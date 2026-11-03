@@ -112,6 +112,10 @@ pub struct Matcher<'a> {
     /// The element `:scope` is: a query's (M25), or none, which makes it
     /// the root element.
     scope: Option<NodeId>,
+    /// Whether `scope` is a scoped rule's root (Cascade 6 section 2.5),
+    /// which differs from one match to the next: a place found to lead
+    /// nowhere is then kept for its walk alone.
+    rule_scoped: bool,
     /// For each element whose children were matched, the ancestor
     /// filter of its children: the bits of the features of it and of
     /// its ancestors (M35.2), at most [`MAX_ANCESTOR_FILTERS`] of them.
@@ -202,6 +206,7 @@ impl<'a> Matcher<'a> {
             radio_groups: HashMap::new(),
             selected_options: HashMap::new(),
             scope: None,
+            rule_scoped: false,
             filters: Vec::new(),
             filter_at: Vec::new(),
             failed: HashSet::new(),
@@ -215,6 +220,18 @@ impl<'a> Matcher<'a> {
     pub fn with_scope(mut self, scope: Option<NodeId>) -> Self {
         self.scope = scope;
         self
+    }
+
+    /// The document matched in.
+    pub(crate) fn document(&self) -> &'a Document {
+        self.document
+    }
+
+    /// Makes `:scope` a scoped rule's root, `root`, for the matches
+    /// until the next call; `None` makes it the root element again.
+    pub(crate) fn set_rule_scope(&mut self, root: Option<NodeId>) {
+        self.scope = root;
+        self.rule_scoped = root.is_some();
     }
 
     /// Whether any selector in the list matches the element; nothing
@@ -294,12 +311,13 @@ impl<'a> Matcher<'a> {
         // other keeps them for this walk alone, allocated only once
         // something fails, which the common selectors never do.
         let id = std::ptr::from_ref(selector) as usize;
-        let kept = selector
-            .combinators
-            .iter()
-            .filter(|c| matches!(c, Combinator::Descendant | Combinator::LaterSibling))
-            .count()
-            >= 2;
+        let kept = !self.rule_scoped
+            && selector
+                .combinators
+                .iter()
+                .filter(|c| matches!(c, Combinator::Descendant | Combinator::LaterSibling))
+                .count()
+                >= 2;
         if kept && self.failed.len() >= MAX_FAILED {
             self.failed.clear();
         }
@@ -599,6 +617,7 @@ impl<'a> Matcher<'a> {
             PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.matches_element_list(element, list)
             }
+            PseudoClass::Nesting(list) => self.matches_element_list(element, list),
             // The user-action pseudo-classes and `:target` read the
             // element's state (M26.4); `:visited` never matches, there
             // being no history of visited links to answer it.

@@ -1,6 +1,8 @@
 //! `attr()` (M21.5): its first argument, an attribute's name and the type
 //! its value is read as (Values 5 §8.7), and the `<syntax>` of `type()`
-//! (Properties and Values API §5.1), as a value is matched against one.
+//! (Properties and Values API section 5.1), as a value is matched against one.
+//! The syntax a registered custom property is given as a string
+//! (`CSS.registerProperty` and `@property`, D73) is read from its text.
 
 use css::Token;
 
@@ -74,7 +76,7 @@ impl Spec {
 }
 
 /// `tokens` without the white space at their ends.
-fn trim(mut tokens: &[Token]) -> &[Token] {
+pub(super) fn trim(mut tokens: &[Token]) -> &[Token] {
     while let [Token::Whitespace, rest @ ..] = tokens {
         tokens = rest;
     }
@@ -122,7 +124,7 @@ pub(super) fn number(value: &str, unit: Option<&str>) -> Option<Token> {
 /// `*`, any value, or components joined by `|`, a value matching the
 /// syntax when it matches one of them.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum Syntax {
+pub(crate) enum Syntax {
     Universal,
     Components(Vec<Component>),
 }
@@ -130,7 +132,7 @@ pub(super) enum Syntax {
 /// One component of a [`Syntax`]: a data type or a keyword, with how many
 /// of it are taken.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Component {
+pub(crate) struct Component {
     name: Name,
     multiplier: Option<Multiplier>,
 }
@@ -143,9 +145,19 @@ enum Name {
     Keyword(String),
 }
 
+/// How a value matched a [`Syntax`]: the first of its components it
+/// matches, what is computed by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Matched {
+    /// `*`, or a keyword: the value as it is.
+    AsIs,
+    /// A data type, so many of it as the multiplier takes.
+    Type(DataType, Option<Multiplier>),
+}
+
 /// `+` or `#` after a component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Multiplier {
+pub(crate) enum Multiplier {
     /// `+`: one or more, white space between them.
     Space,
     /// `#`: one or more, commas between them.
@@ -173,6 +185,8 @@ pub(crate) enum DataType {
     TransformFunction,
     /// `<transform-list>`, which takes no multiplier.
     TransformList,
+    /// `<url>`, a registered custom property's alone.
+    Url,
 }
 
 impl DataType {
@@ -193,9 +207,16 @@ impl DataType {
             "time" => DataType::Time,
             "transform-function" => DataType::TransformFunction,
             "transform-list" => DataType::TransformList,
+            "url" => DataType::Url,
             _ => return None,
         })
     }
+}
+
+/// Whether `c` is CSS white space, which a syntax string's components
+/// may be parted by (Properties and Values API section 5.4).
+fn css_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
 }
 
 impl Syntax {
@@ -216,7 +237,8 @@ impl Syntax {
             let name = match tokens.get(at..at + 3) {
                 Some([Token::Delim('<'), Token::Ident(name), Token::Delim('>')]) => {
                     at += 3;
-                    Name::Type(DataType::of(name)?)
+                    // An attribute's value is never a URL (Values 5 section 8.7).
+                    Name::Type(DataType::of(name).filter(|t| *t != DataType::Url)?)
                 }
                 _ => match tokens.get(at) {
                     Some(Token::Ident(word)) if is_custom_ident(word) => {
@@ -250,15 +272,67 @@ impl Syntax {
         Some(Syntax::Components(components))
     }
 
+    /// The syntax a registered custom property's syntax string `text`
+    /// gives (Properties and Values API section 5.4, "consume a syntax
+    /// definition"), read from its characters: `*` alone, or components
+    /// parted by `|` with white space around them, each a data type's
+    /// name exactly between `<` and `>`, or an identifier that is no
+    /// CSS-wide keyword nor `default`, then `+` or `#` but after
+    /// `<transform-list>`. `None` when the text is none.
+    pub(crate) fn parse_text(text: &str) -> Option<Syntax> {
+        let text = text.trim_matches(css_space);
+        if text == "*" {
+            return Some(Syntax::Universal);
+        }
+        let mut components = Vec::new();
+        for part in text.split('|') {
+            let part = part.trim_matches(css_space);
+            let (body, multiplier) = match part.as_bytes().last() {
+                Some(b'+') => (&part[..part.len() - 1], Some(Multiplier::Space)),
+                Some(b'#') => (&part[..part.len() - 1], Some(Multiplier::Comma)),
+                _ => (part, None),
+            };
+            let name = match body.strip_prefix('<') {
+                Some(rest) => Name::Type(DataType::of(rest.strip_suffix('>')?)?),
+                None => match css::tokenize(body).as_slice() {
+                    [Token::Ident(word)] if is_custom_ident(word) => Name::Keyword(word.clone()),
+                    _ => return None,
+                },
+            };
+            if multiplier.is_some() && name == Name::Type(DataType::TransformList) {
+                return None;
+            }
+            components.push(Component { name, multiplier });
+        }
+        Some(Syntax::Components(components))
+    }
+
     /// Whether `tokens`, a value with its substitution functions
     /// replaced and its white space at the ends left out, match the
     /// syntax. `*` takes any value: [`super::check`] has found it a
     /// `<declaration-value>` before.
-    pub(super) fn matches(&self, tokens: &[Token]) -> bool {
+    pub(crate) fn matches(&self, tokens: &[Token]) -> bool {
+        self.matched(tokens).is_some()
+    }
+
+    /// How `tokens` match the syntax: by the first of its components
+    /// they match; `None` when they match none.
+    pub(crate) fn matched(&self, tokens: &[Token]) -> Option<Matched> {
         match self {
-            Syntax::Universal => true,
-            Syntax::Components(choices) => choices.iter().any(|c| c.matches(tokens)),
+            Syntax::Universal => Some(Matched::AsIs),
+            Syntax::Components(choices) => {
+                let component = choices.iter().find(|c| c.matches(tokens))?;
+                Some(match component.name {
+                    Name::Keyword(_) => Matched::AsIs,
+                    Name::Type(data) => Matched::Type(data, component.multiplier),
+                })
+            }
         }
+    }
+
+    /// Whether the syntax is `*`.
+    pub(crate) fn is_universal(&self) -> bool {
+        matches!(self, Syntax::Universal)
     }
 }
 

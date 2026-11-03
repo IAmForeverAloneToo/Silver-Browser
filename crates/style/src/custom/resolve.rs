@@ -540,9 +540,10 @@ impl<'t, 's> Resolver<'t, 's> {
     /// CSS-wide keyword is that keyword, as if it were declared (Values 5
     /// Appendix A): `initial` the guaranteed-invalid value, `inherit` and
     /// `unset` the inherited value, tainted as the parent's is or the
-    /// declaration is. `revert` and `revert-layer`, which the cascade
-    /// does not know (G7), are `unset`, which is what they give a custom
-    /// property no stylesheet of an earlier origin declares.
+    /// declaration is. `revert` and `revert-layer` substituted, which the
+    /// cascade could not roll back by before substituting (D73), are
+    /// `unset`, which is what they give a custom property no stylesheet
+    /// of an earlier origin declares.
     fn settle(&mut self, index: usize, tokens: Vec<Token>, tainted: bool) -> Option<Arc<[Token]>> {
         let name = self.names[index];
         let inherited = |resolver: &mut Self| {

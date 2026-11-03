@@ -43,7 +43,10 @@ mod matcher;
 mod parse;
 
 pub use matcher::{Matcher, matches_selector, matches_selector_list};
-pub use parse::{parse_selector_list, parse_selector_list_in, supports_selector};
+pub use parse::{
+    Nest, Relative, parse_nested_selector_list, parse_selector_list, parse_selector_list_in,
+    supports_selector,
+};
 
 /// A comma-separated selector list.
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +344,10 @@ pub enum PseudoClass {
     Is(SelectorList),
     /// `:where(list)` — matches like `:is`, zero specificity.
     Where(SelectorList),
+    /// `&` in a style rule nested in another (CSS Nesting 1 section 4):
+    /// the parent rule's selectors, matched and counted as `:is()` of
+    /// them, which every rule nested in the parent shares.
+    Nesting(std::sync::Arc<SelectorList>),
     /// Dynamic: parseable, never matched until M26 wires input state.
     Hover,
     /// Dynamic, see [`PseudoClass::Hover`].

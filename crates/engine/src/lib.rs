@@ -716,7 +716,7 @@ impl Shown {
     /// at the top.
     fn new(mut document: Document, page: Page) -> Shown {
         document.take_changes();
-        let stylesheets = Stylesheets::new(page.sheets());
+        let stylesheets = page.stylesheets(&document);
         let mut scripts = scripts::Scripts::default();
         if page.is_panel() {
             scripts.make_panel();
@@ -6495,9 +6495,16 @@ impl Engine {
     /// differ from those the cascade has, the next frame cascades the
     /// whole document.
     pub(crate) fn sheets_changed(&mut self) {
-        let sheets = self.shown.page.sheets();
-        if sheets != self.shown.stylesheets.sheets() {
-            self.shown.stylesheets = Stylesheets::new(sheets);
+        let page = &self.shown.page;
+        let (sheets, registered) = (page.sheets(), page.registered_properties());
+        let roots = page.scope_roots(&self.shown.document);
+        let prepared = &self.shown.stylesheets;
+        if sheets != prepared.sheets()
+            || roots != prepared.scope_roots()
+            || registered != prepared.registered()
+        {
+            self.shown.stylesheets =
+                Stylesheets::with_scope_roots(sheets, roots).with_registered(registered.to_vec());
             self.shown.recascade = true;
             self.shown.pending.clear();
             self.shown.layout = None;
@@ -6743,8 +6750,13 @@ impl Engine {
                 shown.scripts.preload_modules(&mut lent);
             }
             self.update_load_state();
-            sheets = Some(self.shown.page.sheets())
-                .filter(|sheets| sheets != self.shown.stylesheets.sheets());
+            let (page, prepared) = (&self.shown.page, &self.shown.stylesheets);
+            let roots = page.scope_roots(&self.shown.document);
+            sheets = Some((page.sheets(), roots)).filter(|(sheets, roots)| {
+                sheets != prepared.sheets()
+                    || roots != prepared.scope_roots()
+                    || page.registered_properties() != prepared.registered()
+            });
         }
         if changes.iter().any(may_touch_images) {
             self.request_images();
@@ -6784,8 +6796,10 @@ impl Engine {
         if sheets.is_some() || read {
             self.shown.layout = None;
         }
-        if let Some(sheets) = sheets {
-            self.shown.stylesheets = Stylesheets::new(sheets);
+        if let Some((sheets, roots)) = sheets {
+            let registered = self.shown.page.registered_properties().to_vec();
+            self.shown.stylesheets =
+                Stylesheets::with_scope_roots(sheets, roots).with_registered(registered);
             self.shown.recascade = true;
             self.shown.pending.clear();
         } else if self.shown.styled.is_some()

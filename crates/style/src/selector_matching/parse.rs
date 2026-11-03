@@ -23,6 +23,8 @@
 //! compared in ASCII lowercase: Unicode lowercasing turns some
 //! non-ASCII letters into ASCII ones (the Kelvin sign into `k`).
 
+use std::sync::Arc;
+
 use crate::ParseError;
 use css::Token;
 
@@ -58,8 +60,22 @@ pub fn parse_selector_list_in(
     tokens: &[Token],
     namespaces: &Namespaces,
 ) -> Result<SelectorList, ParseError> {
+    parse_nested_selector_list(tokens, namespaces, Nest::TOP)
+}
+
+/// Parses a style rule's selector list, its prefixes and default
+/// namespace `namespaces`', where `nest` says it stands (CSS Nesting 1,
+/// Cascade 6 section 2.5): what `&` is, and what a selector that names
+/// neither `&` nor, scoped, `:scope` is relative to, which a selector
+/// may then begin with a combinator to say how.
+pub fn parse_nested_selector_list(
+    tokens: &[Token],
+    namespaces: &Namespaces,
+    nest: Nest<'_>,
+) -> Result<SelectorList, ParseError> {
     let mut c = Cursor::new(tokens);
     c.namespaces = namespaces;
+    c.nest = nest;
     let list = parse_list(&mut c, 0, Scope::Rule, false, false)?;
     c.skip_ws();
     if !c.at_end() {
@@ -82,6 +98,43 @@ pub fn supports_selector(tokens: &[Token]) -> bool {
     };
     c.skip_ws();
     c.at_end() && list.0.len() == 1
+}
+
+/// Where a style rule's selector list stands: what the nesting selector
+/// `&` is, and what a selector of it is relative to (CSS Nesting 1
+/// sections 2 and 4, Cascade 6 section 2.5).
+#[derive(Debug, Clone, Copy)]
+pub struct Nest<'a> {
+    /// The selectors `&` is, as `:is()` of them with their specificity:
+    /// the parent style rule's; or, `None`, `:scope` with no specificity,
+    /// as `:where(:scope)`, which it is at the top level and in `@scope`.
+    pub parent: Option<&'a Arc<SelectorList>>,
+    /// What a selector that names no anchor is relative to.
+    pub relative: Relative,
+}
+
+impl Nest<'_> {
+    /// A rule at the top level, or a query's selectors.
+    pub const TOP: Nest<'static> = Nest {
+        parent: None,
+        relative: Relative::No,
+    };
+}
+
+/// What a selector of a nested list that names no anchor is relative
+/// to: such a selector is taken as one after the anchor and a
+/// descendant combinator, or the combinator it begins with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relative {
+    /// Nothing: a selector is absolute, and may not begin with a
+    /// combinator.
+    No,
+    /// `&`, for the selectors of a rule nested in a style rule that do
+    /// not name it (CSS Nesting 1 section 2.2).
+    Nesting,
+    /// `:where(:scope)`, for the selectors of a rule in `@scope` that
+    /// name neither `:scope` nor `&` (Cascade 6 section 2.5).
+    Scope,
 }
 
 /// Where a selector list stands, which decides what its selectors may
@@ -108,6 +161,8 @@ struct Cursor<'a> {
     strict: bool,
     /// The sheet's namespaces.
     namespaces: &'a Namespaces,
+    /// What `&` is, and what the list's selectors are relative to.
+    nest: Nest<'a>,
 }
 
 impl<'a> Cursor<'a> {
@@ -117,6 +172,7 @@ impl<'a> Cursor<'a> {
             pos: 0,
             strict: false,
             namespaces: &NO_NAMESPACES,
+            nest: Nest::TOP,
         }
     }
 
@@ -212,6 +268,19 @@ fn parse_list(
             tokens: &c.tokens[..end],
             ..*c
         };
+        // A rule's own selector may begin with a combinator where it is
+        // relative to an anchor.
+        let relative = depth == 0 && member.nest.relative != Relative::No;
+        let leading = if relative {
+            member.skip_ws();
+            let leading = peek_combinator(&member);
+            if leading.is_some() {
+                member.advance();
+            }
+            leading
+        } else {
+            None
+        };
         let parsed = parse_complex(&mut member, depth, scope).and_then(|selector| {
             member.skip_ws();
             if member.at_end() {
@@ -220,6 +289,10 @@ fn parse_list(
                 Err(ParseError::InvalidSelector)
             }
         });
+        let parsed = match parsed {
+            Ok(selector) if relative => Ok(anchored(selector, leading, member.nest)),
+            other => other,
+        };
         match parsed {
             Ok(selector) => selectors.push(selector),
             Err(e) => {
@@ -359,11 +432,85 @@ fn starts_compound(t: Option<&Token>) -> bool {
             Token::Ident(_)
                 | Token::Delim('*')
                 | Token::Delim('.')
+                | Token::Delim('&')
                 | Token::Hash { .. }
                 | Token::OpenSquare
                 | Token::Colon
         )
     )
+}
+
+/// `selector`, a nested rule's, made absolute (CSS Nesting 1 section
+/// 2.2, Cascade 6 section 2.5): one that begins with a combinator, or
+/// that names no anchor (`&`, or when scoped `:scope` too), is taken as
+/// one after the anchor and that combinator or a descendant one, the
+/// anchor adding the specificity `&` has.
+fn anchored(mut selector: Selector, leading: Option<Combinator>, nest: Nest<'_>) -> Selector {
+    let names_anchor = selector.compounds.iter().any(|compound| {
+        compound.simple.iter().any(|simple| match nest.relative {
+            Relative::Scope => names(simple, &|pc| {
+                matches!(pc, PseudoClass::Scope | PseudoClass::Nesting(_))
+            }),
+            _ => names(simple, &|pc| matches!(pc, PseudoClass::Nesting(_))),
+        })
+    });
+    if leading.is_none() && names_anchor {
+        return selector;
+    }
+    let (anchor, specificity) = match (nest.relative, nest.parent) {
+        (Relative::Nesting, Some(parent)) => (
+            PseudoClass::Nesting(Arc::clone(parent)),
+            max_specificity(parent),
+        ),
+        _ => (PseudoClass::Where(scope_list()), Specificity::default()),
+    };
+    selector.compounds.insert(
+        0,
+        CompoundSelector {
+            simple: vec![SimpleSelector::PseudoClass(anchor)],
+        },
+    );
+    selector
+        .combinators
+        .insert(0, leading.unwrap_or(Combinator::Descendant));
+    selector.specificity += specificity;
+    selector.ancestor_hashes = super::ancestor_hashes(&selector.compounds, &selector.combinators);
+    selector
+}
+
+/// Whether `simple` is, or holds in a list it takes, a pseudo-class
+/// `found` is true of; the selectors `&` stands for are not its own.
+fn names(simple: &SimpleSelector, found: &dyn Fn(&PseudoClass) -> bool) -> bool {
+    let SimpleSelector::PseudoClass(pc) = simple else {
+        return false;
+    };
+    if found(pc) {
+        return true;
+    }
+    let list = match pc {
+        PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => list,
+        PseudoClass::NthChild { of: Some(list), .. } => &**list,
+        _ => return false,
+    };
+    list.0.iter().any(|selector| {
+        selector
+            .compounds
+            .iter()
+            .any(|compound| compound.simple.iter().any(|simple| names(simple, found)))
+    })
+}
+
+/// `:scope` alone, as a list: what `:where(:scope)` holds.
+fn scope_list() -> SelectorList {
+    SelectorList(vec![Selector {
+        compounds: vec![CompoundSelector {
+            simple: vec![SimpleSelector::PseudoClass(PseudoClass::Scope)],
+        }],
+        combinators: Vec::new(),
+        ancestor_hashes: [0; super::ANCESTOR_HASHES],
+        pseudo_element: None,
+        specificity: Specificity(0, 1, 0),
+    }])
 }
 
 /// One compound selector as parsed.
@@ -414,6 +561,19 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                 simple.push(SimpleSelector::Id(value.clone()));
                 spec.0 += 1;
             }
+            // The nesting selector (CSS Nesting 1 section 4): the parent
+            // rule's selectors, or `:scope` with no specificity.
+            Token::Delim('&') => match c.nest.parent {
+                Some(parent) => {
+                    simple.push(SimpleSelector::PseudoClass(PseudoClass::Nesting(
+                        Arc::clone(parent),
+                    )));
+                    spec += max_specificity(parent);
+                }
+                None => simple.push(SimpleSelector::PseudoClass(
+                    PseudoClass::Where(scope_list()),
+                )),
+            },
             // '#123' — a hash that is not an id is never a valid selector.
             Token::Hash { .. } => return None,
             Token::Delim('.') => {

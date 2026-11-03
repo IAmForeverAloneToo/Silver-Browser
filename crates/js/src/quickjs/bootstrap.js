@@ -3936,6 +3936,47 @@
     enumerable: true,
     configurable: true,
   });
+  // `registerProperty()` (Properties and Values API section 3.1, D73): a
+  // custom property registered for the document by the host, its
+  // `PropertyDefinition` read in its members' order.
+  defineProperty(CSSNamespace, "registerProperty", {
+    value: function registerProperty(definition) {
+      need(arguments.length, 1, "registerProperty", "CSS");
+      if (definition !== undefined && definition !== null && typeof definition !== "object" &&
+        typeof definition !== "function") {
+        throw new $TypeError(prefix("registerProperty", "CSS") +
+          "The provided value is not of type 'PropertyDefinition'.");
+      }
+      const member = (key) => (definition === undefined || definition === null ? undefined : definition[key]);
+      const required = (key) => new $TypeError(prefix("registerProperty", "CSS") +
+        "Failed to read the '" + key + "' property from 'PropertyDefinition': Required member is undefined.");
+      const inherits = member("inherits");
+      if (inherits === undefined) {
+        throw required("inherits");
+      }
+      const initial = member("initialValue");
+      const initialValue = initial === undefined ? undefined : str(initial);
+      const named = member("name");
+      if (named === undefined) {
+        throw required("name");
+      }
+      const name = str(named);
+      const given = member("syntax");
+      const syntax = given === undefined ? "*" : str(given);
+      let text = name + "\u0000" + syntax;
+      if (initialValue !== undefined) {
+        text += "\u0000" + initialValue;
+      }
+      try {
+        native.cssom("register", null, [], text, inherits ? 1 : 0);
+      } catch (error) {
+        throw failed(error, "registerProperty", "CSS");
+      }
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   windowOnly("CSS", { value: CSSNamespace, writable: true, configurable: true });
 
   // ---- Mutation observers (DOM 4.3, gap batch A, D42) ----
@@ -12163,7 +12204,7 @@
     get length() {
       const state = blockState(this);
       if (state.computed) {
-        return computedProperties().length;
+        return computedNamesOf(state).length;
       }
       return declarationsOf(state).length / 3;
     }
@@ -12172,7 +12213,7 @@
       const state = blockState(this);
       need(arguments.length, 1, "item", "CSSStyleDeclaration");
       if (state.computed) {
-        const names = computedProperties();
+        const names = computedNamesOf(state);
         const i = unsigned(index);
         return i < names.length ? names[i] : "";
       }
@@ -12578,6 +12619,9 @@
     container: 0,
     "counter-style": 11,
     "font-feature-values": 14,
+    "nested-declarations": 0,
+    scope: 0,
+    property: 0,
   };
   const CSSRULE_CONSTANTS = [
     "STYLE_RULE", 1, "CHARSET_RULE", 2, "IMPORT_RULE", 3, "MEDIA_RULE", 4, "FONT_FACE_RULE", 5,
@@ -12628,20 +12672,6 @@
       state.children.path = path;
     }
     return state.children;
-  }
-
-  class CSSStyleRule extends CSSRule {
-    get selectorText() {
-      return ruleData(ruleState(this))[2];
-    }
-
-    set selectorText(value) {
-      setRule(ruleState(this), str(value), true);
-    }
-
-    get style() {
-      return ruleStyle(this);
-    }
   }
 
   class CSSImportRule extends CSSRule {
@@ -12711,6 +12741,74 @@
     deleteRule(index) {
       need(arguments.length, 1, "deleteRule", "CSSGroupingRule");
       deleteFromList(ruleChildren(this), unsigned(index), "deleteRule", "CSSGroupingRule");
+    }
+  }
+
+  // A style rule is a grouping rule (CSS Nesting 1 section 3.3): its
+  // `cssRules` are the rules nested in it.
+  class CSSStyleRule extends CSSGroupingRule {
+    get selectorText() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    set selectorText(value) {
+      setRule(ruleState(this), str(value), true);
+    }
+
+    get style() {
+      return ruleStyle(this);
+    }
+
+    set style(value) {
+      ruleStyle(this).cssText = value;
+    }
+  }
+
+  // A run of declarations among nested rules (CSS Nesting 1 section
+  // 3.3): its declarations alone.
+  class CSSNestedDeclarations extends CSSRule {
+    get style() {
+      return ruleStyle(this);
+    }
+
+    set style(value) {
+      ruleStyle(this).cssText = value;
+    }
+  }
+
+  // `@property` (Properties and Values API section 4.1): its name, and
+  // its syntax, inheritance and initial value, parted by NULs, the last
+  // after a `1` when it has one.
+  class CSSPropertyRule extends CSSRule {
+    get name() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    get syntax() {
+      return StringSplit(ruleData(ruleState(this))[3], "\u0000")[0];
+    }
+
+    get inherits() {
+      return StringSplit(ruleData(ruleState(this))[3], "\u0000")[1] === "1";
+    }
+
+    get initialValue() {
+      const part = StringSplit(ruleData(ruleState(this))[3], "\u0000")[2];
+      return part === undefined || part === "" ? null : StringSlice(part, 1);
+    }
+  }
+
+  // `@scope` (Cascade 6 section 2.5.3): its roots' and limits'
+  // selectors, null for those it has not.
+  class CSSScopeRule extends CSSGroupingRule {
+    get start() {
+      const part = ruleData(ruleState(this))[2];
+      return part === "" ? null : StringSlice(part, 1);
+    }
+
+    get end() {
+      const part = ruleData(ruleState(this))[3];
+      return part === "" ? null : StringSlice(part, 1);
     }
   }
 
@@ -13157,6 +13255,9 @@
   RULE_CLASSES.container = CSSContainerRule;
   RULE_CLASSES["counter-style"] = CSSCounterStyleRule;
   RULE_CLASSES["font-feature-values"] = CSSFontFeatureValuesRule;
+  RULE_CLASSES["nested-declarations"] = CSSNestedDeclarations;
+  RULE_CLASSES.scope = CSSScopeRule;
+  RULE_CLASSES.property = CSSPropertyRule;
 
   // A media list (CSSOM section 4.1) over where its queries are kept:
   // `get` reads their text and `set` writes it, the element's `media`
@@ -13709,6 +13810,9 @@
   expose(CSSContainerRule, "CSSContainerRule");
   expose(CSSCounterStyleRule, "CSSCounterStyleRule");
   expose(CSSFontFeatureValuesRule, "CSSFontFeatureValuesRule");
+  expose(CSSNestedDeclarations, "CSSNestedDeclarations");
+  expose(CSSScopeRule, "CSSScopeRule");
+  expose(CSSPropertyRule, "CSSPropertyRule");
   expose(CSSFontFeatureValuesMap, "CSSFontFeatureValuesMap");
   expose(CSSPageRule, "CSSPageRule");
   expose(CSSFontFaceRule, "CSSFontFaceRule");
@@ -13738,6 +13842,25 @@
       computedNames = native.computedProperties();
     }
     return computedNames;
+  }
+
+  // The properties a computed style lists: those, then the element's
+  // custom properties with a value, which the host gives for the name
+  // `--` parted by NULs (D73).
+  function computedNamesOf(state) {
+    const names = [];
+    const listed = computedProperties();
+    for (let i = 0; i < listed.length; i++) {
+      ArrayPush(names, listed[i]);
+    }
+    const custom = native.computedValue(state.handle, state.pseudo, "--");
+    if (custom !== null && custom !== "") {
+      const parts = StringSplit(custom, "\u0000");
+      for (let i = 0; i < parts.length; i++) {
+        ArrayPush(names, parts[i]);
+      }
+    }
+    return names;
   }
 
   // The NoModificationAllowedError a computed style's writes throw.
@@ -13874,7 +13997,7 @@
       const i = arrayIndex(key);
       if (i >= 0) {
         if (state.computed) {
-          const names = computedProperties();
+          const names = computedNamesOf(state);
           return i < names.length ? names[i] : undefined;
         }
         const flat = declarationsOf(state);

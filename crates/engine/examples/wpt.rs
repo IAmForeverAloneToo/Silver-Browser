@@ -2052,6 +2052,11 @@ fn rules_supported(
                 }
                 continue;
             }
+            // A run of declarations nested in a style rule (CSS Nesting 1).
+            css::Rule::Declarations(list) => {
+                declarations_supported(list)?;
+                continue;
+            }
             css::Rule::At(at_rule) => at_rule,
         };
         let name = at_rule.name.to_ascii_lowercase();
@@ -2100,6 +2105,7 @@ fn rules_supported(
                         css::Rule::At(rule) => {
                             return Err(format!("@{} in @{name}", rule.name.to_ascii_lowercase()));
                         }
+                        css::Rule::Declarations(_) => {}
                     }
                 }
             }

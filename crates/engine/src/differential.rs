@@ -274,10 +274,6 @@ pub fn compare_with_fresh(
     settle_frames(engine);
     let pixels = engine.frame(width, height);
     fresh.set_document(Document::from_node(&engine.shown.document.to_node()));
-    // A script's CSSOM edits are in the sheets, not in the markup the
-    // snapshot is of: the fresh engine takes the sheets as they are.
-    fresh.shown.stylesheets = style::Stylesheets::new(engine.shown.stylesheets.sheets().to_vec());
-    fresh.shown.recascade = true;
     let order = tree_order(&engine.shown.document);
     let fresh_order = tree_order(&fresh.shown.document);
     if order.len() != fresh_order.len() {
@@ -287,6 +283,26 @@ pub fn compare_with_fresh(
             order.len()
         ));
     }
+    // A script's CSSOM edits are in the sheets, not in the markup the
+    // snapshot is of: the fresh engine takes the sheets as they are, each
+    // scoped to the snapshot's node in its scoping root's place.
+    let roots = engine
+        .shown
+        .stylesheets
+        .scope_roots()
+        .iter()
+        .map(|root| {
+            root.and_then(|root| {
+                let at = order.iter().position(|&node| node == root)?;
+                fresh_order.get(at).copied()
+            })
+        })
+        .collect();
+    let prepared = &engine.shown.stylesheets;
+    fresh.shown.stylesheets =
+        style::Stylesheets::with_scope_roots(prepared.sheets().to_vec(), roots)
+            .with_registered(prepared.registered().to_vec());
+    fresh.shown.recascade = true;
     give_state(engine, fresh, &order, &fresh_order);
     fresh.frame(width, height);
     settle_frames(fresh);

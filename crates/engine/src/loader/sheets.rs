@@ -69,9 +69,13 @@ pub(crate) struct Page {
     /// Whether it is the DevTools panel's page (M36), which the browser
     /// alone shows: its window has the bridge to the browser.
     panel: bool,
-    /// Whether a script changed a sheet through the CSSOM (D66) since
-    /// the engine last took the sheets.
+    /// Whether a script changed a sheet through the CSSOM (D66), or
+    /// registered a custom property, since the engine last took the
+    /// sheets.
     cssom_edited: bool,
+    /// The custom properties the document's scripts registered
+    /// (`CSS.registerProperty`, D73), in order.
+    registered: Vec<style::PropertyRegistration>,
     /// The sheets scripts constructed (`new CSSStyleSheet()`, CSS module
     /// scripts), and the serial numbers of those the document adopted,
     /// in order.
@@ -92,6 +96,9 @@ const MAX_DETACHED_SHEETS: usize = 64;
 
 /// The most sheets a document's scripts may construct.
 pub(crate) const MAX_CONSTRUCTED_SHEETS: usize = 4096;
+
+/// The most custom properties a document's scripts may register.
+pub(crate) const MAX_REGISTERED: usize = 1 << 14;
 
 /// A constructed sheet (CSSOM's constructed flag): its serial number,
 /// its rules, and the URL they resolve against.
@@ -206,6 +213,10 @@ enum Key {
     Style {
         text: String,
         kind: Option<String>,
+        /// The text nodes the text is of: children put in or taken out
+        /// make the sheet again, the same text or not, as HTML's
+        /// "children changed steps" update a style block.
+        nodes: Vec<NodeId>,
     },
 }
 
@@ -319,6 +330,7 @@ impl Page {
             referrer: String::new(),
             panel: false,
             cssom_edited: false,
+            registered: Vec::new(),
             constructed: Vec::new(),
             adopted: Vec::new(),
             disabled: HashSet::new(),
@@ -366,6 +378,7 @@ impl Page {
             referrer: String::new(),
             panel: false,
             cssom_edited: false,
+            registered: Vec::new(),
             constructed: Vec::new(),
             adopted: Vec::new(),
             disabled: HashSet::new(),
@@ -744,6 +757,35 @@ impl Page {
     pub(crate) fn resolve(&self, document: &Document, href: &str) -> Option<Url> {
         let base = self.base_url(document);
         Url::parse_with(href, base.as_ref(), self.context.encoding).ok()
+    }
+
+    /// `value`, a value a script gives as CSS text, with its URLs made
+    /// absolute against the document's base URL, as a sheet's are against
+    /// the sheet's: what a registered custom property's initial value
+    /// resolves against (Properties and Values API section 3.1, D73).
+    pub(crate) fn absolute_value(&self, document: &Document, value: &str) -> String {
+        let tokens = css::tokenize(value);
+        let names_url = tokens.iter().any(|t| match t {
+            css::Token::Url { bad, .. } => !bad,
+            css::Token::Function(name) => {
+                name.eq_ignore_ascii_case("url") || name.eq_ignore_ascii_case("image-set")
+            }
+            _ => false,
+        });
+        let base = self.base_url(document);
+        let Some(base) = base.filter(|_| names_url) else {
+            return value.to_owned();
+        };
+        let mut rules = vec![css::Rule::Declarations(vec![css::Declaration {
+            name: "--value".to_owned(),
+            value: tokens,
+            important: false,
+        }])];
+        rules::absolute_urls(&mut rules, &base);
+        match &rules[0] {
+            css::Rule::Declarations(list) => style::serialize::tokens(&list[0].value),
+            _ => value.to_owned(),
+        }
     }
 
     /// `href` parsed against the document's base URL by the UTF-8 URL
@@ -1191,6 +1233,36 @@ impl Page {
         sheets
     }
 
+    /// The implicit scoping root of each of [`Page::sheets`], in the same
+    /// order, as `document` now stands: the parent element of the element
+    /// whose sheet it is, or none for an adopted sheet. What an `@scope`
+    /// rule without roots of its own scopes to (Cascade 6 section 2.5.1).
+    pub(crate) fn scope_roots(&self, document: &Document) -> Vec<Option<NodeId>> {
+        let preferred = self.preferred();
+        let mut roots: Vec<Option<NodeId>> = self
+            .owners
+            .iter()
+            .filter(|owner| {
+                matches!(&owner.sheet, Slot::Ready(sheet)
+                    if (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
+                        && !self.disabled.contains(&sheet.serial))
+            })
+            .map(|owner| document.parent_element(owner.node))
+            .collect();
+        let mut adopted = Vec::new();
+        self.adopted_sheets(&mut adopted);
+        roots.extend(adopted.iter().map(|_| None));
+        roots
+    }
+
+    /// [`Page::sheets`] prepared for the cascade, each with its scoping
+    /// root in `document`, with the custom properties its scripts
+    /// registered.
+    pub(crate) fn stylesheets(&self, document: &Document) -> style::Stylesheets {
+        style::Stylesheets::with_scope_roots(self.sheets(), self.scope_roots(document))
+            .with_registered(self.registered.clone())
+    }
+
     /// The adopted sheets that apply, each in its `media`, after `sheets`.
     fn adopted_sheets(&self, sheets: &mut Vec<css::Stylesheet>) {
         for serial in &self.adopted {
@@ -1229,9 +1301,20 @@ impl Page {
     /// before `load()` has them; a style its media leaves out, or the
     /// page's policies refuse, gives none.
     pub(crate) fn sheets_now(&self, document: &Document, media: &Media) -> Vec<css::Stylesheet> {
+        self.scoped_sheets_now(document, media).0
+    }
+
+    /// [`Page::sheets_now`], each with its implicit scoping root, as
+    /// [`Page::scope_roots`] gives them.
+    pub(crate) fn scoped_sheets_now(
+        &self,
+        document: &Document,
+        media: &Media,
+    ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
         let preferred = self.preferred();
         let csp = self.policies();
         let mut sheets = Vec::new();
+        let mut roots = Vec::new();
         for node in document.subtree(document.root()) {
             match self.owners.iter().find(|owner| owner.node == node) {
                 Some(owner) => {
@@ -1242,6 +1325,7 @@ impl Page {
                         sheets.push(css::Stylesheet {
                             rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
                         });
+                        roots.push(document.parent_element(node));
                     }
                 }
                 None if document.tag(node) == Some("style")
@@ -1257,13 +1341,16 @@ impl Page {
                         && let Ok(sheet) = css::parse_stylesheet(&text)
                     {
                         sheets.push(sheet);
+                        roots.push(document.parent_element(node));
                     }
                 }
                 None => {}
             }
         }
+        let first_adopted = sheets.len();
         self.adopted_sheets(&mut sheets);
-        sheets
+        roots.resize(roots.len() + sheets.len() - first_adopted, None);
+        (sheets, roots)
     }
 
     /// Sets the disabled flag of the sheet `serial` (CSSOM's `disabled`):
@@ -1374,6 +1461,37 @@ impl Page {
     /// Whether a script changed a sheet since this was last asked.
     pub(crate) fn take_cssom_edited(&mut self) -> bool {
         std::mem::take(&mut self.cssom_edited)
+    }
+
+    /// Registers a custom property for the document's scripts
+    /// (`CSS.registerProperty`, Properties and Values API section 3.1):
+    /// one whose name is registered already is refused with an
+    /// `InvalidModificationError`, and past [`MAX_REGISTERED`] more are
+    /// refused too.
+    pub(crate) fn register_property(
+        &mut self,
+        registration: style::PropertyRegistration,
+    ) -> Result<(), js::DomError> {
+        if self.registered.iter().any(|r| r.name == registration.name) {
+            return Err(js::DomError::new(
+                "InvalidModificationError",
+                format!("The name '{}' is already registered.", registration.name),
+            ));
+        }
+        if self.registered.len() >= MAX_REGISTERED {
+            return Err(js::DomError::new(
+                "QuotaExceededError",
+                "The document registered too many custom properties.",
+            ));
+        }
+        self.registered.push(registration);
+        self.cssom_edited = true;
+        Ok(())
+    }
+
+    /// The custom properties the document's scripts registered, in order.
+    pub(crate) fn registered_properties(&self) -> &[style::PropertyRegistration] {
+        &self.registered
     }
 
     /// A new constructed sheet, empty, whose rules' URLs resolve against
@@ -1791,6 +1909,10 @@ fn scan(
                         .filter_map(|child| document.text(child))
                         .collect(),
                     kind: attr("type"),
+                    nodes: document
+                        .children(node)
+                        .filter(|&child| document.text(child).is_some())
+                        .collect(),
                 },
                 title: title(),
                 media: attr("media"),

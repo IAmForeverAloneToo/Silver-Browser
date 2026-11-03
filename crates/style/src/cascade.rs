@@ -103,6 +103,7 @@
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -130,6 +131,7 @@ use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::{ColorScheme, Media};
 use crate::page::{PagePosition, PageStyle};
+use crate::property::{PropertyRegistration, Registry};
 use crate::rule_set::{InForce, KeyframesInForce, RuleSet};
 use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
 
@@ -153,6 +155,8 @@ mod lists;
 mod motion;
 mod page;
 mod presentational;
+mod registered;
+mod revert;
 mod svg;
 mod text;
 
@@ -163,6 +167,11 @@ pub use presentational::FrameMargins;
 pub(crate) use presentational::{
     is_presentational_hint, reaches_descendants as presentational_reaches_descendants,
 };
+pub(crate) use registered::{
+    compute_alone as compute_registered_alone, number as registered_number,
+};
+use revert::{Mark, Rollbacks};
+pub(crate) use revert::{Revert, revert_keyword};
 pub(crate) use svg::is_svg_hint;
 
 /// The built-in default stylesheet (M5.6), compiled in — loading it is
@@ -694,6 +703,9 @@ pub struct Stylesheets {
     sheets: Vec<css::Stylesheet>,
     rules: RuleSet,
     features: SelectorFeatures,
+    /// The custom properties the document's scripts registered
+    /// (`CSS.registerProperty`, D73), in order.
+    registered: Vec<PropertyRegistration>,
     /// This set's own number, never another's in the process, a copy's
     /// included: what says the declarations a custom property map was
     /// computed from were these sheets' (M21.1, `crate::custom`).
@@ -708,6 +720,7 @@ impl Clone for Stylesheets {
             sheets: self.sheets.clone(),
             rules: self.rules.clone(),
             features: self.features.clone(),
+            registered: self.registered.clone(),
             id: next_sheets_id(),
         }
     }
@@ -734,8 +747,40 @@ impl Stylesheets {
             sheets,
             rules,
             features,
+            registered: Vec::new(),
             id: next_sheets_id(),
         }
+    }
+
+    /// These sheets with the custom properties a document's scripts
+    /// registered, `registered`, in order (D73): each a registration of
+    /// its name that wins over every `@property` rule's.
+    pub fn with_registered(mut self, registered: Vec<PropertyRegistration>) -> Self {
+        self.registered = registered;
+        self
+    }
+
+    /// The custom properties the document's scripts registered, as
+    /// [`Stylesheets::with_registered`] was given them.
+    pub fn registered(&self) -> &[PropertyRegistration] {
+        &self.registered
+    }
+
+    /// `sheets`, in document order, prepared, each with the implicit
+    /// scoping root `roots` gives at its index, if any: what an `@scope`
+    /// rule of it without roots of its own scopes to, the parent element
+    /// of the node that owns the sheet (Cascade 6 section 2.5.1). One in
+    /// a sheet with none scopes to the root element.
+    pub fn with_scope_roots(sheets: Vec<css::Stylesheet>, roots: Vec<Option<NodeId>>) -> Self {
+        let mut prepared = Stylesheets::new(sheets);
+        prepared.rules.set_scope_roots(roots);
+        prepared
+    }
+
+    /// Each sheet's implicit scoping root, by its index, as
+    /// [`Stylesheets::with_scope_roots`] was given them.
+    pub fn scope_roots(&self) -> &[Option<NodeId>] {
+        self.rules.scope_roots()
     }
 
     /// The sheets, in document order.
@@ -927,9 +972,13 @@ impl Stylesheets {
         } else {
             HashMap::new()
         };
+        // The registrations in force: the `@property` rules', then the
+        // scripts', which win (D73).
+        let registry = Registry::new(self.rules.properties_in_force(&answers), &self.registered);
         let mut media = ua_answers;
         media.extend(answers);
         let mut cascader = Cascader::new(document, ua_rules, author, context, media, self.id);
+        cascader.substitutions = Substitutions::new(self.id).with_registry(Arc::new(registry));
         cascader.keyframes = keyframes;
         cascader
     }
@@ -1400,7 +1449,7 @@ fn add_block(
 fn matching_rules<'a>(
     matcher: &mut Matcher<'a>,
     (element, svg): (NodeId, bool),
-    sheet: &[ParsedRule<'a>],
+    sheet: &InForce<'a>,
     candidates: &[(u32, u32)],
 ) -> Vec<(u32, Specificity)> {
     let mut out = Vec::new();
@@ -1415,11 +1464,26 @@ fn matching_rules<'a>(
         if rule.svg_only && !svg {
             continue;
         }
+        let roots = rule
+            .scope
+            .map(|scope| scoping_roots(matcher, sheet, scope, element));
         let list: &'a SelectorList = rule.list;
         let mut best: Option<Specificity> = None;
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
-            if selector.pseudo_element.is_none() && matcher.matches_element(element, selector) {
+            if selector.pseudo_element.is_some() {
+                continue;
+            }
+            let matches = match &roots {
+                None => matcher.matches_element(element, selector),
+                Some(roots) => roots.iter().any(|&(root, _)| {
+                    matcher.set_rule_scope(Some(root));
+                    let found = matcher.matches_element(element, selector);
+                    matcher.set_rule_scope(None);
+                    found
+                }),
+            };
+            if matches {
                 best = best.max(Some(selector.specificity));
             }
         }
@@ -1893,7 +1957,8 @@ fn plain() -> bool {
 /// What an element's base style is made of (M35.2): the number of its
 /// parent's style among the distinct ones met, whether it is the root,
 /// its `dir`, the `rem` it resolves against, and each matched
-/// declaration by address, with its tier, layer, specificity and order.
+/// declaration by address, with its tier, layer, specificity, scope
+/// proximity and order.
 #[derive(PartialEq, Eq, Hash)]
 struct StyleKey {
     parent: u32,
@@ -1901,7 +1966,7 @@ struct StyleKey {
     dir: Option<Box<str>>,
     lang: Option<Box<str>>,
     rem: u32,
-    declarations: Vec<(usize, u8, u32, [u32; 3], u32)>,
+    declarations: Vec<(usize, u8, u32, [u32; 3], u32, u32)>,
 }
 
 /// The cascade's working state over one document: the matcher, with
@@ -2082,8 +2147,14 @@ impl<'a> Cascader<'a> {
             // declared important, is the base style with its values set
             // (M35.2): what `compute_style` makes, the animations applied
             // after every normal declaration, nothing computed from them.
+            // A revert keyword in a keyframe reads the user agent's
+            // declarations, which only `compute_style` keeps (D73).
             |base, animated| {
-                if !sets_composited || important || !animated.sets_only(&COMPOSITED_LONGHANDS) {
+                if !sets_composited
+                    || important
+                    || !animated.sets_only(&COMPOSITED_LONGHANDS)
+                    || animated.reverts()
+                {
                     return None;
                 }
                 let mut style = base.clone();
@@ -2105,6 +2176,7 @@ impl<'a> Cascader<'a> {
                     Target::Element,
                     &bases,
                     &mut [false; 4],
+                    None,
                 );
                 #[cfg(test)]
                 SET_ON.with(|set| set.set(set.get() + 1));
@@ -2244,6 +2316,7 @@ impl<'a> Cascader<'a> {
                 applied.tier,
                 applied.layer,
                 [a, b, c],
+                applied.proximity,
                 applied.order,
             ));
         }
@@ -2601,6 +2674,9 @@ pub(crate) struct ParsedRule<'s> {
     /// Its place among the rule set's rules: what describes it (M36).
     pub(crate) rule: u32,
     pub(crate) list: &'s SelectorList,
+    /// The innermost `@scope` rule around it, by its place among the
+    /// set's.
+    pub(crate) scope: Option<u32>,
     pub(crate) declarations: &'s [css::Declaration],
     pub(crate) layer: u32,
     pub(crate) important_layer: u32,
@@ -2636,10 +2712,17 @@ struct Applied<'a> {
     /// its tier puts above every layer.
     layer: u32,
     specificity: Specificity,
+    /// How many generations up from the element its rule's scoping root
+    /// is, [`UNSCOPED`] for a rule in no `@scope` (Cascade 6 section
+    /// 6.5): after specificity, the nearer root wins.
+    proximity: u32,
     /// Strictly increasing in the order this declaration was examined
     /// (UA sheet, then each author sheet, in document order) — the
     /// final tiebreak once tier and specificity are equal.
     order: u32,
+    /// The `order` of its rule's first declaration: what `revert-rule`
+    /// rolls back past (D73).
+    rule: u32,
     /// A stylesheet's declaration, borrowed, or an inline style's, parsed
     /// for the element.
     decl: Cow<'a, css::Declaration>,
@@ -2709,13 +2792,16 @@ fn declarations_for<'a>(
     );
     // HTML's presentational hints (M21.6): author declarations with no
     // specificity, before every author sheet's, so that any author rule
-    // overrides them.
+    // overrides them; together one rule.
+    let hints = order;
     for decl in hint_declarations(document, element, frame) {
         out.element().push(Applied {
             tier: tier(TierBase::AuthorSheet, false),
             layer: 0,
             specificity: Specificity::default(),
+            proximity: UNSCOPED,
             order,
+            rule: hints,
             decl: Cow::Owned(decl),
         });
         order += 1;
@@ -2735,6 +2821,8 @@ fn declarations_for<'a>(
         && inline_styles.is_none_or(|inline| inline.allowed(element, style_attr))
         && let Ok(decls) = css::parse_style_attribute(style_attr)
     {
+        // The attribute's declarations are one rule.
+        let rule = order;
         for decl in decls {
             out.element().push(Applied {
                 tier: tier(TierBase::AuthorInline, decl.important),
@@ -2744,7 +2832,9 @@ fn declarations_for<'a>(
                 // `order` alone (declaration order in the attribute)
                 // breaks ties, matching real engines.
                 specificity: Specificity::default(),
+                proximity: UNSCOPED,
                 order,
+                rule,
                 decl: Cow::Owned(decl),
             });
             order += 1;
@@ -2790,11 +2880,13 @@ fn hint_declarations(
 fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
     (element, svg): (NodeId, bool),
-    (sheet, candidates): (&[ParsedRule<'a>], &[(u32, u32)]),
+    (sheet, candidates): (&InForce<'a>, &[(u32, u32)]),
     base: TierBase,
     order: &mut u32,
     out: &mut Matched<'a>,
 ) {
+    // The scoping roots of each scope met, for `element`.
+    let mut roots: HashMap<u32, Vec<(NodeId, u32)>> = HashMap::new();
     let mut next = 0;
     while next < candidates.len() {
         let place = candidates[next].0;
@@ -2806,13 +2898,23 @@ fn collect_from_sheet<'a>(
         if rule.svg_only && !svg {
             continue;
         }
+        let scoped = rule.scope.map(|scope| {
+            roots
+                .entry(scope)
+                .or_insert_with(|| scoping_roots(matcher, sheet, scope, element))
+                .as_slice()
+        });
+        if scoped.is_some_and(<[_]>::is_empty) {
+            continue;
+        }
         // A comma-separated list is cascade-equivalent to separate rules
         // sharing one declaration block — each matching branch
         // contributes independently, so the specificity that matters is
         // the highest among the branches that actually matched here,
-        // for the element and for each of its pseudo-elements.
+        // for the element and for each of its pseudo-elements, and of
+        // those the nearest scoping root (Cascade 6 section 6.5).
         let list: &'a SelectorList = rule.list;
-        let mut best: [Option<Specificity>; 6] = [None; 6];
+        let mut best: [Option<(Specificity, Reverse<u32>)>; 6] = [None; 6];
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
             let target = match &selector.pseudo_element {
@@ -2823,20 +2925,31 @@ fn collect_from_sheet<'a>(
                     None => continue,
                 },
             };
-            let matches = match &selector.pseudo_element {
+            let matches = |matcher: &mut Matcher<'a>| match &selector.pseudo_element {
                 None => matcher.matches_element(element, selector),
                 Some(ending) => matcher.matches_pseudo_element(element, selector, ending.element),
             };
-            if matches {
+            let proximity = match scoped {
+                None => matches(matcher).then_some(UNSCOPED),
+                Some(roots) => {
+                    let nearest = roots.iter().find(|&&(root, _)| {
+                        matcher.set_rule_scope(Some(root));
+                        matches(matcher)
+                    });
+                    matcher.set_rule_scope(None);
+                    nearest.map(|&(_, proximity)| proximity)
+                }
+            };
+            if let Some(proximity) = proximity {
                 let best = &mut best[target as usize];
-                *best = (*best).max(Some(selector.specificity));
+                *best = (*best).max(Some((selector.specificity, Reverse(proximity))));
             }
         }
         if best.iter().all(Option::is_none) {
             continue;
         }
-        for (target, specificity) in Target::ALL.into_iter().zip(best) {
-            let Some(specificity) = specificity else {
+        for (target, best) in Target::ALL.into_iter().zip(best) {
+            let Some((specificity, Reverse(proximity))) = best else {
                 continue;
             };
             // The same order for each target: within one, it is the
@@ -2850,13 +2963,117 @@ fn collect_from_sheet<'a>(
                         rule.layer
                     },
                     specificity,
+                    proximity,
                     order: *order + offset as u32,
+                    rule: *order,
                     decl: Cow::Borrowed(decl),
                 });
             }
         }
         *order += rule.declarations.len() as u32;
     }
+}
+
+/// The scope proximity of a declaration of no `@scope` rule: farther
+/// than any (Cascade 6 section 6.5).
+const UNSCOPED: u32 = u32::MAX;
+
+/// The scoping roots of `scope`, one of `sheet`'s `@scope` rules, that
+/// `element` is in the scope of, nearest first, each with how many
+/// generations up from `element` it is (Cascade 6 section 2.5): its
+/// inclusive ancestors that match the rule's root selectors, `:scope` in
+/// them a root of the scope around it that they are in the scope of,
+/// with no limit between them and `element`, `element` itself included.
+/// An implicit root is its sheet's, the parent element of the node that
+/// owns it, or the root element for a sheet with none.
+fn scoping_roots<'a>(
+    matcher: &mut Matcher<'a>,
+    sheet: &InForce<'a>,
+    scope: u32,
+    element: NodeId,
+) -> Vec<(NodeId, u32)> {
+    let document = matcher.document();
+    let rule = &sheet.scopes[scope as usize];
+    let outer = rule
+        .parent
+        .map(|parent| scoping_roots(matcher, sheet, parent, element));
+    let implicit = || {
+        sheet
+            .roots
+            .get(rule.sheet as usize)
+            .copied()
+            .flatten()
+            .or_else(|| document.document_element())
+    };
+    let implicit = if rule.start.is_none() {
+        implicit()
+    } else {
+        None
+    };
+    let mut roots = Vec::new();
+    let mut at = Some(element);
+    let mut generations = 0u32;
+    while let Some(node) = at {
+        let is_root = match (&rule.start, &outer) {
+            (None, _) => implicit == Some(node),
+            (Some(start), None) => {
+                matcher.set_rule_scope(None);
+                matcher.matches_list(node, start)
+            }
+            // The root of an inner scope is in the scope of an outer root,
+            // which `:scope` in its selectors is.
+            (Some(start), Some(outer)) => outer.iter().any(|&(root, up)| {
+                up >= generations && {
+                    matcher.set_rule_scope(Some(root));
+                    let found = matcher.matches_list(node, start);
+                    matcher.set_rule_scope(None);
+                    found
+                }
+            }),
+        };
+        let inside_outer = outer
+            .as_ref()
+            .is_none_or(|outer| outer.iter().any(|&(_, up)| up >= generations));
+        if is_root && inside_outer && !limited(matcher, rule.end.as_ref(), node, element) {
+            roots.push((node, generations));
+        }
+        at = document.parent_element(node);
+        generations += 1;
+    }
+    matcher.set_rule_scope(None);
+    roots
+}
+
+/// Whether a limit of the scope of `root` stands between it and
+/// `element`: an element from `element` up to the root, the root too,
+/// that the limit selectors `end` match, `:scope` in them the root. A
+/// limit selector that names no `:scope` is relative to it, and so never
+/// the root; one that does, `to (:scope)`, may leave nothing in scope.
+fn limited<'a>(
+    matcher: &mut Matcher<'a>,
+    end: Option<&'a SelectorList>,
+    root: NodeId,
+    element: NodeId,
+) -> bool {
+    let Some(end) = end else {
+        return false;
+    };
+    let document = matcher.document();
+    matcher.set_rule_scope(Some(root));
+    let mut at = Some(element);
+    let mut found = false;
+    while let Some(node) = at {
+        if matcher.matches_list(node, end) {
+            found = true;
+            break;
+        }
+        if node == root {
+            break;
+        }
+        at = document.parent_element(node);
+    }
+    matcher.set_rule_scope(None);
+    found
 }
 
 /// Sorts `applied` into cascade order and folds it into a fresh
@@ -2879,9 +3096,20 @@ fn compute_style(
 ) -> ComputedStyle {
     let transitioned = transitioned.unwrap_or_default();
     let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
-    sorted.sort_by_key(|a| (a.tier, a.layer, a.specificity, a.order));
+    sorted.sort_by_key(|a| {
+        (
+            a.tier,
+            a.layer,
+            a.specificity,
+            Reverse(a.proximity),
+            a.order,
+        )
+    });
     // Where the important declarations begin.
     let important = sorted.partition_point(|a| a.tier < tier(TierBase::AuthorSheet, true));
+    // Where the revert keywords roll back to, which each pass keeps its
+    // state at (D73).
+    let rollbacks = Rollbacks::of(&sorted, important, animated.is_some_and(Animated::reverts));
 
     let mut style = ComputedStyle::inherited_from(parent);
 
@@ -2901,24 +3129,57 @@ fn compute_style(
 
     // The custom properties first (M21.1), on every target: the other
     // values substitute them. An element that declares none keeps its
-    // parent's, which it inherited.
-    fn custom_of<'d>(applied: &[&'d Applied<'_>]) -> Vec<custom::Declaration<'d>> {
+    // parent's, which it inherited. Each is kept with its place, the
+    // animations' at the important declarations' start, for the revert
+    // keywords, which take away the declarations of their name from
+    // where they roll back to.
+    type Placed<'d> = ((usize, bool), custom::Declaration<'d>);
+    fn custom_of<'d>(applied: &[&'d Applied<'_>], first: usize) -> Vec<Placed<'d>> {
         applied
             .iter()
-            .filter(|a| custom::is_custom_property_name(&a.decl.name))
-            .map(|a| custom::Declaration {
-                name: &a.decl.name,
-                value: &a.decl.value,
-                identity: a.identity(),
-                animated: false,
+            .enumerate()
+            .filter(|(_, a)| custom::is_custom_property_name(&a.decl.name))
+            .map(|(n, a)| {
+                let declaration = custom::Declaration {
+                    name: &a.decl.name,
+                    value: &a.decl.value,
+                    identity: a.identity(),
+                    animated: false,
+                };
+                ((first + n, false), declaration)
             })
             .collect()
     }
-    let mut declared = custom_of(&sorted[..important]);
+    // The names registered with a syntax, whose animations' values are
+    // interpolated by it once the declared ones are computed (D73).
+    let typed = |name: &str| {
+        resolution
+            .substitutions
+            .registry
+            .get(name)
+            .is_some_and(|r| !r.syntax.is_universal())
+    };
+    let mut placed = custom_of(&sorted[..important], 0);
     if let Some(animated) = animated {
-        declared.extend(animated.custom_declarations());
+        let animations = animated.custom_declarations(&typed);
+        placed.extend(animations.into_iter().map(|d| ((important, true), d)));
     }
-    declared.extend(custom_of(&sorted[important..]));
+    placed.extend(custom_of(&sorted[important..], important));
+    for (n, a) in sorted.iter().enumerate().filter(|_| !rollbacks.is_empty()) {
+        let Some(keyword) = revert_keyword(&a.decl.value) else {
+            continue;
+        };
+        if !custom::is_custom_property_name(&a.decl.name) {
+            continue;
+        }
+        let mark = rollbacks.mark(&sorted, n, keyword);
+        placed.retain(|&(place, ref declaration)| {
+            *declaration.name != *a.decl.name
+                || rollbacks.counts_before(mark, place)
+                || (if place.1 { important } else { place.0 }) > n
+        });
+    }
+    let mut declared: Vec<custom::Declaration<'_>> = placed.into_iter().map(|(_, d)| d).collect();
     // A transition of a custom property gives its value at the step, or
     // the guaranteed-invalid value, which `initial` is.
     let initial = [Token::Ident("initial".into())];
@@ -2939,7 +3200,9 @@ fn compute_style(
             });
         }
     }
-    if !declared.is_empty() {
+    // A registered property takes its initial value where nothing
+    // declares it on the root, and where it is not inherited (D73).
+    if !declared.is_empty() || !resolution.substitutions.registry.is_empty() {
         style.custom = resolution.substitutions.compute(
             &declared,
             parent.custom.as_ref(),
@@ -2951,11 +3214,19 @@ fn compute_style(
     // *this* element's own font-size, which itself must already be
     // final before those are processed. Its own `em` (and `%`) is the
     // parent's font size.
+    let mut sizes: Vec<(Mark, f32)> = Vec::new();
+    // The registered custom properties in a cycle with the font or the
+    // line, and the declarations that read them, by their places (D73).
+    let mut cyclic: Vec<&str> = Vec::new();
+    let mut invalid: Vec<usize> = Vec::new();
     for (n, a) in sorted.iter().enumerate() {
+        rollbacks.keep(&mut sizes, n, Some(false), &style.font_size_px);
         if n == important
             && let Some(animated) = animated
         {
-            animated.font_size(&mut style, parent, resolution);
+            let reverted = Rollbacks::kept(&sizes, rollbacks.user_agent(&sorted)).copied();
+            animated.font_size(&mut style, parent, resolution, reverted);
+            rollbacks.keep(&mut sizes, n, Some(true), &style.font_size_px);
         }
         // The `font` shorthand sets the size too (D53).
         let shorthand = match &*a.decl.name {
@@ -2963,7 +3234,37 @@ fn compute_style(
             "font" => true,
             _ => continue,
         };
+        // A registered property of the font's units read is a cycle: the
+        // declaration is invalid at computed-value time, `unset`, and so
+        // is the property (D73).
+        let units: &[&str] = if resolution.root {
+            &FONT_UNITS_ON_ROOT
+        } else {
+            &FONT_UNITS
+        };
+        let read = reads_cycle(
+            &a.decl.value,
+            &declared,
+            style.custom.as_deref(),
+            resolution,
+            units,
+        );
+        if !read.is_empty() {
+            cyclic.extend(read);
+            invalid.push(n);
+            style.font_size_px = parent.font_size_px;
+            continue;
+        }
         let specified = specified(a, style.custom.as_ref(), resolution);
+        if let Some(keyword) = specified.revert() {
+            // The size where the keyword rolls back to; `unset`, which is
+            // `inherit`, where nothing was.
+            let mark = rollbacks.mark(&sorted, n, keyword);
+            style.font_size_px = Rollbacks::kept(&sizes, mark)
+                .copied()
+                .unwrap_or(parent.font_size_px);
+            continue;
+        }
         if let Some(px) = declared_font_size(specified, shorthand, parent, resolution) {
             style.font_size_px = px;
         }
@@ -2971,7 +3272,9 @@ fn compute_style(
     if important == sorted.len()
         && let Some(animated) = animated
     {
-        animated.font_size(&mut style, parent, resolution);
+        rollbacks.keep(&mut sizes, important, Some(false), &style.font_size_px);
+        let reverted = Rollbacks::kept(&sizes, rollbacks.user_agent(&sorted)).copied();
+        animated.font_size(&mut style, parent, resolution, reverted);
     }
     for transition in transitioned {
         if let (Property::Longhand(Longhand::FontSize), Value::Style(start), Value::Style(end)) =
@@ -3016,13 +3319,46 @@ fn compute_style(
             dark: style.dark,
         };
         let of_parent = LengthBases::of_parent(parent, resolution);
-        for a in &sorted {
+        let mut kept: Vec<(Mark, ComputedStyle)> = Vec::new();
+        for (n, a) in sorted.iter().enumerate() {
+            rollbacks.keep(&mut kept, n, None, &style);
             let name = canonical_name(&a.decl.name);
             if FontPass::of(name) != Some(pass) || !target.applies(name) {
                 continue;
             }
             let bases = font_bases(name, &own, &of_parent, &own);
+            // `line-height` reading a registered property of the line's
+            // units is a cycle (D73).
+            let units: &[&str] = if resolution.root {
+                &["lh", "rlh"]
+            } else {
+                &["lh"]
+            };
+            let read = match name {
+                "line-height" => reads_cycle(
+                    &a.decl.value,
+                    &declared,
+                    style.custom.as_deref(),
+                    resolution,
+                    units,
+                ),
+                _ => Vec::new(),
+            };
+            if !read.is_empty() || invalid.contains(&n) {
+                cyclic.extend(read);
+                if !invalid.contains(&n) {
+                    invalid.push(n);
+                }
+                apply_css_wide(&mut style, name, CssWide::Unset, parent, &mut [false; 4]);
+                continue;
+            }
             let specified = specified(a, style.custom.as_ref(), resolution);
+            if let Some(keyword) = specified.revert() {
+                let mark = rollbacks.mark(&sorted, n, keyword);
+                let reverted = Rollbacks::kept(&kept, mark);
+                apply_revert(&mut style, name, reverted, parent, &mut [false; 4]);
+                continue;
+            }
             apply_specified(&mut style, name, specified, bases, parent, &mut [false; 4]);
         }
         // A transition of `line-height` moves what `lh` is.
@@ -3066,13 +3402,225 @@ fn compute_style(
         resolution
     };
 
+    // A registered custom property in a cycle with the font or the line
+    // is invalid at computed-value time: `unset` (D73).
+    if !cyclic.is_empty()
+        && let Some(custom) = style.custom.clone()
+    {
+        let registry = &resolution.substitutions.registry;
+        let values: Vec<(&str, Arc<[Token]>)> = cyclic
+            .iter()
+            .filter_map(|&name| {
+                let registration = registry.get(name)?;
+                let inherited = parent.custom.as_ref().and_then(|m| m.get(name)).cloned();
+                let value = if registration.inherits {
+                    inherited.or_else(|| registration.initial.clone())
+                } else {
+                    registration.initial.clone()
+                };
+                value.map(|value| (name, value))
+            })
+            .collect();
+        style.custom = Some(Arc::new(custom.with_values(values)));
+    }
+
+    // The registered custom properties the element declares, computed by
+    // their syntaxes against its font, its line and the viewport (D73),
+    // before any other value substitutes them; those it inherits are
+    // its parent's computed values. Those of a colour of `currentcolor`
+    // are computed once the element's colour is.
+    let registry = &resolution.substitutions.registry;
+    let mut current_colored: Vec<&str> = Vec::new();
+    if !registry.is_empty()
+        && let Some(custom) = style.custom.clone()
+    {
+        let font = style.font.clone();
+        let font = font.as_deref().unwrap_or(crate::computed::initial_font());
+        let bases = LengthBases {
+            em: style.font_size_px,
+            font,
+            line: (font, style.font_size_px),
+            resolution,
+            color: style.color,
+            dark: style.dark,
+        };
+        let mut values: Vec<(&str, Arc<[Token]>)> = Vec::new();
+        // An initial value of the viewport's units, against this one.
+        for registration in registry.iter().filter(|r| r.viewport) {
+            let name = registration.name.as_str();
+            if custom.get(name) != registration.initial.as_ref() {
+                continue;
+            }
+            if let Some(initial) = &registration.initial_text
+                && let Some(computed) = registered::compute(&registration.syntax, initial, &bases)
+            {
+                values.push((name, Arc::from(computed)));
+            }
+        }
+        for declaration in &declared {
+            let name = declaration.name;
+            let Some(registration) = registry.get(name).filter(|r| !r.syntax.is_universal()) else {
+                continue;
+            };
+            if values.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            let Some(value) = custom.get(name) else {
+                continue;
+            };
+            // A colour of `currentcolor` waits for the element's colour.
+            if registered::reads_current_color(&registration.syntax, value) {
+                current_colored.push(name);
+                continue;
+            }
+            let computed = registered::compute(&registration.syntax, value, &bases)
+                .map(Arc::from)
+                .or_else(|| registration.initial.clone());
+            if let Some(computed) = computed
+                && *computed != **value
+            {
+                values.push((name, computed));
+            }
+        }
+        if !values.is_empty() {
+            let mut changed: Vec<&str> = values.iter().map(|(name, _)| *name).collect();
+            let mut map = Arc::new(custom.with_values(values));
+            // A property not registered with a syntax that the element declares
+            // and that reads one of them substitutes its computed value, through
+            // a chain of such properties a few deep.
+            for _ in 0..MAX_RESUBSTITUTION {
+                let mut more: Vec<(&str, Arc<[Token]>)> = Vec::new();
+                for (at, declaration) in declared.iter().enumerate() {
+                    let name = declaration.name;
+                    let last = !declared[at + 1..].iter().any(|d| d.name == name);
+                    if !last
+                        || registry.get(name).is_some_and(|r| !r.syntax.is_universal())
+                        || !custom::var_names(declaration.value).any(|n| changed.contains(&n))
+                    {
+                        continue;
+                    }
+                    if let Substituted::Value(value) = resolution.substitutions.substitute(
+                        declaration.value,
+                        None,
+                        Some(&map),
+                        resolution.attributes,
+                        true,
+                    ) {
+                        more.push((name, value));
+                    }
+                }
+                if more.is_empty() {
+                    break;
+                }
+                changed = more.iter().map(|(name, _)| *name).collect();
+                map = Arc::new(map.with_values(more));
+            }
+            style.custom = Some(map);
+        }
+        // Then the animations' values of them, interpolated by their
+        // types, below the important declarations; then the transitions'.
+        let animations = animated.map(|a| a.typed_custom(&typed)).unwrap_or_default();
+        let important_names: Vec<&str> = sorted[important..]
+            .iter()
+            .map(|a| &*a.decl.name)
+            .filter(|name| typed(name))
+            .collect();
+        for mix in animations {
+            if important_names.contains(&mix.name) {
+                continue;
+            }
+            let Some(registration) = registry.get(mix.name) else {
+                continue;
+            };
+            let current = style.custom.clone();
+            let underlying = current.as_ref().and_then(|m| m.get(mix.name)).cloned();
+            let inherited = parent
+                .custom
+                .as_ref()
+                .and_then(|m| m.get(mix.name))
+                .cloned();
+            // A keyframe's value computed, `None` for the underlying one.
+            let endpoint = |value: Option<&[Token]>| -> Option<Arc<[Token]>> {
+                let Some(tokens) = value else {
+                    return underlying.clone();
+                };
+                let unset = || {
+                    if registration.inherits {
+                        inherited.clone().or_else(|| registration.initial.clone())
+                    } else {
+                        registration.initial.clone()
+                    }
+                };
+                match css_wide_keyword(tokens) {
+                    Some(CssWide::Initial) => return registration.initial.clone(),
+                    Some(CssWide::Inherit) => {
+                        return inherited.clone().or_else(|| registration.initial.clone());
+                    }
+                    Some(CssWide::Unset) => return unset(),
+                    None if revert_keyword(tokens).is_some() => return unset(),
+                    None => {}
+                }
+                let substituted = match resolution.substitutions.substitute(
+                    tokens,
+                    None,
+                    current.as_ref(),
+                    resolution.attributes,
+                    true,
+                ) {
+                    Substituted::Value(value) => value,
+                    _ => return unset(),
+                };
+                registered::compute(&registration.syntax, &substituted, &bases)
+                    .map(Arc::from)
+                    .or_else(unset)
+            };
+            let (from, to) = (endpoint(mix.from), endpoint(mix.to));
+            let value = match (&from, &to) {
+                (Some(a), Some(b)) => crate::property::interpolate(a, b, mix.p)
+                    .map(Arc::from)
+                    .or_else(|| {
+                        if mix.p < 0.5 {
+                            from.clone()
+                        } else {
+                            to.clone()
+                        }
+                    }),
+                _ if mix.p < 0.5 => from.clone(),
+                _ => to.clone(),
+            };
+            if let (Some(map), Some(value)) = (current, value) {
+                style.custom = Some(Arc::new(map.with_values(vec![(mix.name, value)])));
+            }
+        }
+        for transition in transitioned {
+            if let (Property::Custom(name), Value::Custom(Some(start)), Value::Custom(Some(end))) =
+                (&transition.property, &transition.start, &transition.end)
+                && typed(name)
+                && let Some(value) = crate::property::interpolate(start, end, transition.progress)
+                && let Some(map) = style.custom.clone()
+            {
+                style.custom = Some(Arc::new(map.with_values(vec![(name, Arc::from(value))])));
+            }
+        }
+    }
+
     // `color-scheme` next (gap batch E, D49): the scheme the element's
     // system colours and `light-dark()` resolve by.
-    for a in &sorted {
+    let mut schemes = Vec::new();
+    for (n, a) in sorted.iter().enumerate() {
+        rollbacks.keep(&mut schemes, n, None, &style.color_scheme);
         if a.decl.name != "color-scheme" || !target.applies("color-scheme") {
             continue;
         }
-        let scheme = match specified(a, style.custom.as_ref(), resolution) {
+        let specified = specified(a, style.custom.as_ref(), resolution);
+        if let Some(keyword) = specified.revert() {
+            let mark = rollbacks.mark(&sorted, n, keyword);
+            style.color_scheme = Rollbacks::kept(&schemes, mark)
+                .cloned()
+                .unwrap_or_else(|| parent.color_scheme.clone());
+            continue;
+        }
+        let scheme = match specified {
             Specified::Written(value) => color_scheme_of(value, parent),
             Specified::Substituted(value) => {
                 Some(color_scheme_of(&value, parent).unwrap_or(parent.color_scheme.clone()))
@@ -3101,11 +3649,22 @@ fn compute_style(
     let mut current = style.color;
     let mut declared: Vec<(usize, Color)> = Vec::new();
     let dark = style.dark;
+    let mut colors = Vec::new();
     for (n, a) in sorted.iter().enumerate() {
+        rollbacks.keep(&mut colors, n, None, &current);
         if !matches!(&*a.decl.name, "color" | "all") || !target.applies("color") {
             continue;
         }
-        let color = match specified(a, style.custom.as_ref(), resolution) {
+        let specified = specified(a, style.custom.as_ref(), resolution);
+        if let Some(keyword) = specified.revert() {
+            let mark = rollbacks.mark(&sorted, n, keyword);
+            current = Rollbacks::kept(&colors, mark)
+                .copied()
+                .unwrap_or(parent.color);
+            declared.push((n, current));
+            continue;
+        }
+        let color = match specified {
             Specified::Written(value) => color_of_color(value, parent, dark),
             Specified::Substituted(value) => {
                 Some(color_of_color(&value, parent, dark).unwrap_or(parent.color))
@@ -3117,6 +3676,33 @@ fn compute_style(
             current = c;
             declared.push((n, c));
         }
+    }
+    // The registered colours of `currentcolor`, against the element's
+    // colour now known (D73).
+    if !current_colored.is_empty()
+        && let Some(custom) = style.custom.clone()
+    {
+        let font = style.font.clone();
+        let font = font.as_deref().unwrap_or(crate::computed::initial_font());
+        let bases = LengthBases {
+            em: style.font_size_px,
+            font,
+            line: (font, style.font_size_px),
+            resolution,
+            color: current,
+            dark: style.dark,
+        };
+        let registry = &resolution.substitutions.registry;
+        let values: Vec<(&str, Arc<[Token]>)> = current_colored
+            .iter()
+            .filter_map(|&name| {
+                let registration = registry.get(name)?;
+                let value = custom.get(name)?;
+                let computed = registered::compute(&registration.syntax, value, &bases)?;
+                Some((name, Arc::from(computed)))
+            })
+            .collect();
+        style.custom = Some(Arc::new(custom.with_values(values)));
     }
     // Kept only where an animation or a transition may move `color`.
     let moves = animated.is_some()
@@ -3150,11 +3736,16 @@ fn compute_style(
             resolution: line_resolution,
             ..bases
         };
+        // The style at each place a revert keyword rolls back to.
+        let mut kept: Vec<(Mark, ComputedStyle)> = Vec::new();
         for (n, a) in sorted.iter().enumerate() {
+            rollbacks.keep(&mut kept, n, Some(false), style);
             if n == important
                 && let Some(animated) = animated
             {
-                animated.apply(style, parent, target, &bases, border_color_set);
+                let reverted = Rollbacks::kept(&kept, rollbacks.user_agent(&sorted));
+                animated.apply(style, parent, target, &bases, border_color_set, reverted);
+                rollbacks.keep(&mut kept, n, Some(true), style);
             }
             let name = canonical_name(&a.decl.name);
             if custom::is_custom_property_name(name) || !target.applies(name) {
@@ -3168,10 +3759,22 @@ fn compute_style(
                     continue;
                 }
             }
+            // A declaration in a cycle with the font or the line (D73).
+            if invalid.contains(&n) {
+                apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+                continue;
+            }
+            let specified = specified(a, style.custom.as_ref(), resolution);
+            if let Some(keyword) = specified.revert() {
+                let mark = rollbacks.mark(&sorted, n, keyword);
+                let reverted = Rollbacks::kept(&kept, mark);
+                apply_revert(style, name, reverted, parent, border_color_set);
+                continue;
+            }
             apply_specified(
                 style,
                 name,
-                specified(a, style.custom.as_ref(), resolution),
+                specified,
                 font_bases(name, &bases, &of_parent, &line),
                 parent,
                 border_color_set,
@@ -3180,7 +3783,9 @@ fn compute_style(
         if important == sorted.len()
             && let Some(animated) = animated
         {
-            animated.apply(style, parent, target, &bases, border_color_set);
+            rollbacks.keep(&mut kept, important, Some(false), style);
+            let reverted = Rollbacks::kept(&kept, rollbacks.user_agent(&sorted));
+            animated.apply(style, parent, target, &bases, border_color_set, reverted);
         }
         for transition in transitioned {
             if let (Property::Longhand(longhand), Value::Style(start), Value::Style(end)) =
@@ -3454,6 +4059,100 @@ enum Specified<'v> {
     Ignored,
 }
 
+/// The units relative to an element's font, which its `font-size` may
+/// not read a registered custom property of (D73).
+const FONT_UNITS: [&str; 7] = ["em", "ex", "ch", "cap", "ic", "lh", "rlh"];
+
+/// [`FONT_UNITS`] on the root element, whose own font the root units
+/// are.
+const FONT_UNITS_ON_ROOT: [&str; 12] = [
+    "em", "ex", "ch", "cap", "ic", "lh", "rlh", "rem", "rex", "rch", "rcap", "ric",
+];
+
+/// The custom properties registered with a syntax that `value`, an
+/// element's declaration of `font-size` or `line-height`, reads through
+/// `var()` and that the element declares, among `declared`, with a unit
+/// of `units` in its value, `custom`'s: such a property computes against
+/// the very font or line the declaration gives, a cycle that makes both
+/// invalid at computed-value time (Properties and Values API section
+/// 2.4, D73). A property the element inherits is computed already; one
+/// not registered is followed to what it reads. Empty for no cycle.
+fn reads_cycle<'d>(
+    value: &'d [Token],
+    declared: &[custom::Declaration<'d>],
+    custom: Option<&CustomProperties>,
+    resolution: &Resolution<'_>,
+    units: &[&str],
+) -> Vec<&'d str> {
+    let registry = &resolution.substitutions.registry;
+    let mut cyclic = Vec::new();
+    if registry.is_empty() || !custom::has_substitution(value) {
+        return cyclic;
+    }
+    let mut names: Vec<&str> = custom::var_names(value).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    while let Some(name) = names.pop() {
+        if !seen.insert(name) || seen.len() > MAX_CYCLE_WALK {
+            continue;
+        }
+        let Some(declaration) = declared.iter().rev().find(|d| d.name == name) else {
+            continue;
+        };
+        if registry.get(name).is_some_and(|r| !r.syntax.is_universal()) {
+            let relative = custom.and_then(|m| m.get(name)).is_some_and(|tokens| {
+                tokens.iter().any(|t| {
+                    matches!(t, Token::Dimension { unit, .. }
+                        if units.iter().any(|u| unit.eq_ignore_ascii_case(u)))
+                })
+            });
+            if relative {
+                cyclic.push(declaration.name);
+            }
+            continue;
+        }
+        names.extend(custom::var_names(declaration.value));
+    }
+    cyclic
+}
+
+/// How many custom properties [`reads_cycle`] follows from one value.
+const MAX_CYCLE_WALK: usize = 1024;
+
+/// How deep a chain of properties not registered is followed to give
+/// each the computed value of a registered one it reads (D73).
+const MAX_RESUBSTITUTION: usize = 8;
+
+impl Specified<'_> {
+    /// The revert keyword the value is, written or substituted (D73).
+    fn revert(&self) -> Option<Revert> {
+        match self {
+            Specified::Written(value) => revert_keyword(value),
+            Specified::Substituted(value) => revert_keyword(value),
+            Specified::Invalid | Specified::Ignored => None,
+        }
+    }
+}
+
+/// Applies a revert keyword of the property `name` (D73): its value as
+/// the style `reverted` has it, which the cascade rolls back to; `unset`
+/// where there is none, the cascade rolling back past every declaration.
+fn apply_revert(
+    style: &mut ComputedStyle,
+    name: &str,
+    reverted: Option<&ComputedStyle>,
+    parent: &ComputedStyle,
+    border_color_set: &mut [bool; 4],
+) {
+    match reverted {
+        Some(reverted) => {
+            apply_css_wide(style, name, CssWide::Inherit, reverted, border_color_set);
+        }
+        None => {
+            apply_css_wide(style, name, CssWide::Unset, parent, border_color_set);
+        }
+    }
+}
+
 /// The value of `a` as the cascade applies it, its substitution functions
 /// replaced against the custom properties `custom`.
 fn specified<'v>(
@@ -3525,7 +4224,9 @@ pub fn supports(name: &str, value: &[Token]) -> bool {
         return custom::is_valid_custom_declaration(value);
     }
     let parent = ComputedStyle::default();
-    if custom::has_substitution(value) {
+    // A revert keyword is a CSS-wide keyword too (D73), and a value with
+    // a substitution function in it any value.
+    if revert_keyword(value).is_some() || custom::has_substitution(value) {
         return custom::check(value)
             && apply_css_wide(
                 &mut ComputedStyle::default(),
@@ -3609,8 +4310,14 @@ pub(crate) fn matches_type(data: DataType, tokens: &[Token]) -> bool {
         }
         DataType::Angle => measure(calc::Measure::Angle) || math(Want::Angle),
         DataType::Time => measure(calc::Measure::Time) || math(Want::Time),
-        DataType::Resolution => measure(calc::Measure::Resolution) || math(Want::Resolution),
-        DataType::Color => parse_color(tokens).is_some(),
+        // Never negative (Values 4 section 7.4).
+        DataType::Resolution => {
+            (measure(calc::Measure::Resolution)
+                && !matches!(single_token(tokens), Some(Token::Dimension { value, .. }) if *value < 0.0))
+                || math(Want::Resolution)
+        }
+        // `currentcolor` among them.
+        DataType::Color => color_with(tokens, Some(Color::CURRENT), false).is_some(),
         DataType::CustomIdent => {
             matches!(single_token(tokens), Some(Token::Ident(word)) if custom::is_custom_ident(word))
         }
@@ -3622,8 +4329,9 @@ pub(crate) fn matches_type(data: DataType, tokens: &[Token]) -> bool {
             single_ident(tokens).is_none()
                 && effects::parse_transform(tokens, bases).is_some_and(|f| !f.is_empty())
         }
-        // Until images (M23).
-        DataType::Image => false,
+        // An image, `none` not among them (Images 3 section 2).
+        DataType::Image => backgrounds::image(tokens, bases).is_some(),
+        DataType::Url => is_url(tokens),
     })
 }
 
@@ -7965,6 +8673,24 @@ fn parse_quotes(tokens: &[Token]) -> Option<Quotes> {
         .map(|[open, close]| (open.clone(), close.clone()))
         .collect();
     Some(Quotes::Pairs(Arc::from(pairs)))
+}
+
+/// Whether `tokens` are one `<url>`: `url()` with the address bare or a
+/// string (Values 4 section 4.5).
+fn is_url(tokens: &[Token]) -> bool {
+    let tokens: Vec<&Token> = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .collect();
+    match tokens.as_slice() {
+        [Token::Url { bad: false, .. }] => true,
+        [
+            Token::Function(name),
+            Token::String { bad: false, .. },
+            Token::CloseParen,
+        ] => name.eq_ignore_ascii_case("url"),
+        _ => false,
+    }
 }
 
 fn single_token(tokens: &[Token]) -> Option<&Token> {
@@ -13205,8 +13931,11 @@ mod tests {
             color_in("<p>x</p>", &[lists], Media::screen(1.0, 1.0)),
             BLUE
         );
-        // Inside a style rule's block, nothing nests (no CSS nesting).
+        // A group rule nested in a style rule (CSS Nesting 1) applies its
+        // declarations to the parent's elements where its list holds.
         let nested = "p { color: blue; @media all { color: red } }";
+        assert_eq!(color_in("<p>x</p>", &[nested], Media::default()), RED);
+        let nested = "p { color: blue; @media print { color: red } }";
         assert_eq!(color_in("<p>x</p>", &[nested], Media::default()), BLUE);
     }
 
@@ -13251,6 +13980,275 @@ mod tests {
                 @scope (p) { p { color: red } }"
             ),
             BLUE
+        );
+    }
+
+    #[test]
+    fn nested_rules_and_scopes_match_as_desugared() {
+        let html = "<div class=a><p id=x class=c>x</p></div><p class=c>y</p>";
+        let at = |source: &str| color_in(html, &[source], Media::default());
+        // D71: `&` the parent's selectors, implicit before a relative or
+        // `&`-less selector, with the parent's specificity.
+        assert_eq!(at(".a { .c { color: blue } }"), BLUE);
+        assert_eq!(at(".a { > .c { color: blue } }"), BLUE);
+        assert_eq!(at(".c { .a > & { color: blue } }"), BLUE);
+        assert_eq!(at(".z { .c { color: blue } }"), Color::BLACK);
+        assert_eq!(
+            at("#x { color: blue } .a { #x.c { color: red } }"),
+            RED,
+            "`:is(.a) #x.c` outweighs `#x`"
+        );
+        // Declarations after a nested rule come after it.
+        assert_eq!(at(".c { & { color: red } color: blue }"), BLUE);
+        // A group rule nested applies its rules where its list holds.
+        assert_eq!(at(".c { @media print { color: red } }"), Color::BLACK);
+        // `@scope`: within the root, not past a limit, the nearer root
+        // winning at equal specificity whatever the order.
+        assert_eq!(at("@scope (.a) { .c { color: blue } }"), BLUE);
+        assert_eq!(
+            at("@scope (.a) to (.c) { .c { color: blue } }"),
+            Color::BLACK
+        );
+        assert_eq!(
+            at("@scope (div) { .c { color: blue } } @scope (body) { .c { color: red } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("@scope (body) { .c { color: red } } @scope (div) { .c { color: blue } }"),
+            BLUE
+        );
+        assert_eq!(
+            at("@scope (div) { .c { color: red } } body .c { color: blue }"),
+            BLUE,
+            "specificity before proximity"
+        );
+        // Selecting the root takes `:scope`.
+        assert_eq!(at("@scope (.c) { .c { color: red } }"), Color::BLACK);
+        assert_eq!(at("@scope (.c) { :scope { color: blue } }"), BLUE);
+    }
+
+    /// The value of the custom property `name` on the first element
+    /// `selector` matches in `html` styled by `source`, with `registered`
+    /// a script's registrations.
+    fn custom_value(
+        html: &str,
+        source: &str,
+        registered: Vec<PropertyRegistration>,
+        selector: &str,
+        name: &str,
+    ) -> Option<String> {
+        let document = Document::from_node(&html::parse_document(html).expect("never fails"));
+        let sheets = Stylesheets::new(vec![sheet(source)]).with_registered(registered);
+        let styles = sheets.cascade(&document, &CascadeContext::default());
+        let list = parse_selector_list(&css::tokenize(selector)).expect("valid selector");
+        let element = document
+            .subtree(document.root())
+            .find(|&id| matches_selector(&document, id, &list.0[0]))
+            .expect("matched");
+        crate::serialize::computed_value(styles.get(element).expect("styled"), name)
+    }
+
+    #[test]
+    fn registered_properties_compute_by_their_syntax() {
+        let length = |inherits| {
+            crate::property::register_property("--l", "<length>", inherits, Some("1in"))
+                .expect("valid")
+        };
+        let html = "<div id=a style='font-size: 10px'><p id=b></p></div>";
+        // D73: its initial value, computed, where nothing declares it.
+        assert_eq!(
+            custom_value(html, "", vec![length(false)], "p", "--l").as_deref(),
+            Some("96px")
+        );
+        // Computed by its syntax against the element's font.
+        assert_eq!(
+            custom_value(html, "#a { --l: 3em }", vec![length(true)], "#a", "--l").as_deref(),
+            Some("30px")
+        );
+        // Inherited as computed, or not inherited at all.
+        assert_eq!(
+            custom_value(html, "#a { --l: 3em }", vec![length(true)], "p", "--l").as_deref(),
+            Some("30px")
+        );
+        assert_eq!(
+            custom_value(html, "#a { --l: 3em }", vec![length(false)], "p", "--l").as_deref(),
+            Some("96px")
+        );
+        // A value not of its syntax is invalid at computed-value time.
+        assert_eq!(
+            custom_value(html, "#a { --l: red }", vec![length(false)], "#a", "--l").as_deref(),
+            Some("96px")
+        );
+        // An `@property` rule registers it too, a script's registration
+        // winning over it.
+        let rule = "@property --l { syntax: '<color>'; inherits: false; initial-value: red }";
+        assert_eq!(
+            custom_value(html, rule, Vec::new(), "p", "--l").as_deref(),
+            Some("rgb(255, 0, 0)")
+        );
+        assert_eq!(
+            custom_value(html, rule, vec![length(false)], "p", "--l").as_deref(),
+            Some("96px")
+        );
+        // A colour's `currentcolor` is the element's colour.
+        let color = crate::property::register_property("--c", "<color>", false, Some("red"))
+            .expect("valid");
+        assert_eq!(
+            custom_value(
+                html,
+                "#a { color: blue; --c: currentcolor }",
+                vec![color],
+                "#a",
+                "--c"
+            )
+            .as_deref(),
+            Some("rgb(0, 0, 255)")
+        );
+        // `var()` substitutes the computed value.
+        assert_eq!(
+            custom_value(
+                html,
+                "#a { --l: 2em; --u: var(--l) }",
+                vec![length(false)],
+                "#a",
+                "--u"
+            )
+            .as_deref(),
+            Some("20px")
+        );
+    }
+
+    #[test]
+    fn revert_rolls_back_to_the_user_agents_declarations() {
+        // D73: an author's `revert` takes the user agent's value, the
+        // author's other declarations however strong passed over.
+        let style = |source: &str, selector: &str| {
+            style_of(
+                "<div id=d class=c>d</div><h1 id=h>h</h1><p id=p>p</p>",
+                &[sheet(source)],
+                selector,
+            )
+        };
+        let div = style("#d.c { display: revert } div { display: inline }", "div");
+        assert_eq!(div.display, Display::Block);
+        let div = style(
+            "div { display: inline !important } #d { display: revert !important }",
+            "div",
+        );
+        assert_eq!(div.display, Display::Block, "the important ones too");
+        let div = style("#d.c { display: inline } div { display: revert }", "div");
+        assert_eq!(
+            div.display,
+            Display::Inline,
+            "a weaker keyword is no winner"
+        );
+        // Every longhand of a shorthand, and of `all`.
+        let h1 = style("h1 { margin: 0; margin: revert }", "h1");
+        assert_eq!(h1.margin, style("", "h1").margin);
+        assert_ne!(
+            style("", "h1").margin,
+            style("h1 { margin: 0 }", "h1").margin
+        );
+        let h1 = style("h1 { margin: 0; display: inline; all: revert }", "h1");
+        assert_eq!(
+            (h1.margin.clone(), h1.display),
+            (style("", "h1").margin, Display::Block)
+        );
+        // The font size, with its own pass, and `color`, with its own.
+        let h1 = style(
+            "h1 { font-size: 10px; color: red } h1 { font-size: revert; color: revert }",
+            "h1",
+        );
+        assert_eq!(h1.font_size_px, 32.0);
+        assert_eq!(h1.color, Color::BLACK);
+        // In the user agent's origin, nothing is below: `unset`.
+        let p = style(
+            "p { color: red; text-align: right } p { text-align: revert }",
+            "p",
+        );
+        assert_eq!(p.text_align, ComputedStyle::default().text_align);
+        // A custom property rolls back too, to none declared.
+        let p = style("p { --x: 1 } p { --x: revert }", "p");
+        assert!(p.custom.as_ref().is_none_or(|m| m.get("--x").is_none()));
+    }
+
+    #[test]
+    fn revert_layer_rolls_back_to_the_layer_below() {
+        let at = |source: &str| color_in("<p id=x class=c>x</p>", &[source], Media::default());
+        // D73: to the layer before, the unlayered declarations being the
+        // last layer.
+        assert_eq!(
+            at(
+                "@layer a, b; @layer a { p { color: blue } } @layer b { #x { color: revert-layer } }"
+            ),
+            BLUE
+        );
+        assert_eq!(
+            at("@layer a { p { color: blue } } #x.c { color: red } p { color: revert-layer }"),
+            RED,
+            "the unlayered declarations' own are one layer: the stronger one wins"
+        );
+        assert_eq!(
+            at("@layer a { p { color: blue } } #x.c { color: revert-layer } p { color: red }"),
+            BLUE,
+            "the keyword the strongest: it rolls back past the weaker ones of its layer"
+        );
+        assert_eq!(
+            at("@layer a { p { color: blue } } #x.c { color: revert-layer }"),
+            BLUE
+        );
+        // `revert-rule`: to the rules below its own in the cascade's order.
+        assert_eq!(
+            at("p { color: blue } p { color: red; color: revert-rule }"),
+            BLUE
+        );
+        assert_eq!(
+            at("#x { color: red; color: revert-rule } .c { color: blue } p { color: red }"),
+            BLUE,
+            "the rule below by specificity, not by the order written"
+        );
+        // Past the first layer, to the user agent's.
+        assert_eq!(
+            at("@layer a { p { color: red; color: revert-layer } }"),
+            Color::BLACK
+        );
+        // Among important declarations, the layer below is the next in
+        // their order, the normal declarations below every one.
+        assert_eq!(
+            at(
+                "@layer a, b; @layer a { p { color: revert-layer !important } } \
+                @layer b { p { color: green !important } } p { color: blue }"
+            ),
+            GREEN
+        );
+        assert_eq!(
+            at("@layer a { p { color: revert-layer !important } } p { color: blue }"),
+            BLUE
+        );
+        // A custom property, and a value substituted to one.
+        let p = style_of(
+            "<p>x</p>",
+            &[sheet(
+                "@layer a { p { --x: 1 } } p { --x: 2; --x: revert-layer }",
+            )],
+            "p",
+        );
+        assert_eq!(
+            p.custom
+                .as_ref()
+                .and_then(|m| m.get("--x"))
+                .map(|v| v.to_vec()),
+            Some(css::tokenize("1"))
+        );
+        assert_eq!(
+            at("@layer a { p { color: blue } } p { --k: revert-layer; color: var(--k) }"),
+            Color::BLACK,
+            "a custom property rolled back to none: `var()` of it invalid, `color` unset"
+        );
+        assert_eq!(
+            at("@layer a { p { color: blue } } p { color: var(--none, revert-layer) }"),
+            BLUE,
+            "a fallback substituted"
         );
     }
 
@@ -14104,6 +15102,9 @@ mod tests {
             ("--a", ""),
             ("--a", "anything { at all }"),
             ("--a", "initial"),
+            ("--a", "revert"),
+            ("--a", "revert-layer"),
+            ("margin", "revert"),
             ("--A", "var(--b, var(--c))"),
             ("color", "var(--a)"),
             ("margin", "var(--a) 1px"),
@@ -14116,7 +15117,7 @@ mod tests {
             ("--", "a"),
             ("--a", "!"),
             ("--a", ")"),
-            ("--a", "revert"),
+            ("bogus", "revert"),
             ("color", "var(--a, !)"),
             ("color", "var()"),
             ("bogus", "var(--a)"),

@@ -179,10 +179,12 @@ mod tests {
             ("(--a:var(--a))", Some(true)),
             ("(--a: x !important)", Some(true)),
             ("(--a: inherit)", Some(true)),
+            ("(--a: revert)", Some(true)),
+            ("(color: revert-layer)", Some(true)),
+            ("(bogus: revert)", Some(false)),
             ("(--: a)", Some(false)),
             ("(--a: !)", Some(false)),
             ("(--a: var(--b,!))", Some(false)),
-            ("(--a: revert)", Some(false)),
             ("(VAR-a: a)", Some(false)),
             ("(color: var(--a))", Some(true)),
             ("(color:var(--a))", Some(true)),
@@ -302,6 +304,9 @@ mod tests {
             ("selector(:not(a, b))", Some(true)),
             ("(color: red) and selector(a)", Some(true)),
             ("not selector(:foo)", Some(true)),
+            // The nesting selector (CSS Nesting 1 section 4).
+            ("selector(&)", Some(true)),
+            ("selector(& > a)", Some(true)),
             // A list, nothing, or what the parser does not know.
             ("selector(a, b)", Some(false)),
             ("selector(a b, c)", Some(false)),
@@ -313,7 +318,6 @@ mod tests {
             ("selector(::before span)", Some(false)),
             // Not this engine's, though the reference browser's.
             ("selector(:has(a))", Some(false)),
-            ("selector(&)", Some(false)),
             // `:is()` and `:where()` forgive nothing here.
             ("selector(:is(:foo))", Some(false)),
             ("selector(:is(a, :foo))", Some(false)),

@@ -92,6 +92,10 @@ pub mod media;
 /// The page box (M20): `@page` rules and what they say of a page.
 pub mod page;
 
+/// Registered custom properties (D73): `CSS.registerProperty`'s and
+/// `@property`'s registrations, by which the cascade computes them.
+pub mod property;
+
 /// The style rules of a set of sheets with the `@media` blocks and the
 /// cascade layers they are in (M20).
 mod rule_set;
@@ -135,4 +139,5 @@ pub use media::{
     serialize_media_query_list,
 };
 pub use page::{Orientation, PageBox, PagePosition, PageSize, PageStyle};
-pub use rule_set::{is_layer_name, namespace_declaration, sheet_namespaces};
+pub use property::{PropertyRegistration, property_rule, register_property};
+pub use rule_set::{is_layer_name, namespace_declaration, scope_selectors, sheet_namespaces};

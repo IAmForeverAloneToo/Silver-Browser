@@ -190,6 +190,7 @@ fn names_in(rules: &[css::Rule], media: &style::Media, names: &mut Vec<String>) 
                     names_in(inner, media, names);
                 }
             }
+            css::Rule::Declarations(_) => {}
         }
     }
 }

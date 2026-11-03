@@ -193,8 +193,16 @@ impl Matching<'_> {
 
 /// Whether `property`'s values in `a` and `b` are transitionable
 /// (Transitions 2 §2.1): they interpolate, or the change is discrete and
-/// `allow-discrete` lets it transition.
-fn transitionable(property: &Property, a: &Value, b: &Value, allow_discrete: bool) -> bool {
+/// `allow-discrete` lets it transition. A custom property's interpolate
+/// where it is `typed`, registered with a syntax (D73), and they are of
+/// one type.
+fn transitionable(
+    property: &Property,
+    a: &Value,
+    b: &Value,
+    allow_discrete: bool,
+    typed: bool,
+) -> bool {
     match (property, a, b) {
         (Property::Longhand(longhand), Value::Style(a), Value::Style(b)) => {
             match longhand.animation_type() {
@@ -205,7 +213,12 @@ fn transitionable(property: &Property, a: &Value, b: &Value, allow_discrete: boo
                 }
             }
         }
-        (Property::Custom(_), Value::Custom(_), Value::Custom(_)) => allow_discrete,
+        (Property::Custom(_), Value::Custom(a), Value::Custom(b)) => {
+            allow_discrete
+                || (typed
+                    && matches!((a, b), (Some(a), Some(b))
+                        if crate::property::interpolate(a, b, 0.5).is_some()))
+        }
         _ => false,
     }
 }
@@ -385,6 +398,10 @@ impl Animations {
                 &property,
                 after_style.get_or_insert_with(|| Arc::new(after.clone())),
             );
+            let typed = match &property {
+                Property::Custom(name) => after.custom.as_ref().is_some_and(|m| m.is_typed(name)),
+                Property::Longhand(_) => false,
+            };
             let start = match (at, matching) {
                 (None, Some(matching))
                     if differs
@@ -394,6 +411,7 @@ impl Animations {
                             &before_value,
                             &after_value,
                             matching.allow_discrete,
+                            typed,
                         )
                         && done.is_none_or(|d| !completed[d].end.same(&property, &after_value)) =>
                 {
@@ -451,7 +469,13 @@ impl Animations {
             let p = progress.progress.unwrap_or(1.0);
             let current = old.start.towards(&property, &old.end, p);
             if current.same(&property, &after_value)
-                || !transitionable(&property, &current, &after_value, matching.allow_discrete)
+                || !transitionable(
+                    &property,
+                    &current,
+                    &after_value,
+                    matching.allow_discrete,
+                    typed,
+                )
                 || matching.combined() <= 0.0
             {
                 continue;

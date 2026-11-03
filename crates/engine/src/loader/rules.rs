@@ -39,8 +39,10 @@ pub(crate) fn absolute_urls(rules: &mut [Rule], base: &Url) {
                 for declaration in &mut rule.declarations {
                     absolute_in(&mut declaration.value, base);
                 }
+                absolute_urls(&mut rule.rules, base);
             }
-            Rule::At(AtRule {
+            Rule::Declarations(declarations)
+            | Rule::At(AtRule {
                 block: Some(Block::Declarations(declarations)),
                 ..
             }) => {

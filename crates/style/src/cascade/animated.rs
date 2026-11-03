@@ -15,7 +15,13 @@
 //! be (§5.3.3): its `em` of the animated font size, its `var()` of the
 //! animated custom properties, and a `currentcolor` the animated colour,
 //! which the last pass computes before every other property for that.
-//! A custom property steps discretely, at half way.
+//! A custom property steps discretely, at half way, but one registered
+//! with a syntax, whose keyframes are computed by it and interpolated by
+//! their type where they can be (D73). A keyframe's `revert` and
+//! `revert-layer` are the value of the user agent's declarations (D73),
+//! the animations' origin rolling back past the author's.
+
+use css::Token;
 
 use crate::animate::{self, Longhand};
 use crate::animation::{Interval, interval};
@@ -27,7 +33,7 @@ use crate::rule_set::KeyframesInForce;
 
 use super::{
     CssWide, LengthBases, Resolution, Specified, Target, apply_css_wide, apply_declaration,
-    canonical_name, declared_font_size, substituted,
+    apply_revert, canonical_name, declared_font_size, revert_keyword, substituted,
 };
 
 /// A target's animations in effect at the timeline's time, in their
@@ -133,6 +139,19 @@ impl<'a> Sampled<'a> {
 }
 
 impl<'a> Animated<'a> {
+    /// Whether a keyframe the animations read declares a revert keyword,
+    /// whose value is the user agent's declarations' (D73).
+    pub(super) fn reverts(&self) -> bool {
+        self.samples.iter().any(|sample| {
+            sample.keyframes().iter().any(|keyframe| {
+                sample
+                    .keyframes
+                    .declarations(keyframe)
+                    .any(|d| revert_keyword(&d.value).is_some())
+            })
+        })
+    }
+
     /// Whether the animations give only longhands among `only` and no
     /// custom property (M35.2): what nothing else in a style is computed
     /// from, so that their values may be set on the style computed
@@ -151,11 +170,19 @@ impl<'a> Animated<'a> {
     /// The custom property declarations the animations give, in order,
     /// for the custom properties' pass: each the declaration of the
     /// keyframe its discrete step takes, none where that is an implicit
-    /// keyframe, whose value is the underlying one.
-    pub(super) fn custom_declarations(&self) -> Vec<custom::Declaration<'a>> {
+    /// keyframe, whose value is the underlying one. Those of the names
+    /// `typed` says are registered with a syntax are left out: they are
+    /// [`Animated::typed_custom`]'s.
+    pub(super) fn custom_declarations(
+        &self,
+        typed: &dyn Fn(&str) -> bool,
+    ) -> Vec<custom::Declaration<'a>> {
         let mut out = Vec::new();
         for sample in &self.samples {
             for name in &sample.keyframes.keyframes.custom {
+                if typed(name) {
+                    continue;
+                }
                 let place = match sample.read(|k| k.sets_custom(name)) {
                     Read::At(place) => place,
                     Read::Mix { from, to, p } => {
@@ -181,15 +208,47 @@ impl<'a> Animated<'a> {
         out
     }
 
+    /// What the animations give the custom properties of the names
+    /// `typed` says are registered with a syntax (D73), in order: each the
+    /// keyframes around the progress and how far between them, a keyframe
+    /// by the value of its last declaration of the name, `None` for an
+    /// implicit one, whose value is the underlying one.
+    pub(super) fn typed_custom(&self, typed: &dyn Fn(&str) -> bool) -> Vec<TypedMix<'a>> {
+        let mut out = Vec::new();
+        for sample in &self.samples {
+            for name in sample
+                .keyframes
+                .keyframes
+                .custom
+                .iter()
+                .filter(|n| typed(n))
+            {
+                let value = |place: Option<usize>| {
+                    place
+                        .and_then(|k| sample.last_declaration(k, name))
+                        .map(|d| &*d.value)
+                };
+                let (from, to, p) = match sample.read(|k| k.sets_custom(name)) {
+                    Read::At(place) => (value(place), value(place), 0.0),
+                    Read::Mix { from, to, p } => (value(from), value(to), p),
+                };
+                out.push(TypedMix { name, from, to, p });
+            }
+        }
+        out
+    }
+
     /// Applies the font size the animations give to `style`, which holds
     /// the one from the normal declarations, for the font size's pass: a
     /// keyframe's own `em` and percentage of the parent's, as the
-    /// property's always are.
+    /// property's always are; a revert keyword's, `reverted`, the user
+    /// agent's declarations' size, or the parent's where none was kept.
     pub(super) fn font_size(
         &self,
         style: &mut ComputedStyle,
         parent: &ComputedStyle,
         resolution: &Resolution<'_>,
+        reverted: Option<f32>,
     ) {
         for sample in &self.samples {
             if sample
@@ -206,6 +265,9 @@ impl<'a> Animated<'a> {
                 place
                     .and_then(|k| sample.last_declaration(k, "font-size"))
                     .and_then(|declaration| {
+                        if revert_keyword(&declaration.value).is_some() {
+                            return Some(reverted.unwrap_or(parent.font_size_px));
+                        }
                         let identity = Some(std::ptr::from_ref(declaration) as usize);
                         let specified = substituted(
                             &declaration.value,
@@ -229,7 +291,9 @@ impl<'a> Animated<'a> {
     /// holds the normal declarations' values, for the last pass, a
     /// target's those that apply to it: the colour first, which a
     /// keyframe's `currentcolor` is, then the rest. A border colour an
-    /// animation sets counts in `border_color_set` as one declared.
+    /// animation sets counts in `border_color_set` as one declared. A
+    /// keyframe's revert keyword takes the value `reverted`, the style of
+    /// the user agent's declarations, has.
     pub(super) fn apply(
         &self,
         style: &mut ComputedStyle,
@@ -237,6 +301,7 @@ impl<'a> Animated<'a> {
         target: Target,
         bases: &LengthBases<'_>,
         border_color_set: &mut [bool; 4],
+        reverted: Option<&ComputedStyle>,
     ) {
         for color in [true, false] {
             for sample in &self.samples {
@@ -266,7 +331,7 @@ impl<'a> Animated<'a> {
                             values[k] = Some(keyframe_style(
                                 sample,
                                 k,
-                                &underlying,
+                                (&underlying, reverted),
                                 parent,
                                 bases,
                                 (!color).then_some(style.color),
@@ -293,6 +358,16 @@ impl<'a> Animated<'a> {
     }
 }
 
+/// A registered custom property's value at a sample, between two of its
+/// keyframes' values, `None` for an implicit keyframe's, the underlying
+/// value.
+pub(super) struct TypedMix<'a> {
+    pub(super) name: &'a str,
+    pub(super) from: Option<&'a [Token]>,
+    pub(super) to: Option<&'a [Token]>,
+    pub(super) p: f64,
+}
+
 /// The side whose border colour `longhand` is, if it is one.
 fn border_color_side(longhand: Longhand) -> Option<usize> {
     match longhand {
@@ -317,12 +392,14 @@ fn current_color(style: &mut ComputedStyle, set: &[bool; 4], color: Color) {
 /// Keyframe `k` of `sample` computed for the element: `underlying` with
 /// the keyframe's declarations applied as the element's own would be,
 /// but for the font size's and the custom properties', which their own
-/// passes take. Past the colour's pass, `color` is the animated colour,
-/// which the keyframe's `currentcolor` is.
+/// passes take, and a revert keyword's, which takes the value of
+/// `reverted`, the style of the user agent's declarations. Past the
+/// colour's pass, `color` is the animated colour, which the keyframe's
+/// `currentcolor` is.
 fn keyframe_style(
     sample: &Sampled<'_>,
     k: usize,
-    underlying: &ComputedStyle,
+    (underlying, reverted): (&ComputedStyle, Option<&ComputedStyle>),
     parent: &ComputedStyle,
     bases: &LengthBases<'_>,
     color: Option<Color>,
@@ -332,6 +409,10 @@ fn keyframe_style(
     for declaration in sample.keyframes.declarations(&sample.keyframes()[k]) {
         let name = canonical_name(&declaration.name);
         if custom::is_custom_property_name(name) || name == "font-size" {
+            continue;
+        }
+        if revert_keyword(&declaration.value).is_some() {
+            apply_revert(&mut style, name, reverted, parent, &mut set);
             continue;
         }
         let identity = Some(std::ptr::from_ref(declaration) as usize);

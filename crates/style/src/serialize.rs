@@ -921,7 +921,7 @@ fn spacing(value: f32) -> String {
 
 /// A color as CSSOM serializes an sRGB one: `rgb(r, g, b)`, or
 /// `rgba(r, g, b, a)` when not opaque.
-fn color(c: Color) -> String {
+pub(crate) fn color(c: Color) -> String {
     if !c.is_legacy() {
         return crate::color::serialize(&c);
     }
@@ -944,7 +944,7 @@ fn color(c: Color) -> String {
     }
 }
 
-fn length_percentage(value: &LengthPercentage) -> Option<String> {
+pub(crate) fn length_percentage(value: &LengthPercentage) -> Option<String> {
     match value {
         LengthPercentage::Px(v) => Some(px(*v)),
         LengthPercentage::Percent(p) => Some(percent(*p)),

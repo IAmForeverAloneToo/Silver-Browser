@@ -2568,6 +2568,18 @@ impl DocumentHost {
                 let Some(style) = style.cloned() else {
                     return Ok(Answer::MaybeString(None));
                 };
+                // `--`, no property's name: the custom properties with a
+                // value, by name, parted by NULs, which a computed style
+                // lists after the others (D73).
+                if property == "--" {
+                    let mut names: Vec<&str> = style
+                        .custom
+                        .as_ref()
+                        .map(|m| m.iter().map(|(name, _)| name).collect())
+                        .unwrap_or_default();
+                    names.sort_unstable();
+                    return Ok(Answer::MaybeString(Some(names.join("\u{0}"))));
+                }
                 let longhand = |name: &str| {
                     let side = ["top", "right", "bottom", "left"]
                         .iter()
@@ -4117,6 +4129,24 @@ impl DocumentHost {
             return Ok(Answer::Strings(super::rules::media_items(&css::tokenize(
                 text,
             ))));
+        }
+        // `CSS.registerProperty` (Properties and Values API section 3.1,
+        // D73): the name, the syntax and the initial value in `text`,
+        // parted by NULs, the last left out for none; `index` 1 when it
+        // inherits.
+        if op == "register" {
+            let mut parts = text.split('\u{0}');
+            let (name, syntax) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let page = self.page.as_mut().ok_or_else(gone)?;
+            // Its URLs against the document's base URL.
+            let initial = parts.next().map(|v| page.absolute_value(&self.document, v));
+            let registration =
+                style::register_property(name, syntax, index == 1.0, initial.as_deref())
+                    .map_err(|message| DomError::new("SyntaxError", message))?;
+            page.register_property(registration)?;
+            self.computed = None;
+            self.laid_out = None;
+            return Ok(Answer::Nothing);
         }
         if owner.is_none() && op != "sheets" {
             return self.constructed_cssom(op, path, text, index);
@@ -5964,11 +5994,25 @@ impl DocumentHost {
                 // so that what changed starts its transitions.
                 let mut matched = Vec::new();
                 if sheets_changed {
-                    let raw = page.sheets_now(&self.document, &self.window.media);
-                    if raw != cached.raw {
+                    let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
+                    let moved = roots != cached.sheets.scope_roots()
+                        || page.registered_properties() != cached.sheets.registered();
+                    if raw != cached.raw || moved {
                         self.work += self.document.len() as u64;
-                        matched = matched_by_changed_rules(&self.document, &cached.raw, &raw);
-                        cached.sheets = Stylesheets::new(raw.clone());
+                        matched = if moved {
+                            // A sheet's owner elsewhere moves what its
+                            // `@scope` rules reach, and a registration what
+                            // its property computes to: every element.
+                            let root = self.document.root();
+                            self.document
+                                .subtree(root)
+                                .filter(|&n| self.document.is_element(n))
+                                .collect()
+                        } else {
+                            matched_by_changed_rules(&self.document, &cached.raw, &raw)
+                        };
+                        cached.sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
+                            .with_registered(page.registered_properties().to_vec());
                         cached.raw = raw;
                     }
                 }
@@ -5984,8 +6028,9 @@ impl DocumentHost {
             }
             _ => {
                 self.work += self.document.len() as u64;
-                let raw = page.sheets_now(&self.document, &self.window.media);
-                let sheets = Stylesheets::new(raw.clone());
+                let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
+                let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
+                    .with_registered(page.registered_properties().to_vec());
                 let styles = sheets.cascade(&self.document, &context);
                 self.computed = Some(ComputedStyles {
                     sheets,
@@ -6665,22 +6710,30 @@ fn own_box(
     None
 }
 
-/// The style rules of `sheets`, those in grouping rules too, in order.
-fn style_rules(sheets: &[css::Stylesheet]) -> Vec<&css::QualifiedRule> {
+/// The style rules of `sheets`, those in grouping rules too, in order,
+/// each with whether its selectors alone say what it matches: not when
+/// it is in an `@scope` rule, or has rules nested in it, which compare
+/// with it (CSS Nesting 1), or is a run of declarations nested in one.
+fn style_rules(sheets: &[css::Stylesheet]) -> Vec<(&css::QualifiedRule, bool)> {
     let mut out = Vec::new();
-    let mut stack: Vec<&[css::Rule]> = sheets.iter().rev().map(|s| s.rules.as_slice()).collect();
-    while let Some(rules) = stack.pop() {
+    let mut stack: Vec<(&[css::Rule], bool)> = sheets
+        .iter()
+        .rev()
+        .map(|s| (s.rules.as_slice(), false))
+        .collect();
+    while let Some((rules, scoped)) = stack.pop() {
         for (i, rule) in rules.iter().enumerate() {
             match rule {
-                css::Rule::Qualified(q) => out.push(q),
+                css::Rule::Qualified(q) => out.push((q, !scoped && q.rules.is_empty())),
                 css::Rule::At(at) => {
                     if let Some(css::Block::Rules(inner)) = &at.block {
                         // The rest of this list after the inner one.
-                        stack.push(&rules[i + 1..]);
-                        stack.push(inner);
+                        stack.push((&rules[i + 1..], scoped));
+                        stack.push((inner, scoped || at.name.eq_ignore_ascii_case("scope")));
                         break;
                     }
                 }
+                css::Rule::Declarations(_) => {}
             }
         }
     }
@@ -6690,6 +6743,29 @@ fn style_rules(sheets: &[css::Stylesheet]) -> Vec<&css::QualifiedRule> {
 /// The elements of `document` a style rule that differs between `old`
 /// and `new` matches: the rules between the two lists' common start
 /// and common end (a script adds or edits rules in one place).
+/// The `@property` rules of `sheets`, those in grouping rules too, in
+/// order.
+fn property_rules(sheets: &[css::Stylesheet]) -> Vec<&css::AtRule> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&[css::Rule]> = sheets.iter().rev().map(|s| s.rules.as_slice()).collect();
+    while let Some(rules) = stack.pop() {
+        for (i, rule) in rules.iter().enumerate() {
+            let css::Rule::At(at) = rule else {
+                continue;
+            };
+            if at.name.eq_ignore_ascii_case("property") {
+                out.push(at);
+            } else if let Some(css::Block::Rules(inner)) = &at.block {
+                // The rest of this list after the inner one.
+                stack.push(&rules[i + 1..]);
+                stack.push(inner);
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn matched_by_changed_rules(
     document: &dom::Document,
     old: &[css::Stylesheet],
@@ -6703,21 +6779,30 @@ fn matched_by_changed_rules(
         .zip(b[start..].iter().rev())
         .take_while(|(x, y)| x == y)
         .count();
-    let lists: Vec<style::selector_matching::SelectorList> = a[start..a.len() - end]
-        .iter()
-        .chain(&b[start..b.len() - end])
-        .filter_map(|rule| style::parse_selector_list(&rule.prelude).ok())
+    let changed = || {
+        a[start..a.len() - end]
+            .iter()
+            .chain(&b[start..b.len() - end])
+    };
+    // A rule its selectors alone do not say the reach of restyles every
+    // element, and so does an `@property` rule put in, changed or taken
+    // out, which says what a custom property computes to (D73).
+    let everything =
+        changed().any(|(_, plain)| !plain) || property_rules(old) != property_rules(new);
+    let lists: Vec<style::selector_matching::SelectorList> = changed()
+        .filter_map(|(rule, _)| style::parse_selector_list(&rule.prelude).ok())
         .collect();
-    if lists.is_empty() {
+    if lists.is_empty() && !everything {
         return Vec::new();
     }
     document
         .subtree(document.root())
         .filter(|&n| document.is_element(n))
         .filter(|&n| {
-            lists
-                .iter()
-                .any(|list| style::matches_selector_list(document, n, list))
+            everything
+                || lists
+                    .iter()
+                    .any(|list| style::matches_selector_list(document, n, list))
         })
         .collect()
 }

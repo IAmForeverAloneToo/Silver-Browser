@@ -155,6 +155,14 @@ impl SelectorFeatures {
         }
     }
 
+    /// Adds what `list`, an `@scope` rule's root or limit selectors,
+    /// depends on (Cascade 6 section 2.5): whatever it reads of an
+    /// element decides the scope of its subtree, a state's subject among
+    /// them, as an ancestor's compound does.
+    pub(crate) fn add_scope(&mut self, list: &SelectorList) {
+        self.add_nested(list, At::Ancestor);
+    }
+
     /// Adds what `list`'s selectors depend on, each standing at `at` in
     /// the selector around them: the state pseudo-classes in a nested
     /// list count where it stands.
@@ -212,6 +220,8 @@ impl SelectorFeatures {
             PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.add_nested(list, at);
             }
+            // The parent rule's selectors stand where `&` does.
+            PseudoClass::Nesting(list) => self.add_nested(list, at),
             PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href"]),
             PseudoClass::Lang(_) => {
                 self.lang = true;

@@ -23,8 +23,8 @@ pub mod unicode_range;
 pub use decode::{decode_stylesheet, determine_fallback_encoding};
 
 pub use parser::{
-    AtRule, Block, Declaration, QualifiedRule, Rule, Stylesheet, parse_style_attribute,
-    parse_stylesheet,
+    AtRule, Block, Declaration, QualifiedRule, Rule, Stylesheet, parse_block_contents,
+    parse_style_attribute, parse_stylesheet,
 };
 pub use tokenizer::{Token, Tokenizer, tokenize};
 

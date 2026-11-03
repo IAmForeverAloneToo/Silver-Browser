@@ -77,7 +77,8 @@ mod attr;
 mod check;
 mod resolve;
 
-pub(crate) use attr::DataType;
+use attr::trim;
+pub(crate) use attr::{DataType, Matched, Multiplier, Syntax};
 pub(crate) use check::check;
 use resolve::{Resolver, State};
 
@@ -158,6 +159,10 @@ pub struct CustomProperties {
     /// of such a value, or the parent's inherited; sorted, `None` when
     /// there is none. An attribute's value never becomes a URL.
     attr_tainted: Option<Arc<[Arc<str>]>>,
+    /// The names registered with a syntax that have a value (D73), whose
+    /// values interpolate by their type; sorted, `None` when there is
+    /// none.
+    typed: Option<Arc<[Arc<str>]>>,
 }
 
 /// The winning custom property declarations of an element, by their
@@ -177,6 +182,7 @@ impl Default for CustomProperties {
             declared: None,
             tainted: None,
             attr_tainted: None,
+            typed: None,
         }
     }
 }
@@ -245,6 +251,14 @@ impl CustomProperties {
         mark(&mut self.attr_tainted, name, tainted);
     }
 
+    /// Whether `name` is registered with a syntax and has a value, which
+    /// interpolates by its type (D73).
+    pub(crate) fn is_typed(&self, name: &str) -> bool {
+        self.typed
+            .as_deref()
+            .is_some_and(|names| names.binary_search_by(|n| (**n).cmp(name)).is_ok())
+    }
+
     /// Gives `name` the value `value`.
     fn insert(&mut self, name: &str, value: Arc<[Token]>) {
         let (branch, leaf) = slot(name);
@@ -260,6 +274,18 @@ impl CustomProperties {
             }
         }
         branch[leaf] = Some(entries.into());
+    }
+
+    /// The map with each of `values`' names given its value, the
+    /// registered custom properties' computed values (D73); what it was
+    /// computed from forgotten.
+    pub(crate) fn with_values(&self, values: Vec<(&str, Arc<[Token]>)>) -> CustomProperties {
+        let mut map = self.clone();
+        for (name, value) in values {
+            map.insert(name, value);
+        }
+        map.declared = None;
+        map
     }
 
     /// Gives `name` the guaranteed-invalid value.
@@ -314,6 +340,7 @@ impl PartialEq for CustomProperties {
         self.len == other.len
             && self.tainted == other.tainted
             && self.attr_tainted == other.attr_tainted
+            && self.typed == other.typed
             && self
                 .branches
                 .iter()
@@ -387,7 +414,7 @@ fn mark(names: &mut Option<Arc<[Arc<str>]>>, name: &str, on: bool) {
 
 /// The names of the custom properties a `var()` in `tokens` reads, its
 /// fallback's among them.
-fn var_names(tokens: &[Token]) -> impl Iterator<Item = &str> {
+pub(crate) fn var_names(tokens: &[Token]) -> impl Iterator<Item = &str> {
     tokens
         .iter()
         .enumerate()
@@ -524,10 +551,13 @@ pub(crate) enum Substituted {
 }
 
 /// What the substitutions of one cascade share: the stylesheets' number,
-/// the weight they may still make, and what they have made already,
-/// kept for the elements that need it again.
+/// the custom properties registered, the weight they may still make, and
+/// what they have made already, kept for the elements that need it
+/// again.
 pub(crate) struct Substitutions {
     sheets: u64,
+    /// The custom properties registered (D73).
+    pub(crate) registry: Arc<crate::property::Registry>,
     remaining: Cell<usize>,
     /// The values of custom property declarations with no substitution
     /// function in them, by the declaration's place in memory: one
@@ -556,10 +586,17 @@ impl Substitutions {
     pub(crate) fn new(sheets: u64) -> Self {
         Substitutions {
             sheets,
+            registry: Arc::default(),
             remaining: Cell::new(MAX_CASCADE_SUBSTITUTION),
             literals: RefCell::default(),
             values: RefCell::default(),
         }
+    }
+
+    /// The substitutions with the custom properties `registry` registers.
+    pub(crate) fn with_registry(mut self, registry: Arc<crate::property::Registry>) -> Self {
+        self.registry = registry;
+        self
     }
 
     /// Takes `weight` from what the cascade may still substitute; once
@@ -597,10 +634,11 @@ impl Substitutions {
     /// attributes, or its originating element's, are `attributes`.
     ///
     /// The winning declaration of each name is the last valid one: a
-    /// CSS-wide keyword, or a value [`check`] takes; `revert` and
-    /// `revert-layer`, which the cascade does not know (G7), are passed
-    /// over as every property passes them over. `initial` gives the
-    /// guaranteed-invalid value, `inherit` and `unset` the parent's.
+    /// CSS-wide keyword, or a value [`check`] takes. `initial` gives the
+    /// guaranteed-invalid value, `inherit` and `unset` the parent's; the
+    /// cascade takes a revert keyword away with the declarations it rolls
+    /// back past before this (D73), and one left is `unset`, rolled back
+    /// past every declaration.
     ///
     /// When the winning declarations are the very ones the parent's map
     /// was computed from, the element shares that map without computing
@@ -608,8 +646,14 @@ impl Substitutions {
     /// gives that map, the names they do not declare being the same. So a
     /// set of custom properties declared on `*` is computed once, not for
     /// every element. Declarations that read the element's attributes,
-    /// by `attr()`, are never so shared. A map is `None` when no custom
-    /// property has a value.
+    /// by `attr()`, are never so shared, nor those of a property
+    /// registered with a syntax, which the element's own bases compute.
+    /// A map is `None` when no custom property has a value.
+    ///
+    /// A registered property (D73) takes its registration's initial value
+    /// for `initial`, on the root where nothing declares it, and where it
+    /// is not inherited and nothing declares it; a value that does not
+    /// match its syntax is invalid at computed-value time, `unset`.
     ///
     /// A value is animation-tainted (Variables 1 §2, M22) when its
     /// declaration is an animation's, when it substituted a tainted
@@ -625,15 +669,22 @@ impl Substitutions {
             Literal,
             Substituted,
         }
+        let registry = &*self.registry;
         let mut winners: Vec<(&Declaration<'_>, Kind)> = Vec::new();
         let mut places: HashMap<&str, usize> = HashMap::new();
         for declaration in declared {
+            let registered = registry.get(declaration.name);
             let kind = if let Some(keyword) = css_wide_keyword(declaration.value) {
                 Kind::Keyword(keyword)
-            } else if is_revert(declaration.value) || !check(declaration.value) {
+            } else if is_revert(declaration.value) {
+                Kind::Keyword(CssWide::Unset)
+            } else if !check(declaration.value) {
                 continue;
             } else if has_substitution(declaration.value) {
                 Kind::Substituted
+            } else if registered.is_some_and(|r| !r.syntax.matches(trim(declaration.value))) {
+                // Invalid at computed-value time.
+                Kind::Keyword(CssWide::Unset)
             } else {
                 Kind::Literal
             };
@@ -645,15 +696,24 @@ impl Substitutions {
                 }
             }
         }
-        if winners.is_empty() {
+        // Nothing declared, and no registered property's value to set to
+        // its initial one: the parent's map itself.
+        let resets = registry.iter().any(|registration| {
+            (parent.is_none() || !registration.inherits)
+                && parent.and_then(|m| m.get(&registration.name)) != registration.initial.as_ref()
+        });
+        if winners.is_empty() && !resets {
             return parent.cloned();
         }
         let fingerprint = winners
             .iter()
             .map(|(declaration, _)| {
-                declaration
-                    .identity
-                    .filter(|_| !reads_attributes(declaration.value))
+                declaration.identity.filter(|_| {
+                    !reads_attributes(declaration.value)
+                        && registry
+                            .get(declaration.name)
+                            .is_none_or(|r| r.syntax.is_universal())
+                })
             })
             .collect::<Option<Vec<usize>>>()
             .map(|mut declarations| {
@@ -669,12 +729,26 @@ impl Substitutions {
             return Some(Arc::clone(parent));
         }
         let inherited = parent.map(|p| &**p);
+        // A registered property's initial value; the guaranteed-invalid
+        // value for one that is not registered.
+        let initial = |name: &str| registry.get(name).and_then(|r| r.initial.clone());
         let (states, taints): (Vec<State<'_>>, Vec<bool>) = winners
             .iter()
             .map(|(declaration, kind)| match kind {
-                Kind::Keyword(CssWide::Initial) => (State::Done(None), false),
+                Kind::Keyword(CssWide::Initial) => (State::Done(initial(declaration.name)), false),
+                // `unset` of a property not inherited is `initial`.
+                Kind::Keyword(CssWide::Unset)
+                    if registry.get(declaration.name).is_some_and(|r| !r.inherits) =>
+                {
+                    (State::Done(initial(declaration.name)), false)
+                }
                 Kind::Keyword(CssWide::Inherit | CssWide::Unset) => (
-                    State::Done(inherited.and_then(|m| m.get(declaration.name)).cloned()),
+                    State::Done(
+                        inherited
+                            .and_then(|m| m.get(declaration.name))
+                            .cloned()
+                            .or_else(|| initial(declaration.name)),
+                    ),
                     inherited.is_some_and(|m| m.is_tainted(declaration.name)),
                 ),
                 Kind::Literal => (
@@ -690,6 +764,34 @@ impl Substitutions {
         for index in 0..winners.len() {
             if matches!(resolver.states[index], State::Pending(_)) {
                 resolver.compute(index);
+            }
+        }
+        // A registered property's value substituted that does not match
+        // its syntax is invalid at computed-value time: `unset`.
+        for (index, (declaration, kind)) in winners.iter().enumerate() {
+            let Some(registration) = registry.get(declaration.name) else {
+                continue;
+            };
+            // A `*` property's is the guaranteed-invalid value, as one not
+            // registered is.
+            if !matches!(kind, Kind::Substituted) || registration.syntax.is_universal() {
+                continue;
+            }
+            let State::Done(value) = &resolver.states[index] else {
+                continue;
+            };
+            let valid = value
+                .as_deref()
+                .is_some_and(|tokens| registration.syntax.matches(trim(tokens)));
+            if !valid {
+                resolver.states[index] = State::Done(if registration.inherits {
+                    inherited
+                        .and_then(|m| m.get(declaration.name))
+                        .cloned()
+                        .or_else(|| registration.initial.clone())
+                } else {
+                    registration.initial.clone()
+                });
             }
         }
         let mut map = match parent {
@@ -749,6 +851,31 @@ impl Substitutions {
             map.set_tainted(declaration.name, tainted && value.is_some());
             map.set_attr_tainted(declaration.name, reads && value.is_some());
         }
+        // The registered properties nothing declares: on the root each its
+        // initial value, and elsewhere each not inherited its initial
+        // value again.
+        for registration in registry.iter() {
+            if places.contains_key(registration.name.as_str())
+                || (parent.is_some() && registration.inherits)
+            {
+                continue;
+            }
+            match &registration.initial {
+                Some(value) => {
+                    if map.get(&registration.name) != Some(value) {
+                        map.insert(&registration.name, Arc::clone(value));
+                    }
+                }
+                None => map.remove(&registration.name),
+            }
+        }
+        for registration in registry.iter() {
+            let typed =
+                !registration.syntax.is_universal() && map.get(&registration.name).is_some();
+            if typed != map.is_typed(&registration.name) {
+                mark(&mut map.typed, &registration.name, typed);
+            }
+        }
         map.declared = fingerprint;
         (!map.is_empty()).then(|| Arc::new(map))
     }
@@ -807,21 +934,15 @@ impl Substitutions {
 }
 
 /// Whether `tokens` are the CSS-wide keyword `revert` or `revert-layer`,
-/// which the cascade does not know yet (G7).
+/// which roll the cascade back (D73).
 fn is_revert(tokens: &[Token]) -> bool {
-    match tokens {
-        [Token::Ident(word)] => {
-            word.eq_ignore_ascii_case("revert") || word.eq_ignore_ascii_case("revert-layer")
-        }
-        _ => false,
-    }
+    crate::cascade::revert_keyword(tokens).is_some()
 }
 
 /// Whether the value `name: value` is valid where it is parsed, for a
-/// custom property: a CSS-wide keyword the cascade knows, or a value
-/// [`check`] takes.
+/// custom property: a CSS-wide keyword, or a value [`check`] takes.
 pub(crate) fn is_valid_custom_declaration(value: &[Token]) -> bool {
-    css_wide_keyword(value).is_some() || (!is_revert(value) && check(value))
+    css_wide_keyword(value).is_some() || is_revert(value) || check(value)
 }
 
 /// The value of the environment variable `name` with `indices` indices
@@ -1338,11 +1459,11 @@ mod tests {
         let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
         assert_eq!(value(&map, "--a").as_deref(), Some("1"));
         assert_eq!(value(&map, "--f").as_deref(), Some("1 x"));
-        // `revert`, which the cascade does not know (G7), is passed over:
-        // the declaration before it stands.
+        // A revert keyword the cascade has not taken away (D73) is
+        // `unset`: the parent's value.
         let list = declared("--a: 4; --a: revert");
         let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());
-        assert_eq!(value(&map, "--a").as_deref(), Some("4"));
+        assert_eq!(value(&map, "--a").as_deref(), Some("1"));
         // Nothing declared, or nothing valid: the parent's map itself.
         let list = declared("--a: !; color: red");
         let map = compute_with(&Substitutions::new(sheets()), &list, parent.as_ref());

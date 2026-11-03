@@ -1,11 +1,18 @@
 //! The CSSOM's rules (D66): which of a sheet's parsed rules a script
 //! sees, as which kind of `CSSRule`, their `cssText` as CSSOM section
 //! 6.7 serializes it, and the changes `insertRule`, `deleteRule` and the
-//! rules' setters make to the parsed sheet the cascade reads.
+//! rules' setters make to the parsed sheet the cascade reads. A style
+//! rule is a grouping rule (CSS Nesting 1 section 3.3): its nested
+//! rules, and the runs of declarations among them as
+//! `CSSNestedDeclarations`, are a list as a group rule's are.
+
+use std::sync::Arc;
 
 use css::{Block, Declaration, Rule, Stylesheet, Token};
 use js::DomError;
-use style::selector_matching::{Namespaces, parse_selector_list_in};
+use style::selector_matching::{
+    Namespaces, Nest, Relative, SelectorList, parse_nested_selector_list,
+};
 
 /// The most rules a list may hold after an insertion: what a hostile
 /// script could otherwise grow a sheet by.
@@ -33,6 +40,14 @@ pub(crate) enum Kind {
     CounterStyle,
     /// `@font-feature-values` (Fonts 4 section 6.10).
     FontFeatureValues,
+    /// A run of declarations among a style rule's nested rules, or in a
+    /// group rule nested in one or in `@scope` (`CSSNestedDeclarations`,
+    /// CSS Nesting 1 section 3.3).
+    NestedDeclarations,
+    /// `@scope` (Cascade 6 section 2.5.3).
+    Scope,
+    /// `@property` (Properties and Values API section 4.1), a valid one.
+    Property,
 }
 
 impl Kind {
@@ -53,21 +68,73 @@ impl Kind {
             Kind::Container => "container",
             Kind::CounterStyle => "counter-style",
             Kind::FontFeatureValues => "font-feature-values",
+            Kind::NestedDeclarations => "nested-declarations",
+            Kind::Scope => "scope",
+            Kind::Property => "property",
         }
     }
 }
 
-/// What `rule` is to a script, in a keyframes rule's list or not, and in
-/// a grouping rule's or the sheet's own; `None` for a rule the CSSOM
-/// leaves out: a style rule whose selector does not parse, an import or
-/// a namespace rule in a grouping rule, an at-rule it has no interface
+/// Where a rule list stands, which says what its rules may be.
+#[derive(Debug, Clone, Copy)]
+struct Place {
+    /// It is a keyframes rule's: its rules are keyframes.
+    keyframes: bool,
+    /// It is a grouping rule's, not the sheet's own.
+    nested: bool,
+    /// What its style rules' selectors are relative to: the style rule
+    /// it is nested in, or the `@scope` rule (CSS Nesting 1, Cascade 6).
+    relative: Relative,
+}
+
+/// The sheet's own list.
+const TOP: Place = Place {
+    keyframes: false,
+    nested: false,
+    relative: Relative::No,
+};
+
+impl Place {
+    /// The place of the list of a rule of `kind` in this list.
+    fn inside(self, kind: Kind) -> Place {
+        Place {
+            keyframes: kind == Kind::Keyframes,
+            nested: true,
+            relative: match kind {
+                Kind::Style => Relative::Nesting,
+                Kind::Scope => Relative::Scope,
+                _ => self.relative,
+            },
+        }
+    }
+}
+
+/// Whether `tokens` are a style rule's selectors where `relative` says
+/// the rule stands; `&` in them stands for any parent's.
+fn valid_selector(tokens: &[Token], ns: &Namespaces, relative: Relative) -> bool {
+    let parent = Arc::new(SelectorList(Vec::new()));
+    let nest = Nest {
+        parent: (relative == Relative::Nesting).then_some(&parent),
+        relative,
+    };
+    parse_nested_selector_list(tokens, ns, nest).is_ok()
+}
+
+/// What `rule` is to a script in a list at `place`; `None` for a rule
+/// the CSSOM leaves out: a style rule whose selector does not parse, a
+/// run of declarations none of which the cascade takes, an import or a
+/// namespace rule in a grouping rule, an at-rule it has no interface
 /// for here.
-fn kind(rule: &Rule, keyframes: bool, nested: bool, ns: &Namespaces) -> Option<Kind> {
+fn kind(rule: &Rule, place: Place, ns: &Namespaces) -> Option<Kind> {
+    let nested = place.nested;
     match rule {
-        Rule::Qualified(_) if keyframes => Some(Kind::Keyframe),
-        Rule::Qualified(rule) => parse_selector_list_in(&rule.prelude, ns)
-            .is_ok()
-            .then_some(Kind::Style),
+        Rule::Qualified(_) if place.keyframes => Some(Kind::Keyframe),
+        Rule::Qualified(rule) => {
+            valid_selector(&rule.prelude, ns, place.relative).then_some(Kind::Style)
+        }
+        Rule::Declarations(list) => (place.relative != Relative::No
+            && !declarations(list).is_empty())
+        .then_some(Kind::NestedDeclarations),
         Rule::At(at) => {
             let rules = matches!(at.block, Some(Block::Rules(_)));
             let declarations = matches!(at.block, Some(Block::Declarations(_)));
@@ -83,10 +150,32 @@ fn kind(rule: &Rule, keyframes: bool, nested: bool, ns: &Namespaces) -> Option<K
                 {
                     Some(Kind::Namespace)
                 }
-                "layer" if at.block.is_none() => Some(Kind::LayerStatement),
+                "scope"
+                    if rules
+                        && style::scope_selectors(&at.prelude, ns, place.relative).is_some() =>
+                {
+                    Some(Kind::Scope)
+                }
+                // Names of identifiers joined by `.` (Cascade 5 section
+                // 6.4.2): a statement's one or more, a block's one or none.
+                "layer"
+                    if at.block.is_none()
+                        && split_top(&at.prelude, |t| matches!(t, Token::Comma))
+                            .into_iter()
+                            .all(|name| style::is_layer_name(trim_space(name))) =>
+                {
+                    Some(Kind::LayerStatement)
+                }
                 "media" if rules => Some(Kind::Media),
                 "supports" if rules => Some(Kind::Supports),
-                "layer" if rules => Some(Kind::Layer),
+                "layer"
+                    if rules && {
+                        let name = trim_space(&at.prelude);
+                        name.is_empty() || style::is_layer_name(name)
+                    } =>
+                {
+                    Some(Kind::Layer)
+                }
                 "keyframes" | "-webkit-keyframes" if rules => Some(Kind::Keyframes),
                 "font-face" if declarations => Some(Kind::FontFace),
                 "page" if declarations => Some(Kind::Page),
@@ -95,6 +184,14 @@ fn kind(rule: &Rule, keyframes: bool, nested: bool, ns: &Namespaces) -> Option<K
                     Some(Kind::CounterStyle)
                 }
                 "font-feature-values" if rules => Some(Kind::FontFeatureValues),
+                "property" => match &at.block {
+                    Some(Block::Declarations(list))
+                        if style::property_rule(&at.prelude, list).is_some() =>
+                    {
+                        Some(Kind::Property)
+                    }
+                    _ => None,
+                },
                 _ => None,
             }
         }
@@ -111,56 +208,58 @@ fn starts_with_url(prelude: &[Token]) -> bool {
     }
 }
 
-/// The rules of `list` a script sees: each one's index in the list and
-/// its kind.
-fn visible(list: &[Rule], keyframes: bool, nested: bool, ns: &Namespaces) -> Vec<(usize, Kind)> {
+/// The rules of `list`, at `place`, a script sees: each one's index in
+/// the list and its kind.
+fn visible(list: &[Rule], place: Place, ns: &Namespaces) -> Vec<(usize, Kind)> {
     list.iter()
         .enumerate()
-        .filter_map(|(at, rule)| kind(rule, keyframes, nested, ns).map(|kind| (at, kind)))
+        .filter_map(|(at, rule)| kind(rule, place, ns).map(|kind| (at, kind)))
         .collect()
 }
 
 /// The rule list `path` names in `sheet`: the sheet's, or a grouping
-/// rule's by each index a script sees, outermost first; whether it is a
-/// keyframes rule's; and the sheet's namespaces, which its selectors are
-/// read with.
-fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, bool, Namespaces)> {
+/// rule's, a style rule's nested rules among them, by each index a
+/// script sees, outermost first; where it stands; and the sheet's
+/// namespaces, which its selectors are read with.
+fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, Place, Namespaces)> {
     let ns = style::sheet_namespaces(&sheet.rules);
     let mut rules = &sheet.rules;
-    let mut keyframes = false;
-    for (depth, &index) in path.iter().enumerate() {
-        let (at, kind) = *visible(rules, keyframes, depth > 0, &ns).get(index)?;
-        let Rule::At(rule) = &rules[at] else {
-            return None;
+    let mut place = TOP;
+    for &index in path {
+        let (at, kind) = *visible(rules, place, &ns).get(index)?;
+        rules = match &rules[at] {
+            Rule::At(css::AtRule {
+                block: Some(Block::Rules(inner)),
+                ..
+            }) => inner,
+            Rule::Qualified(rule) if kind == Kind::Style => &rule.rules,
+            _ => return None,
         };
-        let Some(Block::Rules(inner)) = &rule.block else {
-            return None;
-        };
-        keyframes = kind == Kind::Keyframes;
-        rules = inner;
+        place = place.inside(kind);
     }
-    Some((rules, keyframes, ns))
+    Some((rules, place, ns))
 }
 
 fn list_mut<'a>(
     sheet: &'a mut Stylesheet,
     path: &[usize],
-) -> Option<(&'a mut Vec<Rule>, bool, Namespaces)> {
+) -> Option<(&'a mut Vec<Rule>, Place, Namespaces)> {
     let ns = style::sheet_namespaces(&sheet.rules);
     let mut rules = &mut sheet.rules;
-    let mut keyframes = false;
-    for (depth, &index) in path.iter().enumerate() {
-        let (at, kind) = *visible(rules, keyframes, depth > 0, &ns).get(index)?;
-        let Rule::At(rule) = &mut rules[at] else {
-            return None;
+    let mut place = TOP;
+    for &index in path {
+        let (at, kind) = *visible(rules, place, &ns).get(index)?;
+        rules = match &mut rules[at] {
+            Rule::At(css::AtRule {
+                block: Some(Block::Rules(inner)),
+                ..
+            }) => inner,
+            Rule::Qualified(rule) if kind == Kind::Style => &mut rule.rules,
+            _ => return None,
         };
-        let Some(Block::Rules(inner)) = &mut rule.block else {
-            return None;
-        };
-        keyframes = kind == Kind::Keyframes;
-        rules = inner;
+        place = place.inside(kind);
     }
-    Some((rules, keyframes, ns))
+    Some((rules, place, ns))
 }
 
 /// The rules of the list `path` names, four strings each: the kind's
@@ -169,28 +268,58 @@ fn list_mut<'a>(
 /// supports rule's condition, a keyframes or layer rule's name, a
 /// keyframe's key and declarations, a font-face rule's declarations).
 pub(crate) fn rules(sheet: &Stylesheet, path: &[usize]) -> Vec<String> {
-    let Some((list, keyframes, ns)) = list(sheet, path) else {
+    let Some((list, place, ns)) = list(sheet, path) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (at, kind) in visible(list, keyframes, !path.is_empty(), &ns) {
+    for (at, kind) in visible(list, place, &ns) {
         let rule = &list[at];
-        let (a, b) = parts(rule, kind, &ns);
-        out.extend([kind.name().to_owned(), css_text(rule, kind, "", &ns), a, b]);
+        let (a, b) = parts(rule, kind, place, &ns);
+        out.extend([
+            kind.name().to_owned(),
+            css_text(rule, kind, "", place, &ns),
+            a,
+            b,
+        ]);
     }
     out
 }
 
-/// The two strings by kind [`rules`] gives.
-fn parts(rule: &Rule, kind: Kind, ns: &Namespaces) -> (String, String) {
+/// The two strings by kind [`rules`] gives, of `rule` in a list at
+/// `place`: a nested declarations rule's declarations second; an
+/// `@scope` rule's roots and limits, each after a `1` when it has them.
+fn parts(rule: &Rule, kind: Kind, place: Place, ns: &Namespaces) -> (String, String) {
     match (rule, kind) {
         (Rule::Qualified(rule), Kind::Keyframe) => {
             (key_text(&rule.prelude), declarations(&rule.declarations))
         }
         (Rule::Qualified(rule), _) => (
-            selector_text(&rule.prelude, ns),
+            nested_selector_text(&rule.prelude, ns, place.relative),
             declarations(&rule.declarations),
         ),
+        (Rule::Declarations(list), _) => (String::new(), declarations(list)),
+        (Rule::At(at), Kind::Scope) => {
+            let (start, end) = scope_texts(&at.prelude, place, ns);
+            let flagged = |part: Option<String>| part.map_or_else(String::new, |p| format!("1{p}"));
+            (flagged(start), flagged(end))
+        }
+        // The name; then the syntax, `1` when it inherits, and the initial
+        // value after a `1` when it has one, parted by NULs.
+        (Rule::At(at), Kind::Property) => match property(at) {
+            Some(registration) => (
+                registration.name.clone(),
+                format!(
+                    "{}\u{0}{}\u{0}{}",
+                    registration.syntax_text,
+                    u8::from(registration.inherits),
+                    registration
+                        .initial_text
+                        .as_deref()
+                        .map_or_else(String::new, |v| format!("1{}", initial_text(v)))
+                ),
+            ),
+            None => (String::new(), String::new()),
+        },
         (Rule::At(at), Kind::Namespace) => {
             let (prefix, uri) = style::namespace_declaration(&at.prelude).unwrap_or_default();
             (prefix.unwrap_or_default(), uri)
@@ -255,6 +384,46 @@ fn layer_names(tokens: &[Token]) -> String {
         .join(", ")
 }
 
+/// A style rule's selector, where `relative` says it stands, as the
+/// reference browser serializes it: one nested in a style rule that
+/// begins with a combinator or names no `&` with its `&` written (CSS
+/// Nesting 1 section 2.2); one in `@scope` as written.
+fn nested_selector_text(tokens: &[Token], ns: &Namespaces, relative: Relative) -> String {
+    if relative != Relative::Nesting {
+        return selector_text(tokens, ns);
+    }
+    let mut written: Vec<Token> = Vec::new();
+    for (n, member) in split_top(tokens, |t| matches!(t, Token::Comma))
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            written.push(Token::Comma);
+        }
+        let member = trim_space(member);
+        let leading = matches!(member.first(), Some(Token::Delim('>' | '+' | '~')));
+        if leading || !member.contains(&Token::Delim('&')) {
+            written.extend([Token::Delim('&'), Token::Whitespace]);
+        }
+        written.extend_from_slice(member);
+    }
+    selector_text(&written, ns)
+}
+
+/// The texts of an `@scope` rule's roots and limits, at `place`, as
+/// the reference browser serializes them; `None` for those it has not.
+fn scope_texts(
+    prelude: &[Token],
+    place: Place,
+    ns: &Namespaces,
+) -> (Option<String>, Option<String>) {
+    let (start, end) = style::scope_selectors(prelude, ns, place.relative).unwrap_or_default();
+    (
+        start.map(|tokens| selector_text(tokens, ns)),
+        end.map(|tokens| selector_text(tokens, ns)),
+    )
+}
+
 /// A style rule's selector as CSSOM serializes it (section 6.7.1): each
 /// simple selector in its canonical form, read with the sheet's
 /// namespaces; as written, but for its spacing, where it is past what
@@ -317,7 +486,11 @@ fn complex(tokens: &[Token], ns: &Namespaces, out: &mut String) -> Option<()> {
             i += 1;
         }
         if let Some(Token::Delim(c @ ('>' | '+' | '~'))) = tokens.get(i) {
-            out.push_str(&format!(" {c} "));
+            // A relative selector's leading one has nothing before it.
+            if wrote {
+                out.push(' ');
+            }
+            out.push_str(&format!("{c} "));
             i += 1;
             while matches!(tokens.get(i), Some(Token::Whitespace)) {
                 i += 1;
@@ -425,6 +598,11 @@ fn compound(tokens: &[Token], ns: &Namespaces, out: &mut String) -> Option<()> {
 /// starts.
 fn simple(tokens: &[Token], i: usize, ns: &Namespaces, out: &mut String) -> Option<usize> {
     match (tokens.get(i)?, tokens.get(i + 1)) {
+        // The nesting selector (CSS Nesting 1 section 4).
+        (Token::Delim('&'), _) => {
+            out.push('&');
+            Some(i + 1)
+        }
         (Token::Hash { value, .. }, _) => {
             out.push('#');
             out.push_str(&ident(value));
@@ -865,9 +1043,12 @@ pub(crate) fn descriptor_list(list: &[Declaration]) -> Vec<(&'static str, String
     kept
 }
 
-/// A rule's `cssText`, each nested line after the first indented by
-/// `indent` more.
-fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
+/// A rule's `cssText`, in a list at `place`, each nested line after the
+/// first indented by `indent` more. A style rule with nested rules has
+/// its declarations and each nested rule on a line of their own, those
+/// rules' own lines not indented further, as the reference browser has
+/// them.
+fn css_text(rule: &Rule, kind: Kind, indent: &str, place: Place, ns: &Namespaces) -> String {
     let block = |head: String, list: &[Declaration]| {
         let body = match kind {
             Kind::FontFace => descriptors(list),
@@ -880,11 +1061,79 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
             format!("{head} {{ {body} }}")
         }
     };
+    // The rules nested in a grouping rule of `kind`, each on its line.
+    let children = |inner: &[Rule], out: &mut String| {
+        let deeper = format!("{indent}  ");
+        let inside = place.inside(kind);
+        for (at, kind) in visible(inner, inside, ns) {
+            out.push_str(&deeper);
+            out.push_str(&css_text(&inner[at], kind, &deeper, inside, ns));
+            out.push('\n');
+        }
+    };
     match (rule, kind) {
         (Rule::Qualified(rule), Kind::Keyframe) => {
             block(key_text(&rule.prelude), &rule.declarations)
         }
-        (Rule::Qualified(rule), _) => block(selector_text(&rule.prelude, ns), &rule.declarations),
+        (Rule::Qualified(rule), _) => {
+            let selector = nested_selector_text(&rule.prelude, ns, place.relative);
+            let inside = place.inside(kind);
+            let nested = visible(&rule.rules, inside, ns);
+            if nested.is_empty() {
+                return block(selector, &rule.declarations);
+            }
+            let mut out = format!("{selector} {{");
+            let body = declarations(&rule.declarations);
+            if !body.is_empty() {
+                out.push_str("\n  ");
+                out.push_str(&body);
+            }
+            for (at, kind) in nested {
+                out.push_str("\n  ");
+                out.push_str(&css_text(&rule.rules[at], kind, "", inside, ns));
+            }
+            out.push_str("\n}");
+            out
+        }
+        (Rule::Declarations(list), _) => declarations(list),
+        // Its descriptors in their order, as the reference browser writes
+        // them, whatever order they were given in.
+        (Rule::At(at), Kind::Property) => match property(at) {
+            Some(registration) => {
+                let syntax = registration
+                    .syntax_text
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let mut out = format!(
+                    "@property {} {{ syntax: \"{syntax}\"; inherits: {};",
+                    ident(&registration.name),
+                    registration.inherits
+                );
+                if let Some(initial) = &registration.initial_text {
+                    out.push_str(&format!(" initial-value: {};", initial_text(initial)));
+                }
+                out.push_str(" }");
+                out
+            }
+            None => String::new(),
+        },
+        (Rule::At(at), Kind::Scope) => {
+            let (start, end) = scope_texts(&at.prelude, place, ns);
+            let mut out = "@scope".to_owned();
+            if let Some(start) = start {
+                out.push_str(&format!(" ({start})"));
+            }
+            if let Some(end) = end {
+                out.push_str(&format!(" to ({end})"));
+            }
+            out.push_str(" {\n");
+            if let Some(Block::Rules(inner)) = &at.block {
+                children(inner, &mut out);
+            }
+            out.push_str(indent);
+            out.push('}');
+            out
+        }
         (Rule::At(at), Kind::Import) => {
             let (url, rest) = import_parts(&at.prelude);
             let url = url.replace('\\', "\\\\").replace('"', "\\\"");
@@ -897,12 +1146,7 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
         (Rule::At(at), Kind::Media) => {
             let mut out = format!("@media {} {{\n", media_text(&at.prelude));
             if let Some(Block::Rules(inner)) = &at.block {
-                let deeper = format!("{indent}  ");
-                for (at, kind) in visible(inner, false, true, ns) {
-                    out.push_str(&deeper);
-                    out.push_str(&css_text(&inner[at], kind, &deeper, ns));
-                    out.push('\n');
-                }
+                children(inner, &mut out);
             }
             out.push_str(indent);
             out.push('}');
@@ -941,17 +1185,62 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, ns: &Namespaces) -> String {
                 format!("@{} {prelude} {{\n", at.name)
             };
             if let Some(Block::Rules(inner)) = &at.block {
-                let deeper = format!("{indent}  ");
-                for (at, kind) in visible(inner, kind == Kind::Keyframes, true, ns) {
-                    out.push_str(&deeper);
-                    out.push_str(&css_text(&inner[at], kind, &deeper, ns));
-                    out.push('\n');
-                }
+                children(inner, &mut out);
             }
             out.push_str(indent);
             out.push('}');
             out
         }
+    }
+}
+
+/// The registration an `@property` rule makes, if it is valid.
+fn property(at: &css::AtRule) -> Option<style::PropertyRegistration> {
+    match &at.block {
+        Some(Block::Declarations(list)) => style::property_rule(&at.prelude, list),
+        _ => None,
+    }
+}
+
+/// An `@property` rule's initial value as written back.
+fn initial_text(tokens: &[Token]) -> String {
+    // Each identifier as CSSOM serializes one, escaped.
+    let escaped: Vec<Token> = tokens
+        .iter()
+        .map(|token| match token {
+            Token::Ident(name) => Token::Ident(ident(name)),
+            other => other.clone(),
+        })
+        .collect();
+    style::serialize::tokens(&escaped).trim().to_owned()
+}
+
+/// `text` read as the one rule CSSOM's "insert a CSS rule" inserts into
+/// a list at `place`: in a style rule, or a block read as one, a rule
+/// nesting allows or a run of declarations, at least one of them one
+/// the cascade takes (CSS Nesting 1 section 3.3); elsewhere a rule.
+/// An at-rule nesting does not allow is a `HierarchyRequestError`.
+fn parse_one_rule(text: &str, place: Place) -> Result<Rule, DomError> {
+    let syntax = || DomError::new("SyntaxError", format!("Failed to parse the rule '{text}'."));
+    if place.relative == Relative::No {
+        let parsed = css::parse_stylesheet(text).map_err(|_| syntax())?;
+        return <[Rule; 1]>::try_from(parsed.rules)
+            .map(|[rule]| rule)
+            .map_err(|_| syntax());
+    }
+    match <[Rule; 1]>::try_from(css::parse_block_contents(text)) {
+        Ok([Rule::Declarations(list)]) if declarations(&list).is_empty() => Err(syntax()),
+        Ok([rule]) => Ok(rule),
+        Err(rules) if rules.is_empty() => {
+            match css::parse_stylesheet(text).map(|sheet| sheet.rules) {
+                Ok(rules) if matches!(rules.as_slice(), [Rule::At(_)]) => Err(DomError::new(
+                    "HierarchyRequestError",
+                    "Failed to insert the rule: it may not be nested.",
+                )),
+                _ => Err(syntax()),
+            }
+        }
+        Err(_) => Err(syntax()),
     }
 }
 
@@ -966,10 +1255,9 @@ pub(crate) fn insert(
     index: usize,
 ) -> Result<(usize, Vec<Option<usize>>), DomError> {
     let syntax = || DomError::new("SyntaxError", format!("Failed to parse the rule '{text}'."));
-    let parsed = css::parse_stylesheet(text).map_err(|_| syntax())?;
-    let [rule] = <[Rule; 1]>::try_from(parsed.rules).map_err(|_| syntax())?;
     let top = sheet.rules.len();
-    let (list, keyframes, ns) = list_mut(sheet, path).ok_or_else(syntax)?;
+    let (list, place, ns) = list_mut(sheet, path).ok_or_else(syntax)?;
+    let rule = parse_one_rule(text, place)?;
     let nested = !path.is_empty();
     // An import or a namespace rule in a grouping rule is no rule there.
     if nested
@@ -984,8 +1272,8 @@ pub(crate) fn insert(
             "Failed to insert the rule.",
         ));
     }
-    let new_kind = kind(&rule, keyframes, nested, &ns).ok_or_else(syntax)?;
-    let seen = visible(list, keyframes, nested, &ns);
+    let new_kind = kind(&rule, place, &ns).ok_or_else(syntax)?;
+    let seen = visible(list, place, &ns);
     if index > seen.len() {
         return Err(DomError::new(
             "IndexSizeError",
@@ -1051,10 +1339,10 @@ pub(crate) fn delete(
     index: usize,
 ) -> Result<Vec<Option<usize>>, DomError> {
     let top = sheet.rules.len();
-    let Some((list, keyframes, ns)) = list_mut(sheet, path) else {
+    let Some((list, place, ns)) = list_mut(sheet, path) else {
         return Err(DomError::new("NotFoundError", "The rule list is gone."));
     };
-    let seen = visible(list, keyframes, !path.is_empty(), &ns);
+    let seen = visible(list, place, &ns);
     // A namespace rule stays while rules other than imports and
     // namespace rules follow it (section 6.1.2.2).
     if let Some((_, Kind::Namespace)) = seen.get(index)
@@ -1084,22 +1372,23 @@ pub(crate) fn delete(
     })
 }
 
-/// The rule `path` names: its list's path and its index in it.
+/// The rule `path` names: its list's path and its index in it; with its
+/// kind, where its list stands, and the sheet's namespaces.
 fn rule_mut<'a>(
     sheet: &'a mut Stylesheet,
     path: &[usize],
-) -> Option<(&'a mut Rule, Kind, Namespaces)> {
+) -> Option<(&'a mut Rule, Kind, Place, Namespaces)> {
     let (&last, outer) = path.split_last()?;
-    let (list, keyframes, ns) = list_mut(sheet, outer)?;
-    let (at, kind) = *visible(list, keyframes, !outer.is_empty(), &ns).get(last)?;
-    Some((&mut list[at], kind, ns))
+    let (list, place, ns) = list_mut(sheet, outer)?;
+    let (at, kind) = *visible(list, place, &ns).get(last)?;
+    Some((&mut list[at], kind, place, ns))
 }
 
 /// A rule's `style` set to the declarations `text` holds; or its
 /// selector (or a keyframe's keys) set to `text`, which is ignored
 /// unless it parses, when `selector`.
 pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: bool) -> bool {
-    let Some((rule, kind, ns)) = rule_mut(sheet, path) else {
+    let Some((rule, kind, place, ns)) = rule_mut(sheet, path) else {
         return false;
     };
     if selector {
@@ -1126,7 +1415,7 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
             return false;
         };
         let tokens = css::tokenize(text);
-        if kind == Kind::Style && parse_selector_list_in(&tokens, &ns).is_err() {
+        if kind == Kind::Style && !valid_selector(&tokens, &ns, place.relative) {
             return false;
         }
         rule.prelude = tokens;
@@ -1146,6 +1435,7 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
     let parsed = css::parse_style_attribute(text).unwrap_or_default();
     match rule {
         Rule::Qualified(rule) => rule.declarations = parsed,
+        Rule::Declarations(list) => *list = parsed,
         Rule::At(at) => match &mut at.block {
             Some(Block::Declarations(list)) => *list = parsed,
             _ => return false,
@@ -1332,7 +1622,7 @@ fn feature_values_text(entries: &str) -> String {
 /// `MediaList`'s setters); an import's URL, layer and `supports()` are
 /// kept.
 pub(crate) fn set_media(sheet: &mut Stylesheet, path: &[usize], text: &str) -> bool {
-    let Some((Rule::At(at), kind, _)) = rule_mut(sheet, path) else {
+    let Some((Rule::At(at), kind, ..)) = rule_mut(sheet, path) else {
         return false;
     };
     match kind {
@@ -1371,15 +1661,10 @@ pub(crate) fn set_media(sheet: &mut Stylesheet, path: &[usize], text: &str) -> b
 /// alone: for the tests.
 #[cfg(test)]
 fn kinds(sheet: &Stylesheet) -> Vec<&'static str> {
-    visible(
-        &sheet.rules,
-        false,
-        false,
-        &style::sheet_namespaces(&sheet.rules),
-    )
-    .into_iter()
-    .map(|(_, kind)| kind.name())
-    .collect()
+    visible(&sheet.rules, TOP, &style::sheet_namespaces(&sheet.rules))
+        .into_iter()
+        .map(|(_, kind)| kind.name())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1467,6 +1752,64 @@ mod tests {
         let mut s = sheet("@namespace y url(e);");
         assert!(insert(&mut s, &[], "@namespace z url(f);", 1).is_ok());
         assert!(delete(&mut s, &[], 0).is_ok());
+    }
+
+    #[test]
+    fn a_style_rule_is_a_grouping_rule_of_its_nested_rules() {
+        // CSS Nesting 1 section 3.3: its nested rules and runs of
+        // declarations, the implicit `&` written, the lines as the
+        // reference browser writes them.
+        let mut s =
+            sheet(".a { color: red; .b { top: 0 } left: 1px; @media screen { z-index: 1 } }");
+        let flat = rules(&s, &[0]);
+        let kinds: Vec<&str> = flat.chunks(4).map(|r| r[0].as_str()).collect();
+        assert_eq!(kinds, ["style", "nested-declarations", "media"]);
+        assert_eq!(flat[2], "& .b");
+        assert_eq!(flat[5], "left: 1px;");
+        assert_eq!(
+            rules(&s, &[])[1],
+            ".a {\n  color: red;\n  & .b { top: 0; }\n  left: 1px;\n  @media screen {\n  z-index: 1;\n}\n}"
+        );
+        // Inserted, a rule or declarations; an at-rule nesting does not
+        // allow refused.
+        assert_eq!(insert(&mut s, &[0], "> i { top: 0 }", 0).unwrap().0, 0);
+        assert_eq!(rules(&s, &[0])[2], "& > i");
+        assert_eq!(insert(&mut s, &[0], "width: 2px", 4).unwrap().0, 4);
+        assert_eq!(
+            insert(&mut s, &[0], "@font-face {}", 0).unwrap_err().name,
+            "HierarchyRequestError"
+        );
+        assert_eq!(
+            insert(&mut s, &[0], "nope: 1;", 0).unwrap_err().name,
+            "SyntaxError"
+        );
+        assert!(delete(&mut s, &[0], 0).is_ok());
+        assert!(set(&mut s, &[0, 0], "& .c", true));
+        assert_eq!(rules(&s, &[0])[2], "& .c");
+    }
+
+    #[test]
+    fn scope_and_property_rules_show_their_parts() {
+        let s = sheet(
+            "@scope (.a)to (> .b) { color: red; .c { top: 0 } } \
+             @property --x { inherits: true; syntax: '<length>'; initial-value: 1px } \
+             @property --bad { syntax: '<length>' }",
+        );
+        assert_eq!(kinds(&s), ["scope", "property"]);
+        let flat = rules(&s, &[]);
+        assert_eq!(
+            flat[1],
+            "@scope (.a) to (> .b) {\n  color: red;\n  .c { top: 0; }\n}"
+        );
+        assert_eq!((flat[2].as_str(), flat[3].as_str()), ("1.a", "1> .b"));
+        assert_eq!(
+            flat[5],
+            "@property --x { syntax: \"<length>\"; inherits: true; initial-value: 1px; }"
+        );
+        assert_eq!(flat[7], "<length>\u{0}1\u{0}11px");
+        let inside = rules(&s, &[0]);
+        let kinds: Vec<&str> = inside.chunks(4).map(|r| r[0].as_str()).collect();
+        assert_eq!(kinds, ["nested-declarations", "style"]);
     }
 
     #[test]

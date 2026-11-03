@@ -14,17 +14,26 @@
 //! * Declarations missing their colon are skipped to the next `;`.
 //! * Unclosed blocks at EOF close gracefully.
 //!
+//! A style rule's block is read by CSS Syntax 3's "consume a block's
+//! contents", as CSS Nesting 1 has it: declarations, nested style rules
+//! and the conditional group rules nesting allows (`@media`,
+//! `@supports`, `@container`, `@layer` and `@scope`), in any order. The
+//! declarations before the first rule are the rule's own; each run of
+//! them after a rule is a [`Rule::Declarations`] among its nested rules
+//! (Nesting 1 section 3.3), as every declaration in a group rule nested
+//! in a style rule, or in an `@scope` rule, is. Something that does not
+//! read as a declaration is read again as a nested rule, a `;` ending
+//! it as an error. A keyframe's block holds declarations alone.
+//!
 //! Preludes (selector text, at-rule conditions) are kept as token
 //! vectors — the selector engine (future `style` crate) consumes them
 //! directly, the same way Blink keeps selector tokens.
 //!
 //! Two things keep hostile input linear and bounded. Blocks nest at
 //! most [`MAX_NESTING`] deep: past that, a known at-rule's block is kept
-//! raw like an unknown one's, so a megabyte of `@media{` cannot recurse
-//! the parser off its stack. And a `{}` block met where a declaration
-//! was expected (CSS nesting, which every shipping browser parses) is
-//! consumed to its matching `}` and dropped, so the rule after it is
-//! still seen; a `}` in a nested rule's prelude ends that rule and the
+//! raw like an unknown one's, and a style rule's is skipped, so a
+//! megabyte of `@media{` or `a{` cannot recurse the parser off its
+//! stack. And a `}` in a nested rule's prelude ends that rule and the
 //! enclosing block rather than being swallowed into the prelude.
 
 use std::collections::VecDeque;
@@ -45,6 +54,11 @@ pub enum Rule {
     Qualified(QualifiedRule),
     /// An at-rule: `@name prelude { block }` or `@name prelude;`.
     At(AtRule),
+    /// A nested declarations rule (CSS Nesting 1 section 3.3): a run of
+    /// declarations among a style rule's nested rules after one of
+    /// them, or in a group rule nested in a style rule or in an `@scope`
+    /// rule, which the CSSOM shows as `CSSNestedDeclarations`.
+    Declarations(Vec<Declaration>),
 }
 
 /// A qualified rule (`selector { declarations }`).
@@ -52,8 +66,14 @@ pub enum Rule {
 pub struct QualifiedRule {
     /// The selector text as tokens (leading/trailing whitespace trimmed).
     pub prelude: Vec<Token>,
-    /// The declarations in the block.
+    /// The declarations in the block, those before its first nested
+    /// rule.
     pub declarations: Vec<Declaration>,
+    /// The rules nested in its block (CSS Nesting 1), in order: style
+    /// rules, the group rules nesting allows, and the runs of
+    /// declarations after a rule as [`Rule::Declarations`]. A
+    /// keyframe's is empty.
+    pub rules: Vec<Rule>,
 }
 
 /// An at-rule.
@@ -128,6 +148,15 @@ impl TokenStream {
         self.pending.push_front((token, self.last));
     }
 
+    /// Puts back `tokens`, read in that order, each with its number: CSS
+    /// Syntax 3's "restore a mark", for what was read as a declaration
+    /// and is to be read again as a rule.
+    fn restore(&mut self, tokens: Vec<(Token, usize)>) {
+        for token in tokens.into_iter().rev() {
+            self.pending.push_front(token);
+        }
+    }
+
     /// The source text of tokens `first` to `last`.
     fn text(&self, first: usize, last: usize) -> String {
         let (Some(&(start, _)), Some(&(_, end))) = (self.spans.get(first), self.spans.get(last))
@@ -144,28 +173,49 @@ impl TokenStream {
 pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
     let mut stream = TokenStream::new(input);
     Ok(Stylesheet {
-        rules: parse_rules(&mut stream, true, 0),
+        rules: parse_rules(&mut stream, true, 0, false),
     })
 }
 
 /// Parses a `style` attribute's contents (declaration list only).
 pub fn parse_style_attribute(input: &str) -> Result<Vec<Declaration>, crate::ParseError> {
     let mut stream = TokenStream::new(input);
-    Ok(parse_declarations(&mut stream, 0))
+    Ok(parse_declarations(&mut stream, 0, false))
+}
+
+/// Parses `input` as a style rule's block contents are read (CSS Syntax
+/// 3's "parse a block's contents"): its rules, with the runs of
+/// declarations among them as [`Rule::Declarations`]. What the CSSOM
+/// inserts into a style rule, or into a group rule nested in one, is
+/// read so. A `}` with no block open closes nothing and is passed over.
+pub fn parse_block_contents(input: &str) -> Vec<Rule> {
+    let mut stream = TokenStream::new(input);
+    let mut rules = Vec::new();
+    loop {
+        rules.extend(parse_contents(&mut stream, 0, Context::Rule));
+        if stream.next().is_none() {
+            return rules;
+        }
+    }
 }
 
 /// At-rule names whose blocks contain nested rules: a keyframes rule's
 /// are its keyframes, a selector list of offsets and a block of
 /// declarations each (CSS Animations 1 §3, M22).
-const NESTED_RULE_AT: [&str; 7] = [
+const NESTED_RULE_AT: [&str; 6] = [
     "media",
     "supports",
     "layer",
     "container",
-    "scope",
     "keyframes",
     "-webkit-keyframes",
 ];
+
+/// At-rule names that may be nested in a style rule (CSS Nesting 1
+/// section 3.2, the conditional group rules and `@layer`), whose blocks
+/// are then read as a style rule's contents are, declarations and all;
+/// an `@scope` rule's block always is (Cascade 6 section 2.1).
+const NESTED_GROUP_AT: [&str; 5] = ["media", "supports", "layer", "container", "scope"];
 
 /// At-rule names whose blocks contain declarations.
 const DECLARATION_AT: [&str; 4] = ["font-face", "page", "property", "counter-style"];
@@ -175,9 +225,38 @@ const DECLARATION_AT: [&str; 4] = ["font-face", "page", "property", "counter-sty
 /// once per level, and this is what bounds that recursion.
 pub const MAX_NESTING: usize = 128;
 
+/// Where a block's contents are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Context {
+    /// A rule list, at the top level or in a group rule there: no
+    /// declarations, a rule's `}` its block's end only.
+    Top,
+    /// An `@scope` rule's block, or a group rule's in one: declarations
+    /// and every at-rule.
+    Scope,
+    /// A style rule's block, or a group rule's nested in one: the
+    /// declarations, and the at-rules nesting allows.
+    Rule,
+}
+
+/// What a qualified rule's block holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Body {
+    /// A style rule's: declarations and nested rules.
+    Style,
+    /// A keyframe's: declarations alone.
+    Keyframe,
+}
+
 /// Parses rules until EOF (top level) or an upcoming `}` (nested).
-/// `depth` is how many blocks enclose this rule list.
-fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize) -> Vec<Rule> {
+/// `depth` is how many blocks enclose this rule list; `keyframes` says
+/// it is a keyframes rule's, whose rules are keyframes.
+fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize, keyframes: bool) -> Vec<Rule> {
+    let body = if keyframes {
+        Body::Keyframe
+    } else {
+        Body::Style
+    };
     let mut rules = Vec::new();
     loop {
         match stream.next() {
@@ -196,10 +275,10 @@ fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize) -> Vec<Rule> {
                 return rules;
             }
             Some(Token::AtKeyword(name)) => {
-                rules.push(Rule::At(parse_at_rule(stream, name, depth)));
+                rules.push(Rule::At(parse_at_rule(stream, name, depth, Context::Top)));
             }
             Some(first) => {
-                if let Some(rule) = parse_qualified_rule(stream, first, !top, depth) {
+                if let Some(rule) = parse_qualified_rule(stream, first, !top, depth, body, false) {
                     rules.push(Rule::Qualified(rule));
                 }
             }
@@ -207,8 +286,10 @@ fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize) -> Vec<Rule> {
     }
 }
 
-/// Parses one at-rule; the name has been consumed.
-fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize) -> AtRule {
+/// Parses one at-rule; the name has been consumed. `context` says where
+/// its block is.
+fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize, context: Context) -> AtRule {
+    let nested = context != Context::Top;
     let mut prelude = Vec::new();
     let mut block = None;
     let mut paren_depth = 0i32;
@@ -216,8 +297,14 @@ fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize) -> AtRule
         match stream.next() {
             None => break,
             Some(Token::Semicolon) if paren_depth == 0 => break,
+            // A `}` ends an at-rule nested in a block, the block's own
+            // `}` left for it (CSS Syntax 3 section 5.5.2).
+            Some(Token::CloseCurly) if nested && paren_depth == 0 => {
+                stream.reconsume(Token::CloseCurly);
+                break;
+            }
             Some(Token::OpenCurly) if paren_depth == 0 => {
-                block = Some(parse_at_block(stream, &name, depth));
+                block = Some(parse_at_block(stream, &name, depth, context));
                 break;
             }
             Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
@@ -241,18 +328,29 @@ fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize) -> AtRule
 
 /// Parses the body of an at-rule block; the `{` has been consumed.
 /// `depth` is the nesting of the block being opened.
-fn parse_at_block(stream: &mut TokenStream, name: &str, depth: usize) -> Block {
+fn parse_at_block(stream: &mut TokenStream, name: &str, depth: usize, context: Context) -> Block {
     let lname = name.to_lowercase();
     if depth >= MAX_NESTING {
         // Too deep to parse: kept whole, like an unknown at-rule's block.
         return Block::Raw(take_raw_block(stream));
     }
-    if NESTED_RULE_AT.contains(&lname.as_str()) {
-        let rules = parse_rules(stream, false, depth + 1);
+    if NESTED_GROUP_AT.contains(&lname.as_str()) && (context != Context::Top || lname == "scope") {
+        let inside = match context {
+            Context::Rule => Context::Rule,
+            _ => Context::Scope,
+        };
+        let rules = parse_contents(stream, depth + 1, inside);
+        consume_close_curly(stream);
+        Block::Rules(rules)
+    } else if NESTED_RULE_AT.contains(&lname.as_str()) {
+        let keyframes = lname.ends_with("keyframes");
+        let rules = parse_rules(stream, false, depth + 1, keyframes);
         consume_close_curly(stream);
         Block::Rules(rules)
     } else if DECLARATION_AT.contains(&lname.as_str()) {
-        let declarations = parse_declarations(stream, depth + 1);
+        // An `@property` rule's `initial-value` is any value, as a custom
+        // property's is (Properties and Values API section 4).
+        let declarations = parse_declarations(stream, depth + 1, lname == "property");
         consume_close_curly(stream);
         Block::Declarations(declarations)
     } else {
@@ -265,21 +363,30 @@ fn parse_at_block(stream: &mut TokenStream, name: &str, depth: usize) -> Block {
 /// Returns `None` when EOF arrived before the `{`, or, in a nested rule
 /// list, when a `}` ends the enclosing block first (the spec's "consume
 /// a qualified rule" with `nested` set: the `}` is reconsumed for the
-/// caller, which ends its block on it).
+/// caller, which ends its block on it), or, when `semicolon` stops it,
+/// when a `;` does, which is left for the caller too. A style rule's
+/// block too deep to read is passed over, the rule kept empty.
 fn parse_qualified_rule(
     stream: &mut TokenStream,
     first: Token,
     nested: bool,
     depth: usize,
+    body: Body,
+    semicolon: bool,
 ) -> Option<QualifiedRule> {
-    let mut prelude = vec![first];
+    let mut prelude = Vec::new();
     let mut paren_depth = 0i32;
+    let mut pending = Some(first);
     loop {
-        match stream.next() {
+        match pending.take().or_else(|| stream.next()) {
             None => return None, // EOF before '{': discard the rule
             Some(Token::OpenCurly) if paren_depth == 0 => break,
             Some(Token::CloseCurly) if nested && paren_depth == 0 => {
                 stream.reconsume(Token::CloseCurly);
+                return None;
+            }
+            Some(Token::Semicolon) if semicolon && paren_depth == 0 => {
+                stream.reconsume(Token::Semicolon);
                 return None;
             }
             Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
@@ -294,17 +401,113 @@ fn parse_qualified_rule(
         }
     }
     trim_ws(&mut prelude);
-    let declarations = parse_declarations(stream, depth + 1);
+    let (declarations, rules) = match body {
+        Body::Keyframe => (parse_declarations(stream, depth + 1, false), Vec::new()),
+        Body::Style if depth + 1 >= MAX_NESTING => {
+            let _ = take_raw_block(stream);
+            return Some(QualifiedRule {
+                prelude,
+                declarations: Vec::new(),
+                rules: Vec::new(),
+            });
+        }
+        Body::Style => {
+            let mut rules = parse_contents(stream, depth + 1, Context::Rule);
+            // The declarations before the first rule are the rule's own.
+            let declarations = match rules.first() {
+                Some(Rule::Declarations(_)) => match rules.remove(0) {
+                    Rule::Declarations(declarations) => declarations,
+                    _ => unreachable!("the first rule is a run of declarations"),
+                },
+                _ => Vec::new(),
+            };
+            (declarations, rules)
+        }
+    };
     consume_close_curly(stream);
     Some(QualifiedRule {
         prelude,
         declarations,
+        rules,
     })
 }
 
+/// Parses a block's contents (CSS Syntax 3's "consume a block's
+/// contents") until `}` (reconsumed for the caller) or EOF: its
+/// declarations, its nested style rules and its at-rules, in a style
+/// rule's block those nesting allows, each run of declarations before a
+/// rule a [`Rule::Declarations`]. A rule read, kept or not, and an
+/// at-rule end a run, as the draft says. `depth` is the nesting of the
+/// block, `context` where it is.
+fn parse_contents(stream: &mut TokenStream, depth: usize, context: Context) -> Vec<Rule> {
+    let mut rules = Vec::new();
+    let mut run = Vec::new();
+    loop {
+        match stream.next() {
+            None => break,
+            Some(Token::CloseCurly) => {
+                stream.reconsume(Token::CloseCurly);
+                break;
+            }
+            Some(Token::Whitespace)
+            | Some(Token::Semicolon)
+            | Some(Token::Cdo)
+            | Some(Token::Cdc) => {}
+            Some(Token::AtKeyword(name)) => {
+                end_run(&mut rules, &mut run);
+                let at = parse_at_rule(stream, name, depth, context);
+                // A statement, `@layer a;` among them, is no group rule.
+                if context != Context::Rule
+                    || (NESTED_GROUP_AT.contains(&at.name.to_ascii_lowercase().as_str())
+                        && at.block.is_some())
+                {
+                    rules.push(Rule::At(at));
+                }
+            }
+            Some(Token::Ident(name)) => match parse_declaration(stream, name, true, false) {
+                Attempt::Declaration(declaration) => run.push(declaration),
+                Attempt::Nothing => {}
+                Attempt::Rule(tokens) => {
+                    stream.restore(tokens);
+                    if let Some(first) = stream.next() {
+                        nested_rule(stream, first, depth, &mut rules, &mut run);
+                    }
+                }
+            },
+            Some(first) => nested_rule(stream, first, depth, &mut rules, &mut run),
+        }
+    }
+    end_run(&mut rules, &mut run);
+    rules
+}
+
+/// Ends a run of declarations: puts it among `rules`, if it holds any.
+fn end_run(rules: &mut Vec<Rule>, run: &mut Vec<Declaration>) {
+    if !run.is_empty() {
+        rules.push(Rule::Declarations(std::mem::take(run)));
+    }
+}
+
+/// Reads a style rule nested in a block, `first` its prelude's first
+/// token, a `;` ending it as an error; one read ends the run of
+/// declarations before it.
+fn nested_rule(
+    stream: &mut TokenStream,
+    first: Token,
+    depth: usize,
+    rules: &mut Vec<Rule>,
+    run: &mut Vec<Declaration>,
+) {
+    if let Some(rule) = parse_qualified_rule(stream, first, true, depth, Body::Style, true) {
+        end_run(rules, run);
+        rules.push(Rule::Qualified(rule));
+    }
+}
+
 /// Parses declarations until `}` (reconsumed for the caller) or EOF.
-/// `depth` is the nesting of the block the declarations are in.
-fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration> {
+/// `depth` is the nesting of the block the declarations are in; `blocks`
+/// says a value may hold a `{}` block, as a custom property's always may.
+fn parse_declarations(stream: &mut TokenStream, depth: usize, blocks: bool) -> Vec<Declaration> {
     let mut declarations = Vec::new();
     loop {
         match stream.next() {
@@ -322,10 +525,12 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration
             Some(Token::AtKeyword(name)) => {
                 // At-rules inside declaration blocks are consumed and
                 // ignored for now.
-                let _ = parse_at_rule(stream, name, depth);
+                let _ = parse_at_rule(stream, name, depth, Context::Rule);
             }
             Some(Token::Ident(name)) => {
-                if let Some(declaration) = parse_declaration(stream, name) {
+                if let Attempt::Declaration(declaration) =
+                    parse_declaration(stream, name, false, blocks)
+                {
                     declarations.push(declaration);
                 }
             }
@@ -334,13 +539,23 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration
     }
 }
 
+/// What reading a declaration came to.
+enum Attempt {
+    Declaration(Declaration),
+    /// Nothing: a declaration passed over.
+    Nothing,
+    /// Not a declaration but, in a style rule's block, perhaps a nested
+    /// rule: the tokens read, each with its number, to be read again.
+    Rule(Vec<(Token, usize)>),
+}
+
 /// Parses one declaration; the property name has been consumed. A `{}`
-/// block in the value means this was a nested rule, not a declaration
-/// (`a { color: red } b { ... }` without a `;` reads as `color: red }
-/// b {`-nothing, but `& b { ... }` reads as a declaration named `&`...
-/// no: as the `&` delim, which [`skip_until_delimiter`] handles; the
-/// case here is `x: y { ... }`): the block is consumed to its `}` and
-/// the declaration dropped, so what follows is parsed afresh. A custom
+/// block in the value of any property but a custom one means this was a
+/// nested rule, not a declaration (`a:hover { ... }`): in a style rule's
+/// block, where `rules` is set, the tokens read are given back to be
+/// read again as a rule, as they are when no colon follows the name
+/// (`div { ... }`); elsewhere the block is consumed to its `}` and the
+/// declaration dropped, so what follows is parsed afresh. A custom
 /// property (`--*`, M21) is the exception: its value may hold a `{}`
 /// block, as CSS Syntax 3 §5.5.5 says, kept with its tokens.
 ///
@@ -353,26 +568,41 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize) -> Vec<Declaration
 /// The name is ASCII-lowercased, CSS's property names being ASCII
 /// case-insensitive, except a custom property's, which is
 /// case-sensitive (Variables 1 §2).
-fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declaration> {
+fn parse_declaration(stream: &mut TokenStream, name: String, rules: bool, blocks: bool) -> Attempt {
+    let name_at = stream.last;
     // White space may stand between the name and the colon (CSS Syntax 3
     // section 5.4.6).
+    let mut spaces = Vec::new();
     let mut next = stream.next();
     while next == Some(Token::Whitespace) {
+        spaces.push(stream.last);
         next = stream.next();
     }
+    // The name and the white space read, should they be read again.
+    let read = |name: String, spaces: &[usize]| {
+        let mut read = vec![(Token::Ident(name), name_at)];
+        read.extend(spaces.iter().map(|&n| (Token::Whitespace, n)));
+        read
+    };
     match next {
         Some(Token::Colon) => {}
-        None => return None,
+        None => return Attempt::Nothing,
+        Some(t) if rules => {
+            // No colon: a nested rule's prelude, perhaps.
+            let mut tokens = read(name, &spaces);
+            tokens.push((t, stream.last));
+            return Attempt::Rule(tokens);
+        }
         Some(t) => {
             // Missing colon: skip to the next ';' or '}'.
             skip_until_delimiter(stream, t);
-            return None;
+            return Attempt::Nothing;
         }
     }
+    let colon_at = stream.last;
     let custom = name.starts_with("--");
-    let mut value = Vec::new();
-    // The number of each token of the value.
-    let mut numbers = Vec::new();
+    // The value's tokens, each with its number.
+    let mut value: Vec<(Token, usize)> = Vec::new();
     // The closer of each block open around the token being read,
     // innermost last.
     let mut open = Vec::new();
@@ -384,9 +614,16 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
                     stream.reconsume(Token::CloseCurly);
                     break;
                 }
-                Token::OpenCurly if !custom => {
+                Token::OpenCurly if !custom && !blocks && rules => {
+                    let mut tokens = read(name, &spaces);
+                    tokens.push((Token::Colon, colon_at));
+                    tokens.extend(value);
+                    tokens.push((Token::OpenCurly, stream.last));
+                    return Attempt::Rule(tokens);
+                }
+                Token::OpenCurly if !custom && !blocks => {
                     let _ = take_raw_block(stream);
-                    return None;
+                    return Attempt::Nothing;
                 }
                 _ => {}
             }
@@ -402,9 +639,9 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
             }
             _ => {}
         }
-        value.push(token);
-        numbers.push(stream.last);
+        value.push((token, stream.last));
     }
+    let (mut value, numbers): (Vec<Token>, Vec<usize>) = value.into_iter().unzip();
     let leading = value
         .iter()
         .take_while(|t| matches!(t, Token::Whitespace))
@@ -421,7 +658,7 @@ fn parse_declaration(stream: &mut TokenStream, name: String) -> Option<Declarati
     {
         value = crate::unicode_range::tokens(&ranges);
     }
-    Some(Declaration {
+    Attempt::Declaration(Declaration {
         name: if custom {
             name
         } else {
@@ -780,8 +1017,9 @@ mod tests {
 
     #[test]
     fn a_nested_rule_inside_a_declaration_block_does_not_eat_the_next_rule() {
-        // CSS nesting: the `& b { ... }` block is skipped, `color: blue`
-        // after it is still a declaration of `a`, and `p` is still a rule.
+        // CSS nesting: the `& b { ... }` block is a nested rule,
+        // `color: blue` after it a run of declarations after it, and `p`
+        // is still a rule.
         let sheet =
             parse_stylesheet("a { & b { color: red } color: blue } p { color: green }").unwrap();
         assert_eq!(sheet.rules.len(), 2);
@@ -789,17 +1027,196 @@ mod tests {
             panic!("expected a qualified rule");
         };
         assert_eq!(a.prelude, vec![Token::Ident("a".into())]);
-        assert_eq!(a.declarations.len(), 1);
-        assert_eq!(a.declarations[0].value, vec![Token::Ident("blue".into())]);
+        assert!(a.declarations.is_empty());
+        let [Rule::Qualified(b), Rule::Declarations(after)] = a.rules.as_slice() else {
+            panic!("expected a rule and declarations: {:?}", a.rules);
+        };
+        assert_eq!(b.prelude, tokenize("& b"));
+        assert_eq!(b.declarations[0].value, vec![Token::Ident("red".into())]);
+        assert_eq!(after[0].value, vec![Token::Ident("blue".into())]);
         let Rule::Qualified(p) = &sheet.rules[1] else {
             panic!("expected a qualified rule");
         };
         assert_eq!(p.prelude, vec![Token::Ident("p".into())]);
         assert_eq!(p.declarations[0].value, vec![Token::Ident("green".into())]);
 
-        // A block in a declaration's value is the same case.
+        // A block in a declaration's value makes it a rule too.
         let sheet = parse_stylesheet("a { x: y { z } color: blue } p { color: green }").unwrap();
         assert_eq!(sheet.rules.len(), 2);
+        let Rule::Qualified(a) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        let [Rule::Qualified(xy), Rule::Declarations(_)] = a.rules.as_slice() else {
+            panic!("expected a rule and declarations: {:?}", a.rules);
+        };
+        assert_eq!(xy.prelude, tokenize("x: y"));
+        // A `style` attribute nests nothing: the block is passed over.
+        let declarations = parse_style_attribute("x: y { z } color: blue").unwrap();
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].name, "color");
+    }
+
+    #[test]
+    fn a_style_rules_block_holds_declarations_and_nested_rules_in_order() {
+        // CSS Nesting 1: declarations before the first rule are the
+        // rule's own, each run after a rule a nested declarations rule;
+        // a name without a colon, a `:` and a `{}` block read as a
+        // selector; a group rule nested holds declarations too.
+        let sheet = parse_stylesheet(
+            "a { color: red; div { z-index: 1 } width: 1px; height: 2px; \
+             p:hover { } @media screen { top: 0; .x { } } left: 3px }",
+        )
+        .unwrap();
+        let Rule::Qualified(a) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(a.declarations.len(), 1);
+        let kinds: Vec<String> = a
+            .rules
+            .iter()
+            .map(|rule| match rule {
+                Rule::Qualified(q) if q.prelude == tokenize("div") => "rule div".to_owned(),
+                Rule::Qualified(q) if q.prelude == tokenize("p:hover") => "rule p:hover".to_owned(),
+                Rule::Qualified(q) => format!("rule {:?}", q.prelude),
+                Rule::At(at) => format!("@{}", at.name),
+                Rule::Declarations(list) => format!("{} declarations", list.len()),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "rule div",
+                "2 declarations",
+                "rule p:hover",
+                "@media",
+                "1 declarations"
+            ]
+        );
+        let Rule::At(media) = &a.rules[3] else {
+            panic!("expected @media");
+        };
+        let Some(Block::Rules(inside)) = &media.block else {
+            panic!("expected a block of rules");
+        };
+        assert!(matches!(
+            inside.as_slice(),
+            [Rule::Declarations(_), Rule::Qualified(_)]
+        ));
+        // At the top level `@media` holds rules alone, as before.
+        let sheet = parse_stylesheet("@media screen { top: 0; .x { } }").unwrap();
+        let Rule::At(media) = &sheet.rules[0] else {
+            panic!("expected @media");
+        };
+        let Some(Block::Rules(inside)) = &media.block else {
+            panic!("expected a block of rules");
+        };
+        assert!(matches!(inside.as_slice(), [Rule::Qualified(_)]));
+        // `@scope` holds declarations at the top level too.
+        let sheet = parse_stylesheet("@scope (.a) { color: red; .b { } }").unwrap();
+        let Rule::At(scope) = &sheet.rules[0] else {
+            panic!("expected @scope");
+        };
+        assert!(matches!(
+            &scope.block,
+            Some(Block::Rules(inside))
+                if matches!(inside.as_slice(), [Rule::Declarations(_), Rule::Qualified(_)])
+        ));
+    }
+
+    #[test]
+    fn nested_error_recovery_ends_at_a_semicolon_or_the_block() {
+        // A nested rule's prelude ends, as an error, at a `;` or at the
+        // block's `}`; an at-rule nesting does not allow is dropped; a
+        // `{}` with no prelude is a rule whose selector is empty.
+        let sheet = parse_stylesheet(
+            "a { error3234; z-index: 1; @font-face { x: y } { foo } z-index: 2; nope } b { }",
+        )
+        .unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let Rule::Qualified(a) = &sheet.rules[0] else {
+            panic!("expected a qualified rule");
+        };
+        assert_eq!(a.declarations.len(), 1);
+        let [Rule::Qualified(empty), Rule::Declarations(after)] = a.rules.as_slice() else {
+            panic!("expected a rule and declarations: {:?}", a.rules);
+        };
+        assert!(empty.prelude.is_empty());
+        assert_eq!(after.len(), 1);
+        // A keyframe's block holds declarations alone.
+        let sheet = parse_stylesheet("@keyframes k { from { & { } opacity: 0 } }").unwrap();
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("expected @keyframes");
+        };
+        let Some(Block::Rules(frames)) = &at.block else {
+            panic!("expected keyframes");
+        };
+        let Rule::Qualified(from) = &frames[0] else {
+            panic!("expected a keyframe");
+        };
+        assert!(from.rules.is_empty());
+        assert_eq!(from.declarations.len(), 1);
+    }
+
+    #[test]
+    fn scope_blocks_keep_every_at_rule_and_property_values_their_blocks() {
+        // An `@scope` rule at the top level is no style rule: its block
+        // keeps the at-rules nesting leaves out, statements among them.
+        let sheet = parse_stylesheet("@scope (.a) { @keyframes k { } @layer x; .b { @layer y; } }")
+            .unwrap();
+        let Rule::At(scope) = &sheet.rules[0] else {
+            panic!("expected @scope");
+        };
+        let Some(Block::Rules(inside)) = &scope.block else {
+            panic!("expected a block of rules");
+        };
+        assert!(
+            matches!(inside.as_slice(), [Rule::At(_), Rule::At(_), Rule::Qualified(b)] if b.rules.is_empty())
+        );
+        // An `@property` rule's descriptors keep a `{}` block, as a custom
+        // property's value does.
+        let sheet =
+            parse_stylesheet("@property --x { syntax: '*'; initial-value: foo(){} }").unwrap();
+        let Rule::At(property) = &sheet.rules[0] else {
+            panic!("expected @property");
+        };
+        let Some(Block::Declarations(list)) = &property.block else {
+            panic!("expected declarations");
+        };
+        assert_eq!(list[1].value, tokenize("foo(){}"));
+    }
+
+    #[test]
+    fn block_contents_read_as_the_cssom_inserts_them() {
+        let rules = parse_block_contents("z-index: 3; & .b { } color: red");
+        assert!(matches!(
+            rules.as_slice(),
+            [
+                Rule::Declarations(_),
+                Rule::Qualified(_),
+                Rule::Declarations(_)
+            ]
+        ));
+        assert_eq!(parse_block_contents("} a { }").len(), 1);
+    }
+
+    #[test]
+    fn style_rules_nested_past_the_cap_are_passed_over() {
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let source = "a{".repeat(20_000) + &"}".repeat(20_000) + "b{color:red}";
+                let sheet = parse_stylesheet(&source).unwrap();
+                let mut depth = 0;
+                let mut rules = &sheet.rules;
+                while let [Rule::Qualified(rule), ..] = rules.as_slice() {
+                    depth += 1;
+                    rules = &rule.rules;
+                }
+                assert_eq!(depth, MAX_NESTING);
+                assert_eq!(sheet.rules.len(), 2, "the rule after is read");
+            })
+            .expect("thread");
+        handle.join().expect("no stack overflow");
     }
 
     #[test]

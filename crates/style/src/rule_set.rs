@@ -21,6 +21,19 @@
 //! subjects require (M35.2): an element is tried against the selectors
 //! of its id's, its classes' and its tag's buckets and the universal
 //! one, in the rules' order, rather than every selector of every rule.
+//!
+//! Nesting and `@scope` are desugared as the set is made (D71): a style
+//! rule nested in another is kept after it, its selectors read with `&`
+//! the parent's list as `:is()` and, where they name no `&`, relative to
+//! it; a run of declarations after a nested rule is kept as a rule of
+//! the parent's very selectors, matched as its own declarations are; a
+//! group rule nested in a style rule is walked as one at the top level
+//! is, with the parent's selectors carried in. A rule in an `@scope`
+//! block is kept
+//! with the scope, its selectors relative to `:where(:scope)` where they
+//! name neither `:scope` nor `&`; the scope keeps its root and limit
+//! selectors and the scope around it, which matching reads (Cascade 6
+//! section 2.5).
 
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -34,7 +47,9 @@ use crate::invalidation::SelectorFeatures;
 use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
 use crate::page::{PageSelector, parse_page_selectors};
-use crate::selector_matching::{Namespaces, SelectorList, SimpleSelector, parse_selector_list_in};
+use crate::selector_matching::{
+    Namespaces, Nest, Relative, SelectorList, SimpleSelector, parse_nested_selector_list,
+};
 
 /// The style rules of a set of sheets, in the order they appear.
 #[derive(Debug, Clone, Default)]
@@ -58,7 +73,40 @@ pub(crate) struct RuleSet {
     /// The `@font-face` rules' faces, in the order they appear, each
     /// with the innermost `@media` block around it (D54).
     font_faces: Vec<(crate::font_face::FontFaceRule, Option<u32>)>,
+    /// The `@scope` rules, in the order they appear (Cascade 6 section
+    /// 2.5).
+    scopes: Vec<ScopeRule>,
+    /// The valid `@property` rules' registrations, in the order they
+    /// appear, each with the innermost `@media` block around it and its
+    /// layer (D73).
+    properties: Vec<(crate::property::PropertyRegistration, Option<u32>, u32)>,
+    /// Each sheet's implicit scoping root, by the sheet's index: what an
+    /// `@scope` rule without roots of its own scopes to, the root
+    /// element where there is none.
+    roots: Vec<Option<dom::NodeId>>,
 }
+
+/// An `@scope` rule kept: what its scoping roots and limits are, and the
+/// scope it is in, whose scope its roots must be in.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopeRule {
+    /// The selectors of its roots, `:scope` in them the outer scope's
+    /// root; `None` for the implicit root, the parent element of the
+    /// node that owns its sheet (Cascade 6 section 2.5.1).
+    pub(crate) start: Option<Arc<SelectorList>>,
+    /// The selectors of its limits, `:scope` and `&` in them the root.
+    pub(crate) end: Option<SelectorList>,
+    /// The `@scope` rule it is in.
+    pub(crate) parent: Option<u32>,
+    /// Its sheet, by index, which says what its implicit root is.
+    pub(crate) sheet: u32,
+}
+
+/// How heavy a nested rule's selectors may be, each of its prelude's
+/// tokens counted once and each `&` in it, written or implicit, as heavy
+/// as its parent's: past it the rule and the rules in it are dropped, so
+/// that `& &` nested a hundred deep cannot ask for 2^100 matches.
+pub(crate) const MAX_NESTED_WEIGHT: usize = 1 << 16;
 
 /// A `@keyframes` rule kept: its name, where it is, as a
 /// [`StyleRule`]'s, and its keyframes processed.
@@ -96,7 +144,7 @@ impl<'s> KeyframesInForce<'s> {
             .iter()
             .map(move |&(b, i)| match &blocks[b as usize] {
                 Rule::Qualified(block) => &block.declarations[i as usize],
-                Rule::At(_) => unreachable!("a keyframe's declarations are a block's"),
+                _ => unreachable!("a keyframe's declarations are a block's"),
             })
     }
 }
@@ -186,6 +234,10 @@ pub(crate) struct InForce<'s> {
     /// Each of the set's rules' place among `rules`, or [`NOT_IN_FORCE`].
     places: Vec<u32>,
     index: &'s RuleIndex,
+    /// The set's `@scope` rules, which its rules' scopes name.
+    pub(crate) scopes: &'s [ScopeRule],
+    /// Each sheet's implicit scoping root, if it has one.
+    pub(crate) roots: &'s [Option<dom::NodeId>],
 }
 
 /// The place of a rule the medium leaves out.
@@ -249,17 +301,19 @@ impl InForce<'_> {
     }
 }
 
-/// A style rule kept.
+/// A style rule kept, or a run of declarations nested in one.
 #[derive(Debug, Clone)]
 struct StyleRule {
     /// Its sheet, by index.
     sheet: u32,
     /// Where its path starts in [`RuleSet::paths`], and its length.
     path: (u32, u32),
-    list: SelectorList,
+    list: Arc<SelectorList>,
     /// The innermost `@media` block around it.
     block: Option<u32>,
     layer: u32,
+    /// The innermost `@scope` rule around it.
+    scope: Option<u32>,
 }
 
 /// An `@page` rule kept: as a [`StyleRule`], with page selectors.
@@ -299,12 +353,32 @@ struct Layer {
 /// The layer of the rules in no layer.
 const UNLAYERED: u32 = 0;
 
-/// What a walk carries down: the sheet, and the innermost `@media`
-/// block and the layer it is inside.
+/// What a walk carries down: the sheet, the innermost `@media` block,
+/// the layer and the `@scope` rule it is inside, and what a style rule's
+/// selectors are read with there.
+#[derive(Clone)]
 struct Place {
     sheet: u32,
     block: Option<u32>,
     layer: u32,
+    scope: Option<u32>,
+    /// What `&` is: the selectors of the style rule this is nested in,
+    /// or of an `@scope` rule's root in one; `None` for `:where(:scope)`.
+    parent: Option<Arc<SelectorList>>,
+    /// The weight of `parent`'s selectors (see [`MAX_NESTED_WEIGHT`]).
+    weight: usize,
+    /// What a selector that names no anchor is relative to.
+    relative: Relative,
+}
+
+impl Place {
+    /// What a style rule's selectors are read with here.
+    fn nest(&self) -> Nest<'_> {
+        Nest {
+            parent: self.parent.as_ref(),
+            relative: self.relative,
+        }
+    }
 }
 
 /// The state of the walk that makes a rule set.
@@ -342,6 +416,10 @@ impl RuleSet {
                 sheet: sheet as u32,
                 block: None,
                 layer: UNLAYERED,
+                scope: None,
+                parent: None,
+                weight: 0,
+                relative: Relative::No,
             };
             builder.namespaces = Namespaces::default();
             builder.namespaces_closed = false;
@@ -350,6 +428,18 @@ impl RuleSet {
         let mut set = builder.set;
         set.index = RuleIndex::of(&set.rules);
         set
+    }
+
+    /// Gives each sheet, by its index, its implicit scoping root: what an
+    /// `@scope` rule without roots of its own scopes to.
+    pub(crate) fn set_scope_roots(&mut self, roots: Vec<Option<dom::NodeId>>) {
+        self.roots = roots;
+    }
+
+    /// Each sheet's implicit scoping root, as
+    /// [`RuleSet::set_scope_roots`] gave them.
+    pub(crate) fn scope_roots(&self) -> &[Option<dom::NodeId>] {
+        &self.roots
     }
 
     /// The answer of each `@media` block's own list under `media`, in
@@ -393,6 +483,7 @@ impl RuleSet {
                 ParsedRule {
                     rule: index as u32,
                     list: &rule.list,
+                    scope: rule.scope,
                     declarations: declarations_at(
                         &sheets[rule.sheet as usize],
                         self.path(rule.path),
@@ -416,6 +507,8 @@ impl RuleSet {
             rules,
             places: rule_places,
             index: &self.index,
+            scopes: &self.scopes,
+            roots: &self.roots,
         }
     }
 
@@ -454,7 +547,7 @@ impl RuleSet {
                         Some(Block::Declarations(declarations)) => declarations.as_slice(),
                         _ => unreachable!("a page rule has declarations"),
                     },
-                    Rule::Qualified(_) => unreachable!("a page rule is an at-rule"),
+                    _ => unreachable!("a page rule is an at-rule"),
                 };
                 ParsedPage {
                     selectors: &page.selectors,
@@ -494,7 +587,7 @@ impl RuleSet {
                         Some(Block::Rules(blocks)) => blocks.as_slice(),
                         _ => unreachable!("a keyframes rule has a block of rules"),
                     },
-                    Rule::Qualified(_) => unreachable!("a keyframes rule is an at-rule"),
+                    _ => unreachable!("a keyframes rule is an at-rule"),
                 };
                 (
                     name,
@@ -504,6 +597,31 @@ impl RuleSet {
                     },
                 )
             })
+            .collect()
+    }
+
+    /// The registrations of the `@property` rules that `answers` leave in
+    /// force, in their order of precedence, the least first: by their
+    /// layers' places in the order of normal declarations, then in the
+    /// sheets' order (D73, Cascade 5 section 6.4.3).
+    pub(crate) fn properties_in_force(
+        &self,
+        answers: &[bool],
+    ) -> Vec<&crate::property::PropertyRegistration> {
+        if self.properties.is_empty() {
+            return Vec::new();
+        }
+        let (holds, places) = self.ordered(answers);
+        let mut kept: Vec<(u32, usize, &crate::property::PropertyRegistration)> = self
+            .properties
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, block, _))| block.is_none_or(|b| holds[b as usize]))
+            .map(|(index, (registration, _, layer))| (places[*layer as usize], index, registration))
+            .collect();
+        kept.sort_by_key(|&(place, index, _)| (place, index));
+        kept.into_iter()
+            .map(|(.., registration)| registration)
             .collect()
     }
 
@@ -540,17 +658,27 @@ impl RuleSet {
         let mut conditions = Vec::new();
         let mut rules = sheet.rules.as_slice();
         let (&last, blocks) = path.split_last().expect("a rule's path is never empty");
+        // The selector of the style rule a run of declarations is in.
+        let mut around = String::new();
         for &index in blocks {
-            if let Rule::At(at) = &rules[index as usize] {
-                let prelude = crate::serialize::tokens(&at.prelude);
-                conditions.push(format!("@{} {prelude}", at.name).trim_end().to_owned());
-                if let Some(Block::Rules(inner)) = &at.block {
-                    rules = inner;
+            match &rules[index as usize] {
+                Rule::At(at) => {
+                    let prelude = crate::serialize::tokens(&at.prelude);
+                    conditions.push(format!("@{} {prelude}", at.name).trim_end().to_owned());
+                    if let Some(Block::Rules(inner)) = &at.block {
+                        rules = inner;
+                    }
                 }
+                Rule::Qualified(qualified) => {
+                    around = crate::serialize::tokens(&qualified.prelude);
+                    rules = &qualified.rules;
+                }
+                Rule::Declarations(_) => {}
             }
         }
         let selector = match &rules[last as usize] {
             Rule::Qualified(qualified) => crate::serialize::tokens(&qualified.prelude),
+            Rule::Declarations(_) => around,
             Rule::At(_) => String::new(),
         };
         (rule.sheet, selector, conditions)
@@ -602,10 +730,12 @@ impl RuleSet {
     }
 }
 
-/// The declarations of the style rule at `path` in `sheet`.
+/// The declarations of the style rule, or of the run of declarations
+/// nested in one, at `path` in `sheet`.
 fn declarations_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s [css::Declaration] {
     match rule_at(sheet, path) {
         Rule::Qualified(rule) => &rule.declarations,
+        Rule::Declarations(declarations) => declarations,
         Rule::At(_) => unreachable!("a style rule's path ends at a style rule"),
     }
 }
@@ -620,10 +750,123 @@ fn rule_at<'s>(sheet: &'s css::Stylesheet, path: &[u32]) -> &'s Rule {
                 Some(Block::Rules(inner)) => rules = inner,
                 _ => unreachable!("a path goes through blocks of rules"),
             },
-            Rule::Qualified(_) => unreachable!("a path goes through at-rules"),
+            // A style rule's nested rules (CSS Nesting 1).
+            Rule::Qualified(rule) => rules = &rule.rules,
+            Rule::Declarations(_) => unreachable!("a path goes through rules with blocks"),
         }
     }
     &rules[last as usize]
+}
+
+/// The tokens of an `@scope` rule's root selectors and of its limit
+/// selectors, either absent.
+pub type ScopeTokens<'p> = (Option<&'p [Token]>, Option<&'p [Token]>);
+
+/// An `@scope` rule's prelude read (Cascade 6 section 2.5):
+/// `[(<scope-start>)]? [to (<scope-end>)]?`, each list's tokens; `None`
+/// when it is not one, or a list is empty.
+fn scope_prelude(prelude: &[Token]) -> Option<ScopeTokens<'_>> {
+    let mut rest = trim(prelude);
+    // A parenthesized list at the start of `tokens`: its inside and what
+    // follows.
+    fn parenthesized(tokens: &[Token]) -> Option<(&[Token], &[Token])> {
+        if !matches!(tokens.first(), Some(Token::OpenParen)) {
+            return None;
+        }
+        let mut depth = 0usize;
+        for (at, token) in tokens.iter().enumerate() {
+            match token {
+                Token::OpenParen | Token::Function(_) | Token::OpenSquare => depth += 1,
+                Token::CloseParen | Token::CloseSquare => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inside = trim(&tokens[1..at]);
+                        return (!inside.is_empty()).then(|| (inside, trim(&tokens[at + 1..])));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    let start = match parenthesized(rest) {
+        Some((inside, after)) => {
+            rest = after;
+            Some(inside)
+        }
+        None => None,
+    };
+    let end = match rest {
+        [] => None,
+        [Token::Ident(to), after @ ..] if to.eq_ignore_ascii_case("to") => {
+            let (inside, after) = parenthesized(trim(after))?;
+            if !after.is_empty() {
+                return None;
+            }
+            Some(inside)
+        }
+        _ => return None,
+    };
+    Some((start, end))
+}
+
+/// Whether a selector of `list` ends in a pseudo-element, which a scope's
+/// root or limit may not.
+fn has_pseudo_element(list: &SelectorList) -> bool {
+    list.0.iter().any(|s| s.pseudo_element.is_some())
+}
+
+/// An `@scope` rule's root selectors and limit selectors, either absent.
+type ScopeLists = (Option<SelectorList>, Option<SelectorList>);
+
+/// An `@scope` rule's root and limit selectors, read from its prelude
+/// with `namespaces` (Cascade 6 section 2.5): the roots where `start`
+/// says, relative to the style rule the scope is nested in, or to the
+/// root of the scope it is in, if any; the limits relative to the root,
+/// which `&` and `:scope` in them are. `None` when the prelude does not
+/// parse, or a selector ends in a pseudo-element.
+fn scope_lists(prelude: &[Token], namespaces: &Namespaces, start: Nest<'_>) -> Option<ScopeLists> {
+    let nest = start;
+    let (start, end) = scope_prelude(prelude)?;
+    let read = |tokens: &[Token], nest: Nest<'_>| {
+        parse_nested_selector_list(tokens, namespaces, nest)
+            .ok()
+            .filter(|list| !has_pseudo_element(list))
+    };
+    let start = match start {
+        Some(tokens) => Some(read(tokens, nest)?),
+        None => None,
+    };
+    let end = match end {
+        Some(tokens) => Some(read(
+            tokens,
+            Nest {
+                parent: None,
+                relative: Relative::Scope,
+            },
+        )?),
+        None => None,
+    };
+    Some((start, end))
+}
+
+/// The tokens of the root and of the limit selectors of an `@scope`
+/// rule whose prelude is `prelude`, read with `namespaces`, where
+/// `relative` says the rule stands: nested in a style rule, or in
+/// another `@scope` rule; `None` when it is not a valid one. What the
+/// CSSOM's `CSSScopeRule` shows.
+pub fn scope_selectors<'p>(
+    prelude: &'p [Token],
+    namespaces: &Namespaces,
+    relative: Relative,
+) -> Option<ScopeTokens<'p>> {
+    let parent = Arc::new(SelectorList(Vec::new()));
+    let nest = Nest {
+        parent: (relative == Relative::Nesting).then_some(&parent),
+        relative,
+    };
+    scope_lists(prelude, namespaces, nest)?;
+    scope_prelude(prelude)
 }
 
 /// An `@namespace` rule's prelude read: its prefix, if any, and its
@@ -693,26 +936,122 @@ impl Builder<'_> {
             match rule {
                 Rule::Qualified(rule) => {
                     self.namespaces_closed = true;
-                    // A rule whose selectors do not parse is dropped
-                    // (css-syntax-3, M4.10).
-                    if let Ok(list) = parse_selector_list_in(&rule.prelude, &self.namespaces) {
-                        self.features.add(&list);
-                        self.features.add_declarations(&rule.declarations);
-                        let start = self.set.paths.len() as u32;
-                        self.set.paths.extend_from_slice(&self.path);
-                        self.set.rules.push(StyleRule {
-                            sheet: place.sheet,
-                            path: (start, self.path.len() as u32),
-                            list,
-                            block: place.block,
-                            layer: place.layer,
-                        });
-                    }
+                    self.style_rule(rule, place);
                 }
+                Rule::Declarations(declarations) => self.nested_declarations(declarations, place),
                 Rule::At(at) => self.at_rule(at, place),
             }
             self.path.pop();
         }
+    }
+
+    /// Keeps a style rule, its selectors read where `place` says, and
+    /// walks the rules nested in it (CSS Nesting 1). A rule whose
+    /// selectors do not parse is dropped with them (css-syntax-3, M4.10),
+    /// and so is one heavier than [`MAX_NESTED_WEIGHT`].
+    fn style_rule(&mut self, rule: &css::QualifiedRule, place: &Place) {
+        let Ok(list) = parse_nested_selector_list(&rule.prelude, &self.namespaces, place.nest())
+        else {
+            return;
+        };
+        let anchors = rule
+            .prelude
+            .iter()
+            .filter(|t| matches!(t, Token::Delim('&')))
+            .count()
+            .max(usize::from(place.relative != Relative::No));
+        let weight = place
+            .weight
+            .saturating_mul(anchors)
+            .saturating_add(rule.prelude.len());
+        if weight > MAX_NESTED_WEIGHT {
+            return;
+        }
+        let list = Arc::new(list);
+        self.features.add(&list);
+        self.features.add_declarations(&rule.declarations);
+        self.keep(Arc::clone(&list), place);
+        if !rule.rules.is_empty() {
+            let inside = Place {
+                parent: Some(list),
+                weight,
+                relative: Relative::Nesting,
+                ..place.clone()
+            };
+            self.walk(&rule.rules, &inside);
+        }
+    }
+
+    /// Keeps a run of declarations nested in a style rule, or in an
+    /// `@scope` rule's block: a rule of the parent's very selectors, each
+    /// matching with its own specificity as the parent's own declarations
+    /// do; or, in `@scope`, of `:where(:scope)` (CSS Nesting 1 section
+    /// 3.3, Cascade 6 section 2.5).
+    fn nested_declarations(&mut self, declarations: &[css::Declaration], place: &Place) {
+        let list = match (&place.parent, place.relative) {
+            (Some(parent), Relative::Nesting) => Arc::clone(parent),
+            _ => {
+                match parse_nested_selector_list(&[Token::Delim('&')], &self.namespaces, Nest::TOP)
+                {
+                    Ok(list) => Arc::new(list),
+                    Err(_) => return,
+                }
+            }
+        };
+        self.features.add_declarations(declarations);
+        self.keep(list, place);
+    }
+
+    /// Keeps the rule the walk is at, its selectors `list`.
+    fn keep(&mut self, list: Arc<SelectorList>, place: &Place) {
+        let start = self.set.paths.len() as u32;
+        self.set.paths.extend_from_slice(&self.path);
+        self.set.rules.push(StyleRule {
+            sheet: place.sheet,
+            path: (start, self.path.len() as u32),
+            list,
+            block: place.block,
+            layer: place.layer,
+            scope: place.scope,
+        });
+    }
+
+    /// Keeps an `@scope` rule and walks its block, the rules in it
+    /// scoped (Cascade 6 section 2.5); one whose prelude does not parse
+    /// is dropped with its rules. Nested in a style rule, its roots are
+    /// relative to the parent's selectors; in another `@scope` rule, to
+    /// that one's root. In its block `&` is `:where(:scope)`, as in every
+    /// `@scope` rule's.
+    fn scope_rule(&mut self, at: &css::AtRule, rules: &[Rule], place: &Place) {
+        let nest = match place.relative {
+            Relative::Nesting => place.nest(),
+            Relative::Scope => Nest {
+                parent: None,
+                relative: Relative::Scope,
+            },
+            Relative::No => Nest::TOP,
+        };
+        let Some((start, end)) = scope_lists(&at.prelude, &self.namespaces, nest) else {
+            return;
+        };
+        let start = start.map(Arc::new);
+        for list in start.iter().map(|l| &**l).chain(end.iter()) {
+            self.features.add_scope(list);
+        }
+        let scope = self.set.scopes.len() as u32;
+        self.set.scopes.push(ScopeRule {
+            start: start.clone(),
+            end,
+            parent: place.scope,
+            sheet: place.sheet,
+        });
+        let inside = Place {
+            scope: Some(scope),
+            parent: None,
+            relative: Relative::Scope,
+            ..place.clone()
+        };
+        self.walk(rules, &inside);
     }
 
     fn at_rule(&mut self, at: &css::AtRule, place: &Place) {
@@ -738,6 +1077,18 @@ impl Builder<'_> {
                     && let Some(face) = crate::font_face::read(declarations)
                 {
                     self.set.font_faces.push((face, place.block));
+                }
+            }
+            // A registration whatever the scope or rule it is in, as the
+            // name-defining rules are (Cascade 6 section 2.5).
+            ("property", None) => {
+                if let Some(Block::Declarations(declarations)) = &at.block
+                    && let Some(registration) =
+                        crate::property::property_rule(&at.prelude, declarations)
+                {
+                    self.set
+                        .properties
+                        .push((registration, place.block, place.layer));
                 }
             }
             ("page", None) => {
@@ -777,7 +1128,7 @@ impl Builder<'_> {
                 });
                 let inside = Place {
                     block: Some(block),
-                    ..*place
+                    ..place.clone()
                 };
                 self.walk(rules, &inside);
             }
@@ -786,6 +1137,7 @@ impl Builder<'_> {
                     self.walk(rules, place);
                 }
             }
+            ("scope", Some(rules)) => self.scope_rule(at, rules, place),
             // The statement: layers named in order, without rules.
             ("layer", None) if at.block.is_none() => {
                 let names: Option<Vec<Vec<&str>>> = split_commas(&at.prelude)
@@ -813,7 +1165,10 @@ impl Builder<'_> {
                         None => return,
                     }
                 };
-                let inside = Place { layer, ..*place };
+                let inside = Place {
+                    layer,
+                    ..place.clone()
+                };
                 self.walk(rules, &inside);
             }
             _ => {}
@@ -856,9 +1211,16 @@ fn layer_name(tokens: &[Token]) -> Option<Vec<&str>> {
         let Some(Token::Ident(part)) = tokens.next() else {
             return None;
         };
-        if ["initial", "inherit", "unset", "revert", "revert-layer"]
-            .iter()
-            .any(|keyword| part.eq_ignore_ascii_case(keyword))
+        if [
+            "initial",
+            "inherit",
+            "unset",
+            "revert",
+            "revert-layer",
+            "revert-rule",
+        ]
+        .iter()
+        .any(|keyword| part.eq_ignore_ascii_case(keyword))
         {
             return None;
         }
@@ -899,6 +1261,28 @@ mod tests {
         }
         out.sort();
         out.into_iter().map(|(.., bucket)| bucket).collect()
+    }
+
+    /// D71: a nested rule's selectors as heavy as `&` makes them past
+    /// [`MAX_NESTED_WEIGHT`] are dropped, with the rules in it, so that
+    /// `& &` nested deep asks for no exponential matching.
+    #[test]
+    fn nesting_past_the_weight_bound_is_dropped() {
+        let depth = 24;
+        let source =
+            "a { ".to_owned() + &"& & { ".repeat(depth) + "color: red" + &"}".repeat(depth + 1);
+        let sheets = sheets(&source);
+        let set = RuleSet::new(&sheets, &mut SelectorFeatures::default());
+        assert!(
+            set.rules.len() > 8,
+            "the shallow ones are kept: {}",
+            set.rules.len()
+        );
+        assert!(
+            set.rules.len() <= depth,
+            "the deep ones are dropped: {}",
+            set.rules.len()
+        );
     }
 
     /// M35.2: a selector is kept by its subject's ID, else its first
