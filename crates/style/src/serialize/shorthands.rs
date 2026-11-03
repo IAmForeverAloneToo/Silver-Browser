@@ -87,6 +87,15 @@ pub(super) fn value(
         "place-items" => pair("align-items", "justify-items"),
         "place-self" => pair("align-self", "justify-self"),
         "overflow" => pair("overflow-x", "overflow-y"),
+        // The name, and the type after a `/` but for `normal` (D72).
+        "container" => {
+            let (name, kind) = (get("container-name")?, get("container-type")?);
+            Some(if kind == "normal" {
+                name
+            } else {
+                format!("{name} / {kind}")
+            })
+        }
         "flex" => Some(format!(
             "{} {} {}",
             get("flex-grow")?,

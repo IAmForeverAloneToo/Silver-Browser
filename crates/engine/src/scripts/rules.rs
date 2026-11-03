@@ -182,7 +182,12 @@ fn kind(rule: &Rule, place: Place, ns: &Namespaces) -> Option<Kind> {
                 "keyframes" | "-webkit-keyframes" if rules => Some(Kind::Keyframes),
                 "font-face" if declarations => Some(Kind::FontFace),
                 "page" if declarations => Some(Kind::Page),
-                "container" if rules => Some(Kind::Container),
+                // One whose prelude is a valid query list (D72).
+                "container"
+                    if rules && style::container::container_prelude(&at.prelude).is_some() =>
+                {
+                    Some(Kind::Container)
+                }
                 "counter-style" if declarations && counter_style_name(&at.prelude).is_some() => {
                     Some(Kind::CounterStyle)
                 }
@@ -346,15 +351,16 @@ fn parts(rule: &Rule, kind: Kind, place: Place, ns: &Namespaces) -> (String, Str
             )
         }
         (Rule::At(at), Kind::Media) => (media_text(&at.prelude), String::new()),
-        // The condition, then the container's name.
+        // The condition, as the reference browser writes it (D72).
+        // Then each query's name and condition, all parted by NULs.
         (Rule::At(at), Kind::Container) => {
-            let (name, query) = container_parts(&at.prelude);
-            let condition = if name.is_empty() {
-                query
-            } else {
-                format!("{name} {query}")
-            };
-            (condition, name)
+            let (condition, queries) =
+                style::container::container_prelude(&at.prelude).unwrap_or_default();
+            let parts: Vec<String> = queries
+                .into_iter()
+                .flat_map(|(name, query)| [name, query])
+                .collect();
+            (condition, parts.join("\u{0}"))
         }
         (Rule::At(at), Kind::CounterStyle) => (
             counter_style_name(&at.prelude).unwrap_or_default(),
@@ -1222,7 +1228,12 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, place: Place, ns: &Namespaces
             }
         }
         (Rule::At(at), _) => {
-            let prelude = selector(&at.prelude);
+            let prelude = match kind {
+                Kind::Container => style::container::container_prelude(&at.prelude)
+                    .map(|(condition, _)| condition)
+                    .unwrap_or_default(),
+                _ => selector(&at.prelude),
+            };
             let mut out = if prelude.is_empty() {
                 format!("@{} {{\n", at.name)
             } else {
@@ -1522,27 +1533,6 @@ pub(crate) fn page_selector(text: &str) -> Option<String> {
         out.push(written);
     }
     Some(out.join(", "))
-}
-
-/// A `@container` prelude's name and query: the name an identifier
-/// before the condition (Conditional 5 section 7.1), empty for none.
-fn container_parts(prelude: &[Token]) -> (String, String) {
-    let words: Vec<&Token> = prelude
-        .iter()
-        .skip_while(|t| matches!(t, Token::Whitespace))
-        .collect();
-    match words.first() {
-        Some(Token::Ident(name))
-            if !matches!(
-                name.to_ascii_lowercase().as_str(),
-                "not" | "and" | "or" | "none"
-            ) =>
-        {
-            let rest: Vec<Token> = words[1..].iter().map(|t| (*t).clone()).collect();
-            (name.clone(), selector(&rest))
-        }
-        _ => (String::new(), selector(prelude)),
-    }
 }
 
 /// A `@counter-style` rule's name: one identifier, not `none` nor

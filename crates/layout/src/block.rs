@@ -406,6 +406,73 @@ impl DocumentLayout {
         preorder(&self.roots)
     }
 
+    /// The content boxes of the size containers laid out (D72): each one's
+    /// border box less its borders and its padding, a percentage of
+    /// which is of the content width of the box its fragment is in, the
+    /// initial containing block's for a root's. What container queries
+    /// and units read after this layout.
+    ///
+    /// A scroll-state container that is a scroll container gets its
+    /// scroll state too: the sides it can be scrolled towards, from its
+    /// scroll offset across and down, which `offsets` gives.
+    pub fn container_sizes(
+        &self,
+        viewport_width: f32,
+        offsets: &dyn Fn(NodeId) -> (f32, f32),
+    ) -> style::container::ContainerSizes {
+        let mut sizes = style::container::ContainerSizes::new();
+        for f in self.iter() {
+            if f.generated.is_some()
+                || !f.style.container_type.scroll_state
+                || !f.style.overflow().scrolls()
+            {
+                continue;
+            }
+            let (x, y) = offsets(f.node);
+            let [_, right, _, left] = f.style.used_border_width();
+            let padding_width = f.w - left - right;
+            // How far the content reaches across, inside the boxes that
+            // do not clip.
+            let mut reach = 0.0f32;
+            let mut stack: Vec<(f32, &Fragment)> = f.children.iter().map(|c| (0.0, c)).collect();
+            while let Some((dx, c)) = stack.pop() {
+                reach = reach.max(dx + c.x + c.w - left);
+                if !c.clips() {
+                    stack.extend(c.children.iter().map(|g| (dx + c.x, g)));
+                }
+            }
+            let max_x = (reach - padding_width).max(0.0);
+            let max_y = f.max_scroll();
+            sizes.insert_scroll(
+                f.node,
+                style::container::ScrollState {
+                    scrollable: [y > 0.0, x < max_x, y < max_y, x > 0.0],
+                },
+            );
+        }
+        let mut stack: Vec<(&Fragment, f32)> =
+            self.roots.iter().map(|f| (f, viewport_width)).collect();
+        while let Some((f, cb_width)) = stack.pop() {
+            let border = f.style.used_border_width();
+            let padding = f.style.padding.clone().map(|p| p.resolve(cb_width));
+            let width =
+                (f.w - border[LEFT] - border[RIGHT] - padding[LEFT] - padding[RIGHT]).max(0.0);
+            let height =
+                (f.h - border[TOP] - border[BOTTOM] - padding[TOP] - padding[BOTTOM]).max(0.0);
+            let boxed = matches!(f.kind, FragmentKind::Box);
+            if boxed
+                && f.generated.is_none()
+                && f.style.container_type.is_size()
+                && style::container::eligible(&f.style)
+            {
+                sizes.insert(f.node, width, height);
+            }
+            let inner = if boxed { width } else { cb_width };
+            stack.extend(f.children.iter().map(|child| (child, inner)));
+        }
+        sizes
+    }
+
     /// Every fragment in tree order with its place on the page.
     pub fn placed(&self) -> Places<'_> {
         placed(&self.roots)
@@ -1289,6 +1356,20 @@ pub(crate) fn relative_offset(
     (dx, dy)
 }
 
+/// Whether a box of `style` has size containment in its block axis as a
+/// `size` container (CSS Conditional 5 section 7.2, D72): its auto height
+/// is that of no content.
+pub(crate) fn size_contained(style: &ComputedStyle) -> bool {
+    style.container_type.size == style::computed::ContainerSize::Both
+        && style::container::eligible(style)
+}
+
+/// Whether a box of `style` has inline-size containment as a size
+/// container: its intrinsic widths are those of no content.
+pub(crate) fn inline_size_contained(style: &ComputedStyle) -> bool {
+    style.container_type.is_size() && style::container::eligible(style)
+}
+
 /// Whether a box with this style establishes a block formatting context
 /// of its own (CSS2 section 9.4.1, M10.4): `overflow` other than `visible`
 /// and `clip` (css-overflow-3 section 3, M26.11), an atomic inline (an
@@ -1312,6 +1393,8 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
         )
         || style.float != Float::None
         || style.position.is_out_of_flow()
+        // A size container's layout containment (D72).
+        || inline_size_contained(style)
 }
 
 /// The float context a block container's content is laid out in: a
@@ -2033,11 +2116,18 @@ pub(crate) fn layout_flow<'a>(
     // CSS2 §10.7: the tentative height clamped to `max-height`, then
     // `min-height`.
     // A form control's `auto` height is its own (M26.11), not its
-    // content's, which it scrolls or clips.
-    let natural_height = b.control_size.and_then(|size| size.height);
+    // content's, which it scrolls or clips; a box of size containment's,
+    // a `size` container's, that of no content (CSS Contain 2 section
+    // 3.1, D72), its content overflowing it.
+    let contained = size_contained(&b.style);
+    let natural_height = b
+        .control_size
+        .and_then(|size| size.height)
+        .or(contained.then_some(0.0));
+    let sized_by_content = if contained { 0.0 } else { auto_content_height };
     let specified_height = match (ratio, specified_height) {
         (Some(r), Some(h)) if h == r && !b.style.overflow().scrolls() => {
-            Some(h.max(auto_content_height))
+            Some(h.max(sized_by_content))
         }
         (_, h) => h,
     };
@@ -2045,7 +2135,7 @@ pub(crate) fn layout_flow<'a>(
         specified_height
             .or(natural_height)
             .unwrap_or(auto_content_height),
-        bounds(Some(auto_content_height)),
+        bounds(Some(sized_by_content)),
     );
 
     // A marker's line ends the margins collapsing through the content,
@@ -3248,6 +3338,54 @@ mod tests {
             .iter()
             .filter(|f| matches!(f.kind, FragmentKind::Box))
             .collect()
+    }
+
+    #[test]
+    fn a_size_container_is_contained_and_measured() {
+        // D72: `container-type: size` makes the auto height that of no
+        // content, `inline-size` the intrinsic widths, and either a
+        // formatting context of its own, beside a float; the content
+        // boxes of the containers laid out are measured for the queries.
+        let fonts = test_fonts();
+        let doc = html::parse_document(
+            "<div id=s>text</div><div id=f></div><div id=i>xx</div>\
+             <div id=o><div id=p>text</div></div>",
+        )
+        .expect("html parsing never fails");
+        let sheet = css::parse_stylesheet(
+            "body { margin: 0 } #s { container-type: size; padding: 5% }
+             #f { float: left; width: 30px; height: 30px }
+             #i { container-type: inline-size; float: left }
+             #o { width: 200px } #p { container-type: inline-size }",
+        )
+        .expect("test css is valid");
+        let (document, boxes) = boxes_of(&doc, &[sheet]);
+        let layout = layout_document(&boxes, VIEWPORT, &fonts);
+        let laid = Laid::new(document, layout);
+        let node = |id: &str| {
+            let document = &laid.document;
+            document
+                .subtree(document.root())
+                .find(|&n| document.attr(n, "id") == Some(id))
+                .expect("the element")
+        };
+        let frame = |id: &str| {
+            let node = node(id);
+            laid.iter()
+                .find(|f| f.node == node && matches!(f.kind, FragmentKind::Box))
+                .expect("a box")
+                .clone()
+        };
+        let s = frame("s");
+        assert_eq!(s.h, 80.0, "its padding alone, 5% of 800 at each end");
+        assert_eq!(frame("i").w, 0.0, "a float of no content's width");
+        let sizes = laid.layout.container_sizes(VIEWPORT, &|_| (0.0, 0.0));
+        assert_eq!(sizes.get(node("s")), Some((720.0, 0.0)));
+        // Its own formatting context, beside the 30px float rather than
+        // under it.
+        assert_eq!(sizes.get(node("p")).map(|(w, _)| w), Some(170.0));
+        assert_eq!(sizes.get(node("o")), None, "not a container");
+        assert!(establishes_bfc(&frame("p").style));
     }
 
     #[test]

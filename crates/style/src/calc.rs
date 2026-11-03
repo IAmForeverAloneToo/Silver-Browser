@@ -96,6 +96,15 @@ pub enum LengthUnit {
     Vh,
     Vmin,
     Vmax,
+    /// The container units (CSS Conditional 5 section 7.3, D72): a
+    /// hundredth of the query container's width, height, inline size,
+    /// block size, and the smaller and the larger of those two.
+    Cqw,
+    Cqh,
+    Cqi,
+    Cqb,
+    Cqmin,
+    Cqmax,
 }
 
 impl LengthUnit {
@@ -125,6 +134,12 @@ impl LengthUnit {
             "vh" => LengthUnit::Vh,
             "vmin" => LengthUnit::Vmin,
             "vmax" => LengthUnit::Vmax,
+            "cqw" => LengthUnit::Cqw,
+            "cqh" => LengthUnit::Cqh,
+            "cqi" => LengthUnit::Cqi,
+            "cqb" => LengthUnit::Cqb,
+            "cqmin" => LengthUnit::Cqmin,
+            "cqmax" => LengthUnit::Cqmax,
             _ => return None,
         })
     }

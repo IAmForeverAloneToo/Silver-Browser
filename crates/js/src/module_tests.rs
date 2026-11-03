@@ -46,6 +46,15 @@ fn a_modules_static_imports_are_found_by_declaring_it_apart() {
     let specifiers: Vec<&str> = found.iter().map(|r| r.specifier.as_str()).collect();
     assert_eq!(specifiers, ["./x.js", "./y.js", "./z.js"]);
     assert!(found.iter().all(|r| r.kind == Some(ModuleKind::Js)));
+    // A regular expression in it compiles there too (found by css-logical's
+    // test modules, whose imports were taken for none).
+    let found = realm
+        .module_requests(
+            "https://example.com/r.js",
+            "import { a } from './a.js'; export const b = 'a-b'.replace(/-(.)/g, '$1');",
+        )
+        .expect("it parses");
+    assert_eq!(found.len(), 1);
     let error = realm
         .module_requests("https://example.com/b.js", "import {")
         .expect_err("a syntax error");

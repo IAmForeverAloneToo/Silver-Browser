@@ -157,6 +157,22 @@ pub enum PseudoElement {
     Placeholder,
     /// `::selection`: recognised; there is no selection yet (M26).
     Selection,
+    /// `::details-content` (CSS Pseudo-Elements 4 section 5.1, D74): a
+    /// `details` element's content but its summary; recognised, no box
+    /// of it drawn.
+    DetailsContent,
+    /// `::file-selector-button`: a file input's button; recognised, the
+    /// control drawn whole.
+    FileSelectorButton,
+    /// `::picker(select)`, `::picker-icon` and `::checkmark`: the parts
+    /// of a select the reference browser lets a page style; recognised,
+    /// the control drawn whole.
+    Picker,
+    PickerIcon,
+    Checkmark,
+    /// A pseudo-element of a pseudo-element (`::details-content::before`):
+    /// valid where the reference browser takes it, matching nothing.
+    Nested,
     /// A `::-webkit-` name that is not a function: valid, so that the
     /// list it is in keeps its other selectors, and matching nothing
     /// (selectors-4 Appendix B).
@@ -409,6 +425,26 @@ pub enum PseudoClass {
     Required,
     /// `:optional`: one of those that could be and is not.
     Optional,
+    /// `:has(relative selectors)` (Selectors 4 section 4.5): an element
+    /// some relative selector of which matches an element, searched for
+    /// among its descendants or following siblings as its combinators
+    /// say (D74). Each selector of the list begins with the compound of
+    /// [`PseudoClass::RelativeAnchor`] alone.
+    Has(SelectorList),
+    /// The anchor of a relative selector: the element the `:has()` it is
+    /// in is matched at. Never written; it is the compound a relative
+    /// selector of `:has()` begins with.
+    RelativeAnchor,
+    /// `:dir(ltr)` and `:dir(rtl)` (Selectors 4 section 7.1): an element
+    /// of that directionality, as HTML gives it from `dir` (D74). `None`
+    /// for any other identifier, valid and matching nothing.
+    Dir(Option<crate::computed::Direction>),
+    /// `:open` (Selectors 4 section 13.4): a `details` or a `dialog` with
+    /// `open`, a `select` or an `input` whose picker is shown.
+    Open,
+    /// `:autofill` (and `:-webkit-autofill`): an input the user agent
+    /// filled in; this engine fills in none, and it never matches.
+    Autofill,
 }
 
 /// selectors-4 specificity: (ids, classes+attributes+pseudo-classes,

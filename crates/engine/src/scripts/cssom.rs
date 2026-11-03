@@ -238,9 +238,67 @@ const BORDER: [&str; 17] = [
 const OUTLINE: [&str; 3] = ["outline-color", "outline-style", "outline-width"];
 const LIST_STYLE: [&str; 3] = ["list-style-position", "list-style-image", "list-style-type"];
 
+/// The flow-relative shorthands (CSS Logical 1, D74), each with its
+/// longhands: two-value ones, of a start and an end; a border side's,
+/// of its width, style and colour; and `border-inline` and
+/// `border-block`, of both their sides'.
+const MARGIN_INLINE: [&str; 2] = ["margin-inline-start", "margin-inline-end"];
+const MARGIN_BLOCK: [&str; 2] = ["margin-block-start", "margin-block-end"];
+const PADDING_INLINE: [&str; 2] = ["padding-inline-start", "padding-inline-end"];
+const PADDING_BLOCK: [&str; 2] = ["padding-block-start", "padding-block-end"];
+const INSET_INLINE: [&str; 2] = ["inset-inline-start", "inset-inline-end"];
+const INSET_BLOCK: [&str; 2] = ["inset-block-start", "inset-block-end"];
+const SCROLL_MARGIN_INLINE: [&str; 2] = ["scroll-margin-inline-start", "scroll-margin-inline-end"];
+const SCROLL_MARGIN_BLOCK: [&str; 2] = ["scroll-margin-block-start", "scroll-margin-block-end"];
+const SCROLL_PADDING_INLINE: [&str; 2] =
+    ["scroll-padding-inline-start", "scroll-padding-inline-end"];
+const SCROLL_PADDING_BLOCK: [&str; 2] = ["scroll-padding-block-start", "scroll-padding-block-end"];
+const BORDER_INLINE_WIDTH: [&str; 2] = ["border-inline-start-width", "border-inline-end-width"];
+const BORDER_INLINE_STYLE: [&str; 2] = ["border-inline-start-style", "border-inline-end-style"];
+const BORDER_INLINE_COLOR: [&str; 2] = ["border-inline-start-color", "border-inline-end-color"];
+const BORDER_BLOCK_WIDTH: [&str; 2] = ["border-block-start-width", "border-block-end-width"];
+const BORDER_BLOCK_STYLE: [&str; 2] = ["border-block-start-style", "border-block-end-style"];
+const BORDER_BLOCK_COLOR: [&str; 2] = ["border-block-start-color", "border-block-end-color"];
+const BORDER_INLINE_START: [&str; 3] = [
+    "border-inline-start-width",
+    "border-inline-start-style",
+    "border-inline-start-color",
+];
+const BORDER_INLINE_END: [&str; 3] = [
+    "border-inline-end-width",
+    "border-inline-end-style",
+    "border-inline-end-color",
+];
+const BORDER_BLOCK_START: [&str; 3] = [
+    "border-block-start-width",
+    "border-block-start-style",
+    "border-block-start-color",
+];
+const BORDER_BLOCK_END: [&str; 3] = [
+    "border-block-end-width",
+    "border-block-end-style",
+    "border-block-end-color",
+];
+const BORDER_INLINE: [&str; 6] = [
+    "border-inline-start-width",
+    "border-inline-start-style",
+    "border-inline-start-color",
+    "border-inline-end-width",
+    "border-inline-end-style",
+    "border-inline-end-color",
+];
+const BORDER_BLOCK: [&str; 6] = [
+    "border-block-start-width",
+    "border-block-start-style",
+    "border-block-start-color",
+    "border-block-end-width",
+    "border-block-end-style",
+    "border-block-end-color",
+];
+
 /// The shorthands a declaration block keeps as their longhands (G50),
 /// each with its longhands in their canonical order.
-const SHORTHANDS: [(&str, &[&str]); 18] = [
+const SHORTHANDS: [(&str, &[&str]); 41] = [
     ("font", &FONT_LONGHANDS),
     ("font-variant", &style::VARIANT_LONGHANDS),
     ("margin", &MARGIN),
@@ -259,6 +317,29 @@ const SHORTHANDS: [(&str, &[&str]); 18] = [
     ("list-style", &LIST_STYLE),
     ("gap", &["row-gap", "column-gap"]),
     ("overflow", &["overflow-x", "overflow-y"]),
+    ("container", &["container-name", "container-type"]),
+    ("margin-inline", &MARGIN_INLINE),
+    ("margin-block", &MARGIN_BLOCK),
+    ("padding-inline", &PADDING_INLINE),
+    ("padding-block", &PADDING_BLOCK),
+    ("inset-inline", &INSET_INLINE),
+    ("inset-block", &INSET_BLOCK),
+    ("scroll-margin-inline", &SCROLL_MARGIN_INLINE),
+    ("scroll-margin-block", &SCROLL_MARGIN_BLOCK),
+    ("scroll-padding-inline", &SCROLL_PADDING_INLINE),
+    ("scroll-padding-block", &SCROLL_PADDING_BLOCK),
+    ("border-inline-width", &BORDER_INLINE_WIDTH),
+    ("border-inline-style", &BORDER_INLINE_STYLE),
+    ("border-inline-color", &BORDER_INLINE_COLOR),
+    ("border-block-width", &BORDER_BLOCK_WIDTH),
+    ("border-block-style", &BORDER_BLOCK_STYLE),
+    ("border-block-color", &BORDER_BLOCK_COLOR),
+    ("border-inline-start", &BORDER_INLINE_START),
+    ("border-inline-end", &BORDER_INLINE_END),
+    ("border-block-start", &BORDER_BLOCK_START),
+    ("border-block-end", &BORDER_BLOCK_END),
+    ("border-inline", &BORDER_INLINE),
+    ("border-block", &BORDER_BLOCK),
 ];
 
 /// The longhands of the shorthand `name`, if it is one a block keeps as
@@ -273,6 +354,14 @@ pub(crate) fn longhands(name: &str) -> Option<&'static [&'static str]> {
         .iter()
         .find(|(shorthand, _)| *shorthand == name)
         .map(|(_, longhands)| *longhands)
+}
+
+/// How many longhands the flow-relative shorthand `name` has (D74): 2
+/// for a start and an end's, 3 for a border side's, 6 for both border
+/// sides'; `None` for any other property.
+fn flow_relative(name: &str) -> Option<usize> {
+    let flow = name.contains("-inline") || name.contains("-block");
+    longhands(name).filter(|_| flow).map(<[&str]>::len)
 }
 
 /// The pieces of `value` parted by white space outside brackets and
@@ -449,6 +538,29 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
                 _ => None,
             };
         }
+        // A name, and a type after a `/`, `normal` where none is (D72).
+        "container" => {
+            let (name, kind) = value.split_once('/').unwrap_or((value, "normal"));
+            return pair(vec![
+                name.trim_matches(is_space).to_owned(),
+                kind.trim_matches(is_space).to_owned(),
+            ]);
+        }
+        // A start and an end, one value for both (D74).
+        _ if flow_relative(name) == Some(2) => {
+            let v = components(value);
+            return match v.as_slice() {
+                [a] => pair(vec![a.clone(), a.clone()]),
+                [a, b] => pair(vec![a.clone(), b.clone()]),
+                _ => None,
+            };
+        }
+        // A border side's, or both sides' alike.
+        _ if flow_relative(name) == Some(3) => return pair(border_side(value)?),
+        _ if flow_relative(name) == Some(6) => {
+            let side = border_side(value)?;
+            return pair(side.iter().chain(&side).cloned().collect());
+        }
         // Its initial values alone, as `border` writes it.
         "border-image" if value.eq_ignore_ascii_case("none") => {
             return pair(
@@ -511,6 +623,9 @@ fn written(name: &str, value: &str) -> String {
     if name.starts_with("--") || ["var(", "attr(", "env("].iter().any(|f| value.contains(f)) {
         return value.to_owned();
     }
+    // A flow-relative longhand is written as its physical one is (D74).
+    let physical = style::physical_name(name);
+    let name = physical.as_deref().unwrap_or(name);
     let tokens = css::tokenize(value);
     let text = match name {
         "font-family" => style::font_family::parse_list(&tokens)
@@ -522,6 +637,9 @@ fn written(name: &str, value: &str) -> String {
         | "font-variant-east-asian"
         | "font-variant-position"
         | "font-variant-emoji" => style::parse_variant(name, &tokens),
+        // Its names escaped as identifiers are (D72).
+        "container-name" => style::container::container_name_value(&tokens),
+        "container-type" => style::container::container_type_value(&tokens),
         "font-stretch" | "font-weight" | "font-style" => {
             Some(style::serialize::tokens(&tokens).to_ascii_lowercase())
         }
@@ -625,6 +743,30 @@ pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
             } else {
                 values.join(" ")
             }
+        }
+        "container" => {
+            if values[1].eq_ignore_ascii_case("normal") {
+                values[0].to_owned()
+            } else {
+                format!("{} / {}", values[0], values[1])
+            }
+        }
+        _ if flow_relative(name) == Some(2) => {
+            if values[0] == values[1] {
+                values[0].to_owned()
+            } else {
+                values.join(" ")
+            }
+        }
+        _ if flow_relative(name) == Some(3) => {
+            initials_left_out(&values, &["medium", "none", "currentcolor"], "none")
+        }
+        // Both sides', when they are alike.
+        _ if flow_relative(name) == Some(6) => {
+            if values[..3] != values[3..] {
+                return String::new();
+            }
+            initials_left_out(&values[..3], &["medium", "none", "currentcolor"], "none")
         }
         // The box shorthands: at their shortest.
         _ => shortest_sides(&values),

@@ -909,6 +909,70 @@ pub enum Direction {
     Rtl,
 }
 
+/// The start or the end of the inline axis: a flow-relative value of
+/// `float` or `clear` (CSS Logical 1 section 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineSide {
+    Start,
+    End,
+}
+
+/// The flow-relative values `float` and `clear` were given (D74).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowRelative {
+    /// `float: inline-start` or `inline-end`.
+    pub float: Option<InlineSide>,
+    /// `clear: inline-start` or `inline-end`.
+    pub clear: Option<InlineSide>,
+}
+
+/// `container-type` (CSS Conditional 5 section 7.2, D72): `normal`, a
+/// style container alone, or a size container of its inline axis or of
+/// both, a scroll-state container, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContainerType {
+    /// `inline-size` or `size`: the axes size queries may ask of it.
+    pub size: ContainerSize,
+    /// `scroll-state`: its scroll state may be queried.
+    pub scroll_state: bool,
+}
+
+impl ContainerType {
+    /// `normal`, the initial value.
+    pub const NORMAL: ContainerType = ContainerType {
+        size: ContainerSize::None,
+        scroll_state: false,
+    };
+
+    /// Whether it is a size container, which takes layout, style and
+    /// size or inline-size containment (section 7.2).
+    pub fn is_size(self) -> bool {
+        self.size != ContainerSize::None
+    }
+}
+
+/// The axes a size container's size may be queried on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerSize {
+    None,
+    /// `inline-size`: the inline axis alone.
+    Inline,
+    /// `size`: both.
+    Both,
+}
+
+/// `resize` (CSS UI 4 section 5.1): its keyword, the flow-relative ones
+/// among them (CSS Logical 1 section 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resize {
+    None,
+    Both,
+    Horizontal,
+    Vertical,
+    Block,
+    Inline,
+}
+
 /// A `<length-percentage>` value, or `auto` (css-values-4 §6.3): the
 /// margins (M6, M10.1) and the insets (M11).
 #[derive(Debug, Clone, PartialEq)]
@@ -1812,6 +1876,9 @@ impl WillChange {
 pub struct Effects {
     /// `transform`: its functions in order; empty is `none`.
     pub transform: Vec<TransformFunction>,
+    /// `resize` (CSS UI 4 section 5.1, D74), its flow-relative values
+    /// kept, rare enough to be kept here. No box is drawn with a resizer.
+    pub resize: Resize,
     /// `transform-origin`.
     pub transform_origin: TransformOrigin,
     /// `transform-box`.
@@ -1929,6 +1996,7 @@ impl Default for Effects {
     fn default() -> Self {
         Effects {
             transform: Vec::new(),
+            resize: Resize::None,
             transform_origin: TransformOrigin::CENTER,
             transform_box: TransformBox::ViewBox,
             translate: None,
@@ -3669,6 +3737,18 @@ pub struct ComputedStyle {
     pub float: Float,
     /// `clear` (M11.1) — not inherited.
     pub clear: Clear,
+    /// Which flow-relative value `float` and `clear` were given, if one
+    /// (CSS Logical 1 section 3, D74): the properties hold the physical
+    /// side the parent's direction makes it, what layout reads, and this
+    /// the keyword their computed values are; not inherited.
+    pub flow_relative: FlowRelative,
+    /// `container-type` (CSS Conditional 5 section 7.2, D72): what the
+    /// element is a query container for, and the containment that gives
+    /// it; not inherited.
+    pub container_type: ContainerType,
+    /// `container-name`: the names a query picks the element by, as
+    /// written, duplicates kept; `None` for `none`. Not inherited.
+    pub container_names: Option<Arc<Vec<Box<str>>>>,
     /// `position` (M11.3 to M11.5) — not inherited.
     pub position: Position,
     /// `top`, `right`, `bottom` and `left` (M11.3), in that order like
@@ -3858,6 +3938,9 @@ impl Default for ComputedStyle {
             max_height: MaxSize::None,
             float: Float::None,
             clear: Clear::None,
+            flow_relative: FlowRelative::default(),
+            container_type: ContainerType::NORMAL,
+            container_names: None,
             position: Position::Static,
             inset: [const { LengthPercentageAuto::Auto }; 4],
             z_index: None,
@@ -4555,9 +4638,12 @@ mod tests {
         // byte of which border colours are it into the colours, which
         // left the size as it was. The text properties past the common
         // ones (gap batch D's text gaps) a pointer: 816 before them.
+        // `container-name` (D72) a pointer, and `container-type` and which
+        // flow-relative values `float` and `clear` have (D74) in the
+        // padding: 824 before them.
         // Growing this is a decision, not an accident; say why where the
         // number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 824);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 832);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

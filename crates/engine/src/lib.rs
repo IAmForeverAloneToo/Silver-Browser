@@ -7680,7 +7680,11 @@ impl Engine {
             cached.width != viewport_width
                 || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
         });
-        if stale {
+        // Laid out again, at most so many times, for the size containers
+        // whose sizes changed what their queries and units answer, their
+        // subtrees restyled with the sizes laid out each time (D72).
+        let mut pass = 0;
+        while stale && pass <= style::container::MAX_CONTAINER_PASSES {
             let styles = &self.shown.styled.as_ref().expect("just computed").styles;
             let fonts = FontMeasurer(crate::web_fonts::fonts_of(
                 self.shown.web_fonts.as_ref(),
@@ -7714,17 +7718,52 @@ impl Engine {
                 self.document_fonts(),
                 &self.shown.layout_cache,
             );
+            drop(recascade);
             self.shown.layout_cache.keep_boxes(boxes);
             self.layout_runs += 1;
             let (laid_out, reused) = self.shown.layout_cache.counts();
             self.boxes_laid_out += laid_out as u64;
             self.boxes_reused += reused as u64;
+            let scrolled = &self.shown.element_scroll;
+            let sizes = layout.container_sizes(viewport_width, &|node| {
+                scrolled.get(&node).map_or((0.0, 0.0), |s| (s.x, s.y))
+            });
             self.shown.layout = Some(CachedLayout {
                 width: viewport_width,
                 height: viewport_height,
                 layout,
             });
+            pass += 1;
+            let styled = self.shown.styled.as_mut().expect("just computed");
+            // Past the bound, the styles stand as this layout has them.
+            if pass > style::container::MAX_CONTAINER_PASSES
+                || styled.styles.queried_containers().next().is_none()
+            {
+                break;
+            }
+            let Some(restyle) = self.shown.stylesheets.restyle_containers(
+                &self.shown.document,
+                &context,
+                &mut styled.styles,
+                &sizes,
+            ) else {
+                break;
+            };
+            if restyle.full {
+                self.style_runs += 1;
+                self.shown.layout_cache.clear();
+            } else {
+                self.restyled_elements += restyle.computed as u64;
+                let mut restyled = restyle.changed;
+                restyled.extend(restyle.composited.iter().map(|c| c.node));
+                self.shown
+                    .layout_cache
+                    .invalidate(&self.shown.document, &[], &restyled);
+            }
+        }
+        if pass > 0 {
             self.request_fonts();
+            self.request_css_images();
         }
         &self.shown.layout.as_ref().expect("just computed").layout
     }

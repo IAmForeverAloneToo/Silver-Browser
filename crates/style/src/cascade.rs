@@ -124,9 +124,10 @@ use crate::computed::{
 };
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontKerning,
-    FontProps, Fragmentation, GridStyle, ImageStyle, JustifyItems, Lists, Motion, Radii, Svg,
-    WillChange,
+    FontProps, Fragmentation, GridStyle, ImageStyle, InlineSide, JustifyItems, Lists, Motion,
+    Radii, Resize, Svg, WillChange,
 };
+use crate::container::{ContainerSizes, Containers, Queried};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
 use crate::invalidation::{Reach, SelectorFeatures, invalidate};
 use crate::media::{ColorScheme, Media};
@@ -152,6 +153,7 @@ mod gradients;
 mod grid;
 mod images;
 mod lists;
+mod logical;
 mod motion;
 mod page;
 mod palette;
@@ -168,6 +170,17 @@ mod text;
 use animated::Animated;
 pub(crate) use images::{is_frame_hint, is_img_hint};
 pub(crate) use lists::is_list_hint;
+pub use logical::longhands_of as logical_longhands;
+
+/// The physical longhand a flow-relative longhand is in left-to-right
+/// horizontal writing (D74): what its value is written as; `None` for any
+/// other property.
+pub fn physical_name(name: &str) -> Option<String> {
+    logical::physical_longhand(name, Direction::Ltr)
+}
+pub(crate) use logical::{
+    LONGHANDS as LOGICAL_LONGHANDS, Mapped as LogicalMapped, map as logical_map,
+};
 pub use presentational::FrameMargins;
 pub(crate) use presentational::{
     is_presentational_hint, reaches_descendants as presentational_reaches_descendants,
@@ -225,6 +238,13 @@ pub struct Styles {
     /// some element's scheme was chosen by it: what a change of the
     /// preference restyles (D49). `None` where none was.
     preferred_dark: Option<bool>,
+    /// The size containers' content boxes the styles were computed with,
+    /// as the last layout laid them out (D72).
+    container_sizes: ContainerSizes,
+    /// The containers a size query or a container unit asked about, each
+    /// with the content box it was given: what a layout's sizes are
+    /// compared with (D72).
+    queried: Queried,
 }
 
 impl Styles {
@@ -312,6 +332,26 @@ impl Styles {
             self.entries.resize(index + 1, None);
         }
         self.entries[index] = Some((node, computed));
+    }
+
+    /// The size containers whose content boxes these styles depend on,
+    /// a size query or a container unit having asked about them (D72):
+    /// what a layout measures again.
+    pub fn queried_containers(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.queried.keys().copied()
+    }
+
+    /// The containers of `sizes`, a layout's, whose content box is not
+    /// the one these styles were computed with (D72).
+    pub fn containers_changed(&self, sizes: &ContainerSizes) -> Vec<NodeId> {
+        let mut changed: Vec<NodeId> = self
+            .queried
+            .iter()
+            .filter(|&(&node, &used)| (sizes.get(node), sizes.scroll(node)) != used)
+            .map(|(&node, _)| node)
+            .collect();
+        changed.sort_unstable();
+        changed
     }
 
     /// Forgets `node`'s style, if it has one.
@@ -434,6 +474,12 @@ impl PseudoStyles {
             PseudoElement::Marker => self.marker.as_ref(),
             PseudoElement::Placeholder
             | PseudoElement::Selection
+            | PseudoElement::DetailsContent
+            | PseudoElement::FileSelectorButton
+            | PseudoElement::Picker
+            | PseudoElement::PickerIcon
+            | PseudoElement::Checkmark
+            | PseudoElement::Nested
             | PseudoElement::WebkitPrefixed => None,
         }
     }
@@ -491,6 +537,12 @@ impl Target {
             PseudoElement::Marker => Some(Target::Marker),
             PseudoElement::Placeholder
             | PseudoElement::Selection
+            | PseudoElement::DetailsContent
+            | PseudoElement::FileSelectorButton
+            | PseudoElement::Picker
+            | PseudoElement::PickerIcon
+            | PseudoElement::Checkmark
+            | PseudoElement::Nested
             | PseudoElement::WebkitPrefixed => None,
         }
     }
@@ -900,6 +952,9 @@ impl Stylesheets {
             scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
+            containers: None,
+            units_from: None,
+            containers_used: &viewport_used,
         };
         let bases = LengthBases {
             em: rem,
@@ -1067,9 +1122,44 @@ impl Stylesheets {
                     .retain(|node| !taken_out.contains(&node));
             }
         }
+        self.restyle_reaching(document, context, styles, changes, animated, &[])
+    }
+
+    /// The containers of `sizes`, a layout's, whose content box changed
+    /// from the one `styles` were computed with, restyled with their
+    /// subtrees against it (D72): what the engine does after a layout,
+    /// at most [`crate::container::MAX_CONTAINER_PASSES`] times. `None`
+    /// when no container's size changed.
+    pub fn restyle_containers(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        styles: &mut Styles,
+        sizes: &ContainerSizes,
+    ) -> Option<Restyle> {
+        let changed = styles.containers_changed(sizes);
+        styles.container_sizes = sizes.clone();
+        if changed.is_empty() {
+            return None;
+        }
+        Some(self.restyle_reaching(document, context, styles, &[], &[], &changed))
+    }
+
+    /// [`Stylesheets::restyle_animated`], with the elements `subtrees`
+    /// restyled with everything under them too.
+    fn restyle_reaching(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        styles: &mut Styles,
+        changes: &[Change],
+        animated: &[NodeId],
+        subtrees: &[NodeId],
+    ) -> Restyle {
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
         cascader.root_font = styles.root_font.clone();
+        cascader.container_sizes = styles.container_sizes.clone();
         let preferred_dark = context.media.preferences.color_scheme == ColorScheme::Dark;
         if invalidation.everything
             || cascader.media != styles.media
@@ -1087,6 +1177,9 @@ impl Stylesheets {
             }
         }
         let mut restyle = Restyle::default();
+        // Whether a container's type, names or custom properties can
+        // change what its subtree's queries or units answer (D72).
+        let watches_containers = self.rules.has_containers() || !styles.queried.is_empty();
         // By depth, shallowest first: every ancestor's style is final
         // before a node is restyled from its parent's.
         let mut levels: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
@@ -1094,6 +1187,11 @@ impl Stylesheets {
         for &node in animated {
             if document.is_element(node) && styles.get(node).is_some() {
                 pending.entry(node).or_insert(Reach::Element);
+            }
+        }
+        for &node in subtrees {
+            if document.is_element(node) && styles.get(node).is_some() {
+                pending.insert(node, Reach::Subtree);
             }
         }
         for &node in pending.keys() {
@@ -1127,9 +1225,20 @@ impl Stylesheets {
                     Before::Known(old.filter(|old| !old.unrendered).map(|old| &*old.style));
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
-                let computed = cascader.style_of(node, Parent::of(parent), rem, before, old);
+                let computed =
+                    cascader.style_of(node, Parent::of(parent), rem, before, old, styles);
                 restyle.computed += 1;
                 let changed = old != Some(&computed);
+                // What the queries of the elements under a container read
+                // of it, its type, names and custom properties, changed:
+                // all of them are restyled (D72).
+                let container_changed = watches_containers
+                    && changed
+                    && old.is_none_or(|old| {
+                        old.style.container_type != computed.style.container_type
+                            || old.style.container_names != computed.style.container_names
+                            || old.style.custom != computed.style.custom
+                    });
                 // What layout reads, the style and the pseudo-elements',
                 // changed; or only what the cascade keeps beside them,
                 // which the children read: the after-change style a
@@ -1161,7 +1270,7 @@ impl Stylesheets {
                     None => {}
                 }
                 if changed || reach == Reach::Subtree {
-                    let child_reach = if reach == Reach::Subtree {
+                    let child_reach = if reach == Reach::Subtree || container_changed {
                         Reach::Subtree
                     } else {
                         Reach::Element
@@ -1180,6 +1289,7 @@ impl Stylesheets {
         }
         styles.uses_viewport_units |= cascader.viewport_used.get();
         styles.uses_font_units |= cascader.fonts_used.get();
+        styles.queried.extend(cascader.queried.take());
         if cascader.scheme_read.get() {
             styles.preferred_dark = Some(preferred_dark);
         }
@@ -1535,6 +1645,19 @@ impl Recascader<'_> {
     ) -> R {
         let mut cascader = self.cascader.borrow_mut();
         let cascader = &mut *cascader;
+        let containers = Containers {
+            document: self.document,
+            styles: self.styles,
+            sizes: &self.styles.container_sizes,
+            queried: &cascader.queried,
+            substitutions: &cascader.substitutions,
+            viewport: (
+                cascader.context.viewport_width,
+                cascader.context.viewport_height,
+            ),
+            rem: self.styles.rem,
+            fonts: cascader.context.fonts,
+        };
         let matched = declarations_for(
             self.document,
             (&mut cascader.matcher, &mut cascader.candidates),
@@ -1542,6 +1665,7 @@ impl Recascader<'_> {
             (&cascader.ua, &cascader.author),
             cascader.context.inline_styles,
             cascader.context.frame_margins,
+            Some(&containers),
         );
         let rem = if self.document.document_element() == Some(element) {
             ComputedStyle::default().font_size_px
@@ -1564,6 +1688,9 @@ impl Recascader<'_> {
             scheme_read: Some(&cascader.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &cascader.substitutions,
+            containers: Some(&containers),
+            units_from: self.document.parent_element(element),
+            containers_used: &cascader.containers_used,
         };
         cascade(&matched, &resolution)
     }
@@ -1644,7 +1771,7 @@ impl Recascade for Recascader<'_> {
         let base = self.with_matched(element, |matched, resolution| {
             let applied = matched.of(target);
             (marker || !applied.is_empty())
-                .then(|| compute_style(applied, parent, target, None, resolution, None, None))
+                .then(|| compute_style(applied, parent, target, resolution, None, None))
         })?;
         let Some(pseudo) = target.animated() else {
             return Some(base);
@@ -1672,7 +1799,6 @@ impl Recascade for Recascader<'_> {
                         matched.of(target),
                         parent,
                         target,
-                        None,
                         resolution,
                         animated,
                         transitioned,
@@ -1713,7 +1839,6 @@ fn element_style(
         matched.of(Target::Element),
         parent,
         Target::Element,
-        document.attr(element, "dir"),
         resolution,
         animated,
         transitioned,
@@ -2224,6 +2349,12 @@ struct Cascader<'a> {
     /// The document's `color-scheme` meta element's value (gap batch E,
     /// D49), what `normal` is.
     page_scheme: Option<Arc<String>>,
+    /// The size containers' content boxes the queries read (D72).
+    container_sizes: ContainerSizes,
+    /// The containers the queries and the container units asked about.
+    queried: RefCell<Queried>,
+    /// Set when an element's style meets a container unit.
+    containers_used: Cell<bool>,
 }
 
 impl<'a> Cascader<'a> {
@@ -2258,6 +2389,9 @@ impl<'a> Cascader<'a> {
             scheme_read: Cell::new(false),
             substitutions: Substitutions::new(sheets),
             keyframes: HashMap::new(),
+            container_sizes: ContainerSizes::new(),
+            queried: RefCell::new(Queried::new()),
+            containers_used: Cell::new(false),
         }
     }
 
@@ -2267,6 +2401,9 @@ impl<'a> Cascader<'a> {
     /// pseudo-elements', are matched to what their styles ask for
     /// (M22.2), and their transitions started, replaced and cancelled as
     /// the change asks (M22.1).
+    /// `styles` holds the styles of its ancestors, which its container
+    /// queries and units read (D72).
+    #[allow(clippy::too_many_arguments)]
     fn style_of(
         &mut self,
         element: NodeId,
@@ -2274,16 +2411,41 @@ impl<'a> Cascader<'a> {
         rem: f32,
         before: Before<'_>,
         old: Option<&Computed>,
+        styles: &Styles,
     ) -> Computed {
-        let matched = declarations_for(
-            self.document,
-            (&mut self.matcher, &mut self.candidates),
-            element,
-            (&self.ua, &self.author),
-            self.context.inline_styles,
-            self.context.frame_margins,
-        );
+        let viewport = (self.context.viewport_width, self.context.viewport_height);
+        let matched = {
+            let containers = Containers {
+                document: self.document,
+                styles,
+                sizes: &self.container_sizes,
+                queried: &self.queried,
+                substitutions: &self.substitutions,
+                viewport,
+                rem,
+                fonts: self.context.fonts,
+            };
+            declarations_for(
+                self.document,
+                (&mut self.matcher, &mut self.candidates),
+                element,
+                (&self.ua, &self.author),
+                self.context.inline_styles,
+                self.context.frame_margins,
+                Some(&containers),
+            )
+        };
         let key = self.style_key(element, &matched, parent.style, rem);
+        let containers = Containers {
+            document: self.document,
+            styles,
+            sizes: &self.container_sizes,
+            queried: &self.queried,
+            substitutions: &self.substitutions,
+            viewport,
+            rem,
+            fonts: self.context.fonts,
+        };
         let resolution = Resolution {
             rem,
             root: self.document.document_element() == Some(element),
@@ -2299,7 +2461,17 @@ impl<'a> Cascader<'a> {
             scheme_read: Some(&self.scheme_read),
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
+            containers: Some(&containers),
+            units_from: self.document.parent_element(element),
+            containers_used: &self.containers_used,
         };
+        // A pseudo-element's query containers are its originating
+        // element's inclusive ancestors.
+        let pseudo_resolution = Resolution {
+            units_from: Some(element),
+            ..resolution
+        };
+        self.containers_used.set(false);
         let kept = key.as_ref().and_then(|key| self.kept.get(key)).cloned();
         let (base, shared) = match kept {
             Some(kept) => ((*kept).clone(), Some(kept)),
@@ -2315,7 +2487,8 @@ impl<'a> Cascader<'a> {
                     None,
                     None,
                 );
-                let shared = key.map(|key| {
+                // A style of container units is the element's own (D72).
+                let shared = key.filter(|_| !self.containers_used.get()).map(|key| {
                     if self.kept.len() >= MAX_KEPT_STYLES {
                         self.kept.clear();
                     }
@@ -2427,7 +2600,7 @@ impl<'a> Cascader<'a> {
                 }
                 return None;
             }
-            let base = compute_style(applied, &style, target, None, &resolution, None, None);
+            let base = compute_style(applied, &style, target, &pseudo_resolution, None, None);
             let Some(pseudo) = pseudo else {
                 return Some(base);
             };
@@ -2463,8 +2636,7 @@ impl<'a> Cascader<'a> {
                         applied,
                         parent,
                         target,
-                        None,
-                        &resolution,
+                        &pseudo_resolution,
                         animated,
                         transitioned,
                     )
@@ -2659,6 +2831,11 @@ impl<'a> Cascader<'a> {
         let document = self.document;
         self.viewport_used.set(false);
         self.scheme_read.set(false);
+        // The containers' sizes as the last layout laid them out (D72).
+        if let Some(old) = old {
+            self.container_sizes = old.container_sizes.clone();
+        }
+        self.queried.borrow_mut().clear();
         let mut styles = Styles {
             rem: ComputedStyle::default().font_size_px,
             media: self.media.clone(),
@@ -2699,7 +2876,8 @@ impl<'a> Cascader<'a> {
                     Some(old) => Before::Known((!old.unrendered).then_some(&*old.style)),
                     None => Before::Unknown,
                 };
-                let computed = self.style_of(child, Parent::of(&parent), rem, before, replaced);
+                let computed =
+                    self.style_of(child, Parent::of(&parent), rem, before, replaced, &styles);
                 if root_font_size.is_none() {
                     root_font_size = Some(computed.style.font_size_px);
                     styles.rem = computed.style.font_size_px;
@@ -2712,6 +2890,8 @@ impl<'a> Cascader<'a> {
         }
         styles.uses_viewport_units = self.viewport_used.get();
         styles.uses_font_units = self.fonts_used.get();
+        styles.container_sizes = self.container_sizes.clone();
+        styles.queried = self.queried.take();
         styles.preferred_dark = self
             .scheme_read
             .get()
@@ -2842,6 +3022,29 @@ struct Resolution<'a> {
     attributes: &'a [(String, String)],
     /// What the substitutions of the cascade share (M21.1).
     substitutions: &'a Substitutions,
+    /// What the container units read (D72), `None` where nothing is
+    /// known of the document, and the element whose inclusive ancestors
+    /// are the query containers: the element's parent, a pseudo-element's
+    /// originating element.
+    containers: Option<&'a Containers<'a>>,
+    units_from: Option<NodeId>,
+    /// Set when a container unit is met: the style is the element's own,
+    /// not one another element of the same declarations may take.
+    containers_used: &'a Cell<bool>,
+}
+
+impl Resolution<'_> {
+    /// The width and height the container units measure (D72): the
+    /// query containers' content boxes, the viewport's where there is
+    /// none, which a resize computes again.
+    fn container_units(&self) -> (f32, f32) {
+        self.containers_used.set(true);
+        self.viewport_used.set(true);
+        match self.containers {
+            Some(containers) => containers.unit_sizes(self.units_from),
+            None => (self.context.viewport_width, self.context.viewport_height),
+        }
+    }
 }
 
 /// The bases a length in one element's declarations resolves against:
@@ -2899,6 +3102,9 @@ pub(crate) struct ParsedRule<'s> {
     /// The innermost `@scope` rule around it, by its place among the
     /// set's.
     pub(crate) scope: Option<u32>,
+    /// The innermost `@container` block around it, by its place among
+    /// the set's (D72).
+    pub(crate) container: Option<u32>,
     pub(crate) declarations: &'s [css::Declaration],
     pub(crate) layer: u32,
     pub(crate) important_layer: u32,
@@ -2999,6 +3205,7 @@ fn declarations_for<'a>(
     (ua, author): (&InForce<'a>, &InForce<'a>),
     inline_styles: Option<&dyn InlineStyles>,
     frame: FrameMargins,
+    containers: Option<&Containers<'_>>,
 ) -> Matched<'a> {
     let mut order = 0u32;
     let mut out = Matched::default();
@@ -3011,6 +3218,7 @@ fn declarations_for<'a>(
         TierBase::UserAgent,
         &mut order,
         &mut out,
+        containers,
     );
     // HTML's presentational hints (M21.6): author declarations with no
     // specificity, before every author sheet's, so that any author rule
@@ -3036,6 +3244,7 @@ fn declarations_for<'a>(
         TierBase::AuthorSheet,
         &mut order,
         &mut out,
+        containers,
     );
     // An inline `style` styles the element alone, if its document's
     // policies allow it (M33.1).
@@ -3106,9 +3315,15 @@ fn collect_from_sheet<'a>(
     base: TierBase,
     order: &mut u32,
     out: &mut Matched<'a>,
+    containers: Option<&Containers<'_>>,
 ) {
     // The scoping roots of each scope met, for `element`.
     let mut roots: HashMap<u32, Vec<(NodeId, u32)>> = HashMap::new();
+    // Whether each `@container` block met holds, for the element and for
+    // its pseudo-elements, whose query containers are its own and its
+    // ancestors (D72).
+    let mut held: HashMap<(u32, bool), bool> = HashMap::new();
+    let parent = matcher.document().parent_element(element);
     let mut next = 0;
     while next < candidates.len() {
         let place = candidates[next].0;
@@ -3174,6 +3389,18 @@ fn collect_from_sheet<'a>(
             let Some((specificity, Reverse(proximity))) = best else {
                 continue;
             };
+            if let Some(block) = rule.container {
+                let pseudo = target != Target::Element;
+                let holds = *held.entry((block, pseudo)).or_insert_with(|| {
+                    let from = if pseudo { Some(element) } else { parent };
+                    containers.is_some_and(|containers| {
+                        container_holds(sheet.containers, block, from, containers)
+                    })
+                });
+                if !holds {
+                    continue;
+                }
+            }
             // The same order for each target: within one, it is the
             // declarations' order in the sheets.
             for (offset, decl) in rule.declarations.iter().enumerate() {
@@ -3194,6 +3421,26 @@ fn collect_from_sheet<'a>(
         }
         *order += rule.declarations.len() as u32;
     }
+}
+
+/// Whether `block`, one of `blocks`, holds for an element whose query
+/// containers are `from` and its ancestors: its queries and those of
+/// every block around it (D72).
+fn container_holds(
+    blocks: &[crate::rule_set::ContainerBlock],
+    block: u32,
+    from: Option<NodeId>,
+    containers: &Containers<'_>,
+) -> bool {
+    let mut at = Some(block);
+    while let Some(index) = at {
+        let block = &blocks[index as usize];
+        if !block.rule.holds(from, containers) {
+            return false;
+        }
+        at = block.parent;
+    }
+    true
 }
 
 /// The scope proximity of a declaration of no `@scope` rule: farther
@@ -3311,7 +3558,6 @@ fn compute_style(
     applied: &[Applied<'_>],
     parent: &ComputedStyle,
     target: Target,
-    dir_attr: Option<&str>,
     resolution: &Resolution<'_>,
     animated: Option<&Animated<'_>>,
     transitioned: Option<&[Transitioning]>,
@@ -3334,20 +3580,6 @@ fn compute_style(
     let rollbacks = Rollbacks::of(&sorted, important, animated.is_some_and(Animated::reverts));
 
     let mut style = ComputedStyle::inherited_from(parent);
-
-    // `dir` (M8.3): a presentational HTML attribute, not a cascaded CSS
-    // declaration — applied directly, the same way the inline `style`
-    // attribute gets read in `declarations_for`, rather than through
-    // `apply_declaration`'s property-name dispatch (there's no CSS
-    // `direction` property parser yet to route it through). `auto`
-    // (content-sniffed direction) isn't implemented — unrecognized
-    // values are ignored, same forward-compat pattern as everywhere
-    // else, leaving the inherited direction in place.
-    match dir_attr.map(str::to_ascii_lowercase).as_deref() {
-        Some("ltr") => style.direction = Direction::Ltr,
-        Some("rtl") => style.direction = Direction::Rtl,
-        _ => {}
-    }
 
     // The custom properties first (M21.1), on every target: the other
     // values substitute them. An element that declares none keeps its
@@ -3826,6 +4058,37 @@ fn compute_style(
         }
     }
 
+    // `direction` next (D74): what the flow-relative properties below
+    // name the physical ones by, whatever their order with it. The user
+    // agent's sheet sets it from `dir` (HTML section 15.3.5); the pass
+    // below applies it again where it stands, to the same value.
+    let mut directions = Vec::new();
+    for (n, a) in sorted.iter().enumerate() {
+        rollbacks.keep(&mut directions, n, None, &style.direction);
+        if a.decl.name != "direction" || !target.applies("direction") {
+            continue;
+        }
+        let specified = specified(a, style.custom.as_ref(), resolution);
+        if let Some(keyword) = specified.revert() {
+            let mark = rollbacks.mark(&sorted, n, keyword);
+            style.direction = Rollbacks::kept(&directions, mark)
+                .copied()
+                .unwrap_or(parent.direction);
+            continue;
+        }
+        let direction = match specified {
+            Specified::Written(value) => parse_direction_value(value, parent),
+            Specified::Substituted(value) => {
+                Some(parse_direction_value(&value, parent).unwrap_or(parent.direction))
+            }
+            Specified::Invalid => Some(parent.direction),
+            Specified::Ignored => None,
+        };
+        if let Some(direction) = direction {
+            style.direction = direction;
+        }
+    }
+
     // `color-scheme` next (gap batch E, D49): the scheme the element's
     // system colours and `light-dark()` resolve by.
     let mut schemes = Vec::new();
@@ -4081,6 +4344,7 @@ fn compute_style(
     // the box tree builder keeps the top-level boxes in flow.)
     if style.position.is_out_of_flow() {
         style.float = Float::None;
+        style.flow_relative.float = None;
     }
     if style.float != Float::None || style.position.is_out_of_flow() {
         style.display = style.display.blockified();
@@ -4509,6 +4773,9 @@ fn with_default_bases<R>(f: impl FnOnce(&LengthBases<'_>) -> R) -> R {
         scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
+        containers: None,
+        units_from: None,
+        containers_used: &viewport_used,
     };
     f(&LengthBases {
         em: 16.0,
@@ -4598,11 +4865,12 @@ fn apply_declaration(
         }
         return apply_css_wide(style, name, keyword, parent, border_color_set);
     }
-    if let Some(applied) = apply_flow_relative(style, name, value, bases) {
-        return applied;
+    if let Some(mapped) = logical::map(name, style.direction) {
+        return apply_logical(style, mapped, value, bases, parent, border_color_set);
     }
     match name {
         "color" => set(&mut style.color, color_of_color(value, parent, bases)),
+        "direction" => set(&mut style.direction, parse_direction(value)),
         "color-scheme" => match color_scheme_of(value, parent) {
             Some(scheme) => {
                 style.color_scheme = scheme;
@@ -5028,8 +5296,41 @@ fn apply_declaration(
         },
         "overflow-x" => set(&mut style.overflow_x, parse_overflow(value)),
         "overflow-y" => set(&mut style.overflow_y, parse_overflow(value)),
-        "float" => set(&mut style.float, parse_float(value)),
-        "clear" => set(&mut style.clear, parse_clear(value)),
+        // A flow-relative side is the parent's direction's (D74).
+        "float" => match parse_float(value, parent.direction) {
+            Some((float, flow)) => {
+                style.float = float;
+                style.flow_relative.float = flow;
+                true
+            }
+            None => false,
+        },
+        "clear" => match parse_clear(value, parent.direction) {
+            Some((clear, flow)) => {
+                style.clear = clear;
+                style.flow_relative.clear = flow;
+                true
+            }
+            None => false,
+        },
+        "resize" => set_effects(style, parse_resize(value), |e, v| e.resize = v),
+        // The container properties (D72).
+        "container-type" => set(
+            &mut style.container_type,
+            crate::container::parse_container_type(value),
+        ),
+        "container-name" => set(
+            &mut style.container_names,
+            crate::container::parse_container_name(value),
+        ),
+        "container" => match crate::container::parse_container(value) {
+            Some((names, kind)) => {
+                style.container_names = names;
+                style.container_type = kind;
+                true
+            }
+            None => false,
+        },
         "position" => set(&mut style.position, parse_position(value)),
         // Kept as written (M11.3): a percentage is of the containing
         // block's height or width, which only layout knows.
@@ -5037,6 +5338,9 @@ fn apply_declaration(
             &mut style.inset[edge_index(name)],
             parse_length_percentage_or_auto(value, bases),
         ),
+        // The four insets' shorthand (CSS Positioned Layout 3 section
+        // 3.1.1), one to four values as `margin` takes them.
+        "inset" => set(&mut style.inset, parse_margin_shorthand(value, bases)),
         "z-index" => set(&mut style.z_index, parse_z_index(value, bases)),
         "box-sizing" => set(&mut style.box_sizing, parse_box_sizing(value)),
         "min-width" => set(&mut style.min_width, parse_size(value, bases)),
@@ -5956,12 +6260,14 @@ pub(crate) fn css_wide_keyword(tokens: &[Token]) -> Option<CssWide> {
 }
 
 /// The longhands `all` sets: every one the engine computes but
-/// `direction` and `unicode-bidi` (Cascade 5 section 3.1).
+/// `direction` and `unicode-bidi` (Cascade 5 section 3.1), the
+/// flow-relative ones as the physical ones they name (D74).
 pub fn all_longhands() -> impl Iterator<Item = &'static str> {
     crate::serialize::COMPUTED_PROPERTIES
         .iter()
         .copied()
         .filter(|name| !matches!(*name, "direction" | "unicode-bidi"))
+        .filter(|name| !LOGICAL_LONGHANDS.contains(name))
 }
 
 /// Whether `name` is an inherited property (css-cascade-5 §7.1 and
@@ -6023,6 +6329,7 @@ fn is_inherited(name: &str) -> bool {
             | "cursor"
             | "empty-cells"
             | "quotes"
+            | "direction"
             | "orphans"
             | "widows"
             | "print-color-adjust"
@@ -6059,16 +6366,19 @@ fn apply_css_wide(
         CssWide::Unset => is_inherited(name),
     };
     let src = if from_parent { parent } else { &initial };
-    if let Some((property, sides)) = flow_relative(name, style.direction) {
-        for side in sides.into_iter().flatten() {
-            match property {
-                FlowRelative::Margin => style.margin[side] = src.margin[side].clone(),
-                FlowRelative::Padding => style.padding[side] = src.padding[side].clone(),
+    // A flow-relative property's physical ones, by the element's
+    // direction (D74).
+    if let Some(mapped) = logical::map(name, style.direction) {
+        return match mapped {
+            logical::Mapped::One(physical) => {
+                apply_css_wide(style, &physical, keyword, parent, border_color_set)
             }
-        }
-        return true;
+            logical::Mapped::Pair([start, end]) | logical::Mapped::Both([start, end]) => {
+                apply_css_wide(style, &start, keyword, parent, border_color_set)
+                    && apply_css_wide(style, &end, keyword, parent, border_color_set)
+            }
+        };
     }
-    let name = physical_longhand(name, style.direction).unwrap_or(name);
     match name {
         // Every longhand but `direction` and `unicode-bidi` (Cascade 5
         // section 3.1).
@@ -6080,6 +6390,7 @@ fn apply_css_wide(
         }
         "color" => style.color = src.color,
         "color-scheme" => style.color_scheme = src.color_scheme.clone(),
+        "direction" => style.direction = src.direction,
         "background-color" => {
             style.background_color = src.background_color;
             keep_color_mix(style, src.background().color_mix.clone());
@@ -6275,13 +6586,27 @@ fn apply_css_wide(
         "max-width" => style.max_width = src.max_width.clone(),
         "min-height" => style.min_height = src.min_height.clone(),
         "max-height" => style.max_height = src.max_height.clone(),
-        "float" => style.float = src.float,
-        "clear" => style.clear = src.clear,
+        "float" => {
+            style.float = src.float;
+            style.flow_relative.float = src.flow_relative.float;
+        }
+        "clear" => {
+            style.clear = src.clear;
+            style.flow_relative.clear = src.flow_relative.clear;
+        }
+        "resize" => copy_effects(style, src, |e, s| e.resize = s.resize),
+        "container-type" => style.container_type = src.container_type,
+        "container-name" => style.container_names = src.container_names.clone(),
+        "container" => {
+            style.container_type = src.container_type;
+            style.container_names = src.container_names.clone();
+        }
         "position" => style.position = src.position,
         "top" | "right" | "bottom" | "left" => {
             let side = edge_index(name);
             style.inset[side] = src.inset[side].clone();
         }
+        "inset" => style.inset = src.inset.clone(),
         "z-index" => style.z_index = src.z_index,
         "table-layout" => style.table_layout = src.table_layout,
         "border-collapse" => style.border_collapse = src.border_collapse,
@@ -6593,124 +6918,44 @@ fn apply_css_wide(
     true
 }
 
-/// Which box property a flow-relative margin or padding property sets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowRelative {
-    Margin,
-    Padding,
-}
-
-/// The physical sides a flow-relative margin or padding property
-/// (css-logical-1 section 4.4) sets in horizontal writing, the only
-/// mode: the block axis's start and end are the top and the bottom,
-/// the inline axis's the left and the right, swapped by `direction`
-/// `rtl`. A shorthand sets both, a `-start` or `-end` longhand one.
-fn flow_relative(name: &str, direction: Direction) -> Option<(FlowRelative, [Option<usize>; 2])> {
-    let (property, rest) = if let Some(rest) = name.strip_prefix("margin-") {
-        (FlowRelative::Margin, rest)
-    } else {
-        (FlowRelative::Padding, name.strip_prefix("padding-")?)
-    };
-    let (axis, part) = rest.split_once('-').unwrap_or((rest, ""));
-    let [start, end] = match axis {
-        "block" => [TOP, BOTTOM],
-        "inline" if direction == Direction::Rtl => [RIGHT, LEFT],
-        "inline" => [LEFT, RIGHT],
-        _ => return None,
-    };
-    let sides = match part {
-        "" => [Some(start), Some(end)],
-        "start" => [Some(start), None],
-        "end" => [Some(end), None],
-        _ => return None,
-    };
-    Some((property, sides))
-}
-
-/// The physical longhand a flow-relative longhand is in horizontal
-/// writing with `direction`: a size's, or a margin's or a padding's side
-/// (css-logical-1); `None` for any other property.
-pub(crate) fn physical_longhand(name: &str, direction: Direction) -> Option<&'static str> {
-    const SIDES: [[&str; 4]; 2] = [
-        ["margin-top", "margin-right", "margin-bottom", "margin-left"],
-        [
-            "padding-top",
-            "padding-right",
-            "padding-bottom",
-            "padding-left",
-        ],
-    ];
-    if let Some((property, [Some(side), None])) = flow_relative(name, direction) {
-        return Some(SIDES[usize::from(property == FlowRelative::Padding)][side]);
-    }
-    Some(match name {
-        "inline-size" => "width",
-        "block-size" => "height",
-        "min-inline-size" => "min-width",
-        "min-block-size" => "min-height",
-        "max-inline-size" => "max-width",
-        "max-block-size" => "max-height",
-        _ => return None,
-    })
-}
-
-/// Applies a flow-relative property (css-logical-1, HTML section 15.3.13's
-/// `fieldset` takes several): a margin or padding one to its physical
-/// sides, a shorthand's one or two values to its start and end; a size
-/// one to `width` or `height` and their limits. `None` for any other
-/// property; else whether the value was valid.
-fn apply_flow_relative(
+/// Applies a flow-relative declaration as the physical ones `mapped`
+/// names (D74): a longhand as its physical longhand; a shorthand's one or
+/// two values to its start and end, or its whole value to both sides, all
+/// or, when one is invalid, none.
+fn apply_logical(
     style: &mut ComputedStyle,
-    name: &str,
+    mapped: logical::Mapped,
     value: &[Token],
     bases: &LengthBases<'_>,
-) -> Option<bool> {
-    if let Some((property, sides)) = flow_relative(name, style.direction) {
-        let groups = split_components(value);
-        let values = match (groups.as_slice(), sides) {
-            ([one], [Some(_), None]) => [Some(one), None],
-            ([one], _) => [Some(one), Some(one)],
-            ([start, end], [Some(_), Some(_)]) => [Some(start), Some(end)],
-            _ => return Some(false),
-        };
-        return Some(match property {
-            FlowRelative::Margin => set_sides(&mut style.margin, sides, values, |v| {
-                parse_length_percentage_or_auto(v, bases)
-            }),
-            FlowRelative::Padding => set_sides(&mut style.padding, sides, values, |v| {
-                parse_non_negative_length_percentage(v, bases)
-            }),
-        });
-    }
-    Some(match name {
-        "inline-size" => set(&mut style.width, parse_size(value, bases)),
-        "block-size" => set(&mut style.height, parse_size(value, bases)),
-        "min-inline-size" => set(&mut style.min_width, parse_size(value, bases)),
-        "min-block-size" => set(&mut style.min_height, parse_size(value, bases)),
-        "max-inline-size" => set(&mut style.max_width, parse_max_size(value, bases)),
-        "max-block-size" => set(&mut style.max_height, parse_max_size(value, bases)),
-        _ => return None,
-    })
-}
-
-/// Sets `edges`' `sides` to `values` as `parse` reads them, the first
-/// side to the first value: all or, when one is invalid, none.
-fn set_sides<T>(
-    edges: &mut [T; 4],
-    sides: [Option<usize>; 2],
-    values: [Option<&Vec<Token>>; 2],
-    parse: impl Fn(&[Token]) -> Option<T>,
+    parent: &ComputedStyle,
+    border_color_set: &mut [bool; 4],
 ) -> bool {
-    let parsed = values.map(|v| v.map(|v| parse(v)));
-    if parsed.iter().flatten().any(Option::is_none) {
-        return false;
-    }
-    for (side, v) in sides.into_iter().zip(parsed) {
-        if let (Some(side), Some(Some(v))) = (side, v) {
-            edges[side] = v;
+    let groups;
+    let (names, values): ([String; 2], [&[Token]; 2]) = match mapped {
+        logical::Mapped::One(physical) => {
+            return apply_declaration(style, &physical, value, bases, parent, border_color_set);
         }
+        logical::Mapped::Both(sides) => (sides, [value, value]),
+        logical::Mapped::Pair(sides) => {
+            groups = split_components(value);
+            match groups.as_slice() {
+                [one] => (sides, [one.as_slice(), one.as_slice()]),
+                [start, end] => (sides, [start.as_slice(), end.as_slice()]),
+                _ => return false,
+            }
+        }
+    };
+    let mut trial = style.clone();
+    let mut set = *border_color_set;
+    let applied = names
+        .iter()
+        .zip(values)
+        .all(|(name, value)| apply_declaration(&mut trial, name, value, bases, parent, &mut set));
+    if applied {
+        *style = trial;
+        *border_color_set = set;
     }
-    true
+    applied
 }
 
 /// Like [`set_edge`], for a `margin-*` longhand (which additionally
@@ -7014,9 +7259,21 @@ fn unit_px(value: f64, unit: LengthUnit, bases: &LengthBases<'_>) -> f64 {
             | LengthUnit::Vh
             | LengthUnit::Vmin
             | LengthUnit::Vmax
+            | LengthUnit::Cqw
+            | LengthUnit::Cqh
+            | LengthUnit::Cqi
+            | LengthUnit::Cqb
+            | LengthUnit::Cqmin
+            | LengthUnit::Cqmax
     ) {
         used();
     }
+    // The query containers' sizes, the small viewport's where there is
+    // none (D72).
+    let container = |pick: fn(f32, f32) -> f32| {
+        let (width, height) = r.container_units();
+        value * f64::from(pick(width, height)) / 100.0
+    };
     let line = |(font, size): (&FontProps, f32)| match font.line_height {
         crate::computed::LineHeight::Normal => figures(font, size).normal_line_height,
         crate::computed::LineHeight::Number(n) => n * size,
@@ -7040,6 +7297,10 @@ fn unit_px(value: f64, unit: LengthUnit, bases: &LengthBases<'_>) -> f64 {
         LengthUnit::Vh => viewport(vh),
         LengthUnit::Vmin => viewport(vw.min(vh)),
         LengthUnit::Vmax => viewport(vw.max(vh)),
+        LengthUnit::Cqw | LengthUnit::Cqi => container(|w, _| w),
+        LengthUnit::Cqh | LengthUnit::Cqb => container(|_, h| h),
+        LengthUnit::Cqmin => container(f32::min),
+        LengthUnit::Cqmax => container(f32::max),
         _ => value,
     }
 }
@@ -7484,25 +7745,82 @@ fn edge_index(name: &str) -> usize {
     }
 }
 
-/// `float` (M11.1).
-fn parse_float(tokens: &[Token]) -> Option<Float> {
+/// `direction` (Writing Modes 4 section 2.1, D74): `ltr` or `rtl`.
+fn parse_direction(tokens: &[Token]) -> Option<Direction> {
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "none" => Some(Float::None),
-        "left" => Some(Float::Left),
-        "right" => Some(Float::Right),
-        _ => None, // `inline-start`/`inline-end` are css-logical's, not parsed
+        "ltr" => Some(Direction::Ltr),
+        "rtl" => Some(Direction::Rtl),
+        _ => None,
     }
 }
 
-/// `clear` (M11.1).
-fn parse_clear(tokens: &[Token]) -> Option<Clear> {
-    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
-        "none" => Some(Clear::None),
-        "left" => Some(Clear::Left),
-        "right" => Some(Clear::Right),
-        "both" => Some(Clear::Both),
-        _ => None,
+/// A `direction` declaration's value, a CSS-wide keyword's among them,
+/// for an element whose parent's style is `parent`: `None` when it is
+/// not one the property takes.
+fn parse_direction_value(tokens: &[Token], parent: &ComputedStyle) -> Option<Direction> {
+    match css_wide_keyword(tokens) {
+        Some(CssWide::Initial) => Some(Direction::Ltr),
+        Some(CssWide::Inherit | CssWide::Unset) => Some(parent.direction),
+        None => parse_direction(tokens),
     }
+}
+
+/// The physical side a flow-relative value of `float` or `clear` is
+/// in a box whose containing block's direction is `direction`.
+fn inline_side(word: &str, direction: Direction) -> Option<(bool, InlineSide)> {
+    let side = match word {
+        "inline-start" => InlineSide::Start,
+        "inline-end" => InlineSide::End,
+        _ => return None,
+    };
+    let left = (side == InlineSide::Start) == (direction == Direction::Ltr);
+    Some((left, side))
+}
+
+/// `float` (M11.1), with the flow-relative values (CSS Logical 1 section
+/// 3, D74) made the physical side `direction`, the parent's, makes them.
+fn parse_float(tokens: &[Token], direction: Direction) -> Option<(Float, Option<InlineSide>)> {
+    let word = single_ident(tokens)?.to_ascii_lowercase();
+    if let Some((left, side)) = inline_side(&word, direction) {
+        return Some((if left { Float::Left } else { Float::Right }, Some(side)));
+    }
+    let float = match word.as_str() {
+        "none" => Float::None,
+        "left" => Float::Left,
+        "right" => Float::Right,
+        _ => return None,
+    };
+    Some((float, None))
+}
+
+/// `clear` (M11.1), its flow-relative values as `float`'s.
+fn parse_clear(tokens: &[Token], direction: Direction) -> Option<(Clear, Option<InlineSide>)> {
+    let word = single_ident(tokens)?.to_ascii_lowercase();
+    if let Some((left, side)) = inline_side(&word, direction) {
+        return Some((if left { Clear::Left } else { Clear::Right }, Some(side)));
+    }
+    let clear = match word.as_str() {
+        "none" => Clear::None,
+        "left" => Clear::Left,
+        "right" => Clear::Right,
+        "both" => Clear::Both,
+        _ => return None,
+    };
+    Some((clear, None))
+}
+
+/// `resize` (CSS UI 4 section 5.1), with the flow-relative `block` and
+/// `inline` (CSS Logical 1 section 3).
+fn parse_resize(tokens: &[Token]) -> Option<Resize> {
+    Some(match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "none" => Resize::None,
+        "both" => Resize::Both,
+        "horizontal" => Resize::Horizontal,
+        "vertical" => Resize::Vertical,
+        "block" => Resize::Block,
+        "inline" => Resize::Inline,
+        _ => return None,
+    })
 }
 
 /// `position` (M11.3 to M11.5).
@@ -8134,6 +8452,9 @@ fn apart<T>(f: impl FnOnce(&LengthBases<'_>) -> T) -> T {
         scheme_read: None,
         attributes: &[],
         substitutions: &substitutions,
+        containers: None,
+        units_from: None,
+        containers_used: &viewport_used,
     };
     let bases = LengthBases {
         em: initial,
@@ -9698,6 +10019,9 @@ mod tests {
             scheme_read: None,
             attributes: &[],
             substitutions: &substitutions,
+            containers: None,
+            units_from: None,
+            containers_used: &viewport_used,
         };
         f(&LengthBases {
             em: 16.0,
@@ -12265,6 +12589,181 @@ mod tests {
         assert_eq!(span.min_height, Size::MinContent);
         assert!(supports("padding-block", &css::tokenize("1px 2px")));
         assert!(!supports("margin-inline-start", &css::tokenize("1px 2px")));
+    }
+
+    #[test]
+    fn direction_is_a_property_the_flow_relative_ones_follow() {
+        // D74: `direction` set by a rule, whatever its order with the
+        // flow-relative declarations, maps them; a later physical
+        // declaration wins over an earlier flow-relative one and the
+        // other way round; `dir` sets it through the user agent's sheet,
+        // which a rule overrides.
+        let document = Document::from_node(
+            &html::parse_document(
+                "<p id=a>x</p><p id=b dir=rtl>y</p><div id=c dir=rtl><p id=d>z</p></div>",
+            )
+            .unwrap(),
+        );
+        let sheets = [sheet(
+            "#a { inset-inline-start: 1px; border-inline-end: 2px solid; direction: rtl;
+                  border-start-end-radius: 3px; margin-left: 4px; margin-inline-start: 5px }
+             #b { direction: ltr; padding-inline: 1px 2px; padding-left: 3px }
+             #d { float: inline-start; clear: inline-end; text-align: end }",
+        )];
+        let styles = cascade_document(&document, &sheets, &CascadeContext::default());
+        let style = |id: &str| styles.get(by_id(&document, id)).expect("styled");
+        let a = style("a");
+        assert_eq!(a.direction, Direction::Rtl);
+        assert_eq!(a.inset[RIGHT], LengthPercentageAuto::Px(1.0));
+        assert_eq!(a.border_width[LEFT], 2.0);
+        assert_eq!(a.border_style[LEFT], BorderStyle::Solid);
+        assert_eq!(a.margin[RIGHT], LengthPercentageAuto::Px(5.0));
+        assert_eq!(a.margin[LEFT], LengthPercentageAuto::Px(4.0));
+        let value = |s: &ComputedStyle, name: &str| crate::serialize::computed_value(s, name);
+        assert_eq!(value(a, "border-top-left-radius").as_deref(), Some("3px"));
+        assert_eq!(
+            value(a, "border-inline-end").as_deref(),
+            Some("2px solid rgb(0, 0, 0)")
+        );
+        let b = style("b");
+        assert_eq!(b.direction, Direction::Ltr, "a rule over `dir`");
+        assert_eq!(b.padding[LEFT], LengthPercentage::Px(3.0));
+        assert_eq!(b.padding[RIGHT], LengthPercentage::Px(2.0));
+        assert_eq!(value(b, "padding-inline").as_deref(), Some("3px 2px"));
+        // The flow-relative values by the parent's direction, kept as
+        // written.
+        let d = style("d");
+        assert_eq!(d.direction, Direction::Rtl);
+        assert_eq!((d.float, d.clear), (Float::Right, Clear::Left));
+        assert_eq!(value(d, "float").as_deref(), Some("inline-start"));
+        assert_eq!(value(d, "clear").as_deref(), Some("inline-end"));
+        assert_eq!(value(d, "text-align").as_deref(), Some("end"));
+        assert!(supports("resize", &css::tokenize("block")));
+        assert!(supports("direction", &css::tokenize("rtl")));
+        assert!(!supports("direction", &css::tokenize("auto")));
+    }
+
+    /// The first element whose `id` is `id`.
+    fn by_id(document: &Document, id: &str) -> NodeId {
+        document
+            .subtree(document.root())
+            .find(|&n| document.attr(n, "id") == Some(id))
+            .unwrap_or_else(|| panic!("#{id}"))
+    }
+
+    #[test]
+    fn container_queries_read_the_sizes_laid_out_and_the_styles() {
+        // D72: a size query of a container not laid out is unknown; with
+        // its size, it holds or not; a restyle with new sizes changes the
+        // subtree; style queries read the container's custom properties;
+        // the container units its content box, the viewport's without one.
+        let mut document = Document::from_node(
+            &html::parse_document(
+                "<div id=c style='--theme: dark'><div><p id=p>x</p><span id=s>y</span></div></div>\
+                 <i id=i>z</i>",
+            )
+            .unwrap(),
+        );
+        let sheets = Stylesheets::new(vec![sheet(
+            "#c { container: card / inline-size }
+             @container card (width > 100px) { #p { color: #f00 } }
+             @container (height > 1px) { #p { color: #0f0 } }
+             @container style(--theme: dark) { #s { color: #00f } }
+             #s { width: 50cqw } #i { width: 10cqi }",
+        )]);
+        let context = CascadeContext {
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            ..CascadeContext::default()
+        };
+        let mut styles = sheets.cascade(&document, &context);
+        let (c, p, s, i) = (
+            by_id(&document, "c"),
+            by_id(&document, "p"),
+            by_id(&document, "s"),
+            by_id(&document, "i"),
+        );
+        let black = Color::BLACK;
+        assert_eq!(styles.get(p).unwrap().color, black, "unknown, not laid out");
+        assert_eq!(styles.get(s).unwrap().color, Color::rgb8(0, 0, 255));
+        assert_eq!(styles.get(s).unwrap().width, Size::Px(400.0));
+        assert_eq!(styles.get(i).unwrap().width, Size::Px(80.0));
+        assert_eq!(styles.queried_containers().collect::<Vec<_>>(), [c]);
+        let mut sizes = crate::container::ContainerSizes::new();
+        sizes.insert(c, 200.0, 50.0);
+        let restyle = sheets
+            .restyle_containers(&document, &context, &mut styles, &sizes)
+            .expect("its size changed");
+        assert!(restyle.changed.contains(&p));
+        assert_eq!(styles.get(p).unwrap().color, Color::rgb8(255, 0, 0));
+        assert_eq!(styles.get(s).unwrap().width, Size::Px(100.0));
+        // Asked again with the same sizes: nothing changed.
+        assert!(
+            sheets
+                .restyle_containers(&document, &context, &mut styles, &sizes)
+                .is_none()
+        );
+        // A restyle keeps the sizes it was given.
+        document.set_attribute(s, "class", "x").unwrap();
+        let changes = document.take_changes();
+        sheets.restyle(&document, &context, &mut styles, &changes);
+        assert_eq!(styles.get(p).unwrap().color, Color::rgb8(255, 0, 0));
+        // A container's type changed, nothing it gives its children by
+        // inheritance: its whole subtree's queries again, the paragraph's
+        // under the wrapper among them.
+        document
+            .set_attribute(c, "style", "--theme: dark; container-type: normal")
+            .unwrap();
+        let changes = document.take_changes();
+        sheets.restyle(&document, &context, &mut styles, &changes);
+        assert_eq!(styles.get(p).unwrap().color, black);
+        assert_eq!(styles.get(s).unwrap().width, Size::Px(400.0));
+        // Its custom property changed: the style queries again.
+        document
+            .set_attribute(c, "style", "--theme: light")
+            .unwrap();
+        let changes = document.take_changes();
+        sheets.restyle(&document, &context, &mut styles, &changes);
+        assert_eq!(styles.get(s).unwrap().color, black);
+    }
+
+    #[test]
+    fn the_container_properties_parse_and_serialize() {
+        let value = |css: &str, name: &str| {
+            let document = Document::from_node(&html::parse_document("<p>x</p>").unwrap());
+            let styles = cascade_document(&document, &[sheet(css)], &CascadeContext::default());
+            crate::serialize::computed_value(styles.get(first(&document, "p")).unwrap(), name)
+                .unwrap()
+        };
+        assert_eq!(
+            value("p { container: a b / size }", "container"),
+            "a b / size"
+        );
+        assert_eq!(value("p { container: a / normal }", "container"), "a");
+        assert_eq!(
+            value("p { container-type: scroll-state size }", "container-type"),
+            "size scroll-state"
+        );
+        assert_eq!(
+            value("p { container-name: none }", "container-name"),
+            "none"
+        );
+        assert_eq!(
+            value("p { container-name: FoO foo }", "container-name"),
+            "FoO foo"
+        );
+        for invalid in ["none none", "and", "\"foo\"", "default"] {
+            assert!(
+                !supports("container-name", &css::tokenize(invalid)),
+                "{invalid}"
+            );
+        }
+        for invalid in ["size inline-size", "normal size", "style"] {
+            assert!(
+                !supports("container-type", &css::tokenize(invalid)),
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

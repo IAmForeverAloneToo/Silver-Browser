@@ -200,7 +200,12 @@ pub fn pseudo_element_name(pseudo: PseudoElement) -> Option<&'static str> {
         PseudoElement::FirstLetter => Some("::first-letter"),
         PseudoElement::Placeholder => Some("::placeholder"),
         PseudoElement::Selection => Some("::selection"),
-        PseudoElement::WebkitPrefixed => None,
+        PseudoElement::DetailsContent => Some("::details-content"),
+        PseudoElement::FileSelectorButton => Some("::file-selector-button"),
+        PseudoElement::Picker => Some("::picker(select)"),
+        PseudoElement::PickerIcon => Some("::picker-icon"),
+        PseudoElement::Checkmark => Some("::checkmark"),
+        PseudoElement::Nested | PseudoElement::WebkitPrefixed => None,
     }
 }
 

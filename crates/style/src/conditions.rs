@@ -316,8 +316,17 @@ mod tests {
             ("selector(::-webkit-foo)", Some(false)),
             ("selector(a::before::after)", Some(false)),
             ("selector(::before span)", Some(false)),
-            // Not this engine's, though the reference browser's.
-            ("selector(:has(a))", Some(false)),
+            // `:has()` (D74), unforgiving, and nothing it may not hold:
+            // another `:has()`, even in `:is()`, or a pseudo-element.
+            ("selector(:has(a))", Some(true)),
+            ("selector(:has(> a, ~ b))", Some(true)),
+            ("selector(:has())", Some(false)),
+            ("selector(:has(a, :foo))", Some(false)),
+            ("selector(:has(:has(a)))", Some(false)),
+            ("selector(:has(:is(:has(a))))", Some(false)),
+            ("selector(:has(::before))", Some(false)),
+            ("selector(:dir(foo))", Some(true)),
+            ("selector(:dir(ltr, rtl))", Some(false)),
             // `:is()` and `:where()` forgive nothing here.
             ("selector(:is(:foo))", Some(false)),
             ("selector(:is(a, :foo))", Some(false)),

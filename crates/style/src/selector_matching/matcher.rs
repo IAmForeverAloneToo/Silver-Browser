@@ -48,6 +48,8 @@ use std::collections::{HashMap, HashSet};
 
 use dom::{Document, ElementState, NodeId, forms};
 
+use crate::computed::Direction;
+
 use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
     AttrNamespace, AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector,
@@ -129,6 +131,22 @@ pub struct Matcher<'a> {
     /// matcher's life, since the document does not change in it (M35.2),
     /// at most [`MAX_FAILED`] of them.
     failed: HashSet<(usize, usize, NodeId)>,
+    /// The element whose `:has()` is being matched: what the anchor of a
+    /// relative selector is (D74).
+    anchor: Option<NodeId>,
+    /// The answers of the relative selectors of `:has()` asked, by the
+    /// selector's address and the anchor, kept for the matcher's life:
+    /// a style pass asks each anchor once whatever matches it.
+    has_answers: HashMap<(usize, Option<NodeId>, NodeId), bool>,
+    /// For a relative selector of one compound after a descendant
+    /// combinator, whether any of an element's descendants matches its
+    /// compound, by the selector's address and the element: an anchor's
+    /// answer is its children's, so that a tree is searched once.
+    below: HashMap<(usize, Option<NodeId>, NodeId), bool>,
+    /// Each element's directionality (HTML section 3.2.6.4), by slot
+    /// index, filled along an element's ancestors the first time
+    /// `:dir()` asks.
+    directions: Vec<Option<Direction>>,
     /// How many compounds were tried against an element: for the tests.
     #[cfg(test)]
     pub(crate) compounds_tried: u64,
@@ -210,6 +228,10 @@ impl<'a> Matcher<'a> {
             filters: Vec::new(),
             filter_at: Vec::new(),
             failed: HashSet::new(),
+            anchor: None,
+            has_answers: HashMap::new(),
+            below: HashMap::new(),
+            directions: Vec::new(),
             #[cfg(test)]
             compounds_tried: 0,
         }
@@ -261,7 +283,10 @@ impl<'a> Matcher<'a> {
             return false;
         };
         ending.element == pseudo
-            && pseudo != PseudoElement::WebkitPrefixed
+            && !matches!(
+                pseudo,
+                PseudoElement::WebkitPrefixed | PseudoElement::Nested
+            )
             && ending
                 .states
                 .iter()
@@ -311,7 +336,12 @@ impl<'a> Matcher<'a> {
         // other keeps them for this walk alone, allocated only once
         // something fails, which the common selectors never do.
         let id = std::ptr::from_ref(selector) as usize;
+        // A relative selector's places lead nowhere for one anchor and
+        // may for another.
+        let relative = compounds[0].simple.first()
+            == Some(&SimpleSelector::PseudoClass(PseudoClass::RelativeAnchor));
         let kept = !self.rule_scoped
+            && !relative
             && selector
                 .combinators
                 .iter()
@@ -472,6 +502,16 @@ impl<'a> Matcher<'a> {
         }
     }
 
+    /// Whether one simple selector matches `element`, an element: what
+    /// invalidation asks of the compound a `:has()` stands in (D74).
+    pub(crate) fn matches_simple_selector(
+        &mut self,
+        element: NodeId,
+        simple: &'a SimpleSelector,
+    ) -> bool {
+        self.matches_simple(element, simple)
+    }
+
     /// Whether every simple selector in the compound matches.
     fn matches_compound(&mut self, element: NodeId, compound: &'a super::CompoundSelector) -> bool {
         #[cfg(test)]
@@ -618,6 +658,18 @@ impl<'a> Matcher<'a> {
                 self.matches_element_list(element, list)
             }
             PseudoClass::Nesting(list) => self.matches_element_list(element, list),
+            PseudoClass::Has(list) => list.0.iter().any(|relative| self.has(element, relative)),
+            PseudoClass::RelativeAnchor => self.anchor == Some(element),
+            PseudoClass::Dir(direction) => {
+                direction.is_some_and(|direction| self.direction(element) == direction)
+            }
+            // A `details` or `dialog` with `open`; no picker of a `select`
+            // or an `input` is shown as a popup in this engine.
+            PseudoClass::Open => {
+                matches!(document.tag(element), Some("details" | "dialog"))
+                    && document.attr(element, "open").is_some()
+            }
+            PseudoClass::Autofill => false,
             // The user-action pseudo-classes and `:target` read the
             // element's state (M26.4); `:visited` never matches, there
             // being no history of visited links to answer it.
@@ -629,15 +681,18 @@ impl<'a> Matcher<'a> {
             | PseudoClass::Target => state_matches(pc, document.state(element)),
             PseudoClass::Visited => false,
             // HTML §4.16.3: `a` and `area` elements with an `href`.
+            // An SVG `a` with an `href`, or its `xlink:href`, is one too.
             PseudoClass::Link | PseudoClass::AnyLink => {
-                matches!(document.tag(element), Some("a" | "area"))
-                    && document.attr(element, "href").is_some()
+                (matches!(document.tag(element), Some("a" | "area"))
+                    && document.attr(element, "href").is_some())
+                    || (document.svg_tag(element) == Some("a")
+                        && (document.attr(element, "href").is_some()
+                            || document.attr(element, "xlink:href").is_some()))
             }
             PseudoClass::Lang(ranges) => self.matches_lang(element, ranges),
-            PseudoClass::Disabled => forms::actually_disabled(document, element),
+            PseudoClass::Disabled => disabled(document, element),
             PseudoClass::Enabled => {
-                forms::can_be_disabled(document, element)
-                    && !forms::actually_disabled(document, element)
+                forms::can_be_disabled(document, element) && !disabled(document, element)
             }
             PseudoClass::Checked => self.checked(element),
             PseudoClass::Indeterminate => self.indeterminate(element),
@@ -654,12 +709,16 @@ impl<'a> Matcher<'a> {
                     && dom::validity::will_validate(document, element)
                     && !dom::validity::validity(document, element).valid()
             }
+            // Only a candidate for constraint validation is in or out of
+            // its range (HTML section 4.16.3): a read-only one is neither.
             PseudoClass::InRange | PseudoClass::OutOfRange => {
-                dom::validity::has_range(document, element) && {
-                    let v = dom::validity::validity(document, element);
-                    let out = v.range_underflow || v.range_overflow;
-                    out == matches!(pc, PseudoClass::OutOfRange)
-                }
+                dom::validity::has_range(document, element)
+                    && dom::validity::will_validate(document, element)
+                    && {
+                        let v = dom::validity::validity(document, element);
+                        let out = v.range_underflow || v.range_overflow;
+                        out == matches!(pc, PseudoClass::OutOfRange)
+                    }
             }
             PseudoClass::ReadWrite => dom::validity::read_write(document, element),
             PseudoClass::ReadOnly => !dom::validity::read_write(document, element),
@@ -908,6 +967,268 @@ impl<'a> Matcher<'a> {
         let position = self.position(element).index as usize;
         self.nth_ranks[&key].get(position).copied().flatten()
     }
+
+    /// Whether `relative`, a relative selector of a `:has()`, matches at
+    /// `anchor` (Selectors 4 section 4.5, D74): whether some element it
+    /// can reach from the anchor matches it, its first compound the
+    /// anchor. Which are searched its combinators say: the anchor's
+    /// descendants for a selector of descendant and child combinators,
+    /// as deep as its child combinators reach when it has no descendant
+    /// one; its following siblings for one that begins with a sibling
+    /// combinator, as many as its `+` reach when it has no `~`, and their
+    /// descendants when a descendant or a child combinator follows.
+    fn has(&mut self, anchor: NodeId, relative: &'a Selector) -> bool {
+        let id = std::ptr::from_ref(relative) as usize;
+        // A scoped rule's `:scope` differs from one root to the next.
+        let scope = self.rule_scoped.then_some(self.scope).flatten();
+        if let Some(&answer) = self.has_answers.get(&(id, scope, anchor)) {
+            return answer;
+        }
+        let combinators = &relative.combinators;
+        let sibling =
+            |c: &Combinator| matches!(c, Combinator::NextSibling | Combinator::LaterSibling);
+        let answer = if combinators.len() == 1 && combinators[0] == Combinator::Descendant {
+            self.below(anchor, relative)
+        } else {
+            // How deep below the anchor, or below a sibling, a match may
+            // be: unbounded past a descendant combinator.
+            let depth = if combinators.contains(&Combinator::Descendant) {
+                usize::MAX
+            } else {
+                combinators
+                    .iter()
+                    .filter(|c| **c == Combinator::Child)
+                    .count()
+            };
+            let document = self.document;
+            let mut roots = Vec::new();
+            if sibling(&combinators[0]) {
+                // As many siblings as its leading run of sibling
+                // combinators reaches.
+                let run: Vec<Combinator> = combinators
+                    .iter()
+                    .copied()
+                    .take_while(|c| sibling(c))
+                    .collect();
+                let most = if run.contains(&Combinator::LaterSibling) {
+                    usize::MAX
+                } else {
+                    run.len()
+                };
+                let mut at = document.next_element_sibling(anchor);
+                while let Some(node) = at {
+                    if roots.len() >= most {
+                        break;
+                    }
+                    roots.push((node, 0usize));
+                    at = document.next_element_sibling(node);
+                }
+                if combinators.iter().all(sibling) {
+                    // No descendant of a sibling can match.
+                    let saved = self.anchor.replace(anchor);
+                    let found = roots
+                        .iter()
+                        .any(|&(node, _)| self.matches_compounds(node, relative));
+                    self.anchor = saved;
+                    self.has_answers.insert((id, scope, anchor), found);
+                    return found;
+                }
+            } else {
+                for child in document.element_children(anchor) {
+                    roots.push((child, 1));
+                }
+            }
+            let saved = self.anchor.replace(anchor);
+            let mut found = false;
+            let mut stack: Vec<(NodeId, usize)> = roots.into_iter().rev().collect();
+            while let Some((node, level)) = stack.pop() {
+                if self.matches_compounds(node, relative) {
+                    found = true;
+                    break;
+                }
+                if level < depth {
+                    let children: Vec<NodeId> = document.element_children(node).collect();
+                    stack.extend(children.into_iter().rev().map(|child| (child, level + 1)));
+                }
+            }
+            self.anchor = saved;
+            found
+        };
+        self.has_answers.insert((id, scope, anchor), answer);
+        answer
+    }
+
+    /// Whether any descendant of `node` matches the one compound after
+    /// the anchor of `relative` (`:has(.x)`): each element's answer is
+    /// whether one of its children matches or has a descendant that does,
+    /// found children first for every element of the subtree not yet
+    /// answered, so that the anchors of a tree cost one walk of it.
+    fn below(&mut self, node: NodeId, relative: &'a Selector) -> bool {
+        let id = std::ptr::from_ref(relative) as usize;
+        // A scoped rule's `:scope` differs from one root to the next.
+        let scope = self.rule_scoped.then_some(self.scope).flatten();
+        if let Some(&answer) = self.below.get(&(id, scope, node)) {
+            return answer;
+        }
+        let compound = &relative.compounds[1];
+        let document = self.document;
+        let mut order = Vec::new();
+        let mut stack = vec![node];
+        while let Some(at) = stack.pop() {
+            order.push(at);
+            for child in document.element_children(at) {
+                if !self.below.contains_key(&(id, scope, child)) {
+                    stack.push(child);
+                }
+            }
+        }
+        for &at in order.iter().rev() {
+            let children: Vec<NodeId> = document.element_children(at).collect();
+            let mut any = false;
+            for child in children {
+                if self.below.get(&(id, scope, child)) == Some(&true)
+                    || self.matches_compound(child, compound)
+                {
+                    any = true;
+                    break;
+                }
+            }
+            self.below.insert((id, scope, at), any);
+        }
+        self.below[&(id, scope, node)]
+    }
+
+    /// The element's directionality (HTML section 3.2.6.4): by its `dir`
+    /// attribute, `ltr` and `rtl` as they say and `auto` from its text,
+    /// a `bdi` without one too, a telephone `input` without one
+    /// left-to-right; else its parent's, and the root's left-to-right.
+    /// The `direction` property does not change it (Selectors 4 section
+    /// 7.1). Kept for every element walked.
+    fn direction(&mut self, element: NodeId) -> Direction {
+        let document = self.document;
+        if self.directions.len() < document.slot_count() {
+            self.directions.resize(document.slot_count(), None);
+        }
+        let mut walked = Vec::new();
+        let mut at = Some(element);
+        let found = loop {
+            let Some(node) = at else {
+                break Direction::Ltr;
+            };
+            if let Some(direction) = self.directions[node.index()] {
+                break direction;
+            }
+            if document.is_element(node) {
+                walked.push(node);
+                if let Some(direction) = own_direction(document, node) {
+                    break direction;
+                }
+            }
+            at = document.parent(node);
+        };
+        for node in walked {
+            self.directions[node.index()] = Some(found);
+        }
+        found
+    }
+}
+
+/// The directionality an element's own attributes give it (HTML section
+/// 3.2.6.4), `None` when it has its parent's.
+fn own_direction(document: &Document, element: NodeId) -> Option<Direction> {
+    let dir = document.attr(element, "dir").map(str::to_ascii_lowercase);
+    match dir.as_deref() {
+        Some("ltr") => Some(Direction::Ltr),
+        Some("rtl") => Some(Direction::Rtl),
+        Some("auto") => Some(auto_direction(document, element).unwrap_or(Direction::Ltr)),
+        _ => match document.tag(element) {
+            Some("bdi") => Some(auto_direction(document, element).unwrap_or(Direction::Ltr)),
+            Some("input") if forms::input_type(document, element) == "tel" => Some(Direction::Ltr),
+            _ => None,
+        },
+    }
+}
+
+/// An element's auto directionality (HTML section 3.2.6.4): a text
+/// control's by its value; any other's by the first character of a
+/// strong direction in its descendant text, in tree order, past those of
+/// a `bdi`, a `script`, a `style`, a `textarea` or an element with a
+/// valid `dir` of its own; `None` when there is none.
+fn auto_direction(document: &Document, element: NodeId) -> Option<Direction> {
+    let text_control = match document.tag(element) {
+        Some("textarea") => true,
+        Some("input") => matches!(
+            forms::input_type(document, element),
+            "text" | "search" | "tel" | "url" | "email"
+        ),
+        _ => false,
+    };
+    if text_control {
+        return strong_direction(&forms::value(document, element));
+    }
+    let mut stack: Vec<NodeId> = document.children(element).collect();
+    stack.reverse();
+    while let Some(node) = stack.pop() {
+        if let Some(text) = document.text(node) {
+            if let Some(direction) = strong_direction(text) {
+                return Some(direction);
+            }
+            continue;
+        }
+        if !document.is_element(node) {
+            continue;
+        }
+        let skipped = matches!(
+            document.tag(node),
+            Some("bdi" | "script" | "style" | "textarea")
+        ) || document.attr(node, "dir").is_some_and(|dir| {
+            ["ltr", "rtl", "auto"]
+                .iter()
+                .any(|valid| dir.eq_ignore_ascii_case(valid))
+        });
+        if skipped {
+            continue;
+        }
+        let at = stack.len();
+        stack.extend(document.children(node));
+        stack[at..].reverse();
+    }
+    None
+}
+
+/// The direction of the first character of `text` whose bidirectional
+/// class is strong (UAX 9): R or AL, the scripts written right to left
+/// and the right-to-left mark, or L, every other letter and the
+/// left-to-right mark.
+fn strong_direction(text: &str) -> Option<Direction> {
+    text.chars().find_map(|c| {
+        let code = u32::from(c);
+        let right_to_left = matches!(
+            code,
+            0x0590..=0x08FF | 0x200F | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF
+                | 0x1E800..=0x1EFFF
+        );
+        if right_to_left && (c.is_alphabetic() || code == 0x200F || code == 0x061C) {
+            Some(Direction::Rtl)
+        } else if code == 0x200E || (c.is_alphabetic() && !right_to_left) {
+            Some(Direction::Ltr)
+        } else {
+            None
+        }
+    })
+}
+
+/// Whether an element matches `:disabled` (HTML section 4.16.3): one
+/// actually disabled, and an `option` or `optgroup` whose `select` is,
+/// as HTML has it since its options may be styled in place (whatwg/html
+/// pull request 12205) and the reference browser matches.
+fn disabled(document: &Document, element: NodeId) -> bool {
+    forms::actually_disabled(document, element)
+        || (matches!(document.tag(element), Some("option" | "optgroup"))
+            && document
+                .ancestors(element)
+                .find(|&ancestor| document.tag(ancestor) == Some("select"))
+                .is_some_and(|select| forms::actually_disabled(document, select)))
 }
 
 /// For an element `:required` and `:optional` apply to, whether it is
@@ -2681,5 +3002,89 @@ mod tests {
         );
         let (_, matched) = tried(&page, ".c .b .a .e");
         assert_eq!(matched, depth);
+    }
+
+    #[test]
+    fn has_searches_from_its_anchor_as_its_combinators_say() {
+        // D74: descendants, children, following siblings and their
+        // descendants, complex relative selectors among them.
+        let html = "<div id=a><p id=b class=x><i id=c class=y></i></p><p id=d></p></div>\
+                    <div id=e><p id=f></p><p id=g class=x></p></div><span id=h class=z></span>";
+        assert_eq!(ids(html, ":has(.y)"), ["a", "b"]);
+        assert_eq!(ids(html, ":has(> .y)"), ["b"]);
+        assert_eq!(ids(html, ":has(> p > .y)"), ["a"]);
+        assert_eq!(ids(html, "p:has(+ .x)"), ["f"]);
+        assert_eq!(ids(html, "p:has(~ .x)"), ["f"]);
+        assert_eq!(ids(html, "div:has(~ div .x)"), ["a"]);
+        assert_eq!(ids(html, "div:has(+ span.z)"), ["e"]);
+        assert_eq!(ids(html, ":has(.x .y)"), ["a"]);
+        assert_eq!(ids(html, ":has(.x + p)"), ["a"]);
+        assert_eq!(ids(html, ":has(.nothing, .z)"), NONE);
+        assert_eq!(ids(html, "div:not(:has(.x))"), NONE);
+        assert_eq!(ids(html, ":is(div:has(> #d))"), ["a"]);
+        // `:scope` in it is the anchor's scope, not the anchor.
+        assert_eq!(ids(html, "div:has(> :scope)"), NONE);
+    }
+
+    #[test]
+    fn has_takes_no_has_and_no_pseudo_element() {
+        // Selectors 4 section 4.5, as the reference browser has it: the
+        // list is not forgiving, `:has()` and pseudo-elements are invalid
+        // in it, and in `:is()` inside it forgiven.
+        for invalid in [
+            ":has()",
+            ":has(.a,)",
+            ":has(.a, :foo)",
+            ":has(:has(.a))",
+            ":has(:not(:has(.a)))",
+            ":has(::before)",
+            ":has(:nth-child(1 of :has(.a)))",
+            "::before:has(.a)",
+        ] {
+            assert!(
+                parse_selector_list(&css::tokenize(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+        for valid in [":has(.a)", ":has(> .a, + .b, ~ .c)", ":has(:is(:has(.a)))"] {
+            assert!(
+                parse_selector_list(&css::tokenize(valid)).is_ok(),
+                "{valid}"
+            );
+        }
+        // Its specificity is its most specific argument's.
+        let list = parse_selector_list(&css::tokenize(":has(#a, .b)")).unwrap();
+        assert_eq!(list.0[0].specificity, super::super::Specificity(1, 0, 0));
+    }
+
+    #[test]
+    fn dir_reads_the_directionality_html_gives() {
+        // HTML section 3.2.6.4: `dir`, `auto` from the text, a `bdi`'s,
+        // a telephone input's; inherited; the `direction` property no part
+        // of it.
+        let html = "<div id=a dir=rtl><p id=b>x</p><p id=c dir=ltr>y</p>\
+                    <p id=d dir=auto>abc</p><p id=e dir=auto>\u{5d0}bc</p>\
+                    <bdi id=f>\u{627}</bdi><input id=g type=tel><p id=h dir=foo>z</p></div>\
+                    <p id=i style='direction: rtl'>w</p><p id=j dir=auto>123</p>";
+        assert_eq!(ids(html, ":dir(rtl)"), ["a", "b", "e", "f", "h"]);
+        assert_eq!(ids(html, "p:dir(ltr)"), ["c", "d", "i", "j"]);
+        assert_eq!(ids(html, ":dir(foo)"), NONE);
+        assert!(parse_selector_list(&css::tokenize(":dir(ltr, rtl)")).is_err());
+    }
+
+    #[test]
+    fn options_are_disabled_with_their_select_and_ranges_need_validation() {
+        // As the reference browser matches them: an option or an optgroup
+        // in a disabled select is disabled; a read-only number field is
+        // neither in nor out of its range.
+        let html = "<fieldset disabled><select id=s><option id=o>a</option></select></fieldset>\
+                    <select disabled><optgroup id=g label=x></optgroup></select>\
+                    <select><option id=p>b</option></select>\
+                    <input id=r type=number min=1 max=5 value=9 readonly>\
+                    <input id=t type=number min=1 max=5 value=9>";
+        assert_eq!(ids(html, ":disabled"), ["s", "o", "g"]);
+        assert_eq!(ids(html, ":out-of-range"), ["t"]);
+        assert_eq!(ids(html, ":in-range"), NONE);
+        assert_eq!(ids(html, "details:open, :autofill"), NONE);
     }
 }

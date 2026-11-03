@@ -2626,14 +2626,40 @@ impl DocumentHost {
                 } else {
                     [None; 4]
                 };
+                let parent = self.document.parent_element(node);
+                let lineage: Vec<NodeId> = std::iter::once(node)
+                    .chain(self.document.ancestors(node))
+                    .collect();
                 let styles = self.styles_now();
                 let style = match pseudo {
                     None => styles.and_then(|styles| styles.get(node)),
                     Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
                 };
+                // Whether the element's minimum sizes' `auto` is kept as it
+                // is (CSS Sizing 3 section 4.4, as the reference browser
+                // resolves it): on a flex or a grid item and on a box of an
+                // aspect ratio, of an element that has a box.
+                let none = style::computed::Display::None;
+                let rendered = styles.is_some_and(|styles| {
+                    lineage
+                        .iter()
+                        .filter_map(|&n| styles.get(n))
+                        .all(|s| s.display != none)
+                });
+                let item = styles
+                    .zip(parent)
+                    .and_then(|(styles, parent)| styles.get(parent))
+                    .is_some_and(|parent| {
+                        parent.display.has_items()
+                            || (parent.display == style::computed::Display::Contents
+                                && parent.contents_in_items)
+                    });
                 let Some(style) = style.cloned() else {
                     return Ok(Answer::MaybeString(None));
                 };
+                let keeps_auto = pseudo.is_none()
+                    && rendered
+                    && (item || style.image().aspect_ratio != style::computed::AspectRatio::Auto);
                 // `--`, no property's name: the custom properties with a
                 // value, by name, parted by NULs, which a computed style
                 // lists after the others (D73).
@@ -2650,6 +2676,17 @@ impl DocumentHost {
                     let side = ["top", "right", "bottom", "left"]
                         .iter()
                         .position(|side| *side == name);
+                    // A minimum size's `auto` is 0 but on a flex or a grid
+                    // item (CSS Sizing 3 section 4.4), as the reference
+                    // browser resolves it.
+                    let min = match name {
+                        "min-width" => Some(&style.min_width),
+                        "min-height" => Some(&style.min_height),
+                        _ => None,
+                    };
+                    if min == Some(&style::computed::Size::Auto) && !keeps_auto {
+                        return Some("0px".to_owned());
+                    }
                     match side.and_then(|i| insets[i]) {
                         Some(value) => Some(style::serialize::px(value)),
                         None => used_value(&style, name, &geometry),
@@ -4502,11 +4539,24 @@ impl DocumentHost {
         if self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
             return self.laid_out.as_ref().map(|(_, layout)| layout);
         }
-        let (width, height) = self.window.viewport;
-        if width == 0 {
+        if self.window.viewport.0 == 0 {
             return None;
         }
         self.styles_now()?;
+        // The styles' containers settled with a layout, which stands.
+        if self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
+            return self.laid_out.as_ref().map(|(_, layout)| layout);
+        }
+        let laid_out = self.lay_out()?;
+        self.work += self.document.len() as u64;
+        self.laid_out = Some((version, laid_out));
+        self.laid_out.as_ref().map(|(_, layout)| layout)
+    }
+
+    /// The document laid out with its styles as computed, in the window's
+    /// viewport; `None` without fonts or styles.
+    fn lay_out(&self) -> Option<layout::DocumentLayout> {
+        let (width, height) = self.window.viewport;
         let page = self.page.as_ref()?;
         let computed = self.computed.as_ref()?;
         let fonts = self
@@ -4534,10 +4584,78 @@ impl DocumentHost {
             &recascade,
             &self.images,
         );
-        let laid_out = layout::layout_document_in(&boxes, width as f32, Some(height as f32), fonts);
-        self.work += self.document.len() as u64;
-        self.laid_out = Some((version, laid_out));
-        self.laid_out.as_ref().map(|(_, layout)| layout)
+        Some(layout::layout_document_in(
+            &boxes,
+            width as f32,
+            Some(height as f32),
+            fonts,
+        ))
+    }
+
+    /// Lays the document out, and restyles the subtrees of the size
+    /// containers whose content boxes changed from those the styles were
+    /// computed with, again until none does, at most
+    /// [`style::container::MAX_CONTAINER_PASSES`] times (D72); the last
+    /// layout kept for the document's version. Nothing for styles that
+    /// ask nothing of a container.
+    fn settle_containers(&mut self) {
+        let version = self.document.version();
+        if self.window.viewport.0 == 0 {
+            return;
+        }
+        for _ in 0..=style::container::MAX_CONTAINER_PASSES {
+            let asks = self
+                .computed
+                .as_ref()
+                .is_some_and(|c| c.styles.queried_containers().next().is_some());
+            if !asks {
+                return;
+            }
+            let Some(laid_out) = self.lay_out() else {
+                return;
+            };
+            self.work += self.document.len() as u64;
+            let (_, offsets) = self.scroll_state();
+            let sizes = laid_out.container_sizes(self.window.viewport.0 as f32, &|node| {
+                (
+                    offsets.x.get(&node).copied().unwrap_or(0.0),
+                    offsets.y.get(&node).copied().unwrap_or(0.0),
+                )
+            });
+            self.laid_out = Some((version, laid_out));
+            let Some(page) = self.page.as_ref() else {
+                return;
+            };
+            let fonts = self
+                .window
+                .layout_fonts
+                .as_ref()
+                .or(self.window.fonts.as_ref());
+            let measure = fonts.map(Measure);
+            let context = CascadeContext {
+                viewport_width: self.window.viewport.0 as f32,
+                viewport_height: self.window.viewport.1 as f32,
+                fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
+                language: page.language(),
+                media: self.window.media,
+                animations: Some(&self.animations),
+                inline_styles: Some(page),
+                frame_margins: self.window.frame_margins,
+            };
+            let Some(computed) = self.computed.as_mut() else {
+                return;
+            };
+            let restyled = computed.sheets.restyle_containers(
+                &self.document,
+                &context,
+                &mut computed.styles,
+                &sizes,
+            );
+            if restyled.is_none() {
+                return;
+            }
+            self.laid_out = None;
+        }
     }
 
     /// The viewport's scroll offset and each scroll container's, down
@@ -6329,6 +6447,7 @@ impl DocumentHost {
                 cached.mark = changes.len();
                 cached.version = version;
                 cached.touches = touches;
+                self.settle_containers();
             }
             _ => {
                 self.work += self.document.len() as u64;
@@ -6360,6 +6479,7 @@ impl DocumentHost {
                     fonts: fonts_now,
                     touches,
                 });
+                self.settle_containers();
             }
         }
         self.computed.as_ref().map(|computed| &computed.styles)
@@ -7051,26 +7171,43 @@ fn own_box(
     None
 }
 
+/// A style rule, whether its selectors alone say what it matches, and
+/// the preludes of the grouping rules around it.
+type Placed<'s> = (&'s css::QualifiedRule, bool, Vec<&'s [css::Token]>);
+
 /// The style rules of `sheets`, those in grouping rules too, in order,
 /// each with whether its selectors alone say what it matches: not when
 /// it is in an `@scope` rule, or has rules nested in it, which compare
-/// with it (CSS Nesting 1), or is a run of declarations nested in one.
-fn style_rules(sheets: &[css::Stylesheet]) -> Vec<(&css::QualifiedRule, bool)> {
+/// with it (CSS Nesting 1), or is a run of declarations nested in one;
+/// and the preludes of the grouping rules around it, which a rule that
+/// differs in nothing else differs by (an `@container` query changed).
+fn style_rules(sheets: &[css::Stylesheet]) -> Vec<Placed<'_>> {
     let mut out = Vec::new();
-    let mut stack: Vec<(&[css::Rule], bool)> = sheets
+    // Each list of rules to walk, whether it is in `@scope`, and the
+    // preludes around it.
+    type Walk<'s> = (&'s [css::Rule], bool, Vec<&'s [css::Token]>);
+    let mut stack: Vec<Walk<'_>> = sheets
         .iter()
         .rev()
-        .map(|s| (s.rules.as_slice(), false))
+        .map(|s| (s.rules.as_slice(), false, Vec::new()))
         .collect();
-    while let Some((rules, scoped)) = stack.pop() {
+    while let Some((rules, scoped, around)) = stack.pop() {
         for (i, rule) in rules.iter().enumerate() {
             match rule {
-                css::Rule::Qualified(q) => out.push((q, !scoped && q.rules.is_empty())),
+                css::Rule::Qualified(q) => {
+                    out.push((q, !scoped && q.rules.is_empty(), around.clone()))
+                }
                 css::Rule::At(at) => {
                     if let Some(css::Block::Rules(inner)) = &at.block {
                         // The rest of this list after the inner one.
-                        stack.push((&rules[i + 1..], scoped));
-                        stack.push((inner, scoped || at.name.eq_ignore_ascii_case("scope")));
+                        stack.push((&rules[i + 1..], scoped, around.clone()));
+                        let mut inside = around.clone();
+                        inside.push(&at.prelude);
+                        stack.push((
+                            inner,
+                            scoped || at.name.eq_ignore_ascii_case("scope"),
+                            inside,
+                        ));
                         break;
                     }
                 }
@@ -7081,9 +7218,6 @@ fn style_rules(sheets: &[css::Stylesheet]) -> Vec<(&css::QualifiedRule, bool)> {
     out
 }
 
-/// The elements of `document` a style rule that differs between `old`
-/// and `new` matches: the rules between the two lists' common start
-/// and common end (a script adds or edits rules in one place).
 /// The `@property` rules of `sheets`, those in grouping rules too, in
 /// order.
 fn property_rules(sheets: &[css::Stylesheet]) -> Vec<&css::AtRule> {
@@ -7107,6 +7241,9 @@ fn property_rules(sheets: &[css::Stylesheet]) -> Vec<&css::AtRule> {
     out
 }
 
+/// The elements of `document` a style rule that differs between `old`
+/// and `new` matches: the rules between the two lists' common start
+/// and common end (a script adds or edits rules in one place).
 fn matched_by_changed_rules(
     document: &dom::Document,
     old: &[css::Stylesheet],
@@ -7129,9 +7266,9 @@ fn matched_by_changed_rules(
     // element, and so does an `@property` rule put in, changed or taken
     // out, which says what a custom property computes to (D73).
     let everything =
-        changed().any(|(_, plain)| !plain) || property_rules(old) != property_rules(new);
+        changed().any(|(_, plain, _)| !plain) || property_rules(old) != property_rules(new);
     let lists: Vec<style::selector_matching::SelectorList> = changed()
-        .filter_map(|(rule, _)| style::parse_selector_list(&rule.prelude).ok())
+        .filter_map(|(rule, ..)| style::parse_selector_list(&rule.prelude).ok())
         .collect();
     if lists.is_empty() && !everything {
         return Vec::new();

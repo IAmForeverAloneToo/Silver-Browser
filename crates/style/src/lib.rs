@@ -62,6 +62,11 @@ pub mod computed;
 /// this engine supports, `selector()` included.
 pub mod conditions;
 
+/// Container queries (gap batch H, D72): the container properties,
+/// `@container` preludes, and their evaluation against the containers'
+/// sizes as laid out and their styles.
+pub mod container;
+
 /// Counter styles (M21.4): a counter's value written in a style, with
 /// Counter Styles 3 §6's predefined styles.
 pub mod counter_style;
@@ -128,8 +133,9 @@ pub use cascade::{
     CascadeContext, Composited, FontMeasure, FontUnits, FrameMargins, InlineStyles,
     MatchedDeclaration, MatchedRule, PaletteValues, PseudoStyles, Recascade, Recascader, Restyle,
     RuleOrigin, Styles, Stylesheets, VARIANT_LONGHANDS, all_longhands, cascade_document,
-    font_longhands, font_palette_specified, font_shorthand_families, palette_values_name,
-    parse_color_text, parse_variant, property_name, stretch_name, supports, write_font_variant,
+    font_longhands, font_palette_specified, font_shorthand_families, logical_longhands,
+    palette_values_name, parse_color_text, parse_variant, physical_name, property_name,
+    stretch_name, supports, write_font_variant,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

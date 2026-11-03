@@ -327,6 +327,34 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
     if let Some(longhand) = Longhand::from_name(name) {
         return vec![longhand];
     }
+    // A flow-relative property's physical longhands in either direction
+    // (D74): which it sets is the element's to say, its declaration
+    // applied to the element's style, and the side it does not set keeps
+    // its value through the animation.
+    if crate::cascade::logical_map(name, crate::computed::Direction::Ltr).is_some() {
+        let mut out: Vec<Longhand> = Vec::new();
+        for direction in [
+            crate::computed::Direction::Ltr,
+            crate::computed::Direction::Rtl,
+        ] {
+            let names = match crate::cascade::logical_map(name, direction) {
+                Some(crate::cascade::LogicalMapped::One(one)) => vec![one],
+                Some(
+                    crate::cascade::LogicalMapped::Pair(two)
+                    | crate::cascade::LogicalMapped::Both(two),
+                ) => two.to_vec(),
+                None => Vec::new(),
+            };
+            for physical in names {
+                for longhand in longhands_of(&physical) {
+                    if !out.contains(&longhand) {
+                        out.push(longhand);
+                    }
+                }
+            }
+        }
+        return out;
+    }
     let list: &[Longhand] = match name {
         "background" => &[
             BackgroundColor,
@@ -3604,5 +3632,21 @@ mod tests {
         assert_eq!(translate.y, LengthPercentage::Percent(25.0));
         let none = blended(Longhand::Scale, "scale: none", "scale: none", 0.5);
         assert_eq!(none.effects().scale, None);
+    }
+
+    #[test]
+    fn a_flow_relative_property_animates_its_physical_longhands_either_way() {
+        // D74: which side it sets is the element's direction's.
+        use Longhand::*;
+        assert_eq!(longhands_of("margin-block"), [MarginTop, MarginBottom]);
+        assert_eq!(
+            longhands_of("padding-inline-start"),
+            [PaddingLeft, PaddingRight]
+        );
+        assert_eq!(longhands_of("inline-size"), [Width]);
+        assert_eq!(
+            longhands_of("border-block-end"),
+            [BorderBottomWidth, BorderBottomStyle, BorderBottomColor]
+        );
     }
 }

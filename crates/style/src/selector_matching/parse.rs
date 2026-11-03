@@ -163,6 +163,9 @@ struct Cursor<'a> {
     namespaces: &'a Namespaces,
     /// What `&` is, and what the list's selectors are relative to.
     nest: Nest<'a>,
+    /// Inside `:has()`, where another `:has()` is invalid (Selectors 4
+    /// section 4.5), at any depth of `:is()`, `:not()` or `of S`.
+    in_has: bool,
 }
 
 impl<'a> Cursor<'a> {
@@ -173,6 +176,7 @@ impl<'a> Cursor<'a> {
             strict: false,
             namespaces: &NO_NAMESPACES,
             nest: Nest::TOP,
+            in_has: false,
         }
     }
 
@@ -324,6 +328,76 @@ fn parse_list(
         return Err(ParseError::InvalidSelector);
     }
     Ok(SelectorList(selectors))
+}
+
+/// Parses `:has()`'s argument at the cursor, just after the function
+/// token, stopping before the `)` that closes it (Selectors 4 section
+/// 4.5): a list of relative selectors, none of them empty, the list not
+/// forgiving, as the reference browser has it. Each is kept as a
+/// selector whose first compound is the anchor ([`relative_anchor`])
+/// and whose first combinator the one it begins with, or a descendant
+/// one; its specificity is its own, the anchor counting nothing. Inside
+/// it no `:has()` is valid, nor a pseudo-element.
+fn parse_relative_list(c: &mut Cursor, depth: usize) -> Option<SelectorList> {
+    if depth > MAX_NESTING {
+        return None;
+    }
+    let was_in_has = c.in_has;
+    c.in_has = true;
+    let mut selectors = Vec::new();
+    let parsed = loop {
+        c.skip_ws();
+        let end = {
+            let mut scan = *c;
+            skip_member(&mut scan);
+            scan.pos
+        };
+        let mut member = Cursor {
+            tokens: &c.tokens[..end],
+            ..*c
+        };
+        member.skip_ws();
+        let leading = peek_combinator(&member);
+        if leading.is_some() {
+            member.advance();
+        }
+        let Ok(mut selector) = parse_complex(&mut member, depth, Scope::Nested) else {
+            break None;
+        };
+        member.skip_ws();
+        if !member.at_end() {
+            break None;
+        }
+        selector.compounds.insert(0, relative_anchor());
+        selector
+            .combinators
+            .insert(0, leading.unwrap_or(Combinator::Descendant));
+        selector.ancestor_hashes =
+            super::ancestor_hashes(&selector.compounds, &selector.combinators);
+        selectors.push(selector);
+        c.pos = end;
+        match c.peek() {
+            Some(Token::Comma) => {
+                c.advance();
+                c.skip_ws();
+                if c.at_end() || matches!(c.peek(), Some(Token::CloseParen)) {
+                    break None;
+                }
+            }
+            Some(Token::CloseParen) => break Some(SelectorList(selectors)),
+            _ => break None,
+        }
+    };
+    c.in_has = was_in_has;
+    parsed
+}
+
+/// The compound a relative selector of `:has()` begins with: the
+/// anchor, the element the `:has()` is matched at.
+fn relative_anchor() -> CompoundSelector {
+    CompoundSelector {
+        simple: vec![SimpleSelector::PseudoClass(PseudoClass::RelativeAnchor)],
+    }
 }
 
 /// Skips a forgiving list's bad member: up to, not including, the next
@@ -488,7 +562,10 @@ fn names(simple: &SimpleSelector, found: &dyn Fn(&PseudoClass) -> bool) -> bool 
         return true;
     }
     let list = match pc {
-        PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => list,
+        PseudoClass::Not(list)
+        | PseudoClass::Is(list)
+        | PseudoClass::Where(list)
+        | PseudoClass::Has(list) => list,
         PseudoClass::NthChild { of: Some(list), .. } => &**list,
         _ => return false,
     };
@@ -786,8 +863,28 @@ fn parse_pseudo(
     match c.peek() {
         Some(Token::Colon) => {
             c.advance();
-            // `::name`; no functional pseudo-element (`::part()`,
-            // `::-webkit-x()`) is one this engine knows.
+            // `::name`; of the functional pseudo-elements only
+            // `::picker(select)` is one this engine knows (D74).
+            if let Some(Token::Function(name)) = c.peek()
+                && name.eq_ignore_ascii_case("picker")
+            {
+                c.advance();
+                c.skip_ws();
+                let Some(Token::Ident(argument)) = c.peek() else {
+                    return None;
+                };
+                if !argument.eq_ignore_ascii_case("select") {
+                    return None;
+                }
+                c.advance();
+                c.skip_ws();
+                if !matches!(c.peek(), Some(Token::CloseParen)) {
+                    return None;
+                }
+                c.advance();
+                *spec += Specificity(0, 0, 1);
+                return Some(Pseudo::Element(PseudoElement::Picker));
+            }
             let Some(Token::Ident(name)) = c.peek() else {
                 return None;
             };
@@ -798,6 +895,19 @@ fn parse_pseudo(
             }
             c.advance();
             *spec += Specificity(0, 0, 1);
+            // `::details-content` may be followed by `::before` or
+            // `::after`, as the reference browser takes them.
+            if element == PseudoElement::DetailsContent
+                && matches!(c.peek(), Some(Token::Colon))
+                && matches!(c.peek_ahead(1), Some(Token::Colon))
+                && matches!(c.peek_ahead(2), Some(Token::Ident(name))
+                    if name.eq_ignore_ascii_case("before") || name.eq_ignore_ascii_case("after"))
+            {
+                c.advance();
+                c.advance();
+                c.advance();
+                return Some(Pseudo::Element(PseudoElement::Nested));
+            }
             Some(Pseudo::Element(element))
         }
         Some(Token::Ident(name)) => {
@@ -845,6 +955,8 @@ fn parse_pseudo(
                 "default" => PseudoClass::Default,
                 "required" => PseudoClass::Required,
                 "optional" => PseudoClass::Optional,
+                "open" => PseudoClass::Open,
+                "autofill" | "-webkit-autofill" => PseudoClass::Autofill,
                 _ => return None,
             };
             c.advance();
@@ -868,6 +980,30 @@ fn parse_pseudo(
                 "where" => {
                     let list = parse_list(c, depth + 1, inner, true, !c.strict).ok()?;
                     PseudoClass::Where(list) // zero specificity by design
+                }
+                // Not after a pseudo-element, nor inside another `:has()`.
+                "has" if inner != Scope::State && !c.in_has => {
+                    let list = parse_relative_list(c, depth + 1)?;
+                    *spec += max_specificity(&list);
+                    PseudoClass::Has(list)
+                }
+                // `:dir(ltr)` and `:dir(rtl)`; any other identifier is
+                // valid and matches nothing, as the reference browser has
+                // it (Selectors 4 section 7.1).
+                "dir" => {
+                    c.skip_ws();
+                    let Some(Token::Ident(value)) = c.peek() else {
+                        return None;
+                    };
+                    let value = match value.to_ascii_lowercase().as_str() {
+                        "ltr" => Some(crate::computed::Direction::Ltr),
+                        "rtl" => Some(crate::computed::Direction::Rtl),
+                        _ => None,
+                    };
+                    c.advance();
+                    c.skip_ws();
+                    *spec += Specificity(0, 1, 0);
+                    PseudoClass::Dir(value)
                 }
                 "nth-child" => {
                     let (a, b, of) = parse_nth(c, true, depth)?;
@@ -922,6 +1058,10 @@ fn pseudo_element(name: &str) -> Option<PseudoElement> {
         "marker" => Some(PseudoElement::Marker),
         "placeholder" => Some(PseudoElement::Placeholder),
         "selection" => Some(PseudoElement::Selection),
+        "details-content" => Some(PseudoElement::DetailsContent),
+        "file-selector-button" => Some(PseudoElement::FileSelectorButton),
+        "picker-icon" => Some(PseudoElement::PickerIcon),
+        "checkmark" => Some(PseudoElement::Checkmark),
         // selectors-4 Appendix B: valid, and matching nothing.
         _ if name.starts_with("-webkit-") => Some(PseudoElement::WebkitPrefixed),
         _ => None,

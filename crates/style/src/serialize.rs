@@ -30,7 +30,7 @@ use crate::computed::{
     DominantBaseline, FillRule, PaintLayer, ShapeRendering, StrokeLinecap, StrokeLinejoin,
     SvgPaint, TextAnchor, VectorEffect,
 };
-use crate::computed::{FontStyle, LineHeight};
+use crate::computed::{FontStyle, InlineSide, LineHeight, Resize};
 
 /// The properties a computed style's declaration block lists, the
 /// longhands [`computed_value`] gives, in the reference browser's order:
@@ -60,23 +60,40 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "background-position-y",
     "background-repeat",
     "background-size",
+    "block-size",
+    "border-block-end-color",
+    "border-block-end-style",
+    "border-block-end-width",
+    "border-block-start-color",
+    "border-block-start-style",
+    "border-block-start-width",
     "border-bottom-color",
     "border-bottom-left-radius",
     "border-bottom-right-radius",
     "border-bottom-style",
     "border-bottom-width",
     "border-collapse",
+    "border-end-end-radius",
+    "border-end-start-radius",
     "border-image-outset",
     "border-image-repeat",
     "border-image-slice",
     "border-image-source",
     "border-image-width",
+    "border-inline-end-color",
+    "border-inline-end-style",
+    "border-inline-end-width",
+    "border-inline-start-color",
+    "border-inline-start-style",
+    "border-inline-start-width",
     "border-left-color",
     "border-left-style",
     "border-left-width",
     "border-right-color",
     "border-right-style",
     "border-right-width",
+    "border-start-end-radius",
+    "border-start-start-radius",
     "border-top-color",
     "border-top-left-radius",
     "border-top-right-radius",
@@ -95,6 +112,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "color",
     "color-scheme",
     "column-gap",
+    "container-name",
+    "container-type",
     "content",
     "counter-increment",
     "counter-reset",
@@ -149,6 +168,11 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "hyphens",
     "image-orientation",
     "image-rendering",
+    "inline-size",
+    "inset-block-end",
+    "inset-block-start",
+    "inset-inline-end",
+    "inset-inline-start",
     "justify-content",
     "justify-items",
     "justify-self",
@@ -159,14 +183,22 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "list-style-image",
     "list-style-position",
     "list-style-type",
+    "margin-block-end",
+    "margin-block-start",
     "margin-bottom",
+    "margin-inline-end",
+    "margin-inline-start",
     "margin-left",
     "margin-right",
     "margin-top",
     "math-style",
+    "max-block-size",
     "max-height",
+    "max-inline-size",
     "max-width",
+    "min-block-size",
     "min-height",
+    "min-inline-size",
     "min-width",
     "object-fit",
     "object-position",
@@ -177,10 +209,16 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "outline-offset",
     "outline-style",
     "outline-width",
+    "overflow-block",
+    "overflow-inline",
     "overflow-wrap",
     "overflow-x",
     "overflow-y",
+    "padding-block-end",
+    "padding-block-start",
     "padding-bottom",
+    "padding-inline-end",
+    "padding-inline-start",
     "padding-left",
     "padding-right",
     "padding-top",
@@ -191,6 +229,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "print-color-adjust",
     "quotes",
     "r",
+    "resize",
     "right",
     "rotate",
     "row-gap",
@@ -200,11 +239,19 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "ry",
     "scale",
     "scroll-behavior",
+    "scroll-margin-block-end",
+    "scroll-margin-block-start",
     "scroll-margin-bottom",
+    "scroll-margin-inline-end",
+    "scroll-margin-inline-start",
     "scroll-margin-left",
     "scroll-margin-right",
     "scroll-margin-top",
+    "scroll-padding-block-end",
+    "scroll-padding-block-start",
     "scroll-padding-bottom",
+    "scroll-padding-inline-end",
+    "scroll-padding-inline-start",
     "scroll-padding-left",
     "scroll-padding-right",
     "scroll-padding-top",
@@ -298,9 +345,28 @@ pub fn resolved_value(
     if let Some(value) = shorthands::value(style, name, resolver) {
         return value;
     }
-    // A flow-relative longhand is its physical one's (css-logical-1).
-    if let Some(physical) = crate::cascade::physical_longhand(name, style.direction) {
-        return resolved_value(style, physical, resolver);
+    // A flow-relative property is its physical ones' (D74): a two-value
+    // shorthand its start's and end's, one when they are alike; one of
+    // both sides its sides' when they are alike.
+    if let Some(mapped) = crate::cascade::logical_map(name, style.direction) {
+        use crate::cascade::LogicalMapped;
+        return match mapped {
+            LogicalMapped::One(physical) => resolved_value(style, &physical, resolver),
+            LogicalMapped::Pair([start, end]) => {
+                let start = resolved_value(style, &start, resolver)?;
+                let end = resolved_value(style, &end, resolver)?;
+                Some(if start == end {
+                    start
+                } else {
+                    format!("{start} {end}")
+                })
+            }
+            LogicalMapped::Both([start, end]) => {
+                let start = resolved_value(style, &start, resolver)?;
+                let end = resolved_value(style, &end, resolver)?;
+                Some(if start == end { start } else { String::new() })
+            }
+        };
     }
     if let Some(value) = (resolver.longhand)(name) {
         return Some(value);
@@ -312,6 +378,14 @@ pub fn resolved_value(
 /// custom property's: [`resolved_value`] with nothing past the style.
 pub fn computed_value(style: &ComputedStyle, name: &str) -> Option<String> {
     resolved_value(style, name, &Resolver::COMPUTED)
+}
+
+/// A flow-relative value of `float` or `clear`.
+fn inline_side(side: InlineSide) -> &'static str {
+    match side {
+        InlineSide::Start => "inline-start",
+        InlineSide::End => "inline-end",
+    }
 }
 
 /// A longhand's computed value, or `white-space`'s.
@@ -560,17 +634,31 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             BoxSizing::BorderBox => "border-box",
         }
         .to_owned(),
-        "float" => match style.float {
-            Float::None => "none",
-            Float::Left => "left",
-            Float::Right => "right",
+        // A flow-relative value is kept as written (D74).
+        "float" => match (style.flow_relative.float, style.float) {
+            (Some(side), _) => inline_side(side),
+            (None, Float::None) => "none",
+            (None, Float::Left) => "left",
+            (None, Float::Right) => "right",
         }
         .to_owned(),
-        "clear" => match style.clear {
-            Clear::None => "none",
-            Clear::Left => "left",
-            Clear::Right => "right",
-            Clear::Both => "both",
+        "clear" => match (style.flow_relative.clear, style.clear) {
+            (Some(side), _) => inline_side(side),
+            (None, Clear::None) => "none",
+            (None, Clear::Left) => "left",
+            (None, Clear::Right) => "right",
+            (None, Clear::Both) => "both",
+        }
+        .to_owned(),
+        "container-type" => crate::container::container_type_text(style.container_type),
+        "container-name" => crate::container::container_name_text(&style.container_names),
+        "resize" => match style.effects().resize {
+            Resize::None => "none",
+            Resize::Both => "both",
+            Resize::Horizontal => "horizontal",
+            Resize::Vertical => "vertical",
+            Resize::Block => "block",
+            Resize::Inline => "inline",
         }
         .to_owned(),
         "position" => match style.position {

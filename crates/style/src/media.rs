@@ -1314,7 +1314,7 @@ fn number(value: f64) -> String {
 }
 
 /// An identifier serialized (CSSOM 2.1, as `CSS.escape()` does it).
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     let mut out = String::new();
     for (i, &c) in chars.iter().enumerate() {

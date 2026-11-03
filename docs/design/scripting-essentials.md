@@ -357,7 +357,7 @@ step:
   labels are refused (M42). `FileReader`'s tasks are timers of the
   bindings' own, their ids past 2^31 (QuickJS hands those to the timer
   entry as negative: it makes them unsigned). `CSS.supports` goes
-  through the cascade's own checks; `selector(:has())` is false (G12).
+  through the cascade's own checks, `selector(:has())` among them (D74).
   `TextEncoder`, `TextDecoder` and `FileReader` are exposed to workers.
 - **`matchMedia()` and idle callbacks (step 3).** The style crate had no
   media query serializer: `serialize_media_query_list` writes one that

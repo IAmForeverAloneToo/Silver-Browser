@@ -12162,6 +12162,7 @@
   function styleDeclaration(owner, handle) {
     const target = new CSSStyleDeclaration(KEY);
     const state = { owner, handle };
+    definePropertyAttributes();
     const proxy = new $Proxy(target, styleHandlers);
     WeakMapSet(declarationBlocks, proxy, state);
     WeakMapSet(declarationBlocks, target, state);
@@ -12713,6 +12714,7 @@
       const page = state.kind === "page";
       const target = page ? new CSSPageDescriptors(KEY) : new CSSStyleDeclaration(KEY);
       const block = { owner: rule, rule: state, page };
+      definePropertyAttributes();
       const proxy = new $Proxy(target, styleHandlers);
       WeakMapSet(declarationBlocks, proxy, block);
       WeakMapSet(declarationBlocks, target, block);
@@ -12891,16 +12893,31 @@
 
   class CSSSupportsRule extends CSSConditionRule {}
 
-  // `@container` (Conditional 5 section 7.1): its condition is its name
-  // and its query.
+  // `@container` (Conditional 5 section 7.1): its queries' names and
+  // conditions, parted by NULs; the name and the query those of its one
+  // query, empty for a list of more.
+  function containerConditions(rule) {
+    const parts = StringSplit(ruleData(ruleState(rule))[3], "\u0000");
+    const out = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      ArrayPush(out, { name: parts[i], query: parts[i + 1] });
+    }
+    return out;
+  }
+
   class CSSContainerRule extends CSSConditionRule {
     get containerName() {
-      return ruleData(ruleState(this))[3];
+      const conditions = containerConditions(this);
+      return conditions.length === 1 ? conditions[0].name : "";
     }
 
     get containerQuery() {
-      const data = ruleData(ruleState(this));
-      return data[3] === "" ? data[2] : StringSlice(data[2], data[3].length + 1);
+      const conditions = containerConditions(this);
+      return conditions.length === 1 ? conditions[0].query : "";
+    }
+
+    get conditions() {
+      return containerConditions(this);
     }
   }
 
@@ -13914,6 +13931,7 @@
   function computedStyle(owner, handle, pseudo) {
     const target = new CSSStyleDeclaration(KEY);
     const state = { owner, handle, pseudo, computed: true };
+    definePropertyAttributes();
     const proxy = new $Proxy(target, styleHandlers);
     WeakMapSet(declarationBlocks, proxy, state);
     WeakMapSet(declarationBlocks, target, state);
@@ -14078,6 +14096,70 @@
     return name;
   }
 
+  // A property's value in a declaration block: computed, or declared,
+  // a shorthand's from its longhands.
+  function propertyValue(state, name) {
+    if (state.computed) {
+      return computedValue(state, name);
+    }
+    const flat = declarationsOf(state);
+    const at = findDeclaration(flat, name);
+    if (at >= 0) return flat[at + 1];
+    return flat.length === 0 ? "" : native.cssShorthand(name, flat);
+  }
+
+  // Each property a computed style lists is an attribute of the
+  // interface, dashed and in camel case, as the reference browser has
+  // them (CSSOM section 6.6.1): its getter and setter the block's, on
+  // the prototype, made once the first block is.
+  let propertyAttributes = false;
+  function definePropertyAttributes() {
+    if (propertyAttributes) {
+      return;
+    }
+    propertyAttributes = true;
+    // One attribute, `key`, of the property `name`.
+    const define = (key, name) => {
+      if (ReflectHas(CSSStyleDeclaration.prototype, key)) {
+        return;
+      }
+      defineProperty(CSSStyleDeclaration.prototype, key, {
+        get() {
+          return propertyValue(blockState(this), name);
+        },
+        set(value) {
+          const state = blockState(this);
+          if (state.computed) {
+            throw new $DOMException(
+              "Failed to set the '" + key + "' property on 'CSSStyleDeclaration': These " +
+                "styles are computed, and therefore the '" + name + "' property is read-only.",
+              "NoModificationAllowedError",
+            );
+          }
+          setProperty(state, name, strOrEmpty(value), "", key);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    };
+    const listed = computedProperties();
+    for (let i = 0; i < listed.length; i++) {
+      const name = listed[i];
+      let camel = "";
+      let upper = false;
+      for (let j = StringIndexOf(name, "-webkit-") === 0 ? 1 : 0; j < name.length; j++) {
+        if (name[j] === "-") {
+          upper = true;
+        } else {
+          camel += upper ? ToUpperCase(name[j]) : name[j];
+          upper = false;
+        }
+      }
+      define(name, name);
+      define(camel, name);
+    }
+  }
+
   // The indexed, camel-cased and dashed properties of a declaration
   // block: its properties' names by index, and each property the cascade
   // knows by name.
@@ -14100,13 +14182,7 @@
       if (name === null) {
         return ReflectGet(target, key, receiver);
       }
-      if (state.computed) {
-        return computedValue(state, name);
-      }
-      const flat = declarationsOf(state);
-      const at = findDeclaration(flat, name);
-      if (at >= 0) return flat[at + 1];
-      return flat.length === 0 ? "" : native.cssShorthand(name, flat);
+      return propertyValue(state, name);
     },
     set(target, key, value, receiver) {
       if (typeof key === "string" && !ReflectHas(target, key) && arrayIndex(key) < 0) {

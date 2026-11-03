@@ -98,6 +98,12 @@ i, em { font-style: italic; }
 /* Marked text in the system colours for it (HTML 15.3.4). */
 mark { background-color: Mark; color: MarkText; }
 
+/* Bidirectional text (HTML section 15.3.5, gap batch H, D74): `dir`
+ * sets `direction` by the element's directionality, `auto` from its
+ * text. */
+[dir]:dir(ltr), bdi:dir(ltr), input[type=tel i]:dir(ltr) { direction: ltr; }
+[dir]:dir(rtl), bdi:dir(rtl) { direction: rtl; }
+
 /* Quotation marks (HTML §15.3.4, M16), by `quotes`, whose `auto`
  * gives the same marks in every language until M42. */
 q::before { content: open-quote; }

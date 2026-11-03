@@ -2582,3 +2582,86 @@ fn boxes_and_the_viewport_scroll_across() {
     assert_eq!(tab.engine.element_scroll_x(s), 170.0);
     assert_eq!(tab.engine.scroll_x(), 1105.0);
 }
+
+#[test]
+fn container_queries_are_answered_after_layout_for_scripts_and_frames() {
+    // D72: a script's computed style lays the document out and restyles
+    // the subtrees of the containers whose sizes changed what their
+    // queries and units answer, a nested container a pass later; an
+    // unknown query applies nothing; a change of a container's size is
+    // answered again, by a script and by a frame.
+    let page: &'static str = "<style>#c { container: c / size; width: 300px; height: 100px }\
+         #d { container-type: inline-size; width: 50% }\
+         @container c (width > 200px) { #p { color: #f00 } #d { width: 75% } }\
+         @container (width = 225px) { #q { color: #0f0 } }\
+         @container c (foo(width)) or (not (foo(width))) { #p { --unknown: 1 } }\
+         @container nothing (width) { #p { --named: 1 } }\
+         #q { width: 10cqw }</style>\
+         <div id=c><p id=p>p</p><div id=d><p id=q>q</p></div></div>\
+         <script>var p = document.getElementById('p'), q = document.getElementById('q');\
+         var cs = (e, n) => getComputedStyle(e).getPropertyValue(n);\
+         console.log(cs(p, 'color'), cs(q, 'color'), cs(q, 'width'), \
+         JSON.stringify(cs(p, '--unknown')), JSON.stringify(cs(p, '--named'))); \
+         document.getElementById('c').style.width = '100px'; \
+         console.log(cs(p, 'color'), cs(q, 'color'), cs(q, 'width'));</script>";
+    let server = serve(move |path| (path == "/page.html").then(|| html(page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        console,
+        [
+            "rgb(255, 0, 0) rgb(0, 255, 0) 22.5px \"\" \"\"",
+            "rgb(0, 0, 0) rgb(0, 0, 0) 5px",
+        ]
+    );
+    // The frame's layout settles them too, the paragraph black at the
+    // container's width the script left.
+    let _ = tab.engine.layout(800.0);
+    assert_eq!(color(&mut tab.engine, "p"), (0.0, 0.0, 0.0));
+    assert_eq!(color(&mut tab.engine, "q"), (0.0, 0.0, 0.0));
+}
+
+#[test]
+fn nested_containers_settle_a_level_a_pass_up_to_the_bound() {
+    // D72: each pass settles one more level of nested containers, each
+    // a pixel narrower than the one around it by a query of its width;
+    // past `MAX_CONTAINER_PASSES` levels, the deeper ones keep the styles
+    // of the sizes of the pass before: the width of the one around them.
+    let page: &'static str = "<style id=s>.c { container-type: inline-size } #o { width: 200px }</style>\
+         <div id=o class=c></div><script>\
+         var sheet = document.getElementById('s').sheet, at = document.getElementById('o');\
+         for (var w = 200; w > 100; w--) {\
+           sheet.insertRule('@container (width = ' + w + 'px) { .c { max-width: ' + (w - 1) + 'px } }');\
+           var child = document.createElement('div'); child.className = 'c'; at.appendChild(child); at = child;\
+         }\
+         var widths = Array.from(document.querySelectorAll('.c'), c => c.offsetWidth);\
+         console.log(widths[0], widths[10], widths[60], widths[64], widths[99]);</script>";
+    let server = serve(move |path| (path == "/page.html").then(|| html(page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    let widths: Vec<i32> = console[0]
+        .split(' ')
+        .map(|w| w.parse().expect("a width"))
+        .collect();
+    assert_eq!(&widths[..3], [200, 190, 140]);
+    let bound = style::container::MAX_CONTAINER_PASSES as i32;
+    // The levels past the bound did not settle.
+    assert!(widths[4] > 200 - 99, "{widths:?}");
+    assert!(widths[3] >= 200 - bound, "{widths:?}");
+}

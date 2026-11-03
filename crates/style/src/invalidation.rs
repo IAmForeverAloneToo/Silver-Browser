@@ -58,7 +58,9 @@ use std::collections::{HashMap, HashSet};
 
 use dom::{Change, Document, ElementState, NodeId};
 
-use crate::selector_matching::{Combinator, PseudoClass, SelectorList, SimpleSelector};
+use crate::selector_matching::{
+    Combinator, CompoundSelector, Matcher, PseudoClass, Selector, SelectorList, SimpleSelector,
+};
 
 /// What the selectors of a set of stylesheets depend on, beyond the
 /// tags and the tree's shape that every restyle accounts for: the
@@ -98,6 +100,9 @@ pub struct SelectorFeatures {
     /// An `attr()` whose name is substituted (M21.5): every attribute
     /// counts.
     any_attribute: bool,
+    /// `:dir()` (D74): the text under an element whose `dir` is `auto`
+    /// counts, and a text control's value.
+    directionality: bool,
     /// The element state flags the state pseudo-classes read (M26.4), by
     /// where they stand: in a selector's subject compound, which a change
     /// restyles the element for; in a compound a child or descendant
@@ -106,10 +111,47 @@ pub struct SelectorFeatures {
     states_subject: u8,
     states_ancestor: u8,
     states_sibling: u8,
+    /// What the `:has()` in the sheets read and where they stand (D74),
+    /// if any is there.
+    has: Option<Box<HasFeatures>>,
+}
+
+/// What the `:has()` pseudo-classes of a set of sheets depend on (D74):
+/// what their arguments read, as a selector's features; which way from
+/// an anchor they search; and the compounds they stand in, their
+/// anchors'.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct HasFeatures {
+    /// What the relative selectors read of the elements they reach.
+    read: SelectorFeatures,
+    /// One searches an anchor's descendants: a change can reach the
+    /// anchors above it.
+    below: bool,
+    /// One searches an anchor's following siblings: a change can reach
+    /// the anchors before it.
+    beside: bool,
+    /// One searches the descendants of an anchor's following siblings:
+    /// a change can reach the anchors before the elements above it.
+    beside_below: bool,
+    /// One holds a complex selector in a logical combinator, which can
+    /// read the elements above the one it matches, the anchor's
+    /// ancestors among them: a change can reach the anchors below it.
+    above: bool,
+    /// The compounds the `:has()` stand in.
+    anchors: Vec<HasAnchor>,
+}
+
+/// A compound a `:has()` stands in: what an element must have to anchor
+/// it, its type, id, classes and attributes, which no change but its
+/// own alters; and how far a change of its answer restyles.
+#[derive(Debug, Clone, PartialEq)]
+struct HasAnchor {
+    filter: Vec<SimpleSelector>,
+    at: At,
 }
 
 /// Where in a selector a simple selector stands, for the state
-/// pseudo-classes' invalidation.
+/// pseudo-classes' invalidation and the anchors of `:has()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum At {
     Subject,
@@ -117,33 +159,52 @@ enum At {
     Sibling,
 }
 
+impl At {
+    /// Where a compound stands that stands at `inner` in a selector of a
+    /// list that itself stands at `self`: the outer place for the
+    /// list's subjects, else the inner place, which reaches what the
+    /// outer does (a sibling's later siblings are under its ancestors,
+    /// an ancestor's descendants among its later siblings' subtrees).
+    fn within(self, inner: At) -> At {
+        match inner {
+            At::Subject => self,
+            inner => inner,
+        }
+    }
+}
+
+/// Where each compound of `selector` stands in it.
+fn places(selector: &Selector) -> impl Iterator<Item = At> + '_ {
+    let last = selector.compounds.len().saturating_sub(1);
+    (0..selector.compounds.len()).map(move |i| {
+        if i == last {
+            At::Subject
+        } else if matches!(
+            selector.combinators.get(i),
+            Some(Combinator::NextSibling | Combinator::LaterSibling)
+        ) {
+            At::Sibling
+        } else {
+            At::Ancestor
+        }
+    })
+}
+
+/// Whether `combinator` is a sibling one.
+fn is_sibling(combinator: &Combinator) -> bool {
+    matches!(
+        combinator,
+        Combinator::NextSibling | Combinator::LaterSibling
+    )
+}
+
 impl SelectorFeatures {
     /// Adds what `list`'s selectors depend on.
     pub(crate) fn add(&mut self, list: &SelectorList) {
         for selector in &list.0 {
-            for combinator in &selector.combinators {
-                if matches!(
-                    combinator,
-                    Combinator::NextSibling | Combinator::LaterSibling
-                ) {
-                    self.sibling_combinators = true;
-                }
-            }
-            let last = selector.compounds.len().saturating_sub(1);
-            for (i, compound) in selector.compounds.iter().enumerate() {
-                let at = if i == last {
-                    At::Subject
-                } else if matches!(
-                    selector.combinators.get(i),
-                    Some(Combinator::NextSibling | Combinator::LaterSibling)
-                ) {
-                    At::Sibling
-                } else {
-                    At::Ancestor
-                };
-                for simple in &compound.simple {
-                    self.add_simple(simple, at);
-                }
+            self.sibling_combinators |= selector.combinators.iter().any(is_sibling);
+            for (compound, at) in selector.compounds.iter().zip(places(selector)) {
+                self.add_compound(compound, at);
             }
             // The pseudo-classes after a pseudo-element read the
             // originating element's state (M26.4).
@@ -163,24 +224,89 @@ impl SelectorFeatures {
         self.add_nested(list, At::Ancestor);
     }
 
-    /// Adds what `list`'s selectors depend on, each standing at `at` in
-    /// the selector around them: the state pseudo-classes in a nested
-    /// list count where it stands.
+    /// Adds what `list`'s selectors depend on, the list standing at `at`
+    /// in the selector around it: each compound of them where it stands
+    /// in its selector, within that place ([`At::within`]), so that a
+    /// state read by `:is(:hover .a)` restyles the hovered element's
+    /// subtree.
     fn add_nested(&mut self, list: &SelectorList, at: At) {
         for selector in &list.0 {
-            for compound in &selector.compounds {
+            for (compound, inner) in selector.compounds.iter().zip(places(selector)) {
+                self.add_compound(compound, at.within(inner));
+            }
+            self.sibling_combinators |= selector.combinators.iter().any(is_sibling);
+        }
+    }
+
+    /// Adds what a compound standing at `at` depends on; a `:has()` in
+    /// it is anchored at the elements the compound matches.
+    fn add_compound(&mut self, compound: &CompoundSelector, at: At) {
+        for simple in &compound.simple {
+            if let SimpleSelector::PseudoClass(PseudoClass::Has(list)) = simple {
+                self.add_has(list, compound, at);
+            } else {
+                self.add_simple(simple, at);
+            }
+        }
+    }
+
+    /// Adds a `:has()` of `list` standing in `compound` at `at` (D74):
+    /// what its relative selectors read and which way they search, and
+    /// the compound as an anchor's.
+    fn add_has(&mut self, list: &SelectorList, compound: &CompoundSelector, at: At) {
+        let has = self.has.get_or_insert_with(Box::default);
+        for relative in &list.0 {
+            match relative.combinators.first() {
+                Some(c) if is_sibling(c) => {
+                    has.beside = true;
+                    has.beside_below |= relative.combinators.iter().any(|c| !is_sibling(c));
+                }
+                _ => has.below = true,
+            }
+            // Past the anchor, what each compound reads, wherever it
+            // stands: a change to any element the search reaches is one
+            // to the answer.
+            for compound in relative.compounds.iter().skip(1) {
                 for simple in &compound.simple {
-                    self.add_simple(simple, at);
+                    let inner: Option<&SelectorList> = match simple {
+                        SimpleSelector::PseudoClass(
+                            PseudoClass::Is(list)
+                            | PseudoClass::Where(list)
+                            | PseudoClass::Not(list),
+                        ) => Some(list),
+                        SimpleSelector::PseudoClass(PseudoClass::Nesting(list)) => Some(list),
+                        SimpleSelector::PseudoClass(PseudoClass::NthChild {
+                            of: Some(list),
+                            ..
+                        }) => Some(list),
+                        _ => None,
+                    };
+                    if let Some(inner) = inner {
+                        has.above |= inner.0.iter().any(|s| s.compounds.len() > 1);
+                    }
+                    has.read.add_simple(simple, At::Subject);
                 }
             }
-            for combinator in &selector.combinators {
-                if matches!(
-                    combinator,
-                    Combinator::NextSibling | Combinator::LaterSibling
-                ) {
-                    self.sibling_combinators = true;
-                }
-            }
+            has.read.sibling_combinators |= relative.combinators[1..].iter().any(is_sibling);
+        }
+        let filter = compound
+            .simple
+            .iter()
+            .filter(|simple| {
+                matches!(
+                    simple,
+                    SimpleSelector::Type(_)
+                        | SimpleSelector::Id(_)
+                        | SimpleSelector::Class(_)
+                        | SimpleSelector::Attribute { .. }
+                        | SimpleSelector::Namespace(_)
+                )
+            })
+            .cloned()
+            .collect();
+        let anchor = HasAnchor { filter, at };
+        if !has.anchors.contains(&anchor) {
+            has.anchors.push(anchor);
         }
     }
 
@@ -222,7 +348,7 @@ impl SelectorFeatures {
             }
             // The parent rule's selectors stand where `&` does.
             PseudoClass::Nesting(list) => self.add_nested(list, at),
-            PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href"]),
+            PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href", "xlink:href"]),
             PseudoClass::Lang(_) => {
                 self.lang = true;
                 self.read(&["lang"]);
@@ -270,6 +396,18 @@ impl SelectorFeatures {
             // depends on the parent, which an insertion restyles whole;
             // `:visited` never matches.
             PseudoClass::Root | PseudoClass::Scope | PseudoClass::Visited => {}
+            // `:dir()` reads `dir` on the element and its ancestors, a
+            // telephone input's type, and with `auto` the text under the
+            // element (D74).
+            PseudoClass::Dir(_) => {
+                self.directionality = true;
+                self.read(&["dir", "type"]);
+            }
+            PseudoClass::Open => self.read(&["open"]),
+            // A `:has()` is added with its compound (`add_compound`); the
+            // anchor of a relative selector reads nothing; no input is
+            // autofilled.
+            PseudoClass::Has(_) | PseudoClass::RelativeAnchor | PseudoClass::Autofill => {}
         }
     }
 
@@ -447,6 +585,9 @@ pub(crate) fn invalidate(
     let mut forms = false;
     // The controls whose state changed (M26.7).
     let mut controls: Vec<NodeId> = Vec::new();
+    // Where something a `:has()` reads changed (D74).
+    let mut touched: Vec<Touch> = Vec::new();
+    let has = features.has.as_deref();
     for change in changes {
         match change {
             Change::Everything => {
@@ -462,6 +603,16 @@ pub(crate) fn invalidate(
                     return out;
                 }
                 around_child(document, features, *parent, &mut out);
+                // An element, or text where `:empty` is read, changes
+                // what a search under or beside the parent finds.
+                if has.is_some_and(|has| !document.is_text(*child) || has.read.empty) {
+                    touched.push(Touch::Children(*parent));
+                }
+                // Text under an element of `dir=auto` decides its
+                // directionality.
+                if features.directionality {
+                    auto_around(document, *parent, &mut out);
+                }
                 radios |= features.checked && !document.is_text(*child);
                 forms |= features.validity && !document.is_text(*child);
                 // Which element is the root can change with the
@@ -550,12 +701,57 @@ pub(crate) fn invalidate(
                     .entry((*element, name.as_str()))
                     .or_insert(old.as_deref());
             }
-            Change::TextChanged { .. } => {}
+            Change::TextChanged { node } => {
+                if features.directionality
+                    && let Some(parent) = document.parent(*node)
+                {
+                    auto_around(document, parent, &mut out);
+                }
+            }
             Change::StateChanged { element, old } => {
                 states.entry(*element).or_insert(*old);
             }
-            Change::ControlChanged { element } => controls.push(*element),
+            Change::ControlChanged { element } => {
+                controls.push(*element);
+                // A text control's value decides its auto
+                // directionality.
+                if features.directionality {
+                    auto_around(document, *element, &mut out);
+                }
+            }
         }
+    }
+    if let Some(has) = has {
+        let read = &has.read;
+        let is_radio = |node: NodeId| {
+            document.tag(node) == Some("input") && dom::forms::input_type(document, node) == "radio"
+        };
+        if read.checked {
+            touched.extend(controls.iter().map(|&element| Touch::Node(element)));
+            // A radio button's change is its group's.
+            if controls.iter().any(|&element| is_radio(element)) {
+                let root = document.root();
+                touched.extend(
+                    document
+                        .subtree(root)
+                        .filter(|&node| is_radio(node))
+                        .map(Touch::Node),
+                );
+            }
+        }
+        for (&element, old) in &states {
+            let changed = old.0 ^ document.state(element).0;
+            if changed & (read.states_subject | read.states_ancestor | read.states_sibling) != 0 {
+                touched.push(Touch::Node(element));
+            }
+        }
+        for (&(element, name), &old) in &attributes {
+            let new = document.attr(element, name);
+            if new != old && read.mentions(name, old, new) {
+                touched.push(Touch::Node(element));
+            }
+        }
+        has_anchors(document, has, &touched, &mut out);
     }
     // A control's state restyles what reads it (M26.7): the element, as
     // far as an attribute's change would, and an option's select.
@@ -691,6 +887,152 @@ pub(crate) fn invalidate(
     out
 }
 
+/// Where something the arguments of a `:has()` read changed (D74).
+#[derive(Debug, Clone, Copy)]
+enum Touch {
+    /// On this element: an attribute, a state, a control's state.
+    Node(NodeId),
+    /// Among this node's children: one inserted or removed.
+    Children(NodeId),
+}
+
+/// Restyles the anchors of a `:has()` whose answer the changes at
+/// `touched` can have changed (D74): of the elements a search from one
+/// can reach a touched place, those that have what its compound asks of
+/// its type, id, classes and attributes, each as far as the selector its
+/// `:has()` stands in reaches from there. A search of descendants
+/// reaches a place from its ancestors; one of following siblings from
+/// its preceding siblings, and one of their descendants from the
+/// preceding siblings of its ancestors; a complex selector in a logical
+/// combinator reads above the element it matches, which reaches a
+/// place from below it. An element inserted or removed reaches its
+/// parent and the parent's ancestors, and every sibling, whose places
+/// among them it moved.
+fn has_anchors(document: &Document, has: &HasFeatures, touched: &[Touch], out: &mut Invalidation) {
+    if touched.is_empty() {
+        return;
+    }
+    let mut candidates: Vec<NodeId> = Vec::new();
+    let mut seen: HashSet<NodeId> = HashSet::new();
+    let mut add = |node: NodeId, candidates: &mut Vec<NodeId>| {
+        if document.is_element(node) && seen.insert(node) {
+            candidates.push(node);
+        }
+    };
+    for touch in touched {
+        let (node, inclusive) = match *touch {
+            Touch::Node(node) => (node, false),
+            Touch::Children(parent) => (parent, true),
+        };
+        if !attached(document, node) {
+            continue;
+        }
+        // The node and its ancestors, the node first when a child of it
+        // changed: what a search of descendants reaches the change from.
+        let up: Vec<NodeId> = std::iter::once(node)
+            .filter(|_| inclusive)
+            .chain(document.ancestors(node))
+            .filter(|&n| document.is_element(n))
+            .collect();
+        if has.below {
+            for &ancestor in &up {
+                add(ancestor, &mut candidates);
+            }
+        }
+        if has.beside {
+            match *touch {
+                Touch::Node(node) => {
+                    let mut at = document.prev_element_sibling(node);
+                    while let Some(sibling) = at {
+                        add(sibling, &mut candidates);
+                        at = document.prev_element_sibling(sibling);
+                    }
+                }
+                Touch::Children(parent) => {
+                    for child in document.element_children(parent) {
+                        add(child, &mut candidates);
+                    }
+                }
+            }
+        }
+        if has.beside_below {
+            let from = match *touch {
+                Touch::Node(node) => document.ancestors(node).collect::<Vec<_>>(),
+                Touch::Children(_) => up.clone(),
+            };
+            for ancestor in from {
+                let mut at = document.prev_element_sibling(ancestor);
+                while let Some(sibling) = at {
+                    add(sibling, &mut candidates);
+                    at = document.prev_element_sibling(sibling);
+                }
+            }
+        }
+        // What the complex selector reads above an element is its
+        // ancestors or their preceding siblings: the touched node's
+        // subtree and its later siblings'.
+        if has.above
+            && let Touch::Node(node) = *touch
+        {
+            let mut at = Some(node);
+            while let Some(sibling) = at {
+                for below in document.subtree(sibling) {
+                    add(below, &mut candidates);
+                }
+                at = document.next_element_sibling(sibling);
+            }
+        }
+    }
+    let mut matcher = Matcher::new(document);
+    for candidate in candidates {
+        for anchor in &has.anchors {
+            if !anchor
+                .filter
+                .iter()
+                .all(|simple| matcher.matches_simple_selector(candidate, simple))
+            {
+                continue;
+            }
+            match anchor.at {
+                At::Subject => out.mark(document, candidate, Reach::Element),
+                At::Ancestor => out.mark(document, candidate, Reach::Subtree),
+                At::Sibling => {
+                    let mut at = document.next_element_sibling(candidate);
+                    while let Some(sibling) = at {
+                        out.mark(document, sibling, Reach::Subtree);
+                        at = document.next_element_sibling(sibling);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Restyles, with its subtree, the element whose auto directionality
+/// text or a value changed at `node` can change (HTML section 3.2.6.4,
+/// D74): the nearest of `node` and its ancestors that has a valid `dir`,
+/// or is a `bdi` without one, when that is `auto`.
+fn auto_around(document: &Document, node: NodeId, out: &mut Invalidation) {
+    let nearest = std::iter::once(node)
+        .chain(document.ancestors(node))
+        .filter(|&n| document.is_element(n))
+        .find(|&n| {
+            document.tag(n) == Some("bdi")
+                || document.attr(n, "dir").is_some_and(|dir| {
+                    ["ltr", "rtl", "auto"]
+                        .iter()
+                        .any(|valid| dir.eq_ignore_ascii_case(valid))
+                })
+        });
+    if let Some(element) = nearest
+        && document
+            .attr(element, "dir")
+            .is_none_or(|dir| dir.eq_ignore_ascii_case("auto"))
+    {
+        out.mark(document, element, Reach::Subtree);
+    }
+}
+
 /// Whether `node` or a node under it is an element named `tag`.
 fn holds(document: &Document, node: NodeId, tag: &str) -> bool {
     document
@@ -772,7 +1114,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::computed::{Color, Display};
+    use crate::computed::{Color, Direction, Display};
     use crate::selector_matching::PseudoElement;
     use crate::{CascadeContext, Restyle, Styles, Stylesheets};
 
@@ -1666,5 +2008,118 @@ mod tests {
             d.set_attribute(z, "data-w", "7").unwrap();
         });
         assert_eq!(r.changed, [z]);
+    }
+
+    #[test]
+    fn a_change_below_an_anchor_restyles_it_and_only_what_it_must() {
+        // D74: a class a `:has()` reads changed on a descendant restyles
+        // the ancestors whose compound could anchor it, not the change's
+        // own subtree, nor the elements that cannot anchor it.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=a class=card><section id=s><p id=p>x</p></section></div>\
+             <div id=o><p id=q>y</p></div>",
+            ".card:has(.hot) { color: #f00 } .card:has(> section .warm) p { color: #00f }",
+        );
+        let (a, s, p, q) = (
+            by_id(&d, "a"),
+            by_id(&d, "s"),
+            by_id(&d, "p"),
+            by_id(&d, "q"),
+        );
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(p, "class", "hot").unwrap();
+        });
+        // The anchor: its style changed, and with it what inherits.
+        assert_eq!(r.changed, [a, s, p]);
+        // An element beside no anchor: nothing.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(q, "class", "hot").unwrap();
+        });
+        assert_eq!(r.computed, 0);
+        // An anchor in a compound before a descendant combinator: its
+        // subtree, the paragraph under it blue.
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(p, "class", "warm").unwrap();
+        });
+        assert!(r.changed.contains(&p), "{:?}", r.changed);
+        // An element inserted below no anchor, then below one.
+        let hot = d.create_element("b").unwrap();
+        d.set_attribute(hot, "class", "hot").unwrap();
+        d.take_changes();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.append_child(q, hot).unwrap();
+        });
+        assert_eq!(r.changed, [hot], "no card around #q");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.remove_child(q, hot).unwrap();
+            d.append_child(p, hot).unwrap();
+        });
+        assert!(r.changed.contains(&a), "{:?}", r.changed);
+    }
+
+    #[test]
+    fn a_change_beside_an_anchor_restyles_the_anchors_before_it() {
+        // D74: a search of following siblings is reached from the
+        // siblings before the change, one of their descendants from the
+        // siblings before the change's ancestors.
+        let (mut d, sheets, mut styles) = setup(
+            "<ul><li id=a>a</li><li id=b>b</li><li id=c><i id=i>i</i></li></ul>",
+            "li:has(+ .next) { color: #f00 } li:has(~ li .deep) { background-color: #0f0 }",
+        );
+        let (a, b, c, i) = (
+            by_id(&d, "a"),
+            by_id(&d, "b"),
+            by_id(&d, "c"),
+            by_id(&d, "i"),
+        );
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(b, "class", "next").unwrap();
+        });
+        assert_eq!(r.changed, [a]);
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(i, "class", "deep").unwrap();
+        });
+        assert_eq!(set(&r.changed), set(&[a, b]));
+        // Inserted: every sibling, whose places it moved.
+        let new = d.create_element("li").unwrap();
+        d.set_attribute(new, "class", "next").unwrap();
+        d.take_changes();
+        let list = d.parent(c).unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.insert_before(list, new, Some(c)).unwrap();
+        });
+        assert!(r.changed.contains(&b), "{:?}", r.changed);
+    }
+
+    #[test]
+    fn a_complex_selector_in_has_reaches_the_anchors_below_the_change() {
+        // D74: `:is(.x .y)` in `:has()` reads above the element it
+        // matches, past the anchor: a change above an anchor reaches it.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=top><div id=anchor class=a><p id=y class=y>y</p></div></div>",
+            ".a:has(:is(.x .y)) { color: #f00 }",
+        );
+        let (top, anchor) = (by_id(&d, "top"), by_id(&d, "anchor"));
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(top, "class", "x").unwrap();
+        });
+        assert!(r.changed.contains(&anchor), "{:?}", r.changed);
+    }
+
+    #[test]
+    fn dir_auto_follows_the_text_under_it() {
+        // D74: `:dir()` of an element of `dir=auto` reads its text, and a
+        // change to it restyles the element's subtree.
+        let (mut d, sheets, mut styles) = setup(
+            "<p id=p dir=auto><span id=s>abc</span></p>",
+            ":dir(rtl) { color: #f00 }",
+        );
+        let s = by_id(&d, "s");
+        let text = d.children(s).next().unwrap();
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_text(text, "\u{5d0}").unwrap();
+        });
+        assert_eq!(r.changed.len(), 2, "the paragraph and its span");
+        assert_eq!(styles.get(s).unwrap().direction, Direction::Rtl);
     }
 }

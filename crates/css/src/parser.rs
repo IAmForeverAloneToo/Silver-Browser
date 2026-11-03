@@ -342,7 +342,9 @@ fn parse_at_rule(
                 block = Some(parse_at_block(stream, &name, depth, context));
                 break;
             }
-            Some(t @ (Token::OpenParen | Token::OpenSquare)) => {
+            // A function is a block whose `)` closes it as a parenthesis
+            // does: a `;` in it is the prelude's (`style(--x: y;)`).
+            Some(t @ (Token::OpenParen | Token::OpenSquare | Token::Function(_))) => {
                 paren_depth += 1;
                 prelude.push(t);
             }
@@ -1412,6 +1414,20 @@ mod tests {
         // A name's other letters are lowercased by ASCII's rules alone.
         let decls = parse_style_attribute("COLOR\\212A: red").expect("never fails");
         assert_eq!(decls[0].name, "color\u{212a}");
+    }
+
+    #[test]
+    fn a_semicolon_in_a_function_of_a_prelude_is_the_preludes() {
+        // CSS Syntax 3 section 5.4.4: a function is a block of its own,
+        // as `@container style(--x: y;)` has it (D72).
+        let sheet = parse_stylesheet("@container style(--x: y;) { a { color: red } } b {}")
+            .expect("never fails");
+        assert_eq!(sheet.rules.len(), 2);
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("an at-rule")
+        };
+        assert!(at.prelude.contains(&Token::Semicolon));
+        assert!(matches!(at.block, Some(Block::Rules(_))));
     }
 
     #[test]

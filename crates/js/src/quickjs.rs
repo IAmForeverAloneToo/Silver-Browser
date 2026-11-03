@@ -431,8 +431,13 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return Err(dead(death));
         }
         // A context of the realm's runtime with only the base objects and
-        // the compiler, which runs nothing, and goes with what it declared.
-        let scratch = Context::custom::<rquickjs::context::intrinsic::Eval>(&self.runtime);
+        // the compiler, which runs nothing, and goes with what it declared;
+        // the regular expressions' compiler with it, without which a module
+        // that writes one does not compile, and is found to import nothing.
+        let scratch = Context::custom::<(
+            rquickjs::context::intrinsic::Eval,
+            rquickjs::context::intrinsic::RegExpCompiler,
+        )>(&self.runtime);
         let scratch = scratch.map_err(|e| ScriptError {
             kind: ErrorKind::Heap,
             message: format!("InternalError: {e}"),

@@ -22,6 +22,14 @@
 //! of its id's, its classes' and its tag's buckets and the universal
 //! one, in the rules' order, rather than every selector of every rule.
 //!
+//! An `@container` block's rules are kept with its queries and the
+//! block around it (D72): every style rule in one is in force, matched
+//! only where its queries hold for the element, which the cascade
+//! evaluates; a block whose prelude does not parse is passed over with
+//! its rules. The other rules in one, `@keyframes` and `@property`
+//! among them, are taken whatever it answers, as the reference browser
+//! takes them.
+//!
 //! Nesting and `@scope` are desugared as the set is made (D71): a style
 //! rule nested in another is kept after it, its selectors read with `&`
 //! the parent's list as `:is()` and, where they name no `&`, relative to
@@ -43,6 +51,7 @@ use css::{Block, Rule, Token};
 
 use crate::cascade::ParsedRule;
 use crate::conditions::supports_condition;
+use crate::container::ContainerRule;
 use crate::invalidation::SelectorFeatures;
 use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
@@ -84,6 +93,17 @@ pub(crate) struct RuleSet {
     /// `@scope` rule without roots of its own scopes to, the root
     /// element where there is none.
     roots: Vec<Option<dom::NodeId>>,
+    /// The `@container` blocks, in the order they appear (D72).
+    containers: Vec<ContainerBlock>,
+}
+
+/// An `@container` block kept: its queries, and the block around it,
+/// whose queries must hold too. A block comes after the block around
+/// it.
+#[derive(Debug, Clone)]
+pub(crate) struct ContainerBlock {
+    pub(crate) rule: ContainerRule,
+    pub(crate) parent: Option<u32>,
 }
 
 /// An `@scope` rule kept: what its scoping roots and limits are, and the
@@ -238,6 +258,8 @@ pub(crate) struct InForce<'s> {
     pub(crate) scopes: &'s [ScopeRule],
     /// Each sheet's implicit scoping root, if it has one.
     pub(crate) roots: &'s [Option<dom::NodeId>],
+    /// The set's `@container` blocks, which its rules' name.
+    pub(crate) containers: &'s [ContainerBlock],
 }
 
 /// The place of a rule the medium leaves out.
@@ -314,6 +336,8 @@ struct StyleRule {
     layer: u32,
     /// The innermost `@scope` rule around it.
     scope: Option<u32>,
+    /// The innermost `@container` block around it.
+    container: Option<u32>,
 }
 
 /// An `@page` rule kept: as a [`StyleRule`], with page selectors.
@@ -362,6 +386,8 @@ struct Place {
     block: Option<u32>,
     layer: u32,
     scope: Option<u32>,
+    /// The innermost `@container` block.
+    container: Option<u32>,
     /// What `&` is: the selectors of the style rule this is nested in,
     /// or of an `@scope` rule's root in one; `None` for `:where(:scope)`.
     parent: Option<Arc<SelectorList>>,
@@ -417,6 +443,7 @@ impl RuleSet {
                 block: None,
                 layer: UNLAYERED,
                 scope: None,
+                container: None,
                 parent: None,
                 weight: 0,
                 relative: Relative::No,
@@ -484,6 +511,7 @@ impl RuleSet {
                     rule: index as u32,
                     list: &rule.list,
                     scope: rule.scope,
+                    container: rule.container,
                     declarations: declarations_at(
                         &sheets[rule.sheet as usize],
                         self.path(rule.path),
@@ -509,6 +537,7 @@ impl RuleSet {
             index: &self.index,
             scopes: &self.scopes,
             roots: &self.roots,
+            containers: &self.containers,
         }
     }
 
@@ -623,6 +652,12 @@ impl RuleSet {
         kept.into_iter()
             .map(|(.., registration)| registration)
             .collect()
+    }
+
+    /// Whether any `@container` block was kept: the cascade of a document
+    /// with none asks nothing of its containers (D72).
+    pub(crate) fn has_containers(&self) -> bool {
+        !self.containers.is_empty()
     }
 
     /// Whether any `@keyframes` rule was kept: a document with none runs
@@ -1013,6 +1048,7 @@ impl Builder<'_> {
             block: place.block,
             layer: place.layer,
             scope: place.scope,
+            container: place.container,
         });
     }
 
@@ -1138,6 +1174,21 @@ impl Builder<'_> {
                 }
             }
             ("scope", Some(rules)) => self.scope_rule(at, rules, place),
+            ("container", Some(rules)) => {
+                let Some(rule) = ContainerRule::parse(&at.prelude) else {
+                    return;
+                };
+                let container = self.set.containers.len() as u32;
+                self.set.containers.push(ContainerBlock {
+                    rule,
+                    parent: place.container,
+                });
+                let inside = Place {
+                    container: Some(container),
+                    ..place.clone()
+                };
+                self.walk(rules, &inside);
+            }
             // The statement: layers named in order, without rules.
             ("layer", None) if at.block.is_none() => {
                 let names: Option<Vec<Vec<&str>>> = split_commas(&at.prelude)

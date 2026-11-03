@@ -150,6 +150,11 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 /// [`content_widths`], measured.
 fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     pass.measuring();
+    // A size container's inline-size containment (CSS Conditional 5
+    // section 7.2, D72): its content counts for nothing.
+    if crate::block::inline_size_contained(&b.style) {
+        return (0.0, 0.0);
+    }
     if let Some(replaced) = &b.replaced {
         return crate::replaced::content_widths(b, replaced);
     }

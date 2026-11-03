@@ -843,6 +843,7 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_ANCESTOR_FILTERS` | `1 << 14` | The most ancestor filters a matcher keeps, 512 bytes each: past it an element's selectors are matched without one. |
 | `style` | `MAX_FAILED` | `1 << 20` | The most places a matcher keeps a selector failed at; past it they are forgotten and found again. |
 | `style` | `MAX_KEPT_STYLES` | `4096` | The most base styles a cascade keeps for the elements made of the same (M35.2); past it they are forgotten and computed again. |
+| `style` | `MAX_CONTAINER_PASSES` | `64` | The most times a document is laid out again for the size containers whose sizes changed what their queries and units answer (gap batch H, D72), each pass settling one more level of nested containers; past it the deepest levels keep the styles of the pass before. |
 | `style` | `MAX_SHADOWS` | `64` | The most shadows a `box-shadow` may list (gap batch E): a longer list is invalid. |
 | `style` | `MAX_FILTERS` | `32` | The most functions a `filter` may list (gap batch E): a longer list is invalid. |
 | `style` | `MAX_SCHEME_WORDS` | `16` | The most scheme names a `color-scheme` may list (gap batch E). |

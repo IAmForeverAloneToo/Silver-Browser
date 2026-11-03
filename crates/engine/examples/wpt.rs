@@ -367,6 +367,9 @@ const SUPPORT_DIRECTORIES: &[&str] = &[
     "css/css-fonts/resources",
     "css/css-fonts/matching/resources",
     "css/css-fonts/variations/resources",
+    // Gap batch H's: the modules the logical properties' tests import,
+    // which their markup does not name.
+    "css/css-logical/resources",
 ];
 
 /// How deep `@import`s may go; the engine fetches no deeper.

@@ -915,9 +915,9 @@ fn what_the_parser_inserts_is_observed_before_its_next_script_runs() {
 
 /// The page put to the reference browser for the design note (Chrome
 /// 156, docs/design/scripting-essentials.md), in a window of its size:
-/// the engine says its lines, but for two. A binding's constructor
+/// the engine says its lines, but for one. A binding's constructor
 /// called without `new` throws QuickJS's TypeError, worded as it words
-/// it, and `:has()` is not a selector here (G12).
+/// it.
 #[test]
 fn the_reference_browsers_lines_are_the_engines() {
     let server = serve(|path| match path {
@@ -939,7 +939,6 @@ fn the_reference_browsers_lines_are_the_engines() {
         .collect();
     let mut expected = REFERENCE.map(str::to_owned).to_vec();
     expected[6] = "url call ! TypeError: class constructors must be invoked with 'new'".to_owned();
-    expected[34] = "css supports = \"true true false false\"".to_owned();
     assert_eq!(lines, expected);
 }
 
