@@ -136,6 +136,15 @@ const DIRECTORIES: &[&str] = &[
     "svg/render/reftests",
     "svg/as-image",
     "svg/crashtests",
+    // Web components, the cascade and animations (gap batch H).
+    "shadow-dom",
+    "custom-elements",
+    "css/css-nesting",
+    "css/css-logical",
+    "css/css-properties-values-api",
+    "css/css-env",
+    "web-animations",
+    "scroll-animations",
 ];
 
 /// The directories whose testharness.js tests are taken (M27), each with
@@ -221,6 +230,24 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("css/css-fonts", ""),
     ("css/css-text", ""),
     ("css/cssom-view", ""),
+    // Web components, the cascade and animations (gap batch H): shadow
+    // trees, custom elements, other documents, nesting, container
+    // queries, the cascade's keywords, registered properties, logical
+    // properties, selectors' invalidation, and animations by script.
+    ("shadow-dom", ""),
+    ("custom-elements", ""),
+    ("domparsing", ""),
+    ("css/css-nesting", ""),
+    ("css/css-conditional", ""),
+    ("css/css-cascade", ""),
+    ("css/css-logical", ""),
+    ("css/css-properties-values-api", ""),
+    ("css/css-env", ""),
+    ("css/selectors/invalidation", ""),
+    ("css/css-animations", ""),
+    ("css/css-transitions", ""),
+    ("web-animations", ""),
+    ("scroll-animations", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
