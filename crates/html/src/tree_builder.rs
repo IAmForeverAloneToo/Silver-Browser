@@ -33,7 +33,11 @@
 //!
 //! Comments, the doctype and processing instructions go in as their own
 //! nodes (D58), and what goes in a `template` goes in its contents, the
-//! fragment the DOM made with it. A doctype also sets the document's
+//! fragment the DOM made with it. A `template` with a valid
+//! `shadowrootmode`, where the builder allows declarative shadow roots
+//! (gap batch H, D68), attaches a shadow root to the element it is in
+//! and stands on the stack for it, out of the tree, what goes in it
+//! going in the shadow root. A doctype also sets the document's
 //! quirks mode ([`TreeBuilder::quirks_mode`]), which decides whether a
 //! `table` closes an open `p`.
 //!
@@ -78,9 +82,9 @@
 //! HTML in MathML) and MathML's text integration points take HTML
 //! within them. CDATA sections are read in foreign content.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use dom::{Document, Namespace, NodeData, NodeId};
+use dom::{Document, Namespace, NodeData, NodeId, ShadowRootInit, ShadowRootMode};
 use encoding::Encoding;
 
 use crate::encoding_sniffing::extract_from_meta_content;
@@ -552,6 +556,15 @@ pub struct TreeBuilder {
     /// A `selectedcontent` was parsed: before one, no option is looked
     /// at, so that a long `select` stays linear.
     selectedcontent: bool,
+    /// Whether a `template` with a `shadowrootmode` attaches a shadow
+    /// root (the document's "allow declarative shadow roots", HTML
+    /// section 13.2.6.4.4).
+    declarative_shadow_roots: bool,
+    /// The declarative templates open, each with the shadow root what
+    /// goes in it goes in.
+    shadow_contents: HashMap<NodeId, NodeId>,
+    /// Declarative templates popped, out of the tree, to free.
+    dropped: Vec<NodeId>,
 }
 
 impl Default for TreeBuilder {
@@ -588,7 +601,18 @@ impl TreeBuilder {
             steps: 0,
             popped_options: Vec::new(),
             selectedcontent: false,
+            declarative_shadow_roots: true,
+            shadow_contents: HashMap::new(),
+            dropped: Vec::new(),
         }
+    }
+
+    /// Whether a `template` with a `shadowrootmode` attaches a shadow
+    /// root to the element it is in: a document's parser's does unless
+    /// told otherwise (`DOMParser`'s, a response's), a fragment's does
+    /// not unless told (`setHTMLUnsafe`'s does, `innerHTML`'s not).
+    pub fn set_declarative_shadow_roots(&mut self, allow: bool) {
+        self.declarative_shadow_roots = allow;
     }
 
     /// A builder for a fragment (HTML section 13.4) that builds into the
@@ -610,6 +634,7 @@ impl TreeBuilder {
     ) -> TreeBuilder {
         let mut builder = TreeBuilder {
             max_depth,
+            declarative_shadow_roots: false,
             ..TreeBuilder::new(scripting)
         };
         let mut root = Open::html(container, "html");
@@ -687,7 +712,15 @@ impl TreeBuilder {
             self.html_token(document, token, line)
         };
         self.clone_popped_options(document);
+        self.free_dropped(document);
         state
+    }
+
+    /// Frees the declarative templates popped, which no tree holds.
+    fn free_dropped(&mut self, document: &mut Document) {
+        for template in std::mem::take(&mut self.dropped) {
+            let _ = document.free(template);
+        }
     }
 
     /// Finishes the document: the end-of-file token, which implies what
@@ -711,6 +744,9 @@ impl TreeBuilder {
                 .map(|open| open.id),
         );
         self.clone_popped_options(document);
+        self.dropped
+            .extend(self.shadow_contents.drain().map(|(template, _)| template));
+        self.free_dropped(document);
         self.open.clear();
         self.on_stack.clear();
         self.active.clear();
@@ -1210,7 +1246,12 @@ impl TreeBuilder {
             }
             "script" => self.raw_text(document, tag, TextState::ScriptData),
             "template" => {
-                self.insert_html(document, tag);
+                match self.declarative_shadow(&tag) {
+                    Some(init) => self.insert_declarative(document, tag, init),
+                    None => {
+                        self.insert_html(document, tag);
+                    }
+                }
                 self.push_marker();
                 self.frameset_ok = false;
                 self.mode = Mode::InTemplate;
@@ -2254,7 +2295,13 @@ impl TreeBuilder {
     /// template, in its contents.
     fn place(&self, document: &Document, target: Option<usize>) -> Place {
         match self.place_in(document, target) {
-            Place::Last(parent) => Place::Last(document.template_content(parent).unwrap_or(parent)),
+            Place::Last(parent) => Place::Last(
+                self.shadow_contents
+                    .get(&parent)
+                    .copied()
+                    .or_else(|| document.template_content(parent))
+                    .unwrap_or(parent),
+            ),
             before => before,
         }
     }
@@ -2324,6 +2371,70 @@ impl TreeBuilder {
     /// Inserts an HTML element for `tag` and pushes it onto the stack.
     fn insert_html(&mut self, document: &mut Document, tag: Tag) -> Option<NodeId> {
         self.insert_element(document, tag, true)
+    }
+
+    /// What the declarative shadow root a `template` start tag asks for
+    /// is made with (HTML section 13.2.6.4.4, "in head", a start tag
+    /// "template"): `None` unless its `shadowrootmode` is `open` or
+    /// `closed`, the builder allows declarative shadow roots, and the
+    /// current node is an element of the tree, not its topmost or a
+    /// fragment's context.
+    fn declarative_shadow(&self, tag: &Tag) -> Option<ShadowRootInit> {
+        if !self.declarative_shadow_roots || self.open.len() <= 1 {
+            return None;
+        }
+        let mode = match tag.attr("shadowrootmode")?.to_ascii_lowercase().as_str() {
+            "open" => ShadowRootMode::Open,
+            "closed" => ShadowRootMode::Closed,
+            _ => return None,
+        };
+        let manual = tag
+            .attr("shadowrootslotassignment")
+            .is_some_and(|value| value.eq_ignore_ascii_case("manual"));
+        Some(ShadowRootInit {
+            mode,
+            delegates_focus: tag.attr("shadowrootdelegatesfocus").is_some(),
+            slot_assignment: match manual {
+                true => dom::SlotAssignmentMode::Manual,
+                false => dom::SlotAssignmentMode::Named,
+            },
+            clonable: tag.attr("shadowrootclonable").is_some(),
+            serializable: tag.attr("shadowrootserializable").is_some(),
+        })
+    }
+
+    /// A declarative shadow root's `template`: made and pushed onto the
+    /// stack alone, a shadow root attached to the current node with
+    /// `init` and what goes in the template going in it; inserted as any
+    /// template is when the current node hosts a shadow root already or
+    /// may not host one.
+    fn insert_declarative(&mut self, document: &mut Document, tag: Tag, init: ShadowRootInit) {
+        let Some(host) = self.open.last().map(|open| open.id) else {
+            return;
+        };
+        let Some((place, depth)) = self.place_for_element(document) else {
+            return;
+        };
+        let reference = tag.attr("shadowrootreferencetarget").map(str::to_owned);
+        let Ok(template) = document.create_element_with(&tag.name, tag.attrs) else {
+            return;
+        };
+        let attached = match document.shadow_root(host) {
+            Some(_) => None,
+            None => document.attach_shadow(host, init, true).ok(),
+        };
+        match attached {
+            Some(root) => {
+                let _ = document.set_reference_target(root, reference.as_deref());
+                self.shadow_contents.insert(template, root);
+            }
+            None if !put(document, place, template) => return,
+            None => {}
+        }
+        let mut open = Open::html(template, "template");
+        open.depth = depth;
+        open.at = self.moves;
+        self.push_open(open);
     }
 
     /// Inserts an HTML element for `tag` and pops it at once (a void
@@ -2402,7 +2513,7 @@ impl TreeBuilder {
         };
         if !matches!(
             document.data(parent),
-            Some(NodeData::Element { .. } | NodeData::DocumentFragment)
+            Some(NodeData::Element { .. } | NodeData::DocumentFragment | NodeData::ShadowRoot(_))
         ) {
             return;
         }
@@ -2466,6 +2577,9 @@ impl TreeBuilder {
         self.on_stack.remove(&open.id);
         if open.is("option") {
             self.popped_options.push(open.id);
+        }
+        if !self.shadow_contents.is_empty() && self.shadow_contents.remove(&open.id).is_some() {
+            self.dropped.push(open.id);
         }
         Some(open)
     }
@@ -3067,13 +3181,17 @@ fn put(document: &mut Document, place: Place, node: NodeId) -> bool {
 }
 
 /// How many elements the path from the root to `node` holds, `node`
-/// counted, a template's contents counted under the template.
+/// counted, a template's contents counted under the template and a
+/// shadow tree under its host.
 fn element_depth(document: &Document, node: NodeId) -> usize {
     let mut depth = 0;
     let mut at = Some(node);
     while let Some(n) = at {
         depth += usize::from(document.is_element(n));
-        at = document.parent(n).or_else(|| document.template_host(n));
+        at = document
+            .parent(n)
+            .or_else(|| document.template_host(n))
+            .or_else(|| document.shadow_host(n));
     }
     depth
 }

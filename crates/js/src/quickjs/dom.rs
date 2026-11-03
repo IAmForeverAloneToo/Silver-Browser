@@ -142,6 +142,19 @@ impl<'js> Args<'_, 'js> {
             .collect()
     }
 
+    /// A list of nodes' handles, as an array of them.
+    fn handles(&self, i: usize) -> rquickjs::Result<Vec<Handle>> {
+        self.numbers(i)?
+            .into_iter()
+            .map(|number| {
+                if number.fract() != 0.0 || !(0.0..=MAX_HANDLE as f64).contains(&number) {
+                    return Err(Exception::throw_type(self.ctx, "not a node"));
+                }
+                Ok(Handle(number as u64))
+            })
+            .collect()
+    }
+
     /// A list of strings, as an array of them.
     fn strings(&self, i: usize) -> rquickjs::Result<Vec<String>> {
         let Some(array) = self.value(i).into_array() else {
@@ -320,6 +333,50 @@ const NATIVES: &[(&str, Decode)] = &[
     ("templateContent", |a| {
         Ok(Call::TemplateContent(a.handle(0)?))
     }),
+    ("attachShadow", |a| {
+        Ok(Call::AttachShadow {
+            host: a.handle(0)?,
+            mode: a.string(1)?,
+            delegates_focus: a.bool(2),
+            slot_assignment: a.string(3)?,
+            clonable: a.bool(4),
+            serializable: a.bool(5),
+            reference_target: a.maybe_string(6)?,
+        })
+    }),
+    ("setReferenceTarget", |a| {
+        Ok(Call::SetReferenceTarget(a.handle(0)?, a.maybe_string(1)?))
+    }),
+    ("shadowRoot", |a| Ok(Call::ShadowRoot(a.handle(0)?))),
+    ("shadowInfo", |a| Ok(Call::ShadowInfo(a.handle(0)?))),
+    ("shadowHost", |a| Ok(Call::ShadowHost(a.handle(0)?))),
+    ("rootNode", |a| Ok(Call::RootNode(a.handle(0)?, a.bool(1)))),
+    ("assignedSlot", |a| Ok(Call::AssignedSlot(a.handle(0)?))),
+    ("assignedNodes", |a| {
+        Ok(Call::AssignedNodes(a.handle(0)?, a.bool(1)))
+    }),
+    ("assignSlot", |a| {
+        Ok(Call::AssignSlot(a.handle(0)?, a.handles(1)?))
+    }),
+    ("takeSlotChanges", |_| Ok(Call::TakeSlotChanges)),
+    ("eventPath", |a| {
+        Ok(Call::EventPath {
+            target: a.handle(0)?,
+            related: a.maybe_handle(1)?,
+            composed: a.bool(2),
+        })
+    }),
+    ("retarget", |a| {
+        Ok(Call::Retarget(a.handle(0)?, a.handle(1)?))
+    }),
+    ("focusDelegate", |a| Ok(Call::FocusDelegate(a.handle(0)?))),
+    ("getHTML", |a| {
+        Ok(Call::GetHtml {
+            node: a.handle(0)?,
+            serializable: a.bool(1),
+            roots: a.handles(2)?,
+        })
+    }),
     ("doctype", |a| Ok(Call::Doctype(a.maybe_handle(0)?))),
     ("ownerDocument", |a| Ok(Call::OwnerDocument(a.handle(0)?))),
     ("createDocument", |a| {
@@ -332,6 +389,7 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::ParseDocument {
             markup: a.string(0)?,
             mime: a.string(1)?,
+            declarative: a.bool(2),
         })
     }),
     ("parseResponse", |a| {

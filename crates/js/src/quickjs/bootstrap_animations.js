@@ -1187,6 +1187,19 @@
     enumerable: true,
     configurable: true,
   });
+  // `ShadowRoot.getAnimations()` (DocumentOrShadowRoot): the animations
+  // of the elements of its tree (D68).
+  defineProperty(ShadowRoot.prototype, "getAnimations", {
+    value: {
+      getAnimations() {
+        if (!isNode(this) || kindOf(this) !== 11) throw new $TypeError("Illegal invocation");
+        return animationsOf(handleOf(this), true, null);
+      },
+    }.getAnimations,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   defineProperty(Document.prototype, "timeline", {
     get: ReflectGetOwnPropertyDescriptor({
       get timeline() {

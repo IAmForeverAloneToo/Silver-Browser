@@ -249,6 +249,28 @@ impl Tree {
                 }
                 Answer::Nodes(ancestors)
             }
+            // A tree with no shadow trees: the target and its ancestors,
+            // the target its own, the related target the same throughout,
+            // nothing cleared.
+            Call::EventPath {
+                target, related, ..
+            } => {
+                let related = related.map_or(-1.0, |r| r.0 as f64);
+                let mut numbers = Vec::new();
+                let mut at = Some(self.node(target)?);
+                while let Some(node) = at {
+                    let adjusted = if node as u64 == target.0 {
+                        node as f64
+                    } else {
+                        -1.0
+                    };
+                    numbers.extend([node as f64, adjusted, related, 0.0, 0.0, 0.0]);
+                    at = self.nodes[node].parent;
+                }
+                numbers.extend([0.0, related]);
+                Answer::Numbers(numbers)
+            }
+            Call::TakeSlotChanges => Answer::Nodes(Vec::new()),
             // A link, the tests' only element with an activation
             // behaviour (M26).
             Call::Activator(h) => {

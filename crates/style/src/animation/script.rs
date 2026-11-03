@@ -205,7 +205,11 @@ pub fn pseudo_element_name(pseudo: PseudoElement) -> Option<&'static str> {
         PseudoElement::Picker => Some("::picker(select)"),
         PseudoElement::PickerIcon => Some("::picker-icon"),
         PseudoElement::Checkmark => Some("::checkmark"),
-        PseudoElement::Nested | PseudoElement::WebkitPrefixed => None,
+        // Elements of other trees, not pseudo-elements of this one (D69).
+        PseudoElement::Nested
+        | PseudoElement::WebkitPrefixed
+        | PseudoElement::Slotted
+        | PseudoElement::Part => None,
     }
 }
 

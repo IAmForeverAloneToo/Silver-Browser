@@ -143,6 +143,8 @@ pub mod service_worker;
 pub mod settings;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod shadow_tests;
 mod storage;
 mod submit;
 mod svg_images;
@@ -1176,6 +1178,21 @@ fn drawn_size(
     (w, h)
 }
 
+/// The stylesheets `page` gives, its shadow trees' with them (D69).
+fn stylesheets_of(page: &loader::Page, document: &Document) -> Stylesheets {
+    page.stylesheets(document)
+}
+
+/// Whether `stylesheets` are those `page` gives in `document`: its
+/// sheets, their scoping roots, the properties its scripts registered,
+/// and its shadow trees' sheets (D69).
+fn same_sheets(page: &loader::Page, document: &Document, stylesheets: &Stylesheets) -> bool {
+    page.sheets() == stylesheets.sheets()
+        && page.scope_roots(document) == stylesheets.scope_roots()
+        && page.registered_properties() == stylesheets.registered()
+        && stylesheets.same_shadow_trees(&page.shadow_sheets(document))
+}
+
 /// Whether `change` may change the images the document's `img` elements
 /// show: nodes in or out, a `src`, or an `href` that may be a base URL's.
 fn may_touch_images(change: &Change) -> bool {
@@ -1185,7 +1202,8 @@ fn may_touch_images(change: &Change) -> bool {
         Change::TextChanged { .. }
         | Change::StateChanged { .. }
         | Change::ControlChanged { .. }
-        | Change::Moved { .. } => false,
+        | Change::Moved { .. }
+        | Change::FlatTree { .. } => false,
     }
 }
 
@@ -1243,7 +1261,7 @@ fn change_in_svg(document: &Document, change: &Change) -> bool {
         Change::AttributeChanged { element, .. }
         | Change::StateChanged { element, .. }
         | Change::ControlChanged { element } => in_svg_content(document, *element),
-        Change::TextChanged { node } => in_svg_content(document, *node),
+        Change::TextChanged { node } | Change::FlatTree { node } => in_svg_content(document, *node),
         Change::Everything | Change::Moved { .. } => false,
     }
 }
@@ -1790,8 +1808,9 @@ impl Engine {
 
     /// HTML's "navigate to a fragment": a new entry for `url`, pushed or
     /// put in the current one's place, with the current entry's document
-    /// state, so the document stays and only its URL changes; the next
-    /// frame scrolls to the fragment. Nothing is fetched, and a
+    /// state, so the document stays and only its URL changes; it scrolls
+    /// to the fragment at once, as laid out now, as the reference browser
+    /// does, and again at the next frame. Nothing is fetched, and a
     /// navigation under way goes on, unless it fetches the current
     /// entry's document again for a reload or a traversal, which the
     /// new entry would leave without a place.
@@ -2771,10 +2790,25 @@ impl Engine {
         let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
         let order = focus::sequential_order(&self.shown.document, styles);
         let mut at = current.and_then(|current| order.iter().position(|&node| node == current));
+        // An element focused that is not in the order (a negative
+        // `tabindex`, or in a scope skipped so, D68) is left for the area
+        // after it in its scope, or the scopes around it.
+        let mut beside = None;
+        if at.is_none()
+            && let Some(current) = current.filter(|&c| self.shown.document.contains(c))
+        {
+            beside = Some(focus::navigate_from(
+                &self.shown.document,
+                styles,
+                current,
+                backward,
+            ));
+        }
         loop {
             let next = match (at, backward) {
                 (Some(i), false) => order.get(i + 1).copied(),
                 (Some(i), true) => i.checked_sub(1).map(|i| order[i]),
+                (None, _) if beside.is_some() => beside.take().flatten(),
                 (None, false) => order.first().copied(),
                 (None, true) => order.last().copied(),
             };
@@ -3407,11 +3441,12 @@ impl Engine {
         (x, y)
     }
 
-    /// The element and its element ancestors.
+    /// The element and its element ancestors, in the flat tree (D68):
+    /// a host's around what is in its shadow tree.
     fn chain(&self, node: NodeId) -> Vec<NodeId> {
         let document = &self.shown.document;
         std::iter::once(node)
-            .chain(document.ancestors(node))
+            .chain(document.flat_ancestors(node))
             .filter(|&node| document.is_element(node))
             .collect()
     }
@@ -3452,7 +3487,7 @@ impl Engine {
     fn link_around(&self, node: NodeId) -> Option<Link> {
         let document = &self.shown.document;
         let (node, href) = std::iter::once(node)
-            .chain(document.ancestors(node))
+            .chain(document.flat_ancestors(node))
             .find_map(|node| {
                 matches!(document.tag(node), Some("a" | "area"))
                     .then(|| document.attr(node, "href").map(|href| (node, href)))
@@ -3479,7 +3514,7 @@ impl Engine {
                 && dom::forms::form_owner(document, n).is_some()
         };
         let activator = std::iter::once(node)
-            .chain(document.ancestors(node))
+            .chain(document.flat_ancestors(node))
             .find(|&n| match document.tag(n) {
                 Some("a" | "area") => document.attr(n, "href").is_some(),
                 _ if button(n) => true,
@@ -3544,7 +3579,7 @@ impl Engine {
         let document = &self.shown.document;
         let chain: Vec<NodeId> = hit
             .into_iter()
-            .flat_map(|node| std::iter::once(node).chain(document.ancestors(node)))
+            .flat_map(|node| std::iter::once(node).chain(document.flat_ancestors(node)))
             .filter(|&node| document.is_element(node))
             .collect();
         self.set_hovered(chain);
@@ -3660,10 +3695,14 @@ impl Engine {
         }
         self.shown.autofocus_seen = Some(self.shown.styled_at);
         let document = &self.shown.document;
-        let candidate = document.subtree(document.root()).find(|&node| {
-            document.attr(node, "autofocus").is_some()
-                && focus::focusable(document, Some(&styled.styles), node)
-        });
+        // A shadow tree's elements are candidates too (D68).
+        let candidate = document
+            .shadow_including_subtree(document.root())
+            .into_iter()
+            .find(|&node| {
+                document.attr(node, "autofocus").is_some()
+                    && focus::focusable(document, Some(&styled.styles), node)
+            });
         if let Some(candidate) = candidate {
             self.shown.autofocused = true;
             self.focus(Some(candidate), true, true);
@@ -6898,16 +6937,12 @@ impl Engine {
     /// differ from those the cascade has, the next frame cascades the
     /// whole document.
     pub(crate) fn sheets_changed(&mut self) {
-        let page = &self.shown.page;
-        let (sheets, registered) = (page.sheets(), page.registered_properties());
-        let roots = page.scope_roots(&self.shown.document);
-        let prepared = &self.shown.stylesheets;
-        if sheets != prepared.sheets()
-            || roots != prepared.scope_roots()
-            || registered != prepared.registered()
-        {
-            self.shown.stylesheets =
-                Stylesheets::with_scope_roots(sheets, roots).with_registered(registered.to_vec());
+        if !same_sheets(
+            &self.shown.page,
+            &self.shown.document,
+            &self.shown.stylesheets,
+        ) {
+            self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
             self.shown.recascade = true;
             self.shown.pending.clear();
             self.shown.layout = None;
@@ -7154,13 +7189,12 @@ impl Engine {
                 shown.scripts.preload_modules(&mut lent);
             }
             self.update_load_state();
-            let (page, prepared) = (&self.shown.page, &self.shown.stylesheets);
-            let roots = page.scope_roots(&self.shown.document);
-            sheets = Some((page.sheets(), roots)).filter(|(sheets, roots)| {
-                sheets != prepared.sheets()
-                    || roots != prepared.scope_roots()
-                    || page.registered_properties() != prepared.registered()
-            });
+            sheets = (!same_sheets(
+                &self.shown.page,
+                &self.shown.document,
+                &self.shown.stylesheets,
+            ))
+            .then_some(());
         }
         if changes.iter().any(may_touch_images) {
             self.request_images();
@@ -7200,10 +7234,8 @@ impl Engine {
         if sheets.is_some() || read {
             self.shown.layout = None;
         }
-        if let Some((sheets, roots)) = sheets {
-            let registered = self.shown.page.registered_properties().to_vec();
-            self.shown.stylesheets =
-                Stylesheets::with_scope_roots(sheets, roots).with_registered(registered);
+        if sheets.is_some() {
+            self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
             self.shown.recascade = true;
             self.shown.pending.clear();
         } else if self.shown.styled.is_some()
@@ -7243,6 +7275,19 @@ impl Engine {
                 && !self.hidden
                 && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
             || self.frames_need_frame()
+            || self.focus_fixup_due()
+    }
+
+    /// Whether the element focused can no longer take the focus by the
+    /// last frame's styles, which the next frame's focus fixup makes it
+    /// lose: a host made `display: none` by its `:focus`, which the focus
+    /// in its shadow tree gives it, styled so only in the frame after.
+    fn focus_fixup_due(&self) -> bool {
+        let (Some(focused), Some(styled)) = (self.shown.document.focused(), &self.shown.styled)
+        else {
+            return false;
+        };
+        !focus::focusable(&self.shown.document, Some(&styled.styles), focused)
     }
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is

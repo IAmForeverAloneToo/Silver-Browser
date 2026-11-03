@@ -107,6 +107,7 @@ pub(crate) fn measure(
                             clips: clips.clone(),
                             rects: vec![bounds],
                             margin,
+                            origin: (rect.x, rect.y),
                         });
                     }
                 }

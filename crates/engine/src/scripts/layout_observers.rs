@@ -29,6 +29,10 @@ pub(crate) struct Measured {
     pub(crate) rects: Vec<[f32; 4]>,
     /// Its used margins, top, right, bottom and left.
     pub(crate) margin: [f32; 4],
+    /// Its first box's top left corner as laid out, the transforms
+    /// around it not applied: what `offsetLeft` and `offsetTop` measure
+    /// (CSSOM View section 7).
+    pub(crate) origin: (f32, f32),
 }
 
 impl Measured {
@@ -335,6 +339,7 @@ mod tests {
             clips: Vec::new(),
             rects: vec![bounds],
             margin: [0.0; 4],
+            origin: (bounds[0], bounds[1]),
         }
     }
 

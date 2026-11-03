@@ -114,18 +114,60 @@ pub(super) fn range_rects(
             Held::Text(..) => None,
         })
         .collect();
-    let around: HashSet<NodeId> = held
+    let mut around: HashSet<NodeId> = held
         .iter()
         .filter_map(|h| match h {
             Held::Text(node, ..) => document.parent(*node),
             Held::Element(_) => None,
         })
         .collect();
-    let measured = crate::geometry::measure(layout, viewport, offsets, &elements);
+    let mut measured = crate::geometry::measure(layout, viewport, offsets, &elements);
+    // An element held whole that has no box, as one of `display:
+    // contents` has none, gives what is inside it instead (CSSOM View
+    // section 6.2 includes such elements recursively): its children
+    // with boxes, its text, and the same of its children without.
+    let mut inner = HashSet::new();
+    for &node in elements.iter().filter(|node| !measured.contains_key(node)) {
+        for at in document.subtree(node).skip(1) {
+            if document.is_element(at) {
+                inner.insert(at);
+            } else if document.text(at).is_some()
+                && let Some(parent) = document.parent(at)
+            {
+                around.insert(parent);
+            }
+        }
+    }
+    if !inner.is_empty() {
+        measured.extend(crate::geometry::measure(layout, viewport, offsets, &inner));
+    }
+    let mut expanded = Vec::with_capacity(held.len());
+    for h in held {
+        let node = match h {
+            Held::Element(node) if !measured.contains_key(&node) => node,
+            other => {
+                expanded.push(other);
+                continue;
+            }
+        };
+        let mut stack: Vec<NodeId> = document.children(node).collect();
+        stack.reverse();
+        while let Some(at) = stack.pop() {
+            if let Some(data) = document.text(at) {
+                expanded.push(Held::Text(at, 0, data.encode_utf16().count() as u32));
+            } else if measured.contains_key(&at) {
+                expanded.push(Held::Element(at));
+            } else if document.is_element(at) {
+                let at_children = stack.len();
+                stack.extend(document.children(at));
+                stack[at_children..].reverse();
+            }
+        }
+    }
     let drawn = text_fragments(layout, viewport, offsets, &around);
     let mut matched: HashMap<NodeId, HashMap<NodeId, Vec<Slot>>> = HashMap::new();
     let mut out = Vec::new();
-    for h in held {
+    for h in expanded {
         match h {
             Held::Element(node) => {
                 if let Some(m) = measured.get(&node) {

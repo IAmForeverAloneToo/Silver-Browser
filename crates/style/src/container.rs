@@ -835,7 +835,7 @@ impl Query {
         let document = containers.document;
         let mut at = from;
         while let Some(node) = at {
-            at = document.parent_element(node);
+            at = document.flat_parent_element(node);
             let Some(style) = containers.styles.get(node) else {
                 continue;
             };
@@ -1634,7 +1634,7 @@ impl Containers<'_> {
         let (mut width, mut height) = (None, None);
         let mut at = from;
         while let Some(node) = at {
-            at = self.document.parent_element(node);
+            at = self.document.flat_parent_element(node);
             if width.is_some() && height.is_some() {
                 break;
             }
@@ -1721,7 +1721,7 @@ impl Containers<'_> {
             let initial = registered.and_then(|r| r.initial.as_deref());
             let inherited = || {
                 self.document
-                    .parent_element(node)
+                    .flat_parent_element(node)
                     .and_then(|parent| self.styles.get(parent))
                     .and_then(|parent| parent.custom_property(name))
             };
@@ -1856,7 +1856,7 @@ impl calc::Lengths for Units<'_, '_> {
         use calc::LengthUnit as U;
         let (vw, vh) = self.containers.viewport;
         let container = |pick: fn(f32, f32) -> f32| {
-            let parent = self.containers.document.parent_element(self.node);
+            let parent = self.containers.document.flat_parent_element(self.node);
             let (w, h) = self.containers.unit_sizes(parent);
             value * f64::from(pick(w, h)) / 100.0
         };

@@ -134,7 +134,7 @@ use crate::media::{ColorScheme, Media};
 use crate::page::{PagePosition, PageStyle};
 use crate::property::{PropertyRegistration, Registry};
 use crate::rule_set::{InForce, KeyframesInForce, RuleSet};
-use crate::selector_matching::{Matcher, PseudoElement, SelectorList, Specificity};
+use crate::selector_matching::{Matcher, PseudoElement, Selector, SelectorList, Specificity};
 
 mod animated;
 mod backgrounds;
@@ -164,6 +164,8 @@ pub use palette::{
 mod presentational;
 mod registered;
 mod revert;
+#[cfg(test)]
+mod scoping_tests;
 mod svg;
 mod text;
 
@@ -480,7 +482,9 @@ impl PseudoStyles {
             | PseudoElement::PickerIcon
             | PseudoElement::Checkmark
             | PseudoElement::Nested
-            | PseudoElement::WebkitPrefixed => None,
+            | PseudoElement::WebkitPrefixed
+            | PseudoElement::Slotted
+            | PseudoElement::Part => None,
         }
     }
 }
@@ -543,7 +547,9 @@ impl Target {
             | PseudoElement::PickerIcon
             | PseudoElement::Checkmark
             | PseudoElement::Nested
-            | PseudoElement::WebkitPrefixed => None,
+            | PseudoElement::WebkitPrefixed
+            | PseudoElement::Slotted
+            | PseudoElement::Part => None,
         }
     }
 
@@ -749,6 +755,11 @@ pub fn cascade_document(
     Stylesheets::new(author_sheets.to_vec()).cascade(document, context)
 }
 
+/// A shadow tree's sheets as [`Stylesheets::with_shadow_trees`] takes
+/// them (D69): its root, its sheets in order, and each sheet's implicit
+/// scoping root.
+pub type ShadowTreeSheets = (NodeId, Vec<css::Stylesheet>, Vec<Option<NodeId>>);
+
 /// A document's author stylesheets prepared for the cascade (M13.1):
 /// each style rule's selectors parsed once, with the conditions and the
 /// layer it is in (M20), and what the selectors depend on, the built-in
@@ -767,6 +778,10 @@ pub struct Stylesheets {
     /// included: what says the declarations a custom property map was
     /// computed from were these sheets' (M21.1, `crate::custom`).
     id: u64,
+    /// Each shadow tree's rules (gap batch H, D69), by its shadow root:
+    /// its sheets made a set once, shared by every tree of the same
+    /// sheets, a component of a thousand instances having one.
+    shadow: HashMap<NodeId, Arc<Stylesheets>>,
 }
 
 impl Clone for Stylesheets {
@@ -779,6 +794,7 @@ impl Clone for Stylesheets {
             features: self.features.clone(),
             registered: self.registered.clone(),
             id: next_sheets_id(),
+            shadow: self.shadow.clone(),
         }
     }
 }
@@ -806,6 +822,7 @@ impl Stylesheets {
             features,
             registered: Vec::new(),
             id: next_sheets_id(),
+            shadow: HashMap::new(),
         }
     }
 
@@ -838,6 +855,51 @@ impl Stylesheets {
     /// [`Stylesheets::with_scope_roots`] was given them.
     pub fn scope_roots(&self) -> &[Option<NodeId>] {
         self.rules.scope_roots()
+    }
+
+    /// These sheets with the shadow trees' (D69), `trees` each a shadow
+    /// root, its sheets in order, its `<style>` and `<link>` elements'
+    /// then its adopted ones, and each sheet's implicit scoping root as
+    /// [`Stylesheets::with_scope_roots`] takes them, the host for none:
+    /// a tree's rules match its own elements, and
+    /// its host, `::slotted()` and `::part()` as CSS Scoping 1 says. The
+    /// trees of the same sheets share one set, and what the sets'
+    /// selectors depend on, the document's changes reach as these
+    /// sheets' own.
+    pub fn with_shadow_trees(mut self, trees: Vec<ShadowTreeSheets>) -> Self {
+        let mut made: Vec<Arc<Stylesheets>> = Vec::new();
+        for (root, sheets, roots) in trees {
+            if sheets.is_empty() {
+                continue;
+            }
+            let same = |set: &&Arc<Stylesheets>| set.sheets == sheets && set.scope_roots() == roots;
+            let set = match made.iter().find(same) {
+                Some(set) => set.clone(),
+                None => {
+                    let set = Arc::new(Stylesheets::with_scope_roots(sheets, roots));
+                    self.features.absorb(&set.features);
+                    made.push(set.clone());
+                    set
+                }
+            };
+            self.shadow.insert(root, set);
+        }
+        self
+    }
+
+    /// Whether the shadow trees' sheets are `trees`, as
+    /// [`Stylesheets::with_shadow_trees`] takes them.
+    pub fn same_shadow_trees(&self, trees: &[ShadowTreeSheets]) -> bool {
+        let given: Vec<&ShadowTreeSheets> = trees
+            .iter()
+            .filter(|(_, sheets, _)| !sheets.is_empty())
+            .collect();
+        given.len() == self.shadow.len()
+            && given.iter().all(|(root, sheets, roots)| {
+                self.shadow.get(root).is_some_and(|set| {
+                    set.sheets == *sheets && set.scope_roots() == roots.as_slice()
+                })
+            })
     }
 
     /// The sheets, in document order.
@@ -1030,11 +1092,23 @@ impl Stylesheets {
         )
     }
 
-    /// The answers of the UA sheet's `@media` lists, then these sheets'.
+    /// The answers of the UA sheet's `@media` lists, then these sheets',
+    /// then the shadow trees', by their roots.
     fn answers(&self, media: &Media) -> Vec<bool> {
         let mut answers = ua().rules.answers(media);
         answers.extend(self.rules.answers(media));
+        answers.extend(self.shadow_answers(media));
         answers
+    }
+
+    /// The answers of the shadow trees' `@media` lists, by their roots.
+    fn shadow_answers(&self, media: &Media) -> Vec<bool> {
+        let mut roots: Vec<&NodeId> = self.shadow.keys().collect();
+        roots.sort_unstable();
+        roots
+            .into_iter()
+            .flat_map(|root| self.shadow[root].rules.answers(media))
+            .collect()
     }
 
     /// A cascader over `document` with the rules in force under
@@ -1062,9 +1136,31 @@ impl Stylesheets {
         let registry = Registry::new(self.rules.properties_in_force(&answers), &self.registered);
         let mut media = ua_answers;
         media.extend(answers);
+        media.extend(self.shadow_answers(&context.media));
         let mut cascader = Cascader::new(document, ua_rules, author, context, media, self.id);
         cascader.substitutions = Substitutions::new(self.id).with_registry(Arc::new(registry));
         cascader.keyframes = keyframes;
+        cascader.shadow = self
+            .shadow
+            .iter()
+            .map(|(&root, set)| {
+                let answers = set.rules.answers(&context.media);
+                (root, set.rules.in_force(&set.sheets, &answers))
+            })
+            .collect();
+        // Each shadow tree's `@keyframes` rules, its names its own (CSS
+        // Scoping 1 section 3.5).
+        if context.animations.is_some() {
+            cascader.shadow_keyframes = self
+                .shadow
+                .iter()
+                .filter(|(_, set)| set.rules.has_keyframes())
+                .map(|(&root, set)| {
+                    let answers = set.rules.answers(&context.media);
+                    (root, set.rules.keyframes_in_force(&set.sheets, &answers))
+                })
+                .collect();
+        }
         cascader
     }
 
@@ -1172,7 +1268,7 @@ impl Stylesheets {
             return Restyle::full(styles);
         }
         for removed in &invalidation.removed {
-            for node in document.subtree(*removed) {
+            for node in document.shadow_including_subtree(*removed) {
                 styles.forget(node);
             }
         }
@@ -1194,9 +1290,10 @@ impl Stylesheets {
                 pending.insert(node, Reach::Subtree);
             }
         }
+        // Through the flat tree (D68): what an element inherits from.
         for &node in pending.keys() {
             levels
-                .entry(document.ancestors(node).count())
+                .entry(document.flat_ancestors(node).count())
                 .or_default()
                 .push(node);
         }
@@ -1208,7 +1305,7 @@ impl Stylesheets {
                     continue; // listed twice
                 };
                 let parent = document
-                    .parent(node)
+                    .flat_parent(node)
                     .and_then(|parent| styles.computed(parent))
                     .unwrap_or(&no_parent);
                 // The root element resolves `rem` against the initial
@@ -1275,7 +1372,11 @@ impl Stylesheets {
                     } else {
                         Reach::Element
                     };
-                    for child in document.element_children(node) {
+                    let children: Vec<NodeId> = document
+                        .flat_children(node)
+                        .filter(|&child| document.is_element(child))
+                        .collect();
+                    for child in children {
                         match pending.get_mut(&child) {
                             Some(r) => *r = (*r).max(child_reach),
                             None => {
@@ -1662,7 +1763,7 @@ impl Recascader<'_> {
             self.document,
             (&mut cascader.matcher, &mut cascader.candidates),
             element,
-            (&cascader.ua, &cascader.author),
+            (&cascader.ua, &cascader.author, &cascader.shadow),
             cascader.context.inline_styles,
             cascader.context.frame_margins,
             Some(&containers),
@@ -1689,7 +1790,7 @@ impl Recascader<'_> {
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &cascader.substitutions,
             containers: Some(&containers),
-            units_from: self.document.parent_element(element),
+            units_from: self.document.flat_parent_element(element),
             containers_used: &cascader.containers_used,
         };
         cascade(&matched, &resolution)
@@ -2038,12 +2139,16 @@ fn set_language(style: &mut ComputedStyle, lang: &str) {
 /// `animation-name` that names keyframes in force, with the other
 /// properties' items at its place; an animation's effect is linear, its
 /// timing function its keyframes'.
-fn wanted(motion: &Motion, keyframes: &HashMap<&str, KeyframesInForce<'_>>) -> Vec<Wanted> {
+fn wanted<'k>(
+    motion: &Motion,
+    keyframes: impl Fn(&str) -> Option<KeyframesInForce<'k>>,
+) -> Vec<Wanted> {
     motion
         .animations()
         .filter_map(|item| {
             let name = item.name?;
-            keyframes.contains_key(&**name).then(|| Wanted {
+            let found = keyframes(name)?;
+            Some(Wanted {
                 name: Arc::clone(name),
                 // The effect's timing is in milliseconds.
                 timing: Timing {
@@ -2057,7 +2162,7 @@ fn wanted(motion: &Motion, keyframes: &HashMap<&str, KeyframesInForce<'_>>) -> V
                 easing: item.timing_function.clone(),
                 paused: item.play_state == AnimationPlayState::Paused,
                 composite: item.composition,
-                longhands: Arc::from(keyframes[&**name].keyframes.longhands.as_slice()),
+                longhands: Arc::from(found.keyframes.longhands.as_slice()),
             })
         })
         .collect()
@@ -2301,7 +2406,9 @@ struct StyleKey {
     dir: Option<Box<str>>,
     lang: Option<Box<str>>,
     rem: u32,
-    declarations: Vec<(usize, u8, u32, [u32; 3], u32, u32)>,
+    /// Each declaration's address, tier, layer, specificity with its
+    /// context, scope proximity and order.
+    declarations: Vec<(usize, u8, u32, [u32; 4], u32, u32)>,
 }
 
 /// The cascade's working state over one document: the matcher, with
@@ -2311,6 +2418,8 @@ struct Cascader<'a> {
     matcher: Matcher<'a>,
     ua: InForce<'a>,
     author: InForce<'a>,
+    /// Each shadow tree's rules in force, by its root (D69).
+    shadow: HashMap<NodeId, InForce<'a>>,
     /// The selectors an element is tried against, made again for each
     /// (M35.2): kept to spare an allocation an element.
     candidates: Vec<(u32, u32)>,
@@ -2346,6 +2455,9 @@ struct Cascader<'a> {
     /// The `@keyframes` rules in force by name, when the context runs
     /// animations (M22.2).
     keyframes: HashMap<&'a str, KeyframesInForce<'a>>,
+    /// The shadow trees' `@keyframes` rules in force by name, by their
+    /// roots (D69).
+    shadow_keyframes: HashMap<NodeId, HashMap<&'a str, KeyframesInForce<'a>>>,
     /// The document's `color-scheme` meta element's value (gap batch E,
     /// D49), what `normal` is.
     page_scheme: Option<Arc<String>>,
@@ -2373,6 +2485,7 @@ impl<'a> Cascader<'a> {
             matcher: Matcher::with_language(document, context.language),
             ua,
             author,
+            shadow: HashMap::new(),
             candidates: Vec::new(),
             kept: HashMap::new(),
             keeps: !plain(),
@@ -2392,6 +2505,7 @@ impl<'a> Cascader<'a> {
             container_sizes: ContainerSizes::new(),
             queried: RefCell::new(Queried::new()),
             containers_used: Cell::new(false),
+            shadow_keyframes: HashMap::new(),
         }
     }
 
@@ -2429,7 +2543,7 @@ impl<'a> Cascader<'a> {
                 self.document,
                 (&mut self.matcher, &mut self.candidates),
                 element,
-                (&self.ua, &self.author),
+                (&self.ua, &self.author, &self.shadow),
                 self.context.inline_styles,
                 self.context.frame_margins,
                 Some(&containers),
@@ -2462,7 +2576,7 @@ impl<'a> Cascader<'a> {
             attributes: self.document.attrs(element).unwrap_or_default(),
             substitutions: &self.substitutions,
             containers: Some(&containers),
-            units_from: self.document.parent_element(element),
+            units_from: self.document.flat_parent_element(element),
             containers_used: &self.containers_used,
         };
         // A pseudo-element's query containers are its originating
@@ -2702,12 +2816,12 @@ impl<'a> Cascader<'a> {
                 identity,
                 applied.tier,
                 applied.layer,
-                [a, b, c],
+                [a, b, c, applied.context],
                 applied.proximity,
                 applied.order,
             ));
         }
-        let parent_node = self.document.parent(element)?;
+        let parent_node = self.document.flat_parent(element)?;
         let parent = self.parent_number(parent_node, parent);
         Some(StyleKey {
             parent,
@@ -2742,6 +2856,27 @@ impl<'a> Cascader<'a> {
         number
     }
 
+    /// The `@keyframes` rule in force named `name` for an animation whose
+    /// `animation-name` the tree of `tree` gave, `None` the document's:
+    /// that tree's, else the tree of its host's, and so out to the
+    /// document's (CSS Scoping 1 section 3.5, D69).
+    fn keyframes_named(&self, tree: Option<NodeId>, name: &str) -> Option<KeyframesInForce<'a>> {
+        let mut at = tree;
+        let mut steps = 0;
+        while let Some(root) = at.filter(|_| steps < dom::MAX_DEPTH) {
+            if let Some(&found) = self.shadow_keyframes.get(&root).and_then(|k| k.get(name)) {
+                return Some(found);
+            }
+            at = self
+                .document
+                .shadow_host(root)
+                .map(|host| self.document.root_of(host))
+                .filter(|&outer| self.document.is_shadow_root(outer));
+            steps += 1;
+        }
+        self.keyframes.get(name).copied()
+    }
+
     /// What `target`'s animations give at the timeline's time, its style
     /// without them being `base`: those in effect to sample, what those
     /// current or in effect animate, and the longhands they animate now
@@ -2759,10 +2894,11 @@ impl<'a> Cascader<'a> {
         let cell = self.context.animations?;
         let mut before = Vec::new();
         if let Some(rendered) = update {
+            let any = !self.keyframes.is_empty() || !self.shadow_keyframes.is_empty();
             let wanted = match (rendered, base.motion.as_deref()) {
-                (true, Some(motion)) if !self.keyframes.is_empty() => {
-                    wanted(motion, &self.keyframes)
-                }
+                (true, Some(motion)) if any => wanted(motion, |name| {
+                    self.keyframes_named(motion.animation_names_tree, name)
+                }),
                 _ => Vec::new(),
             };
             let mut animations = cell.borrow_mut();
@@ -2775,14 +2911,15 @@ impl<'a> Cascader<'a> {
             before = animations.animated_longhands(target).to_vec();
             animations.update(target, &wanted);
         }
+        let names_tree = base.motion.as_deref().and_then(|m| m.animation_names_tree);
         let mut animations = cell.borrow_mut();
         let mut samples = Vec::new();
         let mut acts = WillChange::AUTO;
         let mut now = Vec::new();
         for sample in animations.samples(target) {
             let keyframes = match sample.frames {
-                SampleFrames::Css(name) => match self.keyframes.get(&*name) {
-                    Some(&keyframes) => animated::Frames::Sheet(keyframes),
+                SampleFrames::Css(name) => match self.keyframes_named(names_tree, &name) {
+                    Some(keyframes) => animated::Frames::Sheet(keyframes),
                     None => continue,
                 },
                 SampleFrames::Script(keyframes) => animated::Frames::Script(keyframes),
@@ -2865,7 +3002,12 @@ impl<'a> Cascader<'a> {
                     after_change: p.after_change.clone(),
                 })
                 .unwrap_or_default();
-            let children: Vec<NodeId> = document.element_children(node).collect();
+            // The flat tree's children (D68): a host's shadow tree's, a
+            // slot's assigned elements, in their places.
+            let children: Vec<NodeId> = document
+                .flat_children(node)
+                .filter(|&child| document.is_element(child))
+                .collect();
             for &child in &children {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
                 let replaced = old.and_then(|old| old.computed(child));
@@ -3151,6 +3293,14 @@ struct Applied<'a> {
     /// The `order` of its rule's first declaration: what `revert-rule`
     /// rolls back past (D73).
     rule: u32,
+    /// The encapsulation context it comes from (Cascade 5 section 6.1,
+    /// CSS Scoping 1 section 3.3, D69): how many shadow trees deep the
+    /// tree of its rule is, the element's own for one not a rule's.
+    context: u32,
+    /// That tree's shadow root, `None` for the document's: where a name
+    /// it gives, as `animation-name` does, is looked up first (CSS
+    /// Scoping 1 section 3.5).
+    tree: Option<NodeId>,
     /// A stylesheet's declaration, borrowed, or an inline style's, parsed
     /// for the element.
     decl: Cow<'a, css::Declaration>,
@@ -3195,14 +3345,39 @@ fn tier(base: TierBase, important: bool) -> u8 {
     }
 }
 
+/// The rules the cascade matches an element against: the user agent's,
+/// the document's, and each shadow tree's by its root (D69).
+type RulesInForce<'r, 'a> = (
+    &'r InForce<'a>,
+    &'r InForce<'a>,
+    &'r HashMap<NodeId, InForce<'a>>,
+);
+
+/// How many shadow trees deep the tree at `root` is: its encapsulation
+/// context, as the cascade orders it (D69).
+fn tree_depth(document: &Document, root: NodeId) -> u32 {
+    let mut depth = 0;
+    let mut tree = root;
+    while let Some(host) = document.shadow_host(tree) {
+        depth += 1;
+        tree = document.root_of(host);
+    }
+    depth
+}
+
 /// Every declaration that applies to `element` and to each of its
 /// pseudo-elements, tagged with its cascade key — unsorted;
-/// [`compute_style`] sorts before applying.
+/// [`compute_style`] sorts before applying. Its own tree's rules apply
+/// to it (a shadow tree's its own, D69); a host's shadow tree's rules by
+/// `:host`; the rules of each slot's tree it is slotted into, through
+/// slots slotted in turn, by `::slotted()`; and the rules of each tree
+/// its part names reach, through the hosts' `exportparts`, by
+/// `::part()`.
 fn declarations_for<'a>(
     document: &Document,
     (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
     element: NodeId,
-    (ua, author): (&InForce<'a>, &InForce<'a>),
+    (ua, author, shadow): RulesInForce<'_, 'a>,
     inline_styles: Option<&dyn InlineStyles>,
     frame: FrameMargins,
     containers: Option<&Containers<'_>>,
@@ -3210,12 +3385,19 @@ fn declarations_for<'a>(
     let mut order = 0u32;
     let mut out = Matched::default();
     let svg = document.svg_tag(element).is_some();
+    let own_tree = match document.has_shadow_roots() {
+        true => document.root_of(element),
+        false => document.root(),
+    };
+    let own = tree_depth(document, own_tree);
+    let own_root = Some(own_tree).filter(|&root| document.is_shadow_root(root));
+    matcher.set_shadow_scope(None);
     ua.candidates(document, element, candidates);
     collect_from_sheet(
         matcher,
         (element, svg),
         (ua, candidates),
-        TierBase::UserAgent,
+        (TierBase::UserAgent, (own, own_root)),
         &mut order,
         &mut out,
         containers,
@@ -3232,20 +3414,46 @@ fn declarations_for<'a>(
             proximity: UNSCOPED,
             order,
             rule: hints,
+            context: own,
+            tree: own_root,
             decl: Cow::Owned(decl),
         });
         order += 1;
     }
-    author.candidates(document, element, candidates);
-    collect_from_sheet(
-        matcher,
-        (element, svg),
-        (author, candidates),
-        TierBase::AuthorSheet,
-        &mut order,
-        &mut out,
-        containers,
-    );
+    // Its own tree's rules: a shadow tree's, scoped to it.
+    let own_rules = match document.is_shadow_root(own_tree) {
+        true => {
+            matcher.set_shadow_scope(Some(own_tree));
+            shadow.get(&own_tree)
+        }
+        false => Some(author),
+    };
+    if let Some(rules) = own_rules {
+        rules.candidates(document, element, candidates);
+        collect_from_sheet(
+            matcher,
+            (element, svg),
+            (rules, candidates),
+            (TierBase::AuthorSheet, (own, own_root)),
+            &mut order,
+            &mut out,
+            containers,
+        );
+    }
+    // The trees around and below it: `::part()` reaches it from the
+    // document's rules though no shadow tree has a sheet of its own.
+    if document.has_shadow_roots() {
+        scoped_declarations(
+            document,
+            (matcher, candidates),
+            (element, svg),
+            (author, shadow),
+            &mut order,
+            &mut out,
+            containers,
+        );
+    }
+    matcher.set_shadow_scope(None);
     // An inline `style` styles the element alone, if its document's
     // policies allow it (M33.1).
     if let Some(style_attr) = document.attr(element, "style")
@@ -3266,12 +3474,189 @@ fn declarations_for<'a>(
                 proximity: UNSCOPED,
                 order,
                 rule,
+                context: own,
+                tree: own_root,
                 decl: Cow::Owned(decl),
             });
             order += 1;
         }
     }
     out
+}
+
+/// The declarations other trees' rules give `element` (CSS Scoping 1,
+/// CSS Shadow Parts 1, D69): its shadow tree's by `:host`, its slots'
+/// trees' by `::slotted()`, and the trees its parts reach by `::part()`,
+/// each in its tree's context.
+fn scoped_declarations<'a>(
+    document: &Document,
+    (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
+    (element, svg): (NodeId, bool),
+    (author, shadow): (&InForce<'a>, &HashMap<NodeId, InForce<'a>>),
+    order: &mut u32,
+    out: &mut Matched<'a>,
+    containers: Option<&Containers<'_>>,
+) {
+    // A host: its shadow tree's rules, which match it featureless, by
+    // `:host` alone, and its pseudo-elements by `:host::before`.
+    if let Some(root) = document.shadow_root(element)
+        && let Some(rules) = shadow.get(&root)
+    {
+        matcher.set_shadow_scope(Some(root));
+        rules.candidates(document, element, candidates);
+        collect_from_sheet(
+            matcher,
+            (element, svg),
+            (rules, candidates),
+            (
+                TierBase::AuthorSheet,
+                (tree_depth(document, root), Some(root)),
+            ),
+            order,
+            out,
+            containers,
+        );
+    }
+    // Slotted: the rules of each slot's tree, the slot itself slotted
+    // in turn into the next, by `::slotted()` of the slot.
+    let mut slot = document.assigned_slot(element);
+    let mut steps = 0;
+    while let Some(at) = slot {
+        let root = document.root_of(at);
+        if let Some(rules) = shadow.get(&root) {
+            matcher.set_shadow_scope(Some(root));
+            rules.candidates(document, at, candidates);
+            collect_scoped(
+                (rules, candidates),
+                (
+                    TierBase::AuthorSheet,
+                    (tree_depth(document, root), Some(root)),
+                ),
+                order,
+                out,
+                |selector| matcher.matches_slotted(element, at, selector),
+            );
+        }
+        steps += 1;
+        slot = document
+            .assigned_slot(at)
+            .filter(|_| steps < dom::MAX_DEPTH);
+    }
+    // Parts: the names `part` gives, as each host's tree sees them
+    // through its `exportparts`, matched by `::part()` of the host.
+    let mut names: Vec<String> = document
+        .attr(element, "part")
+        .map(|value| value.split_ascii_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+    let mut host = document.shadow_host(document.root_of(element));
+    while let Some(at) = host.filter(|_| !names.is_empty()) {
+        let tree = document.root_of(at);
+        let rules = match document.is_shadow_root(tree) {
+            true => {
+                matcher.set_shadow_scope(Some(tree));
+                shadow.get(&tree)
+            }
+            false => {
+                matcher.set_shadow_scope(None);
+                Some(author)
+            }
+        };
+        if let Some(rules) = rules {
+            let seen: Vec<&str> = names.iter().map(String::as_str).collect();
+            rules.candidates(document, at, candidates);
+            collect_scoped(
+                (rules, candidates),
+                (
+                    TierBase::AuthorSheet,
+                    (
+                        tree_depth(document, tree),
+                        Some(tree).filter(|&tree| document.is_shadow_root(tree)),
+                    ),
+                ),
+                order,
+                out,
+                |selector| matcher.matches_part(element, at, &seen, selector),
+            );
+        }
+        names = exported_parts(document.attr(at, "exportparts"), &names);
+        host = document.shadow_host(tree);
+    }
+}
+
+/// The part names a host's `exportparts` (CSS Shadow Parts 1 section
+/// 4.1) makes of `names`, those of an element of its shadow tree: each
+/// entry `inner` or `inner: outer` whose inner name is among them gives
+/// its outer one.
+fn exported_parts(exportparts: Option<&str>, names: &[String]) -> Vec<String> {
+    let Some(value) = exportparts else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in value.split(',') {
+        let (inner, outer) = match entry.split_once(':') {
+            Some((inner, outer)) => (inner.trim(), outer.trim()),
+            None => (entry.trim(), entry.trim()),
+        };
+        let valid = |name: &str| !name.is_empty() && !name.contains(char::is_whitespace);
+        if valid(inner) && valid(outer) && names.iter().any(|name| name == inner) {
+            out.push(outer.to_owned());
+        }
+    }
+    out
+}
+
+/// Pushes the declarations of `sheet`'s rules one of whose `candidates`
+/// ending in `::slotted()` or `::part()` `matches`, for the element,
+/// with the highest specificity among those of a rule that match,
+/// `base`'s tier and the context given.
+fn collect_scoped<'a>(
+    (sheet, candidates): (&[ParsedRule<'a>], &[(u32, u32)]),
+    (base, (context, tree)): (TierBase, (u32, Option<NodeId>)),
+    order: &mut u32,
+    out: &mut Matched<'a>,
+    mut matches: impl FnMut(&'a Selector) -> bool,
+) {
+    let mut next = 0;
+    while next < candidates.len() {
+        let place = candidates[next].0;
+        let start = next;
+        while next < candidates.len() && candidates[next].0 == place {
+            next += 1;
+        }
+        let rule = &sheet[place as usize];
+        let list: &'a SelectorList = rule.list;
+        let mut best: Option<Specificity> = None;
+        for &(_, index) in &candidates[start..next] {
+            let selector = &list.0[index as usize];
+            let scoped = selector.pseudo_element.as_ref().is_some_and(|ending| {
+                matches!(ending.element, PseudoElement::Slotted | PseudoElement::Part)
+            });
+            if scoped && matches(selector) {
+                best = best.max(Some(selector.specificity));
+            }
+        }
+        let Some(specificity) = best else {
+            continue;
+        };
+        for (offset, decl) in rule.declarations.iter().enumerate() {
+            out.element().push(Applied {
+                tier: tier(base, decl.important),
+                layer: if decl.important {
+                    rule.important_layer
+                } else {
+                    rule.layer
+                },
+                specificity,
+                proximity: UNSCOPED,
+                order: *order + offset as u32,
+                rule: *order,
+                context,
+                tree,
+                decl: Cow::Borrowed(decl),
+            });
+        }
+        *order += rule.declarations.len() as u32;
+    }
 }
 
 /// `element`'s presentational hints (M21.6) and, for an SVG element,
@@ -3312,7 +3697,7 @@ fn collect_from_sheet<'a>(
     matcher: &mut Matcher<'a>,
     (element, svg): (NodeId, bool),
     (sheet, candidates): (&InForce<'a>, &[(u32, u32)]),
-    base: TierBase,
+    (base, (context, tree)): (TierBase, (u32, Option<NodeId>)),
     order: &mut u32,
     out: &mut Matched<'a>,
     containers: Option<&Containers<'_>>,
@@ -3323,7 +3708,7 @@ fn collect_from_sheet<'a>(
     // its pseudo-elements, whose query containers are its own and its
     // ancestors (D72).
     let mut held: HashMap<(u32, bool), bool> = HashMap::new();
-    let parent = matcher.document().parent_element(element);
+    let parent = matcher.document().flat_parent_element(element);
     let mut next = 0;
     while next < candidates.len() {
         let place = candidates[next].0;
@@ -3415,6 +3800,8 @@ fn collect_from_sheet<'a>(
                     proximity,
                     order: *order + offset as u32,
                     rule: *order,
+                    context,
+                    tree,
                     decl: Cow::Borrowed(decl),
                 });
             }
@@ -3466,12 +3853,16 @@ fn scoping_roots<'a>(
     let outer = rule
         .parent
         .map(|parent| scoping_roots(matcher, sheet, parent, element));
+    // A shadow tree's sheet with no element around its owner, or one it
+    // adopted, scopes to its host (D69).
+    let host = matcher.scoped_host();
     let implicit = || {
         sheet
             .roots
             .get(rule.sheet as usize)
             .copied()
             .flatten()
+            .or(host)
             .or_else(|| document.document_element())
     };
     let implicit = if rule.start.is_none() {
@@ -3506,7 +3897,16 @@ fn scoping_roots<'a>(
         if is_root && inside_outer && !limited(matcher, rule.end.as_ref(), node, element) {
             roots.push((node, generations));
         }
-        at = document.parent_element(node);
+        // A shadow tree's rules reach up to its host, and no further.
+        if Some(node) == host {
+            break;
+        }
+        at = document.parent_element(node).or_else(|| {
+            document
+                .parent(node)
+                .filter(|&parent| document.is_shadow_root(parent))
+                .and(host)
+        });
         generations += 1;
     }
     matcher.set_rule_scope(None);
@@ -3564,8 +3964,20 @@ fn compute_style(
 ) -> ComputedStyle {
     let transitioned = transitioned.unwrap_or_default();
     let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
+    // Origin and importance, then the context (Cascade 5 section 6.1):
+    // for normal declarations the outer tree's win, for important ones
+    // the inner's; then whether the element's own, the layer, the
+    // specificity, the scope proximity and the order.
     sorted.sort_by_key(|a| {
+        let (rank, context) = match a.tier {
+            0 => (0, 0),
+            1 | 2 => (1, u32::MAX - a.context),
+            3 | 4 => (2, a.context),
+            _ => (3, 0),
+        };
         (
+            rank,
+            context,
             a.tier,
             a.layer,
             a.specificity,
@@ -4427,6 +4839,20 @@ fn compute_style(
         .is_some_and(|d| *d == Decoration::default())
     {
         style.decoration = None;
+    }
+    // The tree `animation-name` was given in, a shadow tree's, where its
+    // names are looked up first (CSS Scoping 1 section 3.5, D69).
+    if style
+        .motion
+        .as_deref()
+        .is_some_and(|m| m.animation_name.iter().any(Option::is_some))
+        && let Some(tree) = sorted
+            .iter()
+            .rev()
+            .find(|a| matches!(canonical_name(&a.decl.name), "animation-name" | "animation"))
+            .and_then(|a| a.tree)
+    {
+        style.motion_mut().animation_names_tree = Some(tree);
     }
     if style
         .motion

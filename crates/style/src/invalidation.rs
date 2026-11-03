@@ -59,7 +59,8 @@ use std::collections::{HashMap, HashSet};
 use dom::{Change, Document, ElementState, NodeId};
 
 use crate::selector_matching::{
-    Combinator, CompoundSelector, Matcher, PseudoClass, Selector, SelectorList, SimpleSelector,
+    Combinator, CompoundSelector, Matcher, PseudoArgument, PseudoClass, Selector, SelectorList,
+    SimpleSelector,
 };
 
 /// What the selectors of a set of stylesheets depend on, beyond the
@@ -207,10 +208,21 @@ impl SelectorFeatures {
                 self.add_compound(compound, at);
             }
             // The pseudo-classes after a pseudo-element read the
-            // originating element's state (M26.4).
+            // originating element's state (M26.4); `::slotted()`'s
+            // compound the slotted element's, and `::part()` the `part`
+            // and `exportparts` of the elements and hosts (D69).
             if let Some(ending) = &selector.pseudo_element {
                 for state in &ending.states {
                     self.add_pseudo_class(state, At::Subject);
+                }
+                match &ending.argument {
+                    PseudoArgument::Slotted(compound) => {
+                        for simple in &compound.simple {
+                            self.add_simple(simple, At::Subject);
+                        }
+                    }
+                    PseudoArgument::Part(_) => self.read(&["part", "exportparts"]),
+                    PseudoArgument::None => {}
                 }
             }
         }
@@ -348,6 +360,18 @@ impl SelectorFeatures {
             }
             // The parent rule's selectors stand where `&` does.
             PseudoClass::Nesting(list) => self.add_nested(list, at),
+            // The host's own features, and for `:host-context()` its
+            // ancestors', whose changes reach the host's flat subtree.
+            PseudoClass::Host(compound) => {
+                for simple in compound.iter().flat_map(|c| &c.simple) {
+                    self.add_simple(simple, at);
+                }
+            }
+            PseudoClass::HostContext(compound) => {
+                for simple in &compound.simple {
+                    self.add_simple(simple, At::Ancestor);
+                }
+            }
             PseudoClass::Link | PseudoClass::AnyLink => self.read(&["href", "xlink:href"]),
             PseudoClass::Lang(_) => {
                 self.lang = true;
@@ -430,6 +454,27 @@ impl SelectorFeatures {
                 None => self.any_attribute = true,
             }
         }
+    }
+
+    /// Adds what `other`'s selectors depend on: a shadow tree's rules
+    /// (D69), which the document's changes reach as its own do.
+    pub(crate) fn absorb(&mut self, other: &SelectorFeatures) {
+        self.classes.extend(other.classes.iter().cloned());
+        self.ids.extend(other.ids.iter().cloned());
+        self.attributes.extend(other.attributes.iter().cloned());
+        self.sibling_combinators |= other.sibling_combinators;
+        self.counts_from_start |= other.counts_from_start;
+        self.counts_from_end |= other.counts_from_end;
+        self.every_sibling |= other.every_sibling;
+        self.empty |= other.empty;
+        self.lang |= other.lang;
+        self.fieldsets |= other.fieldsets;
+        self.checked |= other.checked;
+        self.validity |= other.validity;
+        self.any_attribute |= other.any_attribute;
+        self.states_subject |= other.states_subject;
+        self.states_ancestor |= other.states_ancestor;
+        self.states_sibling |= other.states_sibling;
     }
 
     /// Counts the attributes `names` as named by a selector.
@@ -560,9 +605,10 @@ const VALIDITY_ATTRIBUTES: &[&str] = &[
     "form",
 ];
 
-/// Whether `node` is in `document`'s tree.
+/// Whether `node` is in `document`'s flat tree (D68): what the cascade
+/// styles.
 pub(crate) fn attached(document: &Document, node: NodeId) -> bool {
-    node == document.root() || document.ancestors(node).last() == Some(document.root())
+    document.in_flat_tree(node)
 }
 
 /// The elements `changes`, made to `document` since its styles were
@@ -636,7 +682,8 @@ pub(crate) fn invalidate(
             | Change::TextChanged { .. }
             | Change::StateChanged { .. }
             | Change::ControlChanged { .. }
-            | Change::Moved { .. } => {}
+            | Change::Moved { .. }
+            | Change::FlatTree { .. } => {}
         }
         match change {
             Change::Everything | Change::Moved { .. } => {}
@@ -708,6 +755,10 @@ pub(crate) fn invalidate(
                     auto_around(document, parent, &mut out);
                 }
             }
+            // A shadow root attached, or a slot's assigned nodes changed
+            // (D68): what inherits from the node in the flat tree is
+            // other, and so may be what matches there.
+            Change::FlatTree { node } => out.mark(document, *node, Reach::Subtree),
             Change::StateChanged { element, old } => {
                 states.entry(*element).or_insert(*old);
             }

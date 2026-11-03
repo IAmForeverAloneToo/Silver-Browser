@@ -37,9 +37,13 @@ use crate::{Element, Namespace, Node, Text, local_part};
 mod attributes;
 mod documents;
 mod live;
+mod shadow;
 pub use attributes::{attribute_local_name, implied_attribute_namespace};
 pub use documents::{CompatMode, DocumentFacts, DocumentInterface};
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
+pub use shadow::{
+    FlatChildren, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, is_valid_custom_element_name,
+};
 
 /// The deepest elements may nest: 512, the HTML parser's cap on its
 /// stack of open elements (`html::MAX_DEPTH` is this constant), which
@@ -155,6 +159,9 @@ pub enum NodeData {
     /// A document fragment: never a child, its children moved where it
     /// is inserted; a template's contents are one ([`Document::template_content`]).
     DocumentFragment,
+    /// A shadow root (gap batch H, D68): a document fragment its host
+    /// links to, parentless, with what it was made with.
+    ShadowRoot(ShadowRootInit),
 }
 
 impl NodeData {
@@ -167,7 +174,7 @@ impl NodeData {
             NodeData::Comment(_) => 8,
             NodeData::Document => 9,
             NodeData::DocumentType { .. } => 10,
-            NodeData::DocumentFragment => 11,
+            NodeData::DocumentFragment | NodeData::ShadowRoot(_) => 11,
         }
     }
 
@@ -224,6 +231,11 @@ pub enum Change {
     /// `Removed` and `Inserted` records the move also made: what it holds
     /// (a frame, animations, a playing medium) is kept.
     Moved { parent: NodeId, child: NodeId },
+    /// The flat tree's children of `node` changed (D68): a shadow root
+    /// was attached to it, or the nodes assigned to it, a slot, are
+    /// others. What its subtree in the flat tree computed is to be
+    /// computed again.
+    FlatTree { node: NodeId },
     /// More changed than the journal keeps ([`MAX_JOURNAL`]): treat the
     /// whole document as changed.
     Everything,
@@ -306,6 +318,9 @@ pub enum MutationError {
     /// [`Document::free`] was given an attached node, the root, or a
     /// template's contents.
     Attached,
+    /// The operation is not supported for the node: a shadow root
+    /// attached to an element that may not host one, or hosts one.
+    NotSupported,
 }
 
 impl fmt::Display for MutationError {
@@ -320,6 +335,7 @@ impl fmt::Display for MutationError {
             MutationError::WrongKind => "the node is of the wrong kind",
             MutationError::IndexSize => "the offset is past the node's length",
             MutationError::Attached => "the node is attached or is the document",
+            MutationError::NotSupported => "the operation is not supported for the node",
         })
     }
 }
@@ -561,7 +577,9 @@ impl Document {
             }
             let children = finished.pop()?;
             let node = match &record.data {
-                NodeData::Document | NodeData::DocumentFragment => Node::Document(children),
+                NodeData::Document | NodeData::DocumentFragment | NodeData::ShadowRoot(_) => {
+                    Node::Document(children)
+                }
                 // The owned tree has no such nodes: they are left out.
                 NodeData::Comment(_)
                 | NodeData::DocumentType { .. }
@@ -771,23 +789,21 @@ impl Document {
     }
 
     /// Focuses `element`, or nothing (M26.6): the `focus` flag, and
-    /// `focus-visible` when `visible`, move to it, and `focus-within` to
-    /// it and its ancestors, journaled as state changes. A node that is
-    /// not a live element takes no focus.
+    /// `focus-visible` when `visible`, move to it and to the hosts of the
+    /// shadow trees it is in (D68), and `focus-within` to it and its
+    /// ancestors in the flat tree, journaled as state changes. A node
+    /// that is not a live element takes no focus.
     pub fn set_focus(&mut self, element: Option<NodeId>, visible: bool) {
         let focus = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, true);
         if let Some(old) = self.focused.take().filter(|&old| self.contains(old)) {
             let _ = self.set_state(old, self.state(old).with(focus, false));
         }
-        if let Some(within) = self.within.take().filter(|&within| self.contains(within)) {
-            let chain: Vec<NodeId> = std::iter::once(within)
-                .chain(self.ancestors(within))
-                .collect();
-            for node in chain {
-                if self.is_element(node) {
-                    let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
-                    let _ = self.set_state(node, state);
-                }
+        self.unfocus_hosts();
+        self.within = None;
+        for node in std::mem::take(&mut self.rare.shadows.focus_within) {
+            if self.contains(node) {
+                let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
+                let _ = self.set_state(node, state);
             }
         }
         let Some(element) = element.filter(|&element| self.is_element(element)) else {
@@ -795,17 +811,28 @@ impl Document {
         };
         let flags = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, visible);
         let _ = self.set_state(element, self.state(element).with(flags, true));
-        let chain: Vec<NodeId> = std::iter::once(element)
-            .chain(self.ancestors(element))
-            .collect();
-        for node in chain {
-            if self.is_element(node) {
-                let state = self.state(node).with(ElementState::FOCUS_WITHIN, true);
-                let _ = self.set_state(node, state);
-            }
+        let (hosts, within) = self.focus_chains(element);
+        for &host in &hosts {
+            let _ = self.set_state(host, self.state(host).with(ElementState::FOCUS, true));
         }
+        for &node in &within {
+            let state = self.state(node).with(ElementState::FOCUS_WITHIN, true);
+            let _ = self.set_state(node, state);
+        }
+        self.rare.shadows.focused_hosts = hosts;
+        self.rare.shadows.focus_within = within;
         self.focused = Some(element);
         self.within = Some(element);
+    }
+
+    /// The hosts the focus in their shadow trees gave the focus flag
+    /// lose it.
+    fn unfocus_hosts(&mut self) {
+        for host in std::mem::take(&mut self.rare.shadows.focused_hosts) {
+            if self.contains(host) {
+                let _ = self.set_state(host, self.state(host).with(ElementState::FOCUS, false));
+            }
+        }
     }
 
     /// The focused element loses the focus on its way to `next` (HTML's
@@ -820,18 +847,19 @@ impl Document {
         };
         let focus = ElementState::FOCUS.with(ElementState::FOCUS_VISIBLE, true);
         let _ = self.set_state(old, self.state(old).with(focus, false));
-        let Some(within) = self.within.take().filter(|&within| self.contains(within)) else {
+        self.unfocus_hosts();
+        if self.within.take().is_none() {
             return;
-        };
-        let chain: Vec<NodeId> = std::iter::once(within)
-            .chain(self.ancestors(within))
-            .collect();
-        for node in chain {
-            if self.is_inclusive_ancestor(node, next) {
-                self.within = self.is_element(node).then_some(node);
+        }
+        let (_, ahead) = self.focus_chains(next);
+        let chain = std::mem::take(&mut self.rare.shadows.focus_within);
+        for (at, &node) in chain.iter().enumerate() {
+            if ahead.contains(&node) {
+                self.within = Some(node);
+                self.rare.shadows.focus_within = chain[at..].to_vec();
                 break;
             }
-            if self.is_element(node) {
+            if self.contains(node) {
                 let state = self.state(node).with(ElementState::FOCUS_WITHIN, false);
                 let _ = self.set_state(node, state);
             }
@@ -930,7 +958,8 @@ impl Document {
     }
 
     /// The subtree at `id` in tree order, then the contents of each
-    /// template in it, theirs too.
+    /// template in it and the shadow tree of each host in it (D68),
+    /// theirs too.
     pub fn subtree_with_contents(&self, id: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         let mut tops = vec![id];
@@ -939,6 +968,9 @@ impl Document {
                 out.push(node);
                 if let Some(content) = self.template_content(node) {
                     tops.push(content);
+                }
+                if let Some(root) = self.shadow_root(node) {
+                    tops.push(root);
                 }
             }
         }
@@ -1208,7 +1240,10 @@ impl Document {
         if depth > MAX_DEPTH {
             return Err(MutationError::TooDeep);
         }
-        if matches!(self.data(child), Some(NodeData::DocumentFragment)) {
+        if matches!(
+            self.data(child),
+            Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_))
+        ) {
             // A fragment's children go in its place, in order.
             let moved: Vec<NodeId> = self.children(child).collect();
             for node in moved {
@@ -1223,6 +1258,7 @@ impl Document {
                     parent,
                     child: node,
                 });
+                self.shadow_inserted(parent, node);
                 self.observe_insertion(parent, node);
                 if self.connected(parent) && self.has_names(node) {
                     self.index_names(node, true);
@@ -1243,6 +1279,7 @@ impl Document {
         self.owned_by_tree(child);
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
+        self.shadow_inserted(parent, child);
         self.observe_insertion(parent, child);
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
@@ -1300,6 +1337,7 @@ impl Document {
             parent,
             child: node,
         });
+        self.shadow_inserted(parent, node);
         self.observe_insertion(parent, node);
         if self.connected(parent) && self.has_names(node) {
             self.index_names(node, true);
@@ -1325,7 +1363,10 @@ impl Document {
             return Err(MutationError::HierarchyRequest);
         }
         let allowed = self.may_insert(parent_data, &child_record.data)
-            && !matches!(child_record.data, NodeData::DocumentFragment);
+            && !matches!(
+                child_record.data,
+                NodeData::DocumentFragment | NodeData::ShadowRoot(_)
+            );
         if !allowed || child == self.root {
             return Err(MutationError::HierarchyRequest);
         }
@@ -1333,6 +1374,7 @@ impl Document {
         self.owned_by_tree(child);
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
+        self.shadow_inserted(parent, child);
         self.observe_insertion(parent, child);
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
@@ -1438,6 +1480,7 @@ impl Document {
             }
         };
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
+        let slotting = matches!(name.as_str(), "slot" | "name").then(|| name.clone());
         if self.observing.is_some() {
             let (local, namespace) = self.observed_name(element, Some(at), &name);
             self.observed(|| Mutated::Attribute {
@@ -1448,6 +1491,9 @@ impl Document {
             });
         }
         self.record_change(Change::AttributeChanged { element, name, old });
+        if let Some(name) = slotting {
+            self.shadow_attribute_changed(element, &name);
+        }
         if let Some(name) = default {
             crate::forms::default_changed(self, element, &name);
         }
@@ -1529,6 +1575,7 @@ impl Document {
         self.data_bytes -= name.len() + old.len();
         self.remove_attribute_namespace(element, at);
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
+        let slotting = matches!(name.as_str(), "slot" | "name").then(|| name.clone());
         self.observed(|| Mutated::Attribute {
             element,
             name: local,
@@ -1540,6 +1587,9 @@ impl Document {
             name,
             old: Some(old),
         });
+        if let Some(name) = slotting {
+            self.shadow_attribute_changed(element, &name);
+        }
         if let Some(name) = default {
             crate::forms::default_changed(self, element, &name);
         }
@@ -1626,6 +1676,7 @@ impl Document {
         if id == self.root
             || self.parent(id).is_some()
             || self.template_host(id).is_some()
+            || self.shadow_host(id).is_some()
             || (self.is_document(id) && self.document_in_use(id))
         {
             return Err(MutationError::Attached);
@@ -1638,6 +1689,7 @@ impl Document {
             }
         }
         self.forget_documents(&doomed);
+        self.forget_shadows(&doomed);
         self.data_bytes -= self.forget_attribute_namespaces(&doomed);
         if !self.rare.prefixed.is_empty() || !self.rare.cdata.is_empty() {
             for node in &doomed {
@@ -1942,7 +1994,8 @@ impl Document {
                 .attr_ns
                 .values()
                 .map(|kept| attributes::namespaces_size(kept))
-                .sum::<usize>();
+                .sum::<usize>()
+            + self.shadow_data_bytes();
         if data != self.data_bytes {
             return Err(format!(
                 "{data} bytes of data counted as {}",
@@ -1961,6 +2014,7 @@ impl Document {
         if self.rare.templates.hosts.len() != self.rare.templates.contents.len() {
             return Err("a template's contents are not mirrored".into());
         }
+        self.validate_shadows()?;
         let documents = &self.rare.documents;
         if documents.facts.values().filter(|facts| facts.xml).count() != documents.xml {
             return Err("the XML documents are miscounted".into());
@@ -2153,7 +2207,10 @@ impl Document {
     fn may_insert(&self, parent: &NodeData, child: &NodeData) -> bool {
         let container = matches!(
             parent,
-            NodeData::Document | NodeData::DocumentFragment | NodeData::Element { .. }
+            NodeData::Document
+                | NodeData::DocumentFragment
+                | NodeData::ShadowRoot(_)
+                | NodeData::Element { .. }
         );
         let document = matches!(parent, NodeData::Document);
         container
@@ -2166,16 +2223,26 @@ impl Document {
     }
 
     /// Whether `ancestor` is a host-including inclusive ancestor of
-    /// `node`: an ancestor, or one of a template whose contents hold it.
+    /// `node`: an ancestor, or one of a template whose contents hold it
+    /// or of a host whose shadow tree does (D68).
     fn is_host_including_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
         let mut at = Some(node);
         while let Some(n) = at {
             if n == ancestor {
                 return true;
             }
-            at = self.parent(n).or_else(|| self.template_host(n));
+            at = self.fragment_parent(n);
         }
         false
+    }
+
+    /// A node's parent, or a template's contents' template, or a shadow
+    /// root's host: the next node up through what holds a fragment.
+    #[inline]
+    fn fragment_parent(&self, node: NodeId) -> Option<NodeId> {
+        self.parent(node)
+            .or_else(|| self.template_host(node))
+            .or_else(|| self.shadow_host(node))
     }
 
     /// The document's own rules (step 6 of "ensure pre-insertion
@@ -2210,7 +2277,7 @@ impl Document {
         let one_element =
             |count: usize| count == 0 || (count == 1 && !has_element() && !doctype_from(reference));
         match self.data(child) {
-            Some(NodeData::DocumentFragment) => {
+            Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
                 let kids: Vec<NodeId> = self.children(child).collect();
                 !kids.iter().any(|&n| self.is_text(n))
                     && one_element(kids.iter().filter(|&&n| self.is_element(n)).count())
@@ -2229,7 +2296,7 @@ impl Document {
         let mut at = Some(id);
         while let Some(node) = at {
             depth += usize::from(self.is_element(node));
-            at = self.parent(node).or_else(|| self.template_host(node));
+            at = self.fragment_parent(node);
         }
         depth
     }
@@ -2247,6 +2314,9 @@ impl Document {
             if let Some(content) = self.template_content(node) {
                 stack.push((content, depth));
             }
+            if let Some(root) = self.shadow_root(node) {
+                stack.push((root, depth));
+            }
         }
         deepest
     }
@@ -2258,7 +2328,7 @@ impl Document {
     fn detach(&mut self, child: NodeId) {
         if !self.rare.moving
             && let Some(focused) = self.focused().or(self.within.filter(|&w| self.contains(w)))
-            && self.is_inclusive_ancestor(child, focused)
+            && self.is_shadow_including_inclusive_ancestor(child, focused)
             && self.parent(child).is_some()
         {
             self.set_focus(None, false);
@@ -2325,6 +2395,9 @@ impl Document {
             });
         }
         self.record_change(change);
+        if let Some(parent) = self.link(Some(parent)) {
+            self.shadow_removed(parent, child);
+        }
     }
 
     /// Links the detached `child` as `parent`'s last child.
@@ -2381,7 +2454,8 @@ impl Document {
 /// The bytes of data a node holds, for [`MAX_DATA_BYTES`].
 fn data_size(data: &NodeData) -> usize {
     match data {
-        NodeData::Document | NodeData::DocumentFragment => 0,
+        NodeData::Document | NodeData::DocumentFragment | NodeData::ShadowRoot(_) => 0,
+
         NodeData::Element { tag, attrs, .. } => {
             tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
         }

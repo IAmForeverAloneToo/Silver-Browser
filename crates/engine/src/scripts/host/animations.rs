@@ -637,13 +637,19 @@ impl DocumentHost {
         pseudo: Option<Option<PseudoElement>>,
     ) -> Vec<u64> {
         let document = &self.document;
+        // In shadow-including tree order (D68); the document's own
+        // animations are those of its tree, a shadow root's or an
+        // element's subtree's those of its tree alone, none crossing into
+        // a shadow tree below.
         let order: std::collections::HashMap<NodeId, usize> = document
-            .subtree(document.root())
+            .shadow_including_subtree(document.root())
+            .into_iter()
             .enumerate()
             .map(|(i, node)| (node, i))
             .collect();
+        let root = document.root();
         let wanted = |(node, of): style::animation::Target| match target {
-            None => order.contains_key(&node),
+            None => order.contains_key(&node) && document.root_of(node) == root,
             Some(element) if pseudo.is_some() => node == element && Some(of) == pseudo,
             Some(element) if !subtree => node == element && of.is_none(),
             Some(element) => {

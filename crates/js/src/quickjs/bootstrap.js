@@ -511,6 +511,7 @@
     "write",
     "normalize",
     "splitText",
+    "attachShadow",
   ];
   for (let i = 0; i < MOVING.length; i++) {
     const call = native[MOVING[i]];
@@ -582,6 +583,9 @@
       case 10:
         return new DocumentType(KEY, handle, 10, name);
       case 11:
+        if (extra === "ShadowRoot") {
+          return new ShadowRoot(KEY, handle, 11, name);
+        }
         return new DocumentFragment(KEY, handle, 11, name);
     }
     const object = new (elementInterface(name, ns))(KEY, handle, 1, name);
@@ -1184,8 +1188,72 @@
       return eventState(this).currentTarget;
     }
 
+    // DOM's `composedPath()` (section 2.2): the path's invocation
+    // targets, those in a closed shadow tree the current target is not
+    // in left out (D68).
     composedPath() {
-      return ArraySlice(eventState(this).path);
+      const s = eventState(this);
+      const path = s.path;
+      if (path.length === 0) {
+        return [];
+      }
+      const current = s.currentTarget;
+      const out = [current];
+      let currentIndex = 0;
+      let currentLevel = 0;
+      for (let i = path.length - 1; i >= 0; i--) {
+        if (path[i].rootClosed) {
+          currentLevel++;
+        }
+        if (path[i].item === current) {
+          currentIndex = i;
+          break;
+        }
+        if (path[i].slotClosed) {
+          currentLevel--;
+        }
+      }
+      let level = currentLevel;
+      let max = currentLevel;
+      const before = [];
+      for (let i = currentIndex - 1; i >= 0; i--) {
+        if (path[i].rootClosed) {
+          level++;
+        }
+        if (level <= max) {
+          ArrayPush(before, path[i].item);
+        }
+        if (path[i].slotClosed) {
+          level--;
+          if (level < max) {
+            max = level;
+          }
+        }
+      }
+      level = currentLevel;
+      max = currentLevel;
+      for (let i = currentIndex + 1; i < path.length; i++) {
+        if (path[i].slotClosed) {
+          level++;
+        }
+        if (level <= max) {
+          ArrayPush(out, path[i].item);
+        }
+        if (path[i].rootClosed) {
+          level--;
+          if (level < max) {
+            max = level;
+          }
+        }
+      }
+      const result = [];
+      for (let i = before.length - 1; i >= 0; i--) {
+        ArrayPush(result, before[i]);
+      }
+      for (let i = 0; i < out.length; i++) {
+        ArrayPush(result, out[i]);
+      }
+      return result;
     }
 
     get eventPhase() {
@@ -1355,6 +1423,32 @@
     }
   }
 
+  // A script's MouseEvent's `offsetX` (`axis` 0) or `offsetY` (CSSOM
+  // View section 12): while it is dispatched, its client coordinate from
+  // the padding edge of its target as the listener sees it, retargeted
+  // (D68), or of the block box an inline target is in, as the reference
+  // browser measures it; else the client coordinate.
+  function dispatchedOffset(s, axis) {
+    const client = axis === 0 ? s.fields.clientX : s.fields.clientY;
+    if (!s.dispatching || !isNode(s.target) || kindOf(s.target) !== 1) {
+      return client;
+    }
+    let box = handleOf(s.target);
+    for (let up = native.parent(box); up !== null && native.kind(up) === 1;
+      up = native.parent(box)) {
+      const display = native.computedValue(box, "", "display");
+      if (display !== "inline" && display !== "contents") {
+        break;
+      }
+      box = up;
+    }
+    const g = native.geometry(box, false);
+    if (g.length === 0) {
+      return client;
+    }
+    return axis === 0 ? client - g[0] - g[G_BORDER + 3] : client - g[1] - g[G_BORDER];
+  }
+
   class MouseEvent extends UIEvent {
     constructor(type, eventInitDict = undefined) {
       const args = eventArgs(arguments.length, type, eventInitDict, MOUSE_INIT, "MouseEvent");
@@ -1400,12 +1494,12 @@
 
     get offsetX() {
       const s = eventOf(this, MOUSE);
-      return (s.offset === null ? s.fields.clientX : s.offset[0]) | 0;
+      return (s.offset === null ? dispatchedOffset(s, 0) : s.offset[0]) | 0;
     }
 
     get offsetY() {
       const s = eventOf(this, MOUSE);
-      return (s.offset === null ? s.fields.clientY : s.offset[1]) | 0;
+      return (s.offset === null ? dispatchedOffset(s, 1) : s.offset[1]) | 0;
     }
 
     get movementX() {
@@ -2143,46 +2237,106 @@
     }
   }
 
-  // The DOM's dispatch of `event` at `target` (section 2.9), with no
-  // shadow trees and so no retargeting, its target `override` if given
-  // (HTML's legacy target override): a generator that yields after
-  // each listener it calls, so that the realm performs a microtask
-  // checkpoint there when the engine dispatches; a script's dispatch is
-  // run through at once. It ends with whether the event was canceled.
+  // The event's related target, for the events that have one: a
+  // FocusEvent's or a MouseEvent's.
+  function relatedOf(s) {
+    if ((s.kinds & (FOCUS | MOUSE)) === 0) {
+      return null;
+    }
+    const related = s.fields.relatedTarget;
+    return related === undefined ? null : related;
+  }
+
+  // One struct of an event's path (DOM section 2.9): its invocation
+  // target, its shadow-adjusted target (null for none), its related
+  // target, whether it is the root of a closed tree or a slot in a
+  // closed tree, and whether its invocation target is in a shadow tree.
+  function pathStruct(item, adjusted, related, rootClosed, slotClosed, inShadow) {
+    return { item, target: adjusted, related, rootClosed, slotClosed, inShadow };
+  }
+
+  // The event path of an event at `target` (D68): for a node, the host's
+  // (`native.eventPath`), its targets and related targets retargeted at
+  // each shadow boundary, then the window from the document, but for a
+  // `load` event; for another target, it and its parents. Null when the
+  // related target, retargeted, is the target, and nothing is
+  // dispatched. Its last member says whether the targets are cleared
+  // after the dispatch.
+  function eventPath(target, s, override) {
+    const related = relatedOf(s);
+    const path = [];
+    if (!isNode(target)) {
+      ArrayPush(path, pathStruct(target, override === undefined ? target : override, related,
+        false, false, false));
+      if (target === global && !WORKER) {
+        windowBody();
+      } else {
+        // An IndexedDB request's, transaction's and database's parents
+        // (M36.7, its section 2.2's "get the parent").
+        for (let p = WeakMapGet(eventParents, target); p !== undefined;
+          p = WeakMapGet(eventParents, p)) {
+          ArrayPush(path, pathStruct(p, null, related, false, false, false));
+        }
+      }
+      return [path, false];
+    }
+    const relatedNode = related !== null && isNode(related) ? handleOf(related) : null;
+    const answer = native.eventPath(handleOf(target), relatedNode, s.composed);
+    if (answer.length === 0) {
+      return null;
+    }
+    const count = (answer.length - 2) / 6;
+    const node = (n) => (n < 0 ? null : wrap(n));
+    for (let i = 0; i < count; i++) {
+      const at = i * 6;
+      ArrayPush(path, pathStruct(
+        wrap(answer[at]),
+        node(answer[at + 1]),
+        relatedNode === null ? related : node(answer[at + 2]),
+        answer[at + 3] === 1,
+        answer[at + 4] === 1,
+        answer[at + 5] === 1,
+      ));
+    }
+    if (override !== undefined) {
+      path[0].target = override;
+    }
+    if (kindOf(path[count - 1].item) === 9 && s.type !== "load") {
+      windowBody();
+      const related = relatedNode === null ? relatedOf(s) : node(answer[count * 6 + 1]);
+      ArrayPush(path, pathStruct(global, null, related, false, false, false));
+    }
+    return [path, answer[count * 6] === 1];
+  }
+
+  // The DOM's dispatch of `event` at `target` (section 2.9), its target
+  // `override` if given (HTML's legacy target override): a generator
+  // that yields after each listener it calls, so that the realm
+  // performs a microtask checkpoint there when the engine dispatches; a
+  // script's dispatch is run through at once. It ends with whether the
+  // event was canceled.
   //
-  // The path is the target, its ancestors and, from the document, the
-  // window, but for a `load` event. A click (a MouseEvent) runs the
-  // activation behaviour of the target, or of the nearest ancestor that
-  // has one when it bubbles, unless a listener canceled it.
+  // The path ([`eventPath`]) goes through shadow trees as the event's
+  // `composed` says, each listener seeing the target and the related
+  // target retargeted to its tree (D68). A click (a MouseEvent) runs
+  // the activation behaviour of the target, or of the nearest ancestor
+  // that has one when it bubbles, unless a listener canceled it.
   function* dispatching(target, event, override) {
     const s = eventState(event);
     s.dispatching = true;
     s.target = override === undefined ? target : override;
-    const path = [target];
+    const made = eventPath(target, s, override);
+    if (made === null) {
+      s.dispatching = false;
+      return s.canceled;
+    }
+    const path = made[0];
     let activator = null;
-    if (isNode(target)) {
+    if (isNode(target) && (s.kinds & MOUSE) !== 0 && s.type === "click") {
       const handle = handleOf(target);
-      const ancestors = native.ancestors(handle);
-      for (let i = 0; i < ancestors.length; i++) {
-        ArrayPush(path, wrap(ancestors[i]));
-      }
-      if (kindOf(path[path.length - 1]) === 9 && s.type !== "load") {
-        windowBody();
-        ArrayPush(path, global);
-      }
-      if ((s.kinds & MOUSE) !== 0 && s.type === "click") {
-        const found = native.activator(handle);
-        if (found !== null && (found === handle || s.bubbles)) {
-          activator = found;
-        }
-      }
-    } else if (target === global && !WORKER) {
-      windowBody();
-    } else {
-      // An IndexedDB request's, transaction's and database's parents
-      // (M36.7, its section 2.2's "get the parent").
-      for (let p = WeakMapGet(eventParents, target); p !== undefined; p = WeakMapGet(eventParents, p)) {
-        ArrayPush(path, p);
+      const found = native.activator(handle);
+      if (found !== null && (found === handle || s.bubbles)) {
+        activator = found;
       }
     }
     // A checkbox's or a radio button's legacy-pre-activation behaviour
@@ -2192,18 +2346,19 @@
     s.path = path;
     try {
       for (let i = path.length - 1; i >= 0; i--) {
-        if (s.stop) {
+        s.phase = path[i].target !== null ? 2 : 1;
+        if (structTargets(path, i, s)) {
           break;
         }
-        s.phase = path[i] === target ? 2 : 1;
-        s.currentTarget = path[i];
-        const listeners = ArraySlice(listenersOf(path[i]));
+        const item = path[i].item;
+        s.currentTarget = item;
+        const listeners = ArraySlice(listenersOf(item));
         for (let j = 0; j < listeners.length; j++) {
           const l = listeners[j];
           if (l.removed || l.type !== s.type || !l.capture) {
             continue;
           }
-          invoke(path[i], l, s, event);
+          invoke(item, l, s, event);
           yield;
           if (s.stopImmediate) {
             break;
@@ -2211,24 +2366,25 @@
         }
       }
       for (let i = 0; i < path.length; i++) {
-        if (path[i] === target) {
+        if (path[i].target !== null) {
           s.phase = 2;
         } else if (!s.bubbles) {
           continue;
         } else {
           s.phase = 3;
         }
-        if (s.stop) {
+        if (structTargets(path, i, s)) {
           break;
         }
-        s.currentTarget = path[i];
-        const listeners = ArraySlice(listenersOf(path[i]));
+        const item = path[i].item;
+        s.currentTarget = item;
+        const listeners = ArraySlice(listenersOf(item));
         for (let j = 0; j < listeners.length; j++) {
           const l = listeners[j];
           if (l.removed || l.type !== s.type || l.capture) {
             continue;
           }
-          invoke(path[i], l, s, event);
+          invoke(item, l, s, event);
           yield;
           if (s.stopImmediate) {
             break;
@@ -2239,9 +2395,17 @@
       s.phase = 0;
       s.currentTarget = null;
       s.path = [];
+      s.inShadow = false;
       s.dispatching = false;
       s.stop = false;
       s.stopImmediate = false;
+      // A target in a shadow tree is not told outside it (step 10).
+      if (made[1]) {
+        s.target = null;
+        if ((s.kinds & (FOCUS | MOUSE)) !== 0) {
+          s.fields.relatedTarget = null;
+        }
+      }
     }
     if (activator !== null && s.canceled && pre !== null) {
       cancelActivation(activator, pre);
@@ -2413,6 +2577,24 @@
     yield* dispatching(element, event);
   }
 
+  // The DOM's "invoke" for the struct at `i` of `path`, its first steps:
+  // the event's target the shadow-adjusted target of the nearest struct
+  // at or before it that has one, its related target the struct's.
+  // Whether propagation was stopped, and nothing is to be invoked.
+  function structTargets(path, i, s) {
+    for (let j = i; j >= 0; j--) {
+      if (path[j].target !== null) {
+        s.target = path[j].target;
+        break;
+      }
+    }
+    if ((s.kinds & (FOCUS | MOUSE)) !== 0) {
+      s.fields.relatedTarget = path[i].related;
+    }
+    s.inShadow = path[i].inShadow;
+    return s.stop;
+  }
+
   // The DOM's "inner invoke" for one listener: removed first if it is
   // once; called with `window.event` the event and, when passive, its
   // canceling refused; what it throws reported.
@@ -2421,7 +2603,9 @@
       removeListener(listenersOf(target), listener);
     }
     const previous = currentEvent;
-    currentEvent = event;
+    // A listener in a shadow tree does not see it as `window.event`
+    // (HTML section 7.2.2.1, D68).
+    currentEvent = s.inShadow ? undefined : event;
     if (listener.passive) {
       s.passive = true;
     }
@@ -4210,9 +4394,11 @@
   expose(MutationObserver, "MutationObserver");
 
   // DOM's "notify mutation observers": each observer with records, in
-  // the order they were made, its callback given them.
+  // the order they were made, its callback given them; then a
+  // `slotchange` at each slot signaled (D68).
   function notifyMutationObservers() {
     mutationsQueued = false;
+    const slots = native.takeSlotChanges();
     const ids = native.mutationNotify();
     for (let i = 0; i < ids.length; i++) {
       const observer = MapGet(mutationObservers, ids[i]);
@@ -4225,6 +4411,11 @@
       } catch (error) {
         reportException(error);
       }
+    }
+    for (let i = 0; i < slots.length; i++) {
+      const event = new Event("slotchange", made(EVENT_INIT, ["bubbles", true]));
+      eventState(event).trusted = true;
+      drain(dispatching(wrap(slots[i]), event));
     }
   }
 
@@ -7355,12 +7546,12 @@
       return native.firstChild(self(this)) !== null;
     }
 
-    getRootNode() {
-      let at = self(this);
-      for (let up = native.parent(at); up !== null; up = native.parent(at)) {
-        at = up;
-      }
-      return wrap(at);
+    // DOM's `getRootNode()`: the root, or with `composed` the
+    // shadow-including root (D68).
+    getRootNode(options) {
+      const handle = self(this);
+      const composed = typeof options === "object" && options !== null && !!options.composed;
+      return wrap(native.rootNode(handle, composed));
     }
 
     contains(other) {
@@ -8546,7 +8737,10 @@
     get activeElement() {
       const handle = self(this);
       const focused = isPage(handle) ? native.focused() : null;
-      return focused === null ? wrap(childOfHtml(handle, "body")) : wrap(focused);
+      // An element in a shadow tree is its outermost host here (D68).
+      return focused === null
+        ? wrap(childOfHtml(handle, "body"))
+        : wrap(native.retarget(focused, handle));
     }
 
     hasFocus() {
@@ -9040,6 +9234,330 @@
       return wrap(native.elementById(handle, str(elementId)));
     }
   }
+
+  // ---- Shadow trees (DOM section 4.8, gap batch H, D68) --------------------
+
+  // What a shadow root was made with: its mode, its slot assignment, and
+  // whether it delegates focus, is clonable, is serializable and is a
+  // declarative one.
+  function shadowInfo(handle) {
+    const info = native.shadowInfo(handle);
+    return {
+      mode: info[0],
+      slotAssignment: info[1],
+      delegatesFocus: info[2] === "true",
+      clonable: info[3] === "true",
+      serializable: info[4] === "true",
+      referenceTarget: info.length > 6 ? info[6] : null,
+    };
+  }
+
+  // Whether `value` is a shadow root's object.
+  function isShadowRoot(value) {
+    return isNode(value) && kindOf(value) === 11 && value instanceof ShadowRoot;
+  }
+
+  // `getHTML()`'s options (HTML section 8.5.1): whether serializable
+  // shadow roots are written, and the shadow roots to write whatever
+  // they say.
+  function htmlOptions(options, iface) {
+    const roots = [];
+    if (options === undefined || options === null) {
+      return [false, roots];
+    }
+    if (typeof options !== "object" && typeof options !== "function") {
+      throw new $TypeError(
+        prefix("getHTML", iface) + "The provided value is not of type 'GetHTMLOptions'.",
+      );
+    }
+    const serializable = !!options.serializableShadowRoots;
+    const given = options.shadowRoots;
+    if (given !== undefined) {
+      const list = sequence(given, "getHTML", iface, (item) => {
+        if (!isShadowRoot(item)) {
+          throw new $TypeError(
+            prefix("getHTML", iface) + "Failed to read the 'shadowRoots' property from " +
+              "'GetHTMLOptions': Failed to convert value to 'ShadowRoot'.",
+          );
+        }
+        return handleOf(item);
+      });
+      for (let i = 0; i < list.length; i++) {
+        ArrayPush(roots, list[i]);
+      }
+    }
+    return [serializable, roots];
+  }
+
+  // DocumentOrShadowRoot's `activeElement` (HTML section 6.6.6) of the
+  // shadow root `handle`: the focused element retargeted against it,
+  // when that is in its tree.
+  function shadowActiveElement(handle) {
+    const focused = native.focused();
+    if (focused === null) {
+      return null;
+    }
+    const candidate = native.retarget(focused, handle);
+    return native.rootNode(candidate, false) === handle ? wrap(candidate) : null;
+  }
+
+  // The elements hit at a point, the topmost first, each retargeted
+  // against `root`, a document or a shadow root, those of its tree once
+  // each (D68): the first alone unless `all`.
+  function pointElements(root, x, y, all) {
+    const found = native.elementsFromPoint(x, y, true);
+    const out = [];
+    for (let i = 0; i < found.length; i++) {
+      const element = native.retarget(found[i], root);
+      if (native.rootNode(element, false) !== root) {
+        continue;
+      }
+      const object = wrap(element);
+      if (!ArrayIncludes(out, object)) {
+        ArrayPush(out, object);
+        if (!all) {
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  class ShadowRoot extends DocumentFragment {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("ShadowRoot");
+      }
+      super(key, handle, kind, name);
+    }
+
+    get mode() {
+      return shadowInfo(self(this)).mode;
+    }
+
+    get delegatesFocus() {
+      return shadowInfo(self(this)).delegatesFocus;
+    }
+
+    get slotAssignment() {
+      return shadowInfo(self(this)).slotAssignment;
+    }
+
+    get clonable() {
+      return shadowInfo(self(this)).clonable;
+    }
+
+    get serializable() {
+      return shadowInfo(self(this)).serializable;
+    }
+
+    get host() {
+      return wrap(native.shadowHost(self(this)));
+    }
+
+    // The ID of the element in its tree that stands for its host in the
+    // host's tree's references (Reference Target), or null.
+    get referenceTarget() {
+      return shadowInfo(self(this)).referenceTarget;
+    }
+
+    set referenceTarget(value) {
+      native.setReferenceTarget(self(this), value === null ? null : str(value));
+    }
+
+    get innerHTML() {
+      return native.innerHTML(self(this));
+    }
+
+    set innerHTML(value) {
+      const handle = self(this);
+      const markup = strOrEmpty(value);
+      try {
+        native.setInnerHTML(handle, markup);
+      } catch (error) {
+        throw failedSet(error, "innerHTML", "ShadowRoot");
+      }
+    }
+
+    getHTML(options) {
+      const handle = self(this);
+      const parsed = htmlOptions(options, "ShadowRoot");
+      return native.getHTML(handle, parsed[0], parsed[1]);
+    }
+
+    // HTML's setHTML() and setHTMLUnsafe() of a shadow root (section
+    // 8.5.1, the Sanitizer API): `html` parsed in the context of its host,
+    // sanitized as `options` say, safe or not, in place of its children.
+    setHTML(html, options = undefined) {
+      const handle = self(this);
+      need(arguments.length, 1, "setHTML", "ShadowRoot");
+      setAndFilterHTML(handle, wrap(native.shadowHost(handle)), str(html), options, true,
+        "setHTML", "ShadowRoot");
+    }
+
+    setHTMLUnsafe(html, options = undefined) {
+      const handle = self(this);
+      need(arguments.length, 1, "setHTMLUnsafe", "ShadowRoot");
+      setAndFilterHTML(handle, wrap(native.shadowHost(handle)), str(html), options, false,
+        "setHTMLUnsafe", "ShadowRoot");
+    }
+
+    get activeElement() {
+      return shadowActiveElement(self(this));
+    }
+
+    // The elements at a point of the viewport (CSSOM View section 5.1),
+    // retargeted against the shadow root, those of its tree.
+    elementFromPoint(x, y) {
+      const handle = self(this);
+      need(arguments.length, 2, "elementFromPoint", "ShadowRoot");
+      const found = pointElements(handle, $Number(x), $Number(y), false);
+      return found.length === 0 ? null : found[0];
+    }
+
+    elementsFromPoint(x, y) {
+      const handle = self(this);
+      need(arguments.length, 2, "elementsFromPoint", "ShadowRoot");
+      return pointElements(handle, $Number(x), $Number(y), true);
+    }
+
+    get fullscreenElement() {
+      self(this);
+      return null;
+    }
+
+    get pointerLockElement() {
+      self(this);
+      return null;
+    }
+
+    get pictureInPictureElement() {
+      self(this);
+      return null;
+    }
+  }
+  expose(ShadowRoot, "ShadowRoot");
+
+  // `ShadowRootInit`'s members (DOM section 4.9), read in their order,
+  // as `attachShadow` takes them.
+  const SHADOW_MODES = ["open", "closed"];
+  const SLOT_ASSIGNMENTS = ["named", "manual"];
+  function shadowInit(init) {
+    const where = prefix("attachShadow", "Element");
+    if (init === undefined || init === null || (typeof init !== "object" && typeof init !== "function")) {
+      throw new $TypeError(where +
+        (init === undefined || init === null
+          ? "Failed to read the 'mode' property from 'ShadowRootInit': Required member is undefined."
+          : "The provided value is not of type 'ShadowRootInit'."));
+    }
+    const clonable = !!init.clonable;
+    const delegatesFocus = !!init.delegatesFocus;
+    const modeValue = init.mode;
+    if (modeValue === undefined) {
+      throw new $TypeError(where +
+        "Failed to read the 'mode' property from 'ShadowRootInit': Required member is undefined.");
+    }
+    const mode = str(modeValue);
+    if (!ArrayIncludes(SHADOW_MODES, mode)) {
+      throw new $TypeError(where + "Failed to read the 'mode' property from 'ShadowRootInit': " +
+        "The provided value '" + mode + "' is not a valid enum value of type ShadowRootMode.");
+    }
+    const referenceValue = init.referenceTarget;
+    const referenceTarget =
+      referenceValue === undefined || referenceValue === null ? null : str(referenceValue);
+    const serializable = !!init.serializable;
+    const assignmentValue = init.slotAssignment;
+    const slotAssignment = assignmentValue === undefined ? "named" : str(assignmentValue);
+    if (!ArrayIncludes(SLOT_ASSIGNMENTS, slotAssignment)) {
+      throw new $TypeError(where +
+        "Failed to read the 'slotAssignment' property from 'ShadowRootInit': The provided " +
+        "value '" + slotAssignment + "' is not a valid enum value of type SlotAssignmentMode.");
+    }
+    return [mode, delegatesFocus, slotAssignment, clonable, serializable, referenceTarget];
+  }
+
+  // The part names of an element, a token list of its `part` (CSS Shadow
+  // Parts 1), made once.
+  const partLists = new $WeakMap();
+
+  // A host's shadow root's object, held while the host's is, out of the
+  // document too, so that what a script set on it (its expandos, its
+  // adopted sheets) stays with it as the host does (D68).
+  const heldRoots = new $WeakMap();
+  function holdRoot(host, root) {
+    if (root !== null) {
+      WeakMapSet(heldRoots, host, root);
+    }
+    return root;
+  }
+
+  include(
+    {
+      attachShadow(init) {
+        const handle = self(this);
+        need(arguments.length, 1, "attachShadow", "Element");
+        const parsed = shadowInit(init);
+        try {
+          return holdRoot(this, wrap(native.attachShadow(handle, parsed[0], parsed[1],
+            parsed[2], parsed[3], parsed[4], parsed[5])));
+        } catch (error) {
+          throw failed(error, "attachShadow", "Element");
+        }
+      },
+
+      // The element's shadow root, when it is open.
+      get shadowRoot() {
+        const root = native.shadowRoot(self(this));
+        return root === null || shadowInfo(root).mode !== "open"
+          ? null
+          : holdRoot(this, wrap(root));
+      },
+
+      get assignedSlot() {
+        return wrap(native.assignedSlot(self(this)));
+      },
+
+      get slot() {
+        const value = native.attribute(self(this), "slot");
+        return value === null ? "" : value;
+      },
+
+      set slot(value) {
+        setAttribute(self(this), "slot", str(value), "slot");
+      },
+
+      get part() {
+        const handle = self(this);
+        let list = WeakMapGet(partLists, this);
+        if (list === undefined) {
+          list = tokenList(this, handle, "part");
+          WeakMapSet(partLists, this, list);
+        }
+        return list;
+      },
+
+      set part(value) {
+        setAttribute(self(this), "part", str(value), "part");
+      },
+
+      getHTML(options) {
+        const handle = self(this);
+        const parsed = htmlOptions(options, "Element");
+        return native.getHTML(handle, parsed[0], parsed[1]);
+      },
+    },
+    [Element.prototype],
+  );
+
+  // Slottable's `assignedSlot` on text (DOM section 4.2.9).
+  include(
+    {
+      get assignedSlot() {
+        return wrap(native.assignedSlot(self(this)));
+      },
+    },
+    [Text.prototype],
+  );
 
   // A processing instruction's target or a doctype's name: a name the
   // DOM takes, or the reference browser's error.
@@ -11582,6 +12100,40 @@
         );
       },
 
+      // `images`, `embeds` (and `plugins`, the same collection),
+      // `anchors` and `applets` (HTML section 3.1.5): its `img`
+      // elements, its `embed` elements, its `a` elements with a `name`,
+      // and nothing; those of its tree, never a shadow tree's.
+      get images() {
+        const handle = self(this);
+        return controlList(this, "images", () =>
+          collection(HTMLCollection, this, () => native.byTag(handle, "img"), true),
+        );
+      },
+
+      get embeds() {
+        const handle = self(this);
+        return controlList(this, "embeds", () =>
+          collection(HTMLCollection, this, () => native.byTag(handle, "embed"), true),
+        );
+      },
+
+      get plugins() {
+        return this.embeds;
+      },
+
+      get anchors() {
+        const handle = self(this);
+        return controlList(this, "anchors", () =>
+          collection(HTMLCollection, this, () => native.query(handle, "a[name]", true), true),
+        );
+      },
+
+      get applets() {
+        self(this);
+        return controlList(this, "applets", () => collection(HTMLCollection, this, () => [], true));
+      },
+
       getElementsByName(elementName) {
         const handle = self(this);
         need(arguments.length, 1, "getElementsByName", "Document");
@@ -13655,7 +14207,18 @@
     insertRule(rule, index = 0) {
       const state = sheetState(this);
       need(arguments.length, 1, "insertRule", "CSSStyleSheet");
-      return insertInList(state.list, str(rule), unsigned(index), "insertRule", "CSSStyleSheet");
+      const text = str(rule);
+      // A constructed sheet takes no `@import` (CSSOM section 6.1.2's
+      // insertRule(), step 3 of "insert a CSS rule").
+      if (state.constructed && StringSlice(ToLowerCase(StringTrim(text)), 0, 7) === "@import") {
+        throw domError(
+          "SyntaxError",
+          "Can't insert @import rules into a constructed stylesheet.",
+          "insertRule",
+          "CSSStyleSheet",
+        );
+      }
+      return insertInList(state.list, text, unsigned(index), "insertRule", "CSSStyleSheet");
     }
 
     deleteRule(index) {
@@ -13750,10 +14313,12 @@
   }
 
   function documentSheets(document) {
-    if (!isPage(document)) {
+    // A shadow root's are its tree's (D69).
+    const shadow = native.kind(document) === 11;
+    if (!shadow && !isPage(document)) {
       return otherDocumentSheets(document);
     }
-    const flat = native.cssom("sheets", null, [], "", 0);
+    const flat = native.cssom("sheets", shadow ? document : null, [], "", 0);
     const out = [];
     for (let i = 0; i < flat.length; i += 2) {
       ArrayPush(out, sheetFor(wrap(flat[i]), flat[i + 1], [], null, null));
@@ -13825,12 +14390,12 @@
         return list;
       },
     },
-    [Document.prototype],
+    [Document.prototype, ShadowRoot.prototype],
   );
 
   // `document.adoptedStyleSheets` (CSSOM 6.2): the constructed sheets
-  // the document's styles take after its own, by document; an array the
-  // page sets whole.
+  // the document's styles take after its own, by document, and a shadow
+  // root's its tree's (D69); an array the page sets whole.
   const adoptedSheets = new $WeakMap();
   include(
     {
@@ -13844,12 +14409,13 @@
         return sheets;
       },
       set adoptedStyleSheets(value) {
-        self(this);
+        const handle = self(this);
+        const iface = kindOf(this) === 11 ? "ShadowRoot" : "Document";
         const sheets = [];
         const serials = [];
         if (value === null || (typeof value !== "object" && typeof value !== "function")) {
           throw new $TypeError(
-            "Failed to set the 'adoptedStyleSheets' property on 'Document': The provided " +
+            "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': The provided " +
               "value cannot be converted to a sequence.",
           );
         }
@@ -13857,13 +14423,13 @@
           const state = WeakMapGet(sheetStates, sheet);
           if (state === undefined) {
             throw new $TypeError(
-              "Failed to set the 'adoptedStyleSheets' property on 'Document': Failed to " +
+              "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Failed to " +
                 "convert value to 'CSSStyleSheet'.",
             );
           }
           if (!state.constructed || state.elsewhere) {
             throw new $DOMException(
-              "Failed to set the 'adoptedStyleSheets' property on 'Document': Can't adopt " +
+              "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Can't adopt " +
                 "non-constructed stylesheets.",
               "NotAllowedError",
             );
@@ -13873,11 +14439,13 @@
         }
         if (this === theDocument()) {
           native.cssom("adopt", null, serials, "", 0);
+        } else if (iface === "ShadowRoot") {
+          native.cssom("adopt", handle, serials, "", 0);
         }
         WeakMapSet(adoptedSheets, this, sheets);
       },
     },
-    [Document.prototype],
+    [Document.prototype, ShadowRoot.prototype],
   );
 
   // A CSS module script's style sheet (HTML's "create a CSS module
@@ -13952,11 +14520,15 @@
     return computedNames;
   }
 
-  // The properties a computed style lists: those, then the element's
-  // custom properties with a value, which the host gives for the name
-  // `--` parted by NULs (D73).
+  // The properties a computed style lists: none for a pseudo-element
+  // that is not one (CSSOM's getComputedStyle(), step 4); else those,
+  // then the element's custom properties with a value, which the host
+  // gives for the name `--` parted by NULs (D73).
   function computedNamesOf(state) {
     const names = [];
+    if (state.pseudo === "invalid") {
+      return names;
+    }
     const listed = computedProperties();
     for (let i = 0; i < listed.length; i++) {
       ArrayPush(names, listed[i]);
@@ -14664,11 +15236,49 @@
     element(ELEMENTS[i][0], ELEMENTS[i][1], ELEMENTS[i][2]);
   }
   const HTMLUnknownElement = element("HTMLUnknownElement", []);
-  // A template's contents (D58), a fragment the element owns.
+  // A template's contents (D58), a fragment the element owns; and what
+  // its attributes make of a declarative shadow root (D68): its
+  // `shadowrootmode`, `open` or `closed` in any case, or else empty.
   include(
     {
       get content() {
         return wrap(native.templateContent(self(this)));
+      },
+
+      get shadowRootMode() {
+        const value = native.attribute(self(this), "shadowrootmode");
+        const lower = value === null ? "" : ToLowerCase(value);
+        return lower === "open" || lower === "closed" ? lower : "";
+      },
+
+      set shadowRootMode(value) {
+        setAttribute(self(this), "shadowrootmode", str(value), "shadowRootMode");
+      },
+
+      // `shadowrootslotassignment`: `manual` in any case, else `named`.
+      get shadowRootSlotAssignment() {
+        const value = native.attribute(self(this), "shadowrootslotassignment");
+        return value !== null && ToLowerCase(value) === "manual" ? "manual" : "named";
+      },
+
+      set shadowRootSlotAssignment(value) {
+        setAttribute(self(this), "shadowrootslotassignment", str(value),
+          "shadowRootSlotAssignment");
+      },
+
+      // `shadowrootreferencetarget`, null when absent.
+      get shadowRootReferenceTarget() {
+        return native.attribute(self(this), "shadowrootreferencetarget");
+      },
+
+      set shadowRootReferenceTarget(value) {
+        const handle = self(this);
+        if (value === null) {
+          native.removeAttribute(handle, "shadowrootreferencetarget");
+        } else {
+          setAttribute(handle, "shadowrootreferencetarget", str(value),
+            "shadowRootReferenceTarget");
+        }
       },
     },
     [MapGet(interfaces, "template").prototype],
@@ -14781,6 +15391,53 @@
     }
     return wrap(row);
   }
+
+  // A slot's members (HTML section 4.12.4, D68): its assigned nodes and
+  // elements, flattened when asked, and `assign()`.
+  function assignedOf(handle, options) {
+    const flatten = typeof options === "object" && options !== null && !!options.flatten;
+    return native.assignedNodes(handle, flatten);
+  }
+  include(
+    {
+      assignedNodes(options) {
+        const handle = self(this);
+        const nodes = assignedOf(handle, options);
+        const out = [];
+        for (let i = 0; i < nodes.length; i++) {
+          ArrayPush(out, wrap(nodes[i]));
+        }
+        return out;
+      },
+
+      assignedElements(options) {
+        const handle = self(this);
+        const nodes = assignedOf(handle, options);
+        const out = [];
+        for (let i = 0; i < nodes.length; i++) {
+          if (native.kind(nodes[i]) === 1) {
+            ArrayPush(out, wrap(nodes[i]));
+          }
+        }
+        return out;
+      },
+
+      assign(...nodes) {
+        const handle = self(this);
+        const handles = [];
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          if (!isNode(node) || (kindOf(node) !== 1 && kindOf(node) !== 3)) {
+            throw new $TypeError(prefix("assign", "HTMLSlotElement") + "parameter " + (i + 1) +
+              " is not of type '(Element or Text)'.");
+          }
+          ArrayPush(handles, handleOf(node));
+        }
+        native.assignSlot(handle, handles);
+      },
+    },
+    [MapGet(interfaces, "slot").prototype],
+  );
 
   include(
     {
@@ -16246,7 +16903,7 @@
     const config = sanitizerConfigFrom(options, safe, method, "Document");
     let document;
     try {
-      document = native.parseDocument(html, "text/html");
+      document = native.parseDocument(html, "text/html", true);
     } catch (error) {
       throw failed(error, method, "Document");
     }
@@ -16664,6 +17321,14 @@
     ["HTMLModElement", [
       ["cite", "cite", "url"],
       ["dateTime", "datetime", "string"],
+    ]],
+    ["HTMLSlotElement", [
+      ["name", "name", "string"],
+    ]],
+    ["HTMLTemplateElement", [
+      ["shadowRootDelegatesFocus", "shadowrootdelegatesfocus", "boolean"],
+      ["shadowRootClonable", "shadowrootclonable", "boolean"],
+      ["shadowRootSerializable", "shadowrootserializable", "boolean"],
     ]],
   ];
   for (let i = 0; i < REFLECTED.length; i++) {
@@ -17513,7 +18178,14 @@
     }
     const name = StringIndexOf(text, "::") === 0 ? StringSlice(text, 2) :
       StringIndexOf(text, ":") === 0 ? StringSlice(text, 1) : null;
-    if (name === null) {
+    // `::part()` and `::slotted()` name elements of other trees, not a
+    // pseudo-element of this one: an empty declaration, as the
+    // reference browser gives (D69).
+    if (
+      name === null ||
+      StringIndexOf(name, "part(") === 0 ||
+      StringIndexOf(name, "slotted(") === 0
+    ) {
       return "invalid";
     }
     return name;
@@ -19394,6 +20066,7 @@
   defineHandlers(SVGElement.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(MathMLElement.prototype, GLOBAL_HANDLERS, false);
   defineHandlers(Document.prototype, GLOBAL_HANDLERS, false);
+  defineHandlers(ShadowRoot.prototype, ["slotchange"], false);
   defineHandlers(Document.prototype, DOCUMENT_ELEMENT_HANDLERS, false);
   defineHandlers(Document.prototype, ["readystatechange", "visibilitychange"], false);
   defineHandlers(Window.prototype, GLOBAL_HANDLERS, false);
@@ -19748,6 +20421,24 @@
     },
   };
   include(textControlMembers, [madeInterfaces.HTMLInputElement.prototype, madeInterfaces.HTMLTextAreaElement.prototype]);
+  // The other form-associated elements' `form` (HTML section
+  // 4.10.18.3): their form owner, found in their own tree (D68).
+  include(
+    {
+      get form() {
+        return wrap(native.formOwner(self(this)));
+      },
+    },
+    [
+      madeInterfaces.HTMLFieldSetElement.prototype,
+      madeInterfaces.HTMLOutputElement.prototype,
+      madeInterfaces.HTMLObjectElement.prototype,
+    ],
+  );
+  // The input types the `list` attribute does not apply to.
+  const LIST_IGNORED = [
+    "hidden", "checkbox", "radio", "file", "submit", "image", "reset", "button", "password",
+  ];
 
   include(
     {
@@ -19773,6 +20464,19 @@
 
       set indeterminate(value) {
         native.setIndeterminate(self(this), !!value);
+      },
+
+      // `list` (HTML section 4.10.5.3.10): the `datalist` its `list`
+      // attribute names in its tree, a shadow tree's own (D68), for a
+      // type the attribute applies to.
+      get list() {
+        const handle = self(this);
+        const id = native.attribute(handle, "list");
+        if (id === null || id === "" || ArrayIncludes(LIST_IGNORED, native.inputType(handle))) {
+          return null;
+        }
+        const found = native.elementById(native.rootNode(handle, false), id);
+        return found !== null && native.tag(found) === "datalist" ? wrap(found) : null;
       },
     },
     [madeInterfaces.HTMLInputElement.prototype],
@@ -20251,6 +20955,9 @@
   // Whether it still has the focus after, for the unfocusing to go on.
   function commitChange(handle) {
     if (native.commitEdit(handle)) {
+      // The user's change committed: `:user-invalid` may show, as when
+      // the engine's own unfocusing commits it.
+      native.setUserValidity(handle);
       drain(fireTrusted(wrap(handle), "change", false));
     }
     return native.focused() === handle;
@@ -20262,6 +20969,19 @@
   // naming the other. Nothing for an element that cannot take the
   // focus, or has it.
   function focusElement(handle, preventScroll) {
+    // A shadow host that delegates focus gives it to its focus delegate,
+    // unless the focus is in it already (the focusing steps' step 2, D68).
+    if (delegatesFocus(handle)) {
+      const focused = native.focused();
+      if (focused !== null && shadowIncludes(handle, focused)) {
+        return;
+      }
+      const delegate = native.focusDelegate(handle);
+      if (delegate === null) {
+        return;
+      }
+      handle = delegate;
+    }
     if (!native.focusable(handle)) {
       return;
     }
@@ -20295,9 +21015,34 @@
     fireFocus("focusin", element, before);
   }
 
+  // Whether the element `handle` hosts a shadow root that delegates
+  // focus.
+  function delegatesFocus(handle) {
+    const root = native.shadowRoot(handle);
+    return root !== null && shadowInfo(root).delegatesFocus;
+  }
+
+  // Whether `node` is a shadow-including inclusive descendant of
+  // `ancestor`, its parents and hosts walked up.
+  function shadowIncludes(ancestor, node) {
+    for (let at = node; at !== null; ) {
+      if (at === ancestor) {
+        return true;
+      }
+      const parent = native.parent(at);
+      at = parent !== null ? parent : native.kind(at) === 11 ? native.shadowHost(at) : null;
+    }
+    return false;
+  }
+
   // HTML's unfocusing steps: the element loses the focus, to the
-  // viewport.
+  // viewport; a shadow host's blur blurs the focus in its tree (D68).
   function blurElement(handle) {
+    const focused = native.focused();
+    if (focused !== null && focused !== handle && native.shadowRoot(handle) !== null &&
+      native.retarget(focused, handle) === handle) {
+      handle = focused;
+    }
     if (native.focused() !== handle || !commitChange(handle)) {
       return;
     }
@@ -21485,7 +22230,10 @@
   const G_PADDING = 8;
   const G_MARGIN = 12;
   const G_SCROLL_HEIGHT = 16;
-  const G_RECTS = 17;
+  // The first box's corner with no transform applied (CSSOM View
+  // section 7's offsets), then each box's bounds.
+  const G_ORIGIN = 17;
+  const G_RECTS = 19;
 
   function geometryOf(element, scrolled) {
     return native.geometry(self(element), scrolled);
@@ -21619,8 +22367,46 @@
     return PromiseResolve(undefined);
   }
 
+  // The element's parent in the flat tree (D68): its slot when it is
+  // assigned one, its shadow root's host for a child of one, else its
+  // parent; `null` at the top.
+  function flatParent(handle) {
+    const slot = native.assignedSlot(handle);
+    if (slot !== null) {
+      return slot;
+    }
+    const parent = native.parent(handle);
+    if (parent !== null && native.kind(parent) === 11) {
+      return native.shadowHost(parent);
+    }
+    return parent;
+  }
+
   include(
     {
+      // CSSOM View's checkVisibility(): false when the element has no
+      // box; with `checkOpacity` (or `opacityProperty`), when it or an
+      // ancestor in the flat tree has an opacity of 0; with
+      // `checkVisibilityCSS` (or `visibilityProperty`), when its own
+      // `visibility` is not `visible`.
+      checkVisibility(options) {
+        const o = options === undefined || options === null ? {} : options;
+        if (geometryOf(this, false).length === 0) {
+          return false;
+        }
+        if (o.checkOpacity || o.opacityProperty) {
+          for (let at = self(this); at !== null && native.kind(at) === 1; at = flatParent(at)) {
+            if (Number(native.computedValue(at, "", "opacity")) === 0) {
+              return false;
+            }
+          }
+        }
+        if (o.checkVisibilityCSS || o.visibilityProperty) {
+          return native.computedValue(self(this), "", "visibility") === "visible";
+        }
+        return true;
+      },
+
       getBoundingClientRect() {
         const g = geometryOf(this, true);
         return g.length === 0 ? new DOMRect(0, 0, 0, 0) : new DOMRect(g[0], g[1], g[2], g[3]);
@@ -21835,13 +22621,16 @@
     if (g.length === 0) {
       return [0, 0];
     }
+    // Measured as laid out, "ignoring any transforms".
+    const x = g[G_ORIGIN];
+    const y = g[G_ORIGIN + 1];
     const parent = native.offsetParent(handleOf(element));
     if (parent === null || native.tag(parent) === "body") {
-      return [g[0], g[1]];
+      return [x, y];
     }
     const p = native.geometry(parent, false);
     if (p.length === 0) {
-      return [g[0], g[1]];
+      return [x, y];
     }
     // The reference browser takes a fieldset's border off twice for an
     // absolutely positioned box it holds.
@@ -21850,7 +22639,10 @@
         ? native.computedValue(handleOf(element), "", "position")
         : "";
     const twice = position === "absolute" || position === "fixed" ? 2 : 1;
-    return [g[0] - p[0] - twice * p[G_BORDER + 3], g[1] - p[1] - twice * p[G_BORDER]];
+    return [
+      x - p[G_ORIGIN] - twice * p[G_BORDER + 3],
+      y - p[G_ORIGIN + 1] - twice * p[G_BORDER],
+    ];
   }
 
   // HTML's "rendered text fragment": `text` as text nodes, each line
@@ -21896,22 +22688,18 @@
 
   include(
     {
+      // An element in a shadow tree is its host here (D68).
       elementFromPoint(x, y) {
-        self(this);
+        const handle = self(this);
         need(arguments.length, 2, "elementFromPoint", "Document");
-        const found = native.elementsFromPoint($Number(x), $Number(y), false);
-        return found.length === 0 ? null : wrap(found[0]);
+        const found = pointElements(handle, $Number(x), $Number(y), false);
+        return found.length === 0 ? null : found[0];
       },
 
       elementsFromPoint(x, y) {
-        self(this);
+        const handle = self(this);
         need(arguments.length, 2, "elementsFromPoint", "Document");
-        const found = native.elementsFromPoint($Number(x), $Number(y), true);
-        const out = [];
-        for (let i = 0; i < found.length; i++) {
-          ArrayPush(out, wrap(found[i]));
-        }
-        return out;
+        return pointElements(handle, $Number(x), $Number(y), true);
       },
 
       get scrollingElement() {
@@ -25626,6 +26414,7 @@
     chunkLazy("animations", Element.prototype, "animate", true, true);
     chunkLazy("animations", Element.prototype, "getAnimations", true, true);
     chunkLazy("animations", Document.prototype, "getAnimations", true, true);
+    chunkLazy("animations", ShadowRoot.prototype, "getAnimations", true, true);
     chunkLazy("animations", Document.prototype, "timeline", true, false);
   }
 

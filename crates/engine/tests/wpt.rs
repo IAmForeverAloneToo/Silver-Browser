@@ -556,7 +556,17 @@ add_completion_callback(function (tests, status) {
 /// The runner's `testdriver-vendor.js`: `test_driver.bless` made by a
 /// click of the runner's (see [`bless`]), which gives the page the user's
 /// activation as a real one does. The button is placed as testdriver's
-/// own `bless` places it, and its centre asked for on the console.
+/// own `bless` places it, and its centre asked for on the console. And
+/// `test_driver.send_keys` made by the runner's presses of the keys it
+/// asks for on the console (see [`send_keys`]), the element focused
+/// first when it can take the focus, as WebDriver's Element Send Keys
+/// does; it settles once the last key's `keyup` reaches the window. And
+/// `test_driver.click` made by a press and release at the point it asks
+/// for, as `bless`'s are; it settles in the task after the release. And
+/// `test_driver.action_sequence` for sequences of key actions and pauses
+/// (see [`key_actions`]), tick by tick; it settles once the window has
+/// seen the event of each key's press and release. Pointer and wheel
+/// actions it refuses.
 const VENDOR: &str = r#"(function () {
   if (!window.test_driver) {
     return;
@@ -586,6 +596,84 @@ const VENDOR: &str = r#"(function () {
       button.remove();
       return typeof action === "function" ? action() : null;
     });
+  };
+  var names = {"\uE003": "Backspace", "\uE004": "Tab", "\uE006": "Enter",
+    "\uE007": "Enter", "\uE00C": "Escape", "\uE00D": " ",
+    "\uE00E": "PageUp", "\uE00F": "PageDown", "\uE010": "End",
+    "\uE011": "Home", "\uE012": "ArrowLeft", "\uE013": "ArrowUp",
+    "\uE014": "ArrowRight", "\uE015": "ArrowDown", "\uE017": "Delete"};
+  window.test_driver_internal.send_keys = function (element, keys) {
+    if (document.activeElement !== element && element !== document.body &&
+        typeof element.focus === "function") {
+      element.focus();
+    }
+    var last = keys.charAt(keys.length - 1);
+    var name = names[last] || last;
+    var done = new Promise(function (resolve) {
+      window.addEventListener("keyup", function seen(event) {
+        if (event.key === name) {
+          window.removeEventListener("keyup", seen, true);
+          resolve();
+        }
+      }, true);
+    });
+    console.log("wpt-keys\t" + keys);
+    return done;
+  };
+  window.test_driver_internal.click = function (element, coords) {
+    var done = new Promise(function (resolve) {
+      window.addEventListener("mouseup", function seen() {
+        window.removeEventListener("mouseup", seen, true);
+        setTimeout(resolve, 0);
+      }, true);
+    });
+    console.log("wpt-bless\t" + coords.x + "\t" + coords.y);
+    return done;
+  };
+  var modifiers = [0xE008, 0xE009, 0xE00A, 0xE03D, 0xE050, 0xE051, 0xE052, 0xE053];
+  window.test_driver_internal.action_sequence = function (actions) {
+    var ticks = 0;
+    for (var i = 0; i < actions.length; i++) {
+      if (actions[i].type !== "key" && actions[i].type !== "none") {
+        return Promise.reject(new Error(
+          "pointer and wheel actions are not implemented by testdriver-vendor.js"));
+      }
+      ticks = Math.max(ticks, actions[i].actions.length);
+    }
+    var steps = [];
+    var events = 0;
+    for (var tick = 0; tick < ticks; tick++) {
+      for (var j = 0; j < actions.length; j++) {
+        var action = actions[j].actions[tick];
+        if (!action || (action.type !== "keyDown" && action.type !== "keyUp")) {
+          continue;
+        }
+        var code = action.value.codePointAt(0);
+        steps.push((action.type === "keyDown" ? "d" : "u") + code);
+        if (modifiers.indexOf(code) < 0) {
+          events += 1;
+        }
+      }
+    }
+    var done = new Promise(function (resolve) {
+      if (events === 0) {
+        setTimeout(resolve, 0);
+        return;
+      }
+      var seen = 0;
+      function count() {
+        seen += 1;
+        if (seen === events) {
+          window.removeEventListener("keydown", count, true);
+          window.removeEventListener("keyup", count, true);
+          setTimeout(resolve, 0);
+        }
+      }
+      window.addEventListener("keydown", count, true);
+      window.addEventListener("keyup", count, true);
+    });
+    console.log("wpt-actions\t" + steps.join("\t"));
+    return done;
   };
 })();
 "#;
@@ -1629,6 +1717,8 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         bless(engine, now, &mut said);
         if engine.needs_frame() {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+            // An animation frame's callbacks may ask for keys or clicks.
+            bless(engine, now, &mut said);
         }
         if let Some(harness) = harness_results(engine) {
             let passed = harness.status == 0 && harness.tests.iter().all(|(_, s, _)| *s == 0);
@@ -1719,6 +1809,16 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
 /// activation for the page. What else the console said is kept in `said`.
 fn bless(engine: &mut Engine, now: Duration, said: &mut Vec<String>) {
     for entry in engine.take_console() {
+        if let Some(keys) = entry.text.strip_prefix("wpt-keys\t") {
+            engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+            send_keys(engine, keys);
+            continue;
+        }
+        if let Some(actions) = entry.text.strip_prefix("wpt-actions\t") {
+            engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+            key_actions(engine, actions);
+            continue;
+        }
         let point = entry.text.strip_prefix("wpt-bless\t").and_then(|point| {
             let (x, y) = point.split_once('\t')?;
             Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))
@@ -1731,6 +1831,98 @@ fn bless(engine: &mut Engine, now: Duration, said: &mut Vec<String>) {
         engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
         engine.pointer_down(x, y, engine::Button::Primary, 1);
         engine.pointer_up(x, y, engine::Button::Primary, 1);
+    }
+}
+
+/// Presses and releases each key of `keys`, WebDriver's: its special
+/// keys by their code points (Tab, Enter, Escape, the arrows and the
+/// rest the vendor names), its modifier keys held down to the end, every
+/// other character a key that types it.
+fn send_keys(engine: &mut Engine, keys: &str) {
+    let mut modifiers = engine::Modifiers::default();
+    for c in keys.chars() {
+        if webdriver_modifier(c, &mut modifiers, true) {
+            continue;
+        }
+        engine.set_modifiers(modifiers);
+        let key = webdriver_key(c);
+        engine.key_down(&key);
+        engine.key_up(&key);
+    }
+    engine.set_modifiers(engine::Modifiers::default());
+}
+
+/// Performs the key actions of a `test_driver.action_sequence` the
+/// vendor flattened tick by tick (see [`VENDOR`]): each a `d` for a
+/// press or a `u` for a release, then the key's code point, WebDriver's,
+/// in decimal. A modifier key is held from its press to its release, and
+/// none past the sequence's end.
+fn key_actions(engine: &mut Engine, actions: &str) {
+    let mut modifiers = engine::Modifiers::default();
+    for action in actions.split('\t') {
+        let (down, code) = match action.split_at_checked(1) {
+            Some(("d", code)) => (true, code),
+            Some(("u", code)) => (false, code),
+            _ => continue,
+        };
+        let Some(c) = code.parse::<u32>().ok().and_then(char::from_u32) else {
+            continue;
+        };
+        if webdriver_modifier(c, &mut modifiers, down) {
+            engine.set_modifiers(modifiers);
+            continue;
+        }
+        let key = webdriver_key(c);
+        if down {
+            engine.key_down(&key);
+        } else {
+            engine.key_up(&key);
+        }
+    }
+    engine.set_modifiers(engine::Modifiers::default());
+}
+
+/// Sets the modifier WebDriver's code point `c` names, if it names one,
+/// in `modifiers`, to `down`; whether it does.
+fn webdriver_modifier(c: char, modifiers: &mut engine::Modifiers, down: bool) -> bool {
+    let held = match c {
+        '\u{E008}' | '\u{E050}' => &mut modifiers.shift,
+        '\u{E009}' | '\u{E051}' => &mut modifiers.ctrl,
+        '\u{E00A}' | '\u{E052}' => &mut modifiers.alt,
+        '\u{E03D}' | '\u{E053}' => &mut modifiers.meta,
+        _ => return false,
+    };
+    *held = down;
+    true
+}
+
+/// The key WebDriver's code point `c` names: its special keys (Tab,
+/// Enter, Escape, the arrows and the rest the vendor names) by their
+/// code points, every other character a key that types it.
+fn webdriver_key(c: char) -> engine::Key {
+    let named = |key: &str| engine::Key::new(key, key);
+    match c {
+        '\u{E003}' => named("Backspace"),
+        '\u{E004}' => named("Tab"),
+        '\u{E006}' | '\u{E007}' => named("Enter"),
+        '\u{E00C}' => named("Escape"),
+        '\u{E00D}' => engine::Key {
+            text: Some(" ".to_owned()),
+            ..engine::Key::new(" ", "Space")
+        },
+        '\u{E00E}' => named("PageUp"),
+        '\u{E00F}' => named("PageDown"),
+        '\u{E010}' => named("End"),
+        '\u{E011}' => named("Home"),
+        '\u{E012}' => named("ArrowLeft"),
+        '\u{E013}' => named("ArrowUp"),
+        '\u{E014}' => named("ArrowRight"),
+        '\u{E015}' => named("ArrowDown"),
+        '\u{E017}' => named("Delete"),
+        c => engine::Key {
+            text: Some(c.to_string()),
+            ..engine::Key::new(&c.to_string(), "")
+        },
     }
 }
 

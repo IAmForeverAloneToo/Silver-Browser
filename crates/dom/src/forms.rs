@@ -1305,13 +1305,14 @@ pub fn form_associated(document: &Document, element: NodeId) -> bool {
 /// `form` ancestor. Style's matcher works it out the same way with the
 /// IDs it keeps.
 pub fn form_owner(document: &Document, element: NodeId) -> Option<NodeId> {
-    let root = document.root();
-    let connected = element == root || document.ancestors(element).last() == Some(root);
+    // The ID is looked for in the element's tree, a shadow tree's own
+    // (D68), once the element is connected.
     if let Some(id) = document.attr(element, "form")
-        && connected
+        && document.is_connected(element)
     {
+        let tree = document.root_of(element);
         let owner = document
-            .subtree(root)
+            .subtree(tree)
             .find(|&node| !id.is_empty() && document.attr(node, "id") == Some(id))?;
         return (document.tag(owner) == Some("form")).then_some(owner);
     }

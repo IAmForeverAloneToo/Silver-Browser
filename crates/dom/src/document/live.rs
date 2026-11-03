@@ -81,6 +81,8 @@ pub(super) struct Live {
     /// `createCDATASection`'s): text to everything after the DOM, with
     /// their own node type and markup.
     pub(super) cdata: std::collections::HashSet<NodeId>,
+    /// The shadow roots and their slots' assignments (D68).
+    pub(super) shadows: super::shadow::Shadows,
 }
 
 impl Live {

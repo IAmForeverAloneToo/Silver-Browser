@@ -854,7 +854,7 @@ fn number(
         } else if b.generated.is_some() {
             (Some(b.node), held(holds, b.node))
         } else {
-            let element = document.parent_element(b.node);
+            let element = document.flat_parent_element(b.node);
             (element, element.is_some_and(|p| held(holds, p)))
         };
         b.parent = above;
@@ -1120,12 +1120,14 @@ impl<'a> Styled<'a> {
     }
 
     /// The children of `node` that may make boxes: its elements and
-    /// text, not its comments or processing instructions (D58). Every
-    /// walk of the tree the boxes are built from goes through here, so
-    /// that it is the one place that says what a node's children are.
+    /// text, not its comments or processing instructions (D58), in the
+    /// flat tree (D68): a host's shadow tree's, a slot's assigned nodes
+    /// or its fallback content. Every walk of the tree the boxes are built
+    /// from goes through here, so that it is the one place that says what
+    /// a node's children are.
     fn boxed_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.document
-            .children(node)
+            .flat_children(node)
             .filter(|&child| self.document.is_element(child) || self.document.is_text(child))
     }
 
@@ -1156,12 +1158,12 @@ impl<'a> Styled<'a> {
     }
 
     /// What the text `child`, met among the children of `parent`, takes
-    /// its style and decorations from: its own parent element when that
-    /// is of `display: contents` and so not `parent` (D77), else
-    /// `parent`.
+    /// its style and decorations from: its own parent element in the
+    /// flat tree (D68) when that is of `display: contents` and so not
+    /// `parent` (D77), as a slot is, else `parent`.
     fn text_owner(&self, parent: Item, child: Item) -> Item {
         if let Item::Node(node) = child
-            && let Some(up) = self.document.parent(node)
+            && let Some(up) = self.document.flat_parent(node)
             && Item::Node(up) != parent
             && self.is_contents(Item::Node(up))
         {
@@ -1317,7 +1319,7 @@ impl<'a> Styled<'a> {
         let found = self.styles.get(node).and_then(|style| {
             let stops = decoration::stops_propagation(style)
                 || self.document.tag(node).is_some_and(is_replaced);
-            let parent = match self.document.parent_element(node) {
+            let parent = match self.document.flat_parent_element(node) {
                 Some(parent) if !stops => self.element_decorations(parent),
                 _ => None,
             };

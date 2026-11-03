@@ -34,6 +34,14 @@
 //! among them, as the reference browser matches them in an HTML document
 //! (M32). Values are compared in place, with nothing allocated.
 //!
+//! A shadow tree's rules (gap batch H, D69) are matched with the
+//! matcher scoped to it ([`Matcher::set_shadow_scope`]): its host then
+//! stands as the parent of the tree's top elements, featureless, so that
+//! only `:host`, `:host()` and `:host-context()` match it, and nothing
+//! above or beside it is reached. `::slotted()` and `::part()` are
+//! matched by the cascade through [`Matcher::matches_slotted`] and
+//! [`Matcher::matches_part`].
+//!
 //! `:lang()` reads the language HTML gives an element: the `lang`
 //! attribute of the element or its nearest ancestor that has one; else
 //! the document's pragma-set default language, from the last
@@ -52,8 +60,8 @@ use crate::computed::Direction;
 
 use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
-    AttrNamespace, AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector,
-    SelectorList, SimpleSelector,
+    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, PseudoArgument, PseudoClass,
+    PseudoElement, Selector, SelectorList, SimpleSelector,
 };
 
 /// Whether any selector in the list matches the element. A one-off;
@@ -127,10 +135,11 @@ pub struct Matcher<'a> {
     /// combinator, which a map's hashing made the cost of (T4.3).
     filter_at: Vec<u32>,
     /// The places a selector's compounds were found to lead nowhere, by
-    /// the selector's address, the compound and the node: kept for the
-    /// matcher's life, since the document does not change in it (M35.2),
-    /// at most [`MAX_FAILED`] of them.
-    failed: HashSet<(usize, usize, NodeId)>,
+    /// the selector's address, the compound, the node and the shadow
+    /// tree it was matched in: kept for the matcher's life, since the
+    /// document does not change in it (M35.2), at most [`MAX_FAILED`] of
+    /// them.
+    failed: HashSet<(usize, usize, NodeId, Option<NodeId>)>,
     /// The element whose `:has()` is being matched: what the anchor of a
     /// relative selector is (D74).
     anchor: Option<NodeId>,
@@ -147,6 +156,8 @@ pub struct Matcher<'a> {
     /// index, filled along an element's ancestors the first time
     /// `:dir()` asks.
     directions: Vec<Option<Direction>>,
+    /// The shadow tree whose rules are matched, and its host (D69).
+    shadow: Option<(NodeId, NodeId)>,
     /// How many compounds were tried against an element: for the tests.
     #[cfg(test)]
     pub(crate) compounds_tried: u64,
@@ -232,9 +243,114 @@ impl<'a> Matcher<'a> {
             has_answers: HashMap::new(),
             below: HashMap::new(),
             directions: Vec::new(),
+            shadow: None,
             #[cfg(test)]
             compounds_tried: 0,
         }
+    }
+
+    /// Matches from now on the rules of the shadow tree at `root`, a
+    /// shadow root, or the document's for `None` (D69): the tree's host is
+    /// its top elements' featureless parent.
+    pub fn set_shadow_scope(&mut self, root: Option<NodeId>) {
+        self.shadow = root.and_then(|root| Some((root, self.document.shadow_host(root)?)));
+    }
+
+    /// The host of the shadow tree whose rules are matched, if any: the
+    /// top of what an `@scope` of them reaches (D69).
+    pub(crate) fn scoped_host(&self) -> Option<NodeId> {
+        self.shadow.map(|(_, host)| host)
+    }
+
+    /// The shadow root whose rules are matched, if any.
+    fn scope_root(&self) -> Option<NodeId> {
+        self.shadow.map(|(root, _)| root)
+    }
+
+    /// Whether `element` is the shadow host of the tree whose rules are
+    /// matched: featureless there.
+    fn is_scope_host(&self, element: NodeId) -> bool {
+        self.shadow.is_some_and(|(_, host)| host == element)
+    }
+
+    /// The parent a combinator walks to from `node`: its parent element,
+    /// or for a top element of the scoped shadow tree its host; none
+    /// above the host.
+    fn parent_in_scope(&self, node: NodeId) -> Option<NodeId> {
+        let Some((root, host)) = self.shadow else {
+            return self.document.parent_element(node);
+        };
+        if node == host {
+            return None;
+        }
+        match self.document.parent_element(node) {
+            Some(parent) => Some(parent),
+            None if self.document.parent(node) == Some(root) => Some(host),
+            None => None,
+        }
+    }
+
+    /// The previous element sibling a combinator walks to: none of the
+    /// scoped tree's host.
+    fn prev_in_scope(&self, node: NodeId) -> Option<NodeId> {
+        if self.is_scope_host(node) {
+            return None;
+        }
+        self.document.prev_element_sibling(node)
+    }
+
+    /// Whether `selector`, which ends in `::slotted()`, represents the
+    /// element `element` assigned to `slot`: its compounds match the slot,
+    /// in the scoped shadow tree, and its argument the element (CSS
+    /// Scoping 1 section 3.2.2).
+    pub(crate) fn matches_slotted(
+        &mut self,
+        element: NodeId,
+        slot: NodeId,
+        selector: &'a Selector,
+    ) -> bool {
+        let Some(ending) = &selector.pseudo_element else {
+            return false;
+        };
+        let PseudoArgument::Slotted(compound) = &ending.argument else {
+            return false;
+        };
+        let scope = self.shadow.take();
+        let argument =
+            self.document.is_element(element) && self.matches_compound(element, compound);
+        self.shadow = scope;
+        argument
+            && ending
+                .states
+                .iter()
+                .all(|state| state_matches(state, self.document.state(element)))
+            && self.matches_compounds(slot, selector)
+    }
+
+    /// Whether `selector`, which ends in `::part()`, represents the
+    /// element `element` of `host`'s shadow tree, whose part names as the
+    /// host's tree sees them are `names`: every name it gives is among
+    /// them, its states hold of the element, and its compounds match the
+    /// host (CSS Shadow Parts 1).
+    pub(crate) fn matches_part(
+        &mut self,
+        element: NodeId,
+        host: NodeId,
+        names: &[&str],
+        selector: &'a Selector,
+    ) -> bool {
+        let Some(ending) = &selector.pseudo_element else {
+            return false;
+        };
+        let PseudoArgument::Part(wanted) = &ending.argument else {
+            return false;
+        };
+        wanted.iter().all(|name| names.contains(&name.as_str()))
+            && ending
+                .states
+                .iter()
+                .all(|state| state_matches(state, self.document.state(element)))
+            && self.matches_compounds(host, selector)
     }
 
     /// The matcher with `:scope` the element `scope` (DOM's "scope-match a
@@ -340,6 +456,7 @@ impl<'a> Matcher<'a> {
         // may for another.
         let relative = compounds[0].simple.first()
             == Some(&SimpleSelector::PseudoClass(PseudoClass::RelativeAnchor));
+        let scope = self.scope_root();
         let kept = !self.rule_scoped
             && !relative
             && selector
@@ -368,7 +485,7 @@ impl<'a> Matcher<'a> {
                 let Some(cand) = frame.next else {
                     let frame = stack.pop().expect("the stack is not empty");
                     if kept {
-                        self.failed.insert((id, frame.k, frame.node));
+                        self.failed.insert((id, frame.k, frame.node, scope));
                     } else {
                         local
                             .get_or_insert_with(HashSet::new)
@@ -379,13 +496,13 @@ impl<'a> Matcher<'a> {
                 let comb = selector.combinators[frame.k - 1];
                 frame.next = match comb {
                     Combinator::Child | Combinator::NextSibling => None,
-                    Combinator::Descendant => self.document.parent_element(cand),
-                    Combinator::LaterSibling => self.document.prev_element_sibling(cand),
+                    Combinator::Descendant => self.parent_in_scope(cand),
+                    Combinator::LaterSibling => self.prev_in_scope(cand),
                 };
                 (frame.k - 1, cand)
             };
             let known = if kept {
-                self.failed.contains(&(id, target, cand))
+                self.failed.contains(&(id, target, cand, scope))
             } else {
                 local.as_ref().is_some_and(|f| f.contains(&(target, cand)))
             };
@@ -404,7 +521,7 @@ impl<'a> Matcher<'a> {
                     next,
                 });
             } else if kept {
-                self.failed.insert((id, target, cand));
+                self.failed.insert((id, target, cand, scope));
             } else {
                 local
                     .get_or_insert_with(HashSet::new)
@@ -495,10 +612,8 @@ impl<'a> Matcher<'a> {
     /// element sibling for the sibling ones.
     fn first_candidate(&self, comb: Combinator, node: NodeId) -> Option<NodeId> {
         match comb {
-            Combinator::Child | Combinator::Descendant => self.document.parent_element(node),
-            Combinator::NextSibling | Combinator::LaterSibling => {
-                self.document.prev_element_sibling(node)
-            }
+            Combinator::Child | Combinator::Descendant => self.parent_in_scope(node),
+            Combinator::NextSibling | Combinator::LaterSibling => self.prev_in_scope(node),
         }
     }
 
@@ -511,17 +626,62 @@ impl<'a> Matcher<'a> {
     ) -> bool {
         self.matches_simple(element, simple)
     }
-
-    /// Whether every simple selector in the compound matches.
-    fn matches_compound(&mut self, element: NodeId, compound: &'a super::CompoundSelector) -> bool {
+    /// Whether every simple selector in the compound matches; the scoped
+    /// tree's host, featureless, matches a compound of `:host`,
+    /// `:host()` and `:host-context()` alone (CSS Scoping 1 section 3.1).
+    fn matches_compound(&mut self, element: NodeId, compound: &'a CompoundSelector) -> bool {
         #[cfg(test)]
         {
             self.compounds_tried += 1;
+        }
+        if self.is_scope_host(element) {
+            // Featureless, it is matched by `:host` and its kin, by
+            // `:scope` and `&` when it is the scoping root an `@scope`
+            // of the tree's rules gives (css-cascade-6, D69), and by the
+            // lists that hold one of those.
+            return compound.simple.iter().all(|s| match s {
+                SimpleSelector::PseudoClass(
+                    pc @ (PseudoClass::Host(_) | PseudoClass::HostContext(_)),
+                ) => self.matches_host(element, pc),
+                SimpleSelector::PseudoClass(
+                    PseudoClass::Scope
+                    | PseudoClass::Is(_)
+                    | PseudoClass::Where(_)
+                    | PseudoClass::Not(_)
+                    | PseudoClass::Nesting(_),
+                ) => self.matches_simple(element, s),
+                _ => false,
+            });
         }
         compound
             .simple
             .iter()
             .all(|s| self.matches_simple(element, s))
+    }
+
+    /// Whether `:host`, `:host()` or `:host-context()` matches `host`, the
+    /// scoped tree's: its compound matched against the host as an element
+    /// of its own tree, for `:host-context()` against it or one of its
+    /// shadow-including ancestors.
+    fn matches_host(&mut self, host: NodeId, pc: &'a PseudoClass) -> bool {
+        let scope = self.shadow.take();
+        let matched = match pc {
+            PseudoClass::Host(None) => true,
+            PseudoClass::Host(Some(compound)) => self.matches_compound(host, compound),
+            PseudoClass::HostContext(compound) => {
+                let document = self.document;
+                let ancestors: Vec<NodeId> = std::iter::once(host)
+                    .chain(document.shadow_including_ancestors(host))
+                    .filter(|&node| document.is_element(node))
+                    .collect();
+                ancestors
+                    .into_iter()
+                    .any(|node| self.matches_compound(node, compound))
+            }
+            _ => false,
+        };
+        self.shadow = scope;
+        matched
     }
 
     /// Whether one simple selector matches the element.
@@ -725,6 +885,9 @@ impl<'a> Matcher<'a> {
             PseudoClass::Default => dom::validity::is_default(document, element),
             PseudoClass::Required => required(document, element) == Some(true),
             PseudoClass::Optional => required(document, element) == Some(false),
+            // A host matches them as the featureless host of the scoped
+            // tree alone ([`Matcher::matches_compound`]).
+            PseudoClass::Host(_) | PseudoClass::HostContext(_) => false,
         }
     }
 
@@ -894,6 +1057,12 @@ impl<'a> Matcher<'a> {
     /// ancestor.
     fn form_owner(&mut self, element: NodeId) -> Option<NodeId> {
         let document = self.document;
+        // A shadow tree's ID is its own (D68): the DOM looks it up there.
+        if document.attr(element, "form").is_some()
+            && document.is_shadow_root(document.root_of(element))
+        {
+            return forms::form_owner(document, element);
+        }
         if let Some(id) = document.attr(element, "form")
             && crate::invalidation::attached(document, element)
         {

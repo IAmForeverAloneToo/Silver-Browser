@@ -93,7 +93,8 @@ pub enum Call {
     /// namespace's URI, or empty (M32); its `nodeType` (D58); for an
     /// element whose name has a prefix that prefix, for a document the
     /// interface its object is of (`Document`, `HTMLDocument` or
-    /// `XMLDocument`, D67), else empty; then the names of its attributes
+    /// `XMLDocument`, D67), for a shadow root `ShadowRoot` (D68), else
+    /// empty; then the names of its attributes
     /// that start with `on`, which may be event handlers (M26), as
     /// strings.
     Wrap(Handle),
@@ -181,6 +182,70 @@ pub enum Call {
     DoctypeIds(Handle),
     /// A template's contents, a fragment.
     TemplateContent(Handle),
+    /// `attachShadow` (DOM section 4.9, D68): a shadow root attached to
+    /// the element, its `mode` `open` or `closed` and its
+    /// `slot_assignment` `named` or `manual`, which the bindings checked.
+    AttachShadow {
+        host: Handle,
+        mode: String,
+        delegates_focus: bool,
+        slot_assignment: String,
+        clonable: bool,
+        serializable: bool,
+        reference_target: Option<String>,
+    },
+    /// A shadow root's `referenceTarget` set, or taken away for `None`.
+    SetReferenceTarget(Handle, Option<String>),
+    /// The element's shadow root, of either mode, or `None`.
+    ShadowRoot(Handle),
+    /// What a shadow root was made with: its mode, its slot assignment,
+    /// and whether it delegates focus, is clonable, is serializable and
+    /// is a declarative one, those four `true` or `false`; then its
+    /// reference target, when it has one.
+    ShadowInfo(Handle),
+    /// A shadow root's host.
+    ShadowHost(Handle),
+    /// `getRootNode()`: the node's root, its shadow-including root when
+    /// `composed`.
+    RootNode(Handle, bool),
+    /// A slottable's assigned slot, when the slot's shadow root is open
+    /// (`assignedSlot`), or `None`.
+    AssignedSlot(Handle),
+    /// A slot's assigned nodes, its flattened slottables when `flatten`.
+    AssignedNodes(Handle, bool),
+    /// A slot's `assign()`: its manually assigned nodes, which the
+    /// bindings checked are elements or text.
+    AssignSlot(Handle, Vec<Handle>),
+    /// The slots whose assigned nodes changed since this was last asked,
+    /// at which the bindings fire `slotchange`.
+    TakeSlotChanges,
+    /// The event path of an event at `target` (DOM section 2.9): six
+    /// numbers a struct, its invocation target, its shadow-adjusted
+    /// target, its related target (each -1 for none), whether it is the
+    /// root of a closed tree, whether it is a slot in a closed tree and
+    /// whether its invocation target is in a shadow tree; then whether
+    /// the targets are cleared after dispatch, and the related target
+    /// retargeted against the document, for the window's struct. `related` is
+    /// the event's related target when it is a node, and `composed` its
+    /// composed flag. Empty when the related target, retargeted, is the
+    /// target.
+    EventPath {
+        target: Handle,
+        related: Option<Handle>,
+        composed: bool,
+    },
+    /// DOM's "retarget" of the first node against the second.
+    Retarget(Handle, Handle),
+    /// A shadow host's focus delegate (HTML section 6.6.3), or `None`.
+    FocusDelegate(Handle),
+    /// `getHTML()` (HTML section 8.5.1): the node's children's markup,
+    /// with each serializable shadow root's when `serializable` and each
+    /// of `roots`'s, as declarative shadow roots.
+    GetHtml {
+        node: Handle,
+        serializable: bool,
+        roots: Vec<Handle>,
+    },
     /// A document's doctype, or `None`: the page's for `None`.
     Doctype(Option<Handle>),
     /// A node's owner document (DOM's node document, D67), an inert
@@ -198,10 +263,13 @@ pub enum Call {
     /// says (`DOMParser.parseFromString`, `Document.parseHTMLUnsafe`):
     /// `text/html` by the HTML parser, scripting off, another by the XML
     /// parser, an error reported in the document as the reference
-    /// browser reports it.
+    /// browser reports it. Its `template`s with a `shadowrootmode`
+    /// attach declarative shadow roots when `declarative`, as
+    /// `parseHTMLUnsafe`'s do (D68) and `DOMParser`'s do not.
     ParseDocument {
         markup: String,
         mime: String,
+        declarative: bool,
     },
     /// A response's body parsed into a new document (XHR's "document
     /// response"): HTML's (`html`) decoded by its `charset`, if one, or

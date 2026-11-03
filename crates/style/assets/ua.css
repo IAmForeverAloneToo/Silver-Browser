@@ -154,6 +154,10 @@ legend { padding-inline: 2px; }
  * defaults the presentational hints build on (D60). */
 [hidden]:not([hidden=until-found i]) { display: none; }
 center { text-align: -webkit-center; }
+
+/* A slot makes no box (HTML section 15.3.1, gap batch H): its
+ * assigned nodes, or its fallback content, are laid out in its place. */
+slot { display: contents; }
 table { border-color: gray; }
 
 dl { margin: 1em 0; }

@@ -81,6 +81,9 @@ pub(crate) struct Page {
     /// in order.
     constructed: Vec<Constructed>,
     adopted: Vec<u64>,
+    /// The serial numbers of the sheets each shadow root adopted (D69).
+    adopted_shadow: HashMap<NodeId, Vec<u64>>,
+
     /// The serial numbers of the sheets a script disabled (CSSOM's
     /// disabled flag): a sheet made again is a new one, enabled.
     disabled: HashSet<u64>,
@@ -163,6 +166,9 @@ pub(crate) struct Creator {
 /// An element that may own a sheet.
 struct Owner {
     node: NodeId,
+    /// The shadow root of the tree the element is in, whose rules its
+    /// sheet's are (D69); `None` for the document's.
+    scope: Option<NodeId>,
     /// What the element's sheet was made from; a change to it makes the
     /// sheet again.
     key: Key,
@@ -256,6 +262,8 @@ struct Imported {
 /// An element found by a walk over the document.
 struct Found {
     node: NodeId,
+    /// The shadow root of its tree, if it is in one (D69).
+    scope: Option<NodeId>,
     key: Key,
     title: String,
     media: Option<String>,
@@ -333,6 +341,7 @@ impl Page {
             registered: Vec::new(),
             constructed: Vec::new(),
             adopted: Vec::new(),
+            adopted_shadow: HashMap::new(),
             disabled: HashSet::new(),
             detached: Vec::new(),
         }
@@ -381,6 +390,7 @@ impl Page {
             registered: Vec::new(),
             constructed: Vec::new(),
             adopted: Vec::new(),
+            adopted_shadow: HashMap::new(),
             disabled: HashSet::new(),
             detached: Vec::new(),
         }
@@ -989,6 +999,7 @@ impl Page {
             self.detach(owner);
         }
         self.owners = owners;
+        self.forget_shadow_sheets(document);
     }
 
     /// [`Page::rescan`] in a script's run, which has no network (D65,
@@ -1034,6 +1045,7 @@ impl Page {
             self.detach(owner);
         }
         self.owners = owners;
+        self.forget_shadow_sheets(document);
     }
 
     /// Keeps the sheet of an owner that has it no more, for the CSSOM.
@@ -1215,9 +1227,41 @@ impl Page {
     /// and a sheet with another title is left out (CSSOM section 6.1's
     /// add steps).
     pub(crate) fn sheets(&self) -> Vec<css::Stylesheet> {
+        self.sheets_of(None)
+    }
+
+    /// The sheets of each shadow tree (D69), by its root, in tree order:
+    /// [`Page::sheets`] of its `<style>` and `<link>` elements, then its
+    /// adopted sheets, with their implicit scoping roots in `document`.
+    pub(crate) fn shadow_sheets(&self, document: &Document) -> Vec<style::ShadowTreeSheets> {
+        let mut roots: Vec<NodeId> = Vec::new();
+        for owner in &self.owners {
+            if let Some(scope) = owner.scope
+                && !roots.contains(&scope)
+            {
+                roots.push(scope);
+            }
+        }
+        for &root in self.adopted_shadow.keys() {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        roots
+            .into_iter()
+            .map(|root| {
+                let roots = self.scope_roots_of(document, Some(root));
+                (root, self.sheets_of(Some(root)), roots)
+            })
+            .collect()
+    }
+
+    /// The sheets of the tree whose shadow root is `scope`, the
+    /// document's for `None`, then its adopted ones.
+    fn sheets_of(&self, scope: Option<NodeId>) -> Vec<css::Stylesheet> {
         let preferred = self.preferred();
         let mut sheets = Vec::new();
-        for owner in &self.owners {
+        for owner in self.owners.iter().filter(|owner| owner.scope == scope) {
             if let Slot::Ready(sheet) = &owner.sheet
                 && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
                 && !self.disabled.contains(&sheet.serial)
@@ -1229,7 +1273,7 @@ impl Page {
         }
         // The adopted sheets after the document's (CSSOM's document or
         // shadow root CSS style sheets).
-        self.adopted_sheets(&mut sheets);
+        self.adopted_sheets(scope, &mut sheets);
         sheets
     }
 
@@ -1238,34 +1282,52 @@ impl Page {
     /// whose sheet it is, or none for an adopted sheet. What an `@scope`
     /// rule without roots of its own scopes to (Cascade 6 section 2.5.1).
     pub(crate) fn scope_roots(&self, document: &Document) -> Vec<Option<NodeId>> {
+        self.scope_roots_of(document, None)
+    }
+
+    /// [`Page::scope_roots`] of the sheets of the tree whose shadow root
+    /// is `scope` (D69), the document's for `None`, as
+    /// [`Page::shadow_sheets`] gives them.
+    fn scope_roots_of(&self, document: &Document, scope: Option<NodeId>) -> Vec<Option<NodeId>> {
         let preferred = self.preferred();
         let mut roots: Vec<Option<NodeId>> = self
             .owners
             .iter()
             .filter(|owner| {
-                matches!(&owner.sheet, Slot::Ready(sheet)
+                owner.scope == scope
+                    && matches!(&owner.sheet, Slot::Ready(sheet)
                     if (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
                         && !self.disabled.contains(&sheet.serial))
             })
             .map(|owner| document.parent_element(owner.node))
             .collect();
         let mut adopted = Vec::new();
-        self.adopted_sheets(&mut adopted);
+        self.adopted_sheets(scope, &mut adopted);
         roots.extend(adopted.iter().map(|_| None));
         roots
     }
 
     /// [`Page::sheets`] prepared for the cascade, each with its scoping
     /// root in `document`, with the custom properties its scripts
-    /// registered.
+    /// registered, and the shadow trees' sheets (D69).
     pub(crate) fn stylesheets(&self, document: &Document) -> style::Stylesheets {
         style::Stylesheets::with_scope_roots(self.sheets(), self.scope_roots(document))
             .with_registered(self.registered.clone())
+            .with_shadow_trees(self.shadow_sheets(document))
     }
 
-    /// The adopted sheets that apply, each in its `media`, after `sheets`.
-    fn adopted_sheets(&self, sheets: &mut Vec<css::Stylesheet>) {
-        for serial in &self.adopted {
+    /// The adopted sheets of the tree whose shadow root is `scope`, the
+    /// document's for `None`, that apply, each in its `media`, after
+    /// `sheets`.
+    fn adopted_sheets(&self, scope: Option<NodeId>, sheets: &mut Vec<css::Stylesheet>) {
+        let adopted = match scope {
+            Some(root) => self
+                .adopted_shadow
+                .get(&root)
+                .map_or(&[][..], Vec::as_slice),
+            None => &self.adopted,
+        };
+        for serial in adopted {
             if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial)
                 && !self.disabled.contains(serial)
             {
@@ -1311,11 +1373,43 @@ impl Page {
         document: &Document,
         media: &Media,
     ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
+        self.scoped_sheets_now_of(document, media, document.root())
+    }
+
+    /// [`Page::sheets_now`] of each shadow tree in `document` (D69), by
+    /// its root, in tree order, with its adopted sheets.
+    pub(crate) fn shadow_sheets_now(
+        &self,
+        document: &Document,
+        media: &Media,
+    ) -> Vec<style::ShadowTreeSheets> {
+        if !document.has_shadow_roots() {
+            return Vec::new();
+        }
+        document
+            .shadow_including_subtree(document.root())
+            .into_iter()
+            .filter(|&node| document.is_shadow_root(node))
+            .map(|root| {
+                let (sheets, roots) = self.scoped_sheets_now_of(document, media, root);
+                (root, sheets, roots)
+            })
+            .collect()
+    }
+
+    /// [`Page::scoped_sheets_now`] of the tree at `top`, the document or
+    /// a shadow root.
+    fn scoped_sheets_now_of(
+        &self,
+        document: &Document,
+        media: &Media,
+        top: NodeId,
+    ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
         let preferred = self.preferred();
         let csp = self.policies();
         let mut sheets = Vec::new();
         let mut roots = Vec::new();
-        for node in document.subtree(document.root()) {
+        for node in document.subtree(top) {
             match self.owners.iter().find(|owner| owner.node == node) {
                 Some(owner) => {
                     if let Slot::Ready(sheet) = &owner.sheet
@@ -1347,8 +1441,9 @@ impl Page {
                 None => {}
             }
         }
+        let scope = Some(top).filter(|&top| document.is_shadow_root(top));
         let first_adopted = sheets.len();
-        self.adopted_sheets(&mut sheets);
+        self.adopted_sheets(scope, &mut sheets);
         roots.resize(roots.len() + sheets.len() - first_adopted, None);
         (sheets, roots)
     }
@@ -1379,9 +1474,10 @@ impl Page {
 
     /// The CSSOM's `document.styleSheets` (D66): each element whose
     /// sheet is there, in tree order, with its sheet's serial number.
-    pub(crate) fn cssom_sheets(&self) -> Vec<(NodeId, u64)> {
+    pub(crate) fn cssom_sheets(&self, scope: Option<NodeId>) -> Vec<(NodeId, u64)> {
         self.owners
             .iter()
+            .filter(|owner| owner.scope == scope)
             .filter_map(|owner| match &owner.sheet {
                 Slot::Ready(sheet) => Some((owner.node, sheet.serial)),
                 _ => None,
@@ -1564,6 +1660,34 @@ impl Page {
             self.cssom_edited = true;
         }
     }
+
+    /// A shadow root's `adoptedStyleSheets` set to the sheets `serials`
+    /// numbers (D69).
+    pub(crate) fn adopt_shadow_sheets(&mut self, root: NodeId, serials: Vec<u64>) {
+        let serials: Vec<u64> = serials
+            .into_iter()
+            .filter(|serial| self.constructed.iter().any(|c| c.serial == *serial))
+            .collect();
+        let old = self
+            .adopted_shadow
+            .get(&root)
+            .map_or(&[][..], Vec::as_slice);
+        if serials != old {
+            if serials.is_empty() {
+                self.adopted_shadow.remove(&root);
+            } else if self.adopted_shadow.len() < MAX_CONSTRUCTED_SHEETS {
+                self.adopted_shadow.insert(root, serials);
+            }
+            self.cssom_edited = true;
+        }
+    }
+
+    /// Forgets the adopted sheets of the shadow roots not in `document`
+    /// any more.
+    pub(crate) fn forget_shadow_sheets(&mut self, document: &Document) {
+        self.adopted_shadow
+            .retain(|&root, _| document.contains(root));
+    }
 }
 
 impl Slot {
@@ -1710,6 +1834,7 @@ fn start(
     };
     Owner {
         node: found.node,
+        scope: found.scope,
         key: found.key,
         title: found.title,
         media: found.media,
@@ -1744,6 +1869,7 @@ fn start_inline(context: &Context, found: Found, csp: &Csp) -> Owner {
     };
     Owner {
         node: found.node,
+        scope: found.scope,
         key: found.key,
         title: found.title,
         media: found.media,
@@ -1860,7 +1986,12 @@ fn scan(
     let mut base = context.fallback();
     let mut base_seen = false;
     let mut before_body = true;
-    for node in document.subtree(document.root()) {
+    // The shadow trees' elements too, each tree's sheets its own (D69).
+    let nodes = match document.has_shadow_roots() {
+        true => document.shadow_including_subtree(document.root()),
+        false => document.subtree(document.root()).collect(),
+    };
+    for node in nodes {
         let tag = match document.tag(node) {
             Some(tag) => tag,
             // SVG's `<style>` owns a sheet as HTML's does (SVG 2 section
@@ -1868,6 +1999,11 @@ fn scan(
             None if is_svg_style(document, node) => "style",
             None => continue,
         };
+        let scope = Some(document.root_of(node)).filter(|&top| document.is_shadow_root(top));
+        // A shadow tree's `base` and `body` are no document's.
+        if scope.is_some() && matches!(tag, "base" | "body") {
+            continue;
+        }
         let attr = |name: &str| document.attr(node, name).map(str::to_owned);
         let nonce = |node: NodeId| checked_nonce(document, nonces, node);
         let title = || attr("title").unwrap_or_default();
@@ -1882,6 +2018,7 @@ fn scan(
             }
             "link" => found.push(Found {
                 node,
+                scope,
                 key: Key::Link {
                     href: attr("href"),
                     rel: attr("rel"),
@@ -1903,6 +2040,7 @@ fn scan(
             }),
             "style" => found.push(Found {
                 node,
+                scope,
                 key: Key::Style {
                     text: document
                         .children(node)
@@ -1995,13 +2133,20 @@ pub(crate) fn may_touch_sheets(document: &Document, change: &Change) -> bool {
     match change {
         Change::Inserted { parent, child } | Change::Removed { parent, child, .. } => {
             is_style(*parent)
-                // A node freed since cannot be looked into.
+                // A node freed since cannot be looked into; the shadow
+                // trees in what came or went hold sheets too (D69).
                 || !document.contains(*child)
-                || document.subtree(*child).any(owns)
+                || document
+                    .shadow_including_subtree(*child)
+                    .into_iter()
+                    .any(owns)
         }
         Change::AttributeChanged { element, .. } => owns(*element),
         Change::TextChanged { node } => document.parent(*node).is_some_and(is_style),
-        Change::StateChanged { .. } | Change::ControlChanged { .. } | Change::Moved { .. } => false,
+        Change::StateChanged { .. }
+        | Change::ControlChanged { .. }
+        | Change::Moved { .. }
+        | Change::FlatTree { .. } => false,
         Change::Everything => true,
     }
 }

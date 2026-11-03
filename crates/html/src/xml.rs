@@ -498,7 +498,7 @@ impl<'a> XmlSerializer<'a> {
                         steps.push(Step::Node(child, inherited.clone(), map.clone()));
                     }
                 }
-                Some(NodeData::Document | NodeData::DocumentFragment) => {
+                Some(NodeData::Document | NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
                     let children: Vec<NodeId> = document.children(at).collect();
                     for child in children.into_iter().rev() {
                         steps.push(Step::Node(child, ns.clone(), map.clone()));

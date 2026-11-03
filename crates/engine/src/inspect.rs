@@ -702,6 +702,10 @@ fn tree_json(
             members.push(("type", Json::from(11u32)));
             members.push(("name", Json::from("#document-fragment")));
         }
+        Some(NodeData::ShadowRoot(_)) => {
+            members.push(("type", Json::from(11u32)));
+            members.push(("name", Json::from("#shadow-root")));
+        }
         Some(NodeData::Document) | None => {
             members.push(("type", Json::from(9u32)));
             members.push(("name", Json::from("#document")));

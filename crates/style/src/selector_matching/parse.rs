@@ -30,8 +30,9 @@ use css::Token;
 
 use super::language::is_well_formed_range;
 use super::{
-    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoClass,
-    PseudoElement, PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
+    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoArgument,
+    PseudoClass, PseudoElement, PseudoElementSelector, Selector, SelectorList, SimpleSelector,
+    Specificity,
 };
 
 /// How deep `:not()`, `:is()`, `:where()` and `of S` may nest.
@@ -680,7 +681,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
             Token::Colon => {
                 match parse_pseudo(c, &mut spec, depth, Scope::Nested)? {
                     Pseudo::Class(pc) => simple.push(SimpleSelector::PseudoClass(pc)),
-                    Pseudo::Element(element) => {
+                    Pseudo::Element(element, argument) => {
                         if scope != Scope::Rule {
                             return None;
                         }
@@ -692,7 +693,11 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         return Some(Compound {
                             selector: CompoundSelector { simple },
                             specificity: spec,
-                            pseudo_element: Some(PseudoElementSelector { element, states }),
+                            pseudo_element: Some(PseudoElementSelector {
+                                element,
+                                argument,
+                                states,
+                            }),
                         });
                     }
                 }
@@ -844,7 +849,7 @@ fn parse_attribute(c: &mut Cursor) -> Option<AttributeParts> {
 /// What a `:` begins.
 enum Pseudo {
     Class(PseudoClass),
-    Element(PseudoElement),
+    Element(PseudoElement, PseudoArgument),
 }
 
 /// Parses a pseudo-class or a pseudo-element; the cursor is at `:`.
@@ -863,27 +868,61 @@ fn parse_pseudo(
     match c.peek() {
         Some(Token::Colon) => {
             c.advance();
-            // `::name`; of the functional pseudo-elements only
-            // `::picker(select)` is one this engine knows (D74).
-            if let Some(Token::Function(name)) = c.peek()
-                && name.eq_ignore_ascii_case("picker")
-            {
+            // `::name`, or one of the functional pseudo-elements this
+            // engine knows: `::picker(select)` (D74), `::slotted()` and
+            // `::part()` (D69).
+            if let Some(Token::Function(name)) = c.peek() {
+                let name = name.to_ascii_lowercase();
                 c.advance();
-                c.skip_ws();
-                let Some(Token::Ident(argument)) = c.peek() else {
-                    return None;
+                let pseudo = match name.as_str() {
+                    "picker" => {
+                        c.skip_ws();
+                        let Some(Token::Ident(argument)) = c.peek() else {
+                            return None;
+                        };
+                        if !argument.eq_ignore_ascii_case("select") {
+                            return None;
+                        }
+                        c.advance();
+                        *spec += Specificity(0, 0, 1);
+                        Pseudo::Element(PseudoElement::Picker, PseudoArgument::None)
+                    }
+                    "slotted" => {
+                        c.skip_ws();
+                        let compound = parse_compound(c, depth + 1, Scope::Nested)?;
+                        if compound.pseudo_element.is_some() {
+                            return None;
+                        }
+                        *spec += Specificity(0, 0, 1) + compound.specificity;
+                        Pseudo::Element(
+                            PseudoElement::Slotted,
+                            PseudoArgument::Slotted(Box::new(compound.selector)),
+                        )
+                    }
+                    "part" => {
+                        let mut names = Vec::new();
+                        loop {
+                            c.skip_ws();
+                            match c.peek() {
+                                Some(Token::Ident(name)) => names.push(name.clone()),
+                                _ => break,
+                            }
+                            c.advance();
+                        }
+                        if names.is_empty() {
+                            return None;
+                        }
+                        *spec += Specificity(0, 0, 1);
+                        Pseudo::Element(PseudoElement::Part, PseudoArgument::Part(names))
+                    }
+                    _ => return None,
                 };
-                if !argument.eq_ignore_ascii_case("select") {
-                    return None;
-                }
-                c.advance();
                 c.skip_ws();
                 if !matches!(c.peek(), Some(Token::CloseParen)) {
                     return None;
                 }
                 c.advance();
-                *spec += Specificity(0, 0, 1);
-                return Some(Pseudo::Element(PseudoElement::Picker));
+                return Some(pseudo);
             }
             let Some(Token::Ident(name)) = c.peek() else {
                 return None;
@@ -906,9 +945,9 @@ fn parse_pseudo(
                 c.advance();
                 c.advance();
                 c.advance();
-                return Some(Pseudo::Element(PseudoElement::Nested));
+                return Some(Pseudo::Element(PseudoElement::Nested, PseudoArgument::None));
             }
-            Some(Pseudo::Element(element))
+            Some(Pseudo::Element(element, PseudoArgument::None))
         }
         Some(Token::Ident(name)) => {
             let name = name.to_ascii_lowercase();
@@ -917,7 +956,7 @@ fn parse_pseudo(
             if let Some(element) = legacy_pseudo_element(&name) {
                 c.advance();
                 *spec += Specificity(0, 0, 1);
-                return Some(Pseudo::Element(element));
+                return Some(Pseudo::Element(element, PseudoArgument::None));
             }
             let pc = match name.as_str() {
                 "first-child" => PseudoClass::FirstChild,
@@ -957,6 +996,7 @@ fn parse_pseudo(
                 "optional" => PseudoClass::Optional,
                 "open" => PseudoClass::Open,
                 "autofill" | "-webkit-autofill" => PseudoClass::Autofill,
+                "host" => PseudoClass::Host(None),
                 _ => return None,
             };
             c.advance();
@@ -1035,8 +1075,25 @@ fn parse_pseudo(
                     let (a, b, _) = parse_nth(c, false, depth)?;
                     PseudoClass::NthLastOfType { a, b }
                 }
+                // CSS Scoping 1 (D69): one compound, its specificity a
+                // pseudo-class's and the compound's.
+                "host" | "host-context" => {
+                    c.skip_ws();
+                    let compound = parse_compound(c, depth + 1, Scope::Nested)?;
+                    if compound.pseudo_element.is_some() {
+                        return None;
+                    }
+                    c.skip_ws();
+                    *spec += Specificity(0, 1, 0) + compound.specificity;
+                    let compound = Box::new(compound.selector);
+                    match name.as_str() {
+                        "host" => PseudoClass::Host(Some(compound)),
+                        _ => PseudoClass::HostContext(compound),
+                    }
+                }
                 _ => return None,
             };
+
             // The function's closing `)`.
             if !matches!(c.peek(), Some(Token::CloseParen)) {
                 return None;
@@ -1826,12 +1883,48 @@ mod tests {
         err("::-moz-selection");
         err("::-webkitx");
         err("::backdrop");
-        err("::part(x)");
-        err("::slotted(p)");
         err("::nope");
         err(":: before");
         err("::");
         err("::'before'");
+    }
+
+    #[test]
+    fn the_scoping_selectors_take_their_arguments_as_css_scoping_says() {
+        // CSS Scoping 1 sections 3.2.1 and 3.2.2, CSS Shadow Parts 1
+        // section 4: `::slotted()` takes one compound, `::part()` one or
+        // more idents, `:host()` and `:host-context()` one compound.
+        for src in [
+            "::slotted(p.a)",
+            "slot::slotted(*)",
+            "::part(label)",
+            "x-a::part(label thumb)",
+            ":host",
+            ":host(.on)",
+            ":host-context(.dark) p",
+            ":host(.on)::slotted(span)",
+        ] {
+            ok(src);
+        }
+        for src in [
+            "::slotted()",
+            "::slotted(p span)",
+            "::part()",
+            "::part(1x)",
+            ":host(.a .b)",
+            ":host()",
+            ":host-context(.a > .b)",
+            "::slotted(p)::part(x)",
+        ] {
+            err(src);
+        }
+        let list = ok("::part(a b)");
+        let pseudo = list.0[0].pseudo_element.as_ref().unwrap();
+        assert_eq!(pseudo.element, PseudoElement::Part);
+        assert_eq!(
+            pseudo.argument,
+            PseudoArgument::Part(vec!["a".into(), "b".into()])
+        );
     }
 
     #[test]

@@ -210,10 +210,11 @@ impl LayoutCache {
             if !document.contains(node) {
                 continue;
             }
-            for ancestor in document.ancestors(node) {
+            // Through the flat tree, which the boxes are built of (D68).
+            for ancestor in document.flat_ancestors(node) {
                 boxes.remove(&ancestor);
             }
-            for below in document.subtree(node) {
+            for below in document.flat_subtree(node) {
                 boxes.remove(&below);
             }
         }
@@ -279,11 +280,14 @@ impl LayoutCache {
         let widths = self.widths.get_mut();
         let boxes = self.boxes.get_mut();
         let mut forget = |node: NodeId| {
+            // A shadow tree's top is laid out in its host's box, and every
+            // box is above its ancestors' in the flat tree (D68).
+            let node = document.shadow_host(node).unwrap_or(node);
             entries.remove(&node);
             items.remove(&node);
             widths.remove(&node);
             boxes.remove(&node);
-            for ancestor in document.ancestors(node) {
+            for ancestor in document.flat_ancestors(node) {
                 entries.remove(&ancestor);
                 items.remove(&ancestor);
                 widths.remove(&ancestor);
@@ -319,10 +323,13 @@ impl LayoutCache {
                         });
                 }
                 Change::TextChanged { node } => {
-                    if let Some(parent) = document.parent(*node) {
+                    if let Some(parent) = document.flat_parent(*node) {
                         forget(parent);
                     }
                 }
+                // A shadow root attached, or a slot's assigned nodes
+                // changed (D68): what is laid out in its place is other.
+                Change::FlatTree { node } => forget(*node),
                 // A state's change lays out what it restyles, which the
                 // restyled list holds (M26.4); a move's `Removed` and
                 // `Inserted` say what it changed.

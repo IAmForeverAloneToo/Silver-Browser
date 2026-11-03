@@ -155,6 +155,10 @@ impl Document {
         page_facts: impl FnOnce() -> DocumentFacts,
     ) -> Result<NodeId, MutationError> {
         let data = self.data(node).ok_or(MutationError::NoSuchNode)?.clone();
+        // A shadow root is copied with its host alone, by its caller.
+        if matches!(data, NodeData::ShadowRoot(_)) {
+            return Err(MutationError::NotSupported);
+        }
         if data == NodeData::Document {
             let facts = match self.document_facts(node) {
                 Some(facts) => DocumentFacts {
@@ -286,6 +290,11 @@ impl Document {
                 at = host;
                 continue;
             }
+            // A shadow tree is its host's document's (D68).
+            if let Some(host) = self.shadow_host(top) {
+                at = host;
+                continue;
+            }
             let owner = self
                 .rare
                 .documents
@@ -352,7 +361,7 @@ impl Document {
         if !self.contains(node) || !self.is_document(document) {
             return Err(MutationError::NoSuchNode);
         }
-        if self.is_document(node) {
+        if self.is_document(node) || self.is_shadow_root(node) {
             return Err(MutationError::HierarchyRequest);
         }
         if let Some(parent) = self.parent(node) {
@@ -433,6 +442,7 @@ impl Document {
         let mut pending: Vec<(NodeId, NodeId)> = Vec::new();
         let tops: Vec<NodeId> = from.children(from.root()).collect();
         pending.extend(tops.into_iter().rev().map(|n| (n, document)));
+        let mut roots = Vec::new();
         while let Some((node, parent)) = pending.pop() {
             let Some(data) = from.data(node) else {
                 continue;
@@ -457,6 +467,22 @@ impl Document {
                 let children: Vec<NodeId> = from.children(from_contents).collect();
                 pending.extend(children.into_iter().rev().map(|c| (c, contents)));
             }
+            // A host's shadow tree, as its parser attached it (D68).
+            if let Some(from_root) = from.shadow_root(node)
+                && let Some(init) = from.shadow_init(from_root)
+                && let Ok(root) =
+                    self.attach_shadow(made, init, from.is_declarative_shadow(from_root))
+            {
+                let _ = self.set_reference_target(root, from.reference_target(from_root));
+                let children: Vec<NodeId> = from.children(from_root).collect();
+                pending.extend(children.into_iter().rev().map(|c| (c, root)));
+                roots.push(root);
+            }
+        }
+        // The copies' slots, linked without the insertion steps, are
+        // assigned once the trees are whole.
+        for root in roots {
+            self.reassign(root);
         }
         Ok(document)
     }

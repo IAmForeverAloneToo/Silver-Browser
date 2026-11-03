@@ -260,6 +260,20 @@ fn an_inserted_iframe_has_its_window_at_once() {
 }
 
 #[test]
+fn a_shadow_trees_frames_are_not_the_windows() {
+    // HTML's document-tree child navigables (D68): a frame whose iframe
+    // is in a shadow tree has its window, but its parent window has it
+    // neither by index nor by name.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<iframe name=main></iframe><div id=host></div>             <script>             const root = host.attachShadow({mode: 'closed'});             root.innerHTML = '<iframe name=inner></iframe>';             const w = root.firstChild.contentWindow;             onload = () => console.log(length, frames.main === frames[0], frames.inner,                w !== null, w.parent === window);             </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 1);
+    assert_eq!(lines, ["1 true undefined true true"]);
+}
+
+#[test]
 fn a_frames_name_its_script_set_stays_across_its_navigations() {
     static PAGES: &[(&str, &str)] = &[
         ("/page.html", "<iframe name=given src=one.html></iframe>"),

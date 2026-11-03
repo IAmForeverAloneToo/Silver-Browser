@@ -99,6 +99,10 @@ struct TreeNode {
     /// Whether a script's question made it, which no engine has taken
     /// yet.
     reserved: bool,
+    /// Whether its element is in a shadow tree, which leaves it out of
+    /// its parent window's frames by index and name (HTML's
+    /// "document-tree child navigables", D68).
+    shadowed: bool,
 }
 
 /// The frames of a tab, which its engines share (M33.2).
@@ -346,12 +350,18 @@ impl FrameTree {
     }
 
     /// Frame `parent`'s children, in the tree order of their elements,
-    /// each with its element and that element's `name`.
-    pub(crate) fn set_children(&mut self, parent: FrameId, children: &[(FrameId, NodeId, String)]) {
-        for (id, element, name) in children {
+    /// each with its element, that element's `name`, and whether it is
+    /// in a shadow tree.
+    pub(crate) fn set_children(
+        &mut self,
+        parent: FrameId,
+        children: &[(FrameId, NodeId, String, bool)],
+    ) {
+        for (id, element, name, shadowed) in children {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.element = Some(*element);
                 node.name.clone_from(name);
+                node.shadowed = *shadowed;
             }
         }
         // A frame reserved for an element that has none now goes.
@@ -381,6 +391,7 @@ impl FrameTree {
         parent: FrameId,
         element: NodeId,
         name: &str,
+        shadowed: bool,
     ) -> Option<FrameId> {
         if let Some(id) = self.of_element(parent, element) {
             return Some(id);
@@ -390,6 +401,7 @@ impl FrameTree {
             node.element = Some(element);
             node.name = name.to_owned();
             node.reserved = true;
+            node.shadowed = shadowed;
         }
         Some(id)
     }
@@ -501,14 +513,23 @@ impl FrameTree {
         self.nodes.get(&id).map_or(&[], |node| &node.children)
     }
 
-    /// Frame `id`'s child whose element is named `name`.
+    /// Frame `id`'s children its window shows by index and name: those
+    /// whose elements are in its document's tree, not a shadow tree's.
+    pub(crate) fn window_children(&self, id: FrameId) -> Vec<FrameId> {
+        self.children(id)
+            .iter()
+            .copied()
+            .filter(|child| !self.nodes.get(child).is_some_and(|node| node.shadowed))
+            .collect()
+    }
+
+    /// Frame `id`'s child its window names `name`.
     pub(crate) fn child_named(&self, id: FrameId, name: &str) -> Option<FrameId> {
         if name.is_empty() {
             return None;
         }
-        self.children(id)
-            .iter()
-            .copied()
+        self.window_children(id)
+            .into_iter()
             .find(|child| self.nodes.get(child).is_some_and(|node| node.name == name))
     }
 
@@ -919,7 +940,8 @@ fn is_iframe(document: &Document, node: NodeId) -> bool {
 pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
     match change {
         Change::Inserted { child, .. } | Change::Removed { child, .. } => document
-            .subtree(*child)
+            .shadow_including_subtree(*child)
+            .into_iter()
             .any(|node| is_iframe(document, node)),
         Change::AttributeChanged { element, name, .. } => {
             is_iframe(document, *element)
@@ -932,7 +954,8 @@ pub(crate) fn may_touch_frames(document: &Document, change: &Change) -> bool {
         Change::TextChanged { .. }
         | Change::StateChanged { .. }
         | Change::ControlChanged { .. }
-        | Change::Moved { .. } => false,
+        | Change::Moved { .. }
+        | Change::FlatTree { .. } => false,
     }
 }
 
@@ -1094,8 +1117,10 @@ impl Engine {
         let iframes: Vec<NodeId> = if self.shown.made {
             Vec::new()
         } else {
+            // A shadow tree's `iframe`s have frames too (D68).
             document
-                .subtree(document.root())
+                .shadow_including_subtree(document.root())
+                .into_iter()
                 .filter(|&node| is_iframe(document, node))
                 .collect()
         };
@@ -1142,17 +1167,22 @@ impl Engine {
     /// tree order, with their elements' names, and its realm the same.
     pub(crate) fn sync_frame_children(&mut self) {
         let document = &self.shown.document;
-        let children: Vec<(FrameId, NodeId, String)> = self
+        let root = document.root();
+        let children: Vec<(FrameId, NodeId, String, bool)> = self
             .frames_in_order()
             .into_iter()
             .filter_map(|node| {
                 let frame = self.shown.frames.get(&node)?;
                 let name = document.attr(node, "name").unwrap_or_default().to_owned();
-                Some((frame.id, node, name))
+                Some((frame.id, node, name, document.root_of(node) != root))
             })
             .collect();
         lock(&self.frame.tree).set_children(self.frame.id, &children);
-        let names = children.into_iter().map(|(.., name)| name).collect();
+        let names = children
+            .into_iter()
+            .filter(|&(.., shadowed)| !shadowed)
+            .map(|(_, _, name, _)| name)
+            .collect();
         self.shown.scripts.set_frame_list(names);
     }
 
@@ -1666,7 +1696,8 @@ impl Engine {
         }
         let document = &self.shown.document;
         let order: HashMap<NodeId, usize> = document
-            .subtree(document.root())
+            .shadow_including_subtree(document.root())
+            .into_iter()
             .enumerate()
             .map(|(at, node)| (node, at))
             .collect();
@@ -1797,7 +1828,8 @@ impl Engine {
     fn frames_in_order(&self) -> Vec<NodeId> {
         let document = &self.shown.document;
         document
-            .subtree(document.root())
+            .shadow_including_subtree(document.root())
+            .into_iter()
             .filter(|node| self.shown.frames.contains_key(node))
             .collect()
     }

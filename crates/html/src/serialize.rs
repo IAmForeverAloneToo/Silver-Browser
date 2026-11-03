@@ -1,8 +1,20 @@
 //! Serializing HTML fragments (HTML section 13.3, M25): a node's
-//! children as markup, what `innerHTML` and `outerHTML` read. Iterative
-//! at any depth.
+//! children as markup, what `innerHTML` and `outerHTML` read, and with
+//! the shadow roots it is asked for, as declarative shadow roots, what
+//! `getHTML()` reads (gap batch H, D68). Iterative at any depth of a
+//! tree, recursive only from a host into its shadow tree.
 
-use dom::{Document, Namespace, NodeData, NodeId};
+use dom::{Document, Namespace, NodeData, NodeId, ShadowRootMode, SlotAssignmentMode};
+
+/// The shadow roots a serialization writes, as `template` elements with
+/// a `shadowrootmode` (`getHTML()`'s `serializableShadowRoots` and
+/// `shadowRoots`): each serializable one when `serializable`, and each
+/// of `roots`; none by default, as `innerHTML` writes none.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowRoots<'a> {
+    pub serializable: bool,
+    pub roots: &'a [NodeId],
+}
 
 /// The elements that serialize as void: HTML's void elements, and
 /// `basefont`, `bgsound`, `frame`, `keygen` and `param`.
@@ -27,12 +39,71 @@ const RAW_TEXT: [&str; 7] = [
 /// algorithm): empty for an element that serializes as void. A
 /// `noscript`'s text is written as it is when `scripting`.
 pub fn serialize_children(document: &Document, node: NodeId, scripting: bool) -> String {
+    serialize_children_with(document, node, scripting, ShadowRoots::default())
+}
+
+/// [`serialize_children`] with the shadow roots `shadows` asks for
+/// written as declarative ones: the node's own first, as HTML's fragment
+/// serializing algorithm has it.
+pub fn serialize_children_with(
+    document: &Document,
+    node: NodeId,
+    scripting: bool,
+    shadows: ShadowRoots<'_>,
+) -> String {
     let mut out = String::new();
     let void = document.tag(node).is_some_and(|tag| VOID.contains(&tag));
     if !void {
-        write_children(document, node, scripting, &mut out);
+        write_shadow(document, node, scripting, shadows, &mut out);
+        write_children(document, node, scripting, shadows, &mut out);
     }
     out
+}
+
+/// Writes the shadow root `host` hosts as a `template`, when `shadows`
+/// asks for it (HTML section 13.3, step 4).
+fn write_shadow(
+    document: &Document,
+    host: NodeId,
+    scripting: bool,
+    shadows: ShadowRoots<'_>,
+    out: &mut String,
+) {
+    let Some(root) = document.shadow_root(host) else {
+        return;
+    };
+    let Some(init) = document.shadow_init(root) else {
+        return;
+    };
+    if !(shadows.serializable && init.serializable) && !shadows.roots.contains(&root) {
+        return;
+    }
+    out.push_str("<template shadowrootmode=\"");
+    out.push_str(match init.mode {
+        ShadowRootMode::Open => "open",
+        ShadowRootMode::Closed => "closed",
+    });
+    out.push('"');
+    if init.delegates_focus {
+        out.push_str(" shadowrootdelegatesfocus=\"\"");
+    }
+    if init.serializable {
+        out.push_str(" shadowrootserializable=\"\"");
+    }
+    if init.slot_assignment == SlotAssignmentMode::Manual {
+        out.push_str(" shadowrootslotassignment=\"manual\"");
+    }
+    if init.clonable {
+        out.push_str(" shadowrootclonable=\"\"");
+    }
+    if let Some(target) = document.reference_target(root) {
+        out.push_str(" shadowrootreferencetarget=\"");
+        escape(target, true, out);
+        out.push('"');
+    }
+    out.push('>');
+    write_children(document, root, scripting, shadows, out);
+    out.push_str("</template>");
 }
 
 /// The markup of `node` itself, with its children's: what `outerHTML`
@@ -43,7 +114,7 @@ pub fn serialize_node(document: &Document, node: NodeId, scripting: bool) -> Str
         Some(NodeData::Element { tag, attrs, ns }) => {
             start_tag(tag, attrs, &mut out);
             if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
-                write_children(document, node, scripting, &mut out);
+                write_children(document, node, scripting, ShadowRoots::default(), &mut out);
                 end_tag(tag, &mut out);
             }
         }
@@ -53,8 +124,8 @@ pub fn serialize_node(document: &Document, node: NodeId, scripting: bool) -> Str
             | NodeData::DocumentType { .. }
             | NodeData::ProcessingInstruction { .. }),
         ) => write_other(data, &mut out),
-        Some(NodeData::Document | NodeData::DocumentFragment) | None => {
-            write_children(document, node, scripting, &mut out)
+        Some(NodeData::Document | NodeData::DocumentFragment | NodeData::ShadowRoot(_)) | None => {
+            write_children(document, node, scripting, ShadowRoots::default(), &mut out)
         }
     }
     out
@@ -85,9 +156,16 @@ fn write_other(data: &NodeData, out: &mut String) {
 }
 
 /// Writes the children of `node`, and theirs, in tree order: each
-/// element's start tag on the way down, its end tag on the way up; a
-/// template's contents stand for its children.
-fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut String) {
+/// element's start tag on the way down, then the shadow root `shadows`
+/// asks for, its end tag on the way up; a template's contents stand for
+/// its children.
+fn write_children(
+    document: &Document,
+    node: NodeId,
+    scripting: bool,
+    shadows: ShadowRoots<'_>,
+    out: &mut String,
+) {
     let node = document.template_content(node).unwrap_or(node);
     // A noscript in a template's contents is not scripted: its document,
     // the template contents owner document, has no browsing context.
@@ -120,6 +198,8 @@ fn write_children(document: &Document, node: NodeId, scripting: bool, out: &mut 
                 // Only HTML's void elements have no end tag: a foreign
                 // element empty or not has one (`<rect></rect>`).
                 if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
+                    write_shadow(document, at, scripting, shadows, out);
+
                     if document.first_child(inner(at)).is_some() {
                         descend = true;
                     } else {
@@ -275,5 +355,120 @@ mod tests {
         assert!(markup.starts_with("<b><b>") && markup.ends_with("</b></b><i>y</i>"));
         let (again, body_again) = parsed_body(&markup);
         assert_eq!(serialize_children(&again, body_again, true), markup);
+    }
+
+    /// The first element child of `node` named `tag`.
+    fn child(document: &Document, node: NodeId, tag: &str) -> NodeId {
+        document
+            .children(node)
+            .find(|&n| document.tag(n) == Some(tag))
+            .unwrap_or_else(|| panic!("a {tag}"))
+    }
+
+    #[test]
+    fn declarative_shadow_roots_attach_to_their_hosts_and_serialize_back() {
+        // HTML section 13.2.6.4.4: a `template` with a valid
+        // `shadowrootmode` attaches a shadow root to its parent, its
+        // contents the root's children; a second one on the same host
+        // stays a template; an invalid mode stays a template too.
+        let (document, _) = crate::parse_detached(
+            "<div id=host><template shadowrootmode=open shadowrootdelegatesfocus \
+             shadowrootclonable shadowrootserializable shadowrootslotassignment=manual>\
+             <slot></slot><p>in</p></template><template shadowrootmode=closed>again</template>\
+             <span>light</span></div><div id=bad><template shadowrootmode=other>t</template></div>",
+            true,
+        );
+        let body = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("body"))
+            .expect("a body");
+        let host = child(&document, body, "div");
+        let root = document.shadow_root(host).expect("attached");
+        let init = document.shadow_init(root).unwrap();
+        assert_eq!(init.mode, dom::ShadowRootMode::Open);
+        assert!(init.delegates_focus && init.clonable && init.serializable);
+        assert_eq!(init.slot_assignment, dom::SlotAssignmentMode::Manual);
+        assert!(document.is_declarative_shadow(root));
+        let tags: Vec<_> = document
+            .children(root)
+            .filter_map(|n| document.tag(n))
+            .collect();
+        assert_eq!(tags, ["slot", "p"]);
+        let light: Vec<_> = document
+            .children(host)
+            .filter_map(|n| document.tag(n))
+            .collect();
+        assert_eq!(light, ["template", "span"], "the second template stays");
+        let bad = document.next_sibling(host).unwrap();
+        assert!(document.shadow_root(bad).is_none());
+        // getHTML({serializableShadowRoots: true}): the root as a template
+        // first, its attributes in the reference browser's order.
+        let shadows = ShadowRoots {
+            serializable: true,
+            roots: &[],
+        };
+        assert_eq!(
+            serialize_children_with(&document, body, true, shadows)
+                .split("<template shadowrootmode=\"closed\"")
+                .next(),
+            Some(
+                "<div id=\"host\"><template shadowrootmode=\"open\" shadowrootdelegatesfocus=\"\" \
+                 shadowrootserializable=\"\" shadowrootslotassignment=\"manual\" \
+                 shadowrootclonable=\"\"><slot></slot><p>in</p></template>"
+            )
+        );
+        // Without the option, and for a root neither serializable nor
+        // named, only the light tree.
+        assert!(!serialize_children(&document, body, true).contains("shadowrootmode=\"open\""));
+    }
+
+    #[test]
+    fn fragment_parsing_attaches_no_shadow_root_unless_asked() {
+        let mut document = Document::new();
+        let container = document.create_element("div").unwrap();
+        let markup = "<div><template shadowrootmode=open><p>x</p></template></div>";
+        crate::parse_fragment(
+            &mut document,
+            container,
+            (&dom::Namespace::Html, "div"),
+            false,
+            dom::MAX_DEPTH,
+            markup,
+        );
+        let div = child(&document, container, "div");
+        assert!(document.shadow_root(div).is_none(), "innerHTML: no opt-in");
+        assert_eq!(
+            serialize_children(&document, container, false),
+            "<div><template shadowrootmode=\"open\"><p>x</p></template></div>"
+        );
+        // setHTMLUnsafe's opt-in.
+        let other = document.create_element("div").unwrap();
+        crate::parse_fragment_with(
+            &mut document,
+            other,
+            (&dom::Namespace::Html, "div"),
+            (false, true),
+            dom::MAX_DEPTH,
+            markup,
+        );
+        let div = child(&document, other, "div");
+        let root = document.shadow_root(div).expect("attached");
+        assert_eq!(
+            document
+                .children(root)
+                .filter_map(|n| document.tag(n))
+                .collect::<Vec<_>>(),
+            ["p"]
+        );
+        // A root named in `shadowRoots` is written though not serializable.
+        let roots = [root];
+        let shadows = ShadowRoots {
+            serializable: false,
+            roots: &roots,
+        };
+        assert_eq!(
+            serialize_children_with(&document, other, false, shadows),
+            "<div><template shadowrootmode=\"open\"><p>x</p></template></div>"
+        );
     }
 }

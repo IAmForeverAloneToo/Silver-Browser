@@ -34,6 +34,7 @@ use crate::storage;
 
 mod animations;
 pub(crate) use animations::notices_json;
+mod shadow;
 
 /// A script running, innermost last.
 struct Frame {
@@ -475,7 +476,8 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn take_mutation_wake(&mut self) -> bool {
-        self.mutations.take_wake()
+        // A slot signaled waits for the same microtask (D68).
+        self.mutations.take_wake() | self.document.has_slot_changes()
     }
 
     fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
@@ -725,6 +727,20 @@ impl DocumentHost {
         }
         match call {
             Call::Document => Ok(self.give(Some(self.document.root()))),
+            call @ (Call::AttachShadow { .. }
+            | Call::SetReferenceTarget(..)
+            | Call::ShadowRoot(_)
+            | Call::ShadowInfo(_)
+            | Call::ShadowHost(_)
+            | Call::RootNode(..)
+            | Call::AssignedSlot(_)
+            | Call::AssignedNodes(..)
+            | Call::AssignSlot(..)
+            | Call::TakeSlotChanges
+            | Call::EventPath { .. }
+            | Call::Retarget(..)
+            | Call::FocusDelegate(_)
+            | Call::GetHtml { .. }) => self.shadow_call(call),
             Call::Wrap(node) => {
                 let id = self.node(node)?;
                 self.exposed.insert(id);
@@ -747,17 +763,21 @@ impl DocumentHost {
                         (target.to_string(), String::new())
                     }
                     NodeData::DocumentType { name, .. } => (name.to_string(), String::new()),
-                    NodeData::DocumentFragment => ("#document-fragment".to_owned(), String::new()),
+                    NodeData::DocumentFragment | NodeData::ShadowRoot(_) => {
+                        ("#document-fragment".to_owned(), String::new())
+                    }
                     NodeData::Document => ("#document".to_owned(), String::new()),
                 };
                 let connected = if self.connected(id) { "connected" } else { "" };
-                // An element's prefix, or a document's interface (D67).
+                // An element's prefix, a document's interface (D67), or a
+                // shadow root's (D68).
                 let extra = match self.document.document_facts(id) {
                     Some(facts) => match facts.interface {
                         DocumentInterface::Document => "Document",
                         DocumentInterface::HtmlDocument => "HTMLDocument",
                         DocumentInterface::XmlDocument => "XMLDocument",
                     },
+                    None if self.document.is_shadow_root(id) => "ShadowRoot",
                     None => self.document.element_prefix(id).unwrap_or_default(),
                 };
                 let mut answer = vec![name, connected.to_owned(), ns, kind, extra.to_owned()];
@@ -833,8 +853,9 @@ impl DocumentHost {
             // `isConnected`).
             Call::Connected(node) => {
                 let node = self.node(node)?;
-                let top = self.document.ancestors(node).last().unwrap_or(node);
-                Ok(Answer::Bool(self.document.is_document(top)))
+                // Through hosts (D68): a shadow tree's nodes are connected
+                // when their host is.
+                Ok(Answer::Bool(self.document.is_connected(node)))
             }
             Call::Contains { node, other } => {
                 let (node, other) = (self.node(node)?, self.node(other)?);
@@ -1070,7 +1091,7 @@ impl DocumentHost {
                     return Err(refused(MutationError::WrongKind));
                 }
                 let context = self.fragment_context(node);
-                let container = self.parse_fragment_as(&context, node, &markup, false)?;
+                let container = self.parse_fragment_as(&context, node, &markup, false, true)?;
                 let made = self.document.create_fragment().map_err(refused)?;
                 let owner = self.document.owner_document(node);
                 self.made_for(made, owner);
@@ -1125,8 +1146,12 @@ impl DocumentHost {
                 let made = self.document.create_document(facts).map_err(refused)?;
                 Ok(self.give(Some(made)))
             }
-            Call::ParseDocument { markup, mime } => {
-                let made = self.parse_document(&markup, &mime)?;
+            Call::ParseDocument {
+                markup,
+                mime,
+                declarative,
+            } => {
+                let made = self.parse_document(&markup, &mime, declarative)?;
                 Ok(self.give(Some(made)))
             }
             Call::ParseResponse {
@@ -3829,11 +3854,13 @@ impl DocumentHost {
             Call::FrameParent(id) => Ok(number(crate::frames::lock(&env.tree).parent(id))),
             Call::FrameTop(id) => Ok(number(Some(crate::frames::lock(&env.tree).top(id)))),
             Call::FrameLength(id) => Ok(Answer::Number(
-                crate::frames::lock(&env.tree).children(id).len() as f64,
+                crate::frames::lock(&env.tree).window_children(id).len() as f64,
             )),
             Call::FrameChild(id, index) => {
                 let tree = crate::frames::lock(&env.tree);
-                Ok(number(tree.children(id).get(index as usize).copied()))
+                Ok(number(
+                    tree.window_children(id).get(index as usize).copied(),
+                ))
             }
             Call::FrameNamed(id, name) => Ok(number(
                 crate::frames::lock(&env.tree).child_named(id, &name),
@@ -3850,7 +3877,8 @@ impl DocumentHost {
                     Some(id) => Some(id),
                     None if iframe => {
                         let name = self.document.attr(element, "name").unwrap_or_default();
-                        tree.reserve(me, element, name)
+                        let shadowed = self.document.root_of(element) != self.document.root();
+                        tree.reserve(me, element, name, shadowed)
                     }
                     None => None,
                 };
@@ -3959,7 +3987,7 @@ impl DocumentHost {
     /// Whether changes wait for mutation observers that no script's call
     /// took (the parser's).
     pub(crate) fn mutations_waiting(&self, document: &dom::Document) -> bool {
-        self.mutations.observing() && document.has_observed()
+        (self.mutations.observing() && document.has_observed()) || document.has_slot_changes()
     }
 
     /// The origin the document's `blob:` URLs are of.
@@ -4298,8 +4326,10 @@ impl DocumentHost {
         } else {
             usize::MAX
         };
+        // A shadow root's sheets are its tree's (D69).
         if op == "sheets" {
-            let sheets = page.cssom_sheets();
+            let sheets =
+                page.cssom_sheets(owner.filter(|&root| self.document.is_shadow_root(root)));
             self.work += sheets.len() as u64;
             return Ok(Answer::Numbers(
                 sheets
@@ -4310,6 +4340,25 @@ impl DocumentHost {
         }
         let owner = owner.ok_or_else(gone)?;
         match op {
+            // A shadow root's `adoptedStyleSheets` (D69).
+            "adopt" => {
+                self.work += path.len() as u64;
+                let serials = path
+                    .iter()
+                    .take(1 << 12)
+                    .map(|&n| {
+                        if n.is_finite() && n >= 0.0 {
+                            n as u64
+                        } else {
+                            u64::MAX
+                        }
+                    })
+                    .collect();
+                page.adopt_shadow_sheets(owner, serials);
+                self.computed = None;
+                self.laid_out = None;
+                Ok(Answer::Nothing)
+            }
             // An element out of the document has no sheet, though the
             // sheet it had is kept for the objects scripts hold.
             "sheet" => Ok(Answer::Numbers(
@@ -4721,6 +4770,7 @@ impl DocumentHost {
             .map(|&v| f64::from(v))
             .collect();
         out.push(f64::from(scroll_height));
+        out.extend([f64::from(m.origin.0), f64::from(m.origin.1)]);
         out.extend(m.rects.iter().flatten().map(|&v| f64::from(v)));
         self.work += layout.iter().count() as u64 / 16;
         out
@@ -4883,40 +4933,74 @@ impl DocumentHost {
         ])
     }
 
-    /// CSSOM View's `offsetParent`: none for the root, the body, a fixed
-    /// box or one not rendered; else the nearest ancestor that is
-    /// positioned, a cell or a table, or the body.
+    /// CSSOM View's `offsetParent` (section 7): none for the root, the
+    /// body, one not rendered, or a fixed box no ancestor is a containing
+    /// block for; else, up the flat tree (D68), the nearest ancestor that
+    /// is a shadow-including ancestor of the element and is a containing
+    /// block for absolutely positioned boxes, a cell or a table for a
+    /// static box, or the body; none past a fixed ancestor in a shadow
+    /// tree the element is not in.
     fn offset_parent(&mut self, node: NodeId) -> Option<NodeId> {
+        use style::computed::{Display, Position};
         if !self.connected(node) || !self.document.is_element(node) {
             return None;
         }
-        let ancestors: Vec<NodeId> = self.document.ancestors(node).collect();
+        let ancestors: Vec<NodeId> = match self.document.in_flat_tree(node) {
+            true => self.document.flat_ancestors(node).collect(),
+            false => return None,
+        };
         self.styles_now()?;
         let styles = &self.computed.as_ref()?.styles;
-        let shown = |n: NodeId| {
-            styles
-                .get(n)
-                .is_some_and(|s| s.display != style::computed::Display::None)
-        };
+        let shown = |n: NodeId| styles.get(n).is_some_and(|s| s.display != Display::None);
         let position = |n: NodeId| styles.get(n).map(|s| s.position);
+        // A containing block for absolutely positioned boxes, and for
+        // fixed ones.
+        let contains = |n: NodeId, fixed: bool| {
+            styles.get(n).is_some_and(|s| {
+                let by_effects = match fixed {
+                    true => s.effects().contains_all_descendants(),
+                    false => s.effects().contains_absolutes_of(true),
+                };
+                by_effects || (!fixed && s.position != Position::Static)
+            })
+        };
         let document = &self.document;
+        let fixed = position(node) == Some(Position::Fixed);
         if matches!(document.tag(node), Some("body" | "html"))
             || document.parent(node) == Some(document.root())
             || !shown(node)
             || ancestors
                 .iter()
                 .any(|&a| document.is_element(a) && !shown(a))
-            || position(node) == Some(style::computed::Position::Fixed)
+            || (fixed && !ancestors.iter().any(|&a| contains(a, true)))
         {
             return None;
         }
-        let static_position = position(node) == Some(style::computed::Position::Static);
-        ancestors.into_iter().find(|&a| {
-            document.is_element(a)
-                && (position(a).is_some_and(|p| p != style::computed::Position::Static)
-                    || document.tag(a) == Some("body")
-                    || (static_position && matches!(document.tag(a), Some("td" | "th" | "table"))))
-        })
+        let static_position = position(node) == Some(Position::Static);
+        for (at, &ancestor) in ancestors.iter().enumerate() {
+            if !document.is_element(ancestor) {
+                continue;
+            }
+            let hidden = !document.is_shadow_including_inclusive_ancestor(ancestor, node);
+            if hidden {
+                // A fixed box in a tree the element is not in, which no
+                // box above contains, places it against the viewport.
+                if position(ancestor) == Some(Position::Fixed)
+                    && !ancestors[at + 1..].iter().any(|&a| contains(a, true))
+                {
+                    return None;
+                }
+                continue;
+            }
+            if contains(ancestor, false)
+                || document.tag(ancestor) == Some("body")
+                || (static_position
+                    && matches!(document.tag(ancestor), Some("td" | "th" | "table")))
+            {
+                return Some(ancestor);
+            }
+        }
+        None
     }
 
     /// A scroll offset and how far it may go, down then across: the
@@ -5258,9 +5342,9 @@ impl DocumentHost {
         let document = &self.document;
         let mut work = 0u64;
         let rendered = |n: NodeId| styles.get(n).is_some_and(|s| s.display != Display::None);
-        let connected =
-            node == document.root() || document.ancestors(node).last() == Some(document.root());
-        if !connected || !rendered(node) {
+        // Rendered is in the flat tree (D68), a slot's assigned nodes in
+        // its place.
+        if !document.in_flat_tree(node) || !rendered(node) {
             return None;
         }
         // The part of a text node within the range, in UTF-16 units.
@@ -5306,7 +5390,7 @@ impl DocumentHost {
         while let Some((n, leaving)) = stack.pop() {
             work += 1;
             if let Some(text) = document.text(n) {
-                let Some(style) = document.parent(n).and_then(|p| styles.get(p)) else {
+                let Some(style) = document.flat_parent(n).and_then(|p| styles.get(p)) else {
                     continue;
                 };
                 if style.visibility != Visibility::Visible {
@@ -5417,7 +5501,7 @@ impl DocumentHost {
                 }
             }
             stack.push((n, true));
-            let children: Vec<NodeId> = document.children(n).collect();
+            let children: Vec<NodeId> = document.flat_children(n).collect();
             for child in children.into_iter().rev() {
                 stack.push((child, false));
             }
@@ -5795,12 +5879,17 @@ impl DocumentHost {
     /// URL, by the HTML parser with scripting off for `text/html`, else
     /// by the XML parser, the error a document is not well formed by
     /// reported in it as the reference browser reports it.
-    fn parse_document(&mut self, markup: &str, mime: &str) -> Result<NodeId, DomError> {
+    fn parse_document(
+        &mut self,
+        markup: &str,
+        mime: &str,
+        declarative: bool,
+    ) -> Result<NodeId, DomError> {
         self.work += markup.len() as u64 / 64;
         let url = self.page_url();
         let (parsed, facts) = match mime {
             "text/html" => {
-                let (parsed, quirks) = html::parse_detached(markup);
+                let (parsed, quirks) = html::parse_detached(markup, declarative);
                 let mut facts = DocumentFacts::html(&url);
                 facts.mode = compat_mode(quirks);
                 (parsed, facts)
@@ -5852,7 +5941,7 @@ impl DocumentHost {
             let transport = transport
                 .or_else(|| html::encoding_sniffing::prescan(body))
                 .unwrap_or(encoding::UTF_8);
-            let decoded = html::parse_document_from_bytes(body, Some(transport));
+            let decoded = html::parse_response_document(body, Some(transport));
             let mut facts = DocumentFacts::html(url);
             facts.mode = compat_mode(decoded.quirks);
             facts.charset = decoded.encoding.name().to_owned();
@@ -5906,22 +5995,25 @@ impl DocumentHost {
         markup: &str,
     ) -> Result<NodeId, DomError> {
         let xml = self.document.is_xml_node(under);
-        self.parse_fragment_as(context, under, markup, xml)
+        self.parse_fragment_as(context, under, markup, xml, false)
     }
 
     /// [`DocumentHost::parse_fragment`] by the XML parser when `xml`, else
-    /// by HTML's, whatever the document's type.
+    /// by HTML's, whatever the document's type; its `template`s with a
+    /// `shadowrootmode` attaching shadow roots when `declarative` (D68),
+    /// as `setHTMLUnsafe` and `setHTML` parse.
     fn parse_fragment_as(
         &mut self,
         context: &(Namespace, String),
         under: NodeId,
         markup: &str,
         xml: bool,
+        declarative: bool,
     ) -> Result<NodeId, DomError> {
         self.work += markup.len() as u64 / 64;
         let container = self.document.create_element("html").map_err(refused)?;
         let depth = std::iter::once(under)
-            .chain(self.document.ancestors(under))
+            .chain(self.document.shadow_including_ancestors(under))
             .filter(|&node| self.document.is_element(node))
             .count();
         let before = self.document.len();
@@ -5945,11 +6037,11 @@ impl DocumentHost {
                 ));
             }
         } else {
-            html::parse_fragment(
+            html::parse_fragment_with(
                 &mut self.document,
                 container,
                 (&context.0, &context.1),
-                true,
+                (true, declarative),
                 max_depth,
                 markup,
             );
@@ -6019,7 +6111,9 @@ impl DocumentHost {
         }
         // A fragment's children go in its place.
         let moved: Vec<NodeId> = match document.data(node) {
-            Some(NodeData::DocumentFragment) => document.children(node).collect(),
+            Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
+                document.children(node).collect()
+            }
             _ => vec![node],
         };
         self.document
@@ -6055,12 +6149,19 @@ impl DocumentHost {
             Some(NodeData::Comment(_)) => "#comment".to_owned(),
             Some(NodeData::ProcessingInstruction { target, .. }) => target.to_string(),
             Some(NodeData::DocumentType { name, .. }) => name.to_string(),
-            Some(NodeData::DocumentFragment) => "#document-fragment".to_owned(),
+            Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
+                "#document-fragment".to_owned()
+            }
             Some(NodeData::Document) | None => "#document".to_owned(),
         };
         if !matches!(
             document.data(parent),
-            Some(NodeData::Element { .. } | NodeData::Document | NodeData::DocumentFragment)
+            Some(
+                NodeData::Element { .. }
+                    | NodeData::Document
+                    | NodeData::DocumentFragment
+                    | NodeData::ShadowRoot(_)
+            )
         ) {
             return hierarchy("This node type does not support this method.".to_owned());
         }
@@ -6069,7 +6170,10 @@ impl DocumentHost {
             if at == node {
                 return hierarchy("The new child element contains the parent.".to_owned());
             }
-            up = document.parent(at).or_else(|| document.template_host(at));
+            up = document
+                .parent(at)
+                .or_else(|| document.template_host(at))
+                .or_else(|| document.shadow_host(at));
         }
         if let Some(reference) = before
             && document.parent(reference) != Some(parent)
@@ -6121,7 +6225,9 @@ impl DocumentHost {
             self.work += document.subtree(node).count() as u64;
         }
         let moved: Vec<NodeId> = match document.data(node) {
-            Some(NodeData::DocumentFragment) => document.children(node).collect(),
+            Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
+                document.children(node).collect()
+            }
             _ => vec![node],
         };
         // Step 11: adopting `node` takes it out of its parent first, a
@@ -6394,6 +6500,13 @@ impl DocumentHost {
             let (nodes, count) = animations.touched();
             (nodes.to_vec(), count)
         };
+        // The shadow trees' sheets (D69): one changed, every tree is
+        // cascaded afresh, its elements matched against its new rules.
+        let shadow = page.shadow_sheets_now(&self.document, &self.window.media);
+        let shadow_changed = self
+            .computed
+            .as_ref()
+            .is_some_and(|cached| sheets_changed && !cached.sheets.same_shadow_trees(&shadow));
         match &mut self.computed {
             Some(cached) if cached.version == version && cached.touches == touches => {}
             Some(cached) if cached.version == version => {
@@ -6406,7 +6519,7 @@ impl DocumentHost {
                 );
                 cached.touches = touches;
             }
-            Some(cached) if !whole && cached.mark <= changes.len() => {
+            Some(cached) if !whole && !shadow_changed && cached.mark <= changes.len() => {
                 let since = changes[cached.mark..].to_vec();
                 self.work += since.len() as u64;
                 // New sheets: the elements the rules that changed match
@@ -6432,7 +6545,8 @@ impl DocumentHost {
                             matched_by_changed_rules(&self.document, &cached.raw, &raw)
                         };
                         cached.sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
-                            .with_registered(page.registered_properties().to_vec());
+                            .with_registered(page.registered_properties().to_vec())
+                            .with_shadow_trees(shadow);
                         cached.raw = raw;
                     }
                 }
@@ -6453,7 +6567,8 @@ impl DocumentHost {
                 self.work += self.document.len() as u64;
                 let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
                 let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
-                    .with_registered(page.registered_properties().to_vec());
+                    .with_registered(page.registered_properties().to_vec())
+                    .with_shadow_trees(shadow);
                 // The before-change style: the last run's styles, or the
                 // frame's when it styled the document since.
                 let previous = self.previous_styles.take();
@@ -6499,10 +6614,10 @@ impl DocumentHost {
         }
     }
 
-    /// Whether `node` is in the document.
+    /// Whether `node` is in the document, through the hosts of the
+    /// shadow trees it is in (D68).
     fn connected(&self, node: NodeId) -> bool {
-        let root = self.document.root();
-        node == root || self.document.ancestors(node).last() == Some(root)
+        self.document.in_page(node)
     }
 
     /// `node` was taken out of its parent by a script: its subtree may be
@@ -6527,7 +6642,12 @@ impl DocumentHost {
         if self.exposed.is_empty() {
             return;
         }
-        for node in self.document.subtree(root) {
+        // The shadow trees in it come and go with it (D68).
+        let nodes = match self.document.has_shadow_roots() {
+            true => self.document.shadow_including_subtree(root),
+            false => self.document.subtree(root).collect(),
+        };
+        for node in nodes {
             self.work += 1;
             if self.exposed.contains(&node) {
                 self.pins.push((node, connected));
@@ -6597,14 +6717,23 @@ impl DocumentHost {
             }
             Ok(made)
         };
+        if self.document.is_shadow_root(node) {
+            return Err(DomError::new(
+                "NotSupportedError",
+                "ShadowRoot nodes are not clonable.",
+            ));
+        }
         let top = copy(&mut self.document, node).map_err(refused)?;
         self.detached.push(top);
-        if !deep {
-            return Ok(top);
-        }
         // Each entry: a node whose children are still to copy, and its
-        // copy; a template's contents are copied into its copy's.
-        let mut pending = vec![(node, top)];
+        // copy; a template's contents are copied into its copy's, and a
+        // clonable shadow root's into the one attached to its host's
+        // copy (D68), whole whatever `deep` says.
+        let mut pending = Vec::new();
+        self.clone_shadow(node, top, &mut pending)?;
+        if deep {
+            pending.push((node, top));
+        }
         while let Some((from, to)) = pending.pop() {
             if let (Some(from), Some(to)) = (
                 self.document.template_content(from),
@@ -6620,10 +6749,39 @@ impl DocumentHost {
                     let _ = self.document.free(made);
                     return Err(refused(error));
                 }
+                self.clone_shadow(child, made, &mut pending)?;
                 pending.push((child, made));
             }
         }
         Ok(top)
+    }
+
+    /// DOM's "clone a node" step 6 (D68): when `from` hosts a clonable
+    /// shadow root, a root of its mode and flags attached to its copy
+    /// `to`, declarative as it is, its children to copy into it.
+    fn clone_shadow(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        pending: &mut Vec<(NodeId, NodeId)>,
+    ) -> Result<(), DomError> {
+        let Some(root) = self.document.shadow_root(from) else {
+            return Ok(());
+        };
+        let Some(init) = self.document.shadow_init(root).filter(|init| init.clonable) else {
+            return Ok(());
+        };
+        let declarative = self.document.is_declarative_shadow(root);
+        let copy = self
+            .document
+            .attach_shadow(to, init, declarative)
+            .map_err(refused)?;
+        let target = self.document.reference_target(root).map(str::to_owned);
+        self.document
+            .set_reference_target(copy, target.as_deref())
+            .map_err(refused)?;
+        pending.push((root, copy));
+        Ok(())
     }
 
     /// `document.title`'s setter (HTML section 3.1.7): the first `title`
@@ -7290,7 +7448,13 @@ fn matched_by_changed_rules(
 /// one of the attributes that choose its sheet.
 fn touches_sheets(document: &dom::Document, changes: &[dom::Change]) -> bool {
     let owner = |node: NodeId| matches!(document.tag(node), Some("style" | "link"));
-    let holds = |node: NodeId| document.subtree(node).any(owner);
+    // The shadow trees in what came or went hold sheets too (D69).
+    let holds = |node: NodeId| {
+        document
+            .shadow_including_subtree(node)
+            .into_iter()
+            .any(owner)
+    };
     changes.iter().any(|change| match change {
         dom::Change::Inserted { parent, child } | dom::Change::Removed { parent, child, .. } => {
             owner(*parent) || holds(*child)
@@ -7354,6 +7518,9 @@ fn refused(error: MutationError) -> DomError {
                 "HierarchyRequestError",
                 "The operation would yield an incorrect node tree.",
             )
+        }
+        MutationError::NotSupported => {
+            DomError::new("NotSupportedError", "The operation is not supported.")
         }
     }
 }

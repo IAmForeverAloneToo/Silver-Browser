@@ -56,6 +56,8 @@ pub struct Load {
     xml: Option<Box<XmlLoad>>,
     /// The parse was aborted: it is done, and takes nothing more.
     aborted: bool,
+    /// Whether its parser attaches declarative shadow roots (D68).
+    declarative_shadow_roots: bool,
 }
 
 /// An XML document's parse: its bytes taken whole, then parsed a slice
@@ -84,7 +86,15 @@ impl Load {
             hints: Vec::new(),
             xml: None,
             aborted: false,
+            declarative_shadow_roots: true,
         }
+    }
+
+    /// Whether its parser attaches declarative shadow roots (HTML's
+    /// "allow declarative shadow roots"): a navigation's does, a
+    /// response's document (XHR's) does not. Set before the bytes come.
+    pub fn set_declarative_shadow_roots(&mut self, allow: bool) {
+        self.declarative_shadow_roots = allow;
     }
 
     /// A load of an XML document (XHTML and the other XML types), its
@@ -216,7 +226,11 @@ impl Load {
             confidence,
             decoder,
             fed: skip,
-            parser: Parser::new(self.scripting),
+            parser: {
+                let mut parser = Parser::new(self.scripting);
+                parser.set_declarative_shadow_roots(self.declarative_shadow_roots);
+                parser
+            },
             scanner: self.scanning.then(|| Scanner::new(self.scripting)),
         });
     }

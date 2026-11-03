@@ -29,6 +29,12 @@
 //!   `::-webkit-` name that is not a function, which never matches
 //!   (selectors-4 Appendix B). Only the user-action pseudo-classes may
 //!   follow it.
+//! * CSS Scoping 1's (gap batch H, D69): `:host`, `:host()` and
+//!   `:host-context()`, which match a shadow host from its shadow tree's
+//!   rules alone, the host featureless there but for them; `::slotted()`
+//!   of a compound, a slot's assigned elements; and CSS Shadow Parts'
+//!   `::part()` of names, an element of a host's shadow tree its `part`
+//!   names, through the hosts' `exportparts`.
 //!
 //! Names (types, attributes, pseudo-classes and pseudo-elements) are
 //! compared in ASCII lowercase, as HTML and selectors-4 say.
@@ -131,6 +137,9 @@ pub struct Selector {
 pub struct PseudoElementSelector {
     /// Which pseudo-element.
     pub element: PseudoElement,
+    /// What a functional one takes: `::slotted()`'s compound,
+    /// `::part()`'s names.
+    pub argument: PseudoArgument,
     /// The pseudo-classes after it, in source order: the user-action
     /// ones (`:hover`, `:focus`, `:focus-visible`, `:focus-within`,
     /// `:active`), and `:is()`, `:where()` and `:not()` of them, as
@@ -177,6 +186,24 @@ pub enum PseudoElement {
     /// list it is in keeps its other selectors, and matching nothing
     /// (selectors-4 Appendix B).
     WebkitPrefixed,
+    /// `::slotted()` (CSS Scoping 1 section 3.2.2): of a slot, the
+    /// elements assigned to it its compound matches. A real element, not
+    /// a box of its originating one.
+    Slotted,
+    /// `::part()` (CSS Shadow Parts 1): of a shadow host, the elements of
+    /// its shadow tree with every part name given.
+    Part,
+}
+
+/// What a functional pseudo-element takes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum PseudoArgument {
+    #[default]
+    None,
+    /// `::slotted()`'s compound.
+    Slotted(Box<CompoundSelector>),
+    /// `::part()`'s names, in their case.
+    Part(Vec<String>),
 }
 
 /// How two compound selectors relate.
@@ -445,6 +472,14 @@ pub enum PseudoClass {
     /// `:autofill` (and `:-webkit-autofill`): an input the user agent
     /// filled in; this engine fills in none, and it never matches.
     Autofill,
+    /// `:host` and `:host(compound)` (CSS Scoping 1 section 3.2.1): the
+    /// shadow host, from its shadow tree's rules, when it matches the
+    /// compound.
+    Host(Option<Box<CompoundSelector>>),
+    /// `:host-context(compound)`: the shadow host, from its shadow
+    /// tree's rules, when it or a shadow-including ancestor matches the
+    /// compound.
+    HostContext(Box<CompoundSelector>),
 }
 
 /// selectors-4 specificity: (ids, classes+attributes+pseudo-classes,

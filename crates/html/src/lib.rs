@@ -25,7 +25,7 @@ pub mod xml;
 
 pub use encoding_sniffing::Confidence;
 pub use load::{Load, Progress};
-pub use serialize::{serialize_children, serialize_node};
+pub use serialize::{ShadowRoots, serialize_children, serialize_children_with, serialize_node};
 pub use tokenizer::{Doctype, TextState, Token, Tokenizer, content_state, tokenize};
 pub use tree_builder::TreeBuilder;
 
@@ -100,6 +100,12 @@ impl Parser {
             builder,
             done: false,
         }
+    }
+
+    /// Whether a `template` with a `shadowrootmode` attaches a shadow
+    /// root (D68, [`TreeBuilder::set_declarative_shadow_roots`]).
+    pub fn set_declarative_shadow_roots(&mut self, allow: bool) {
+        self.builder.set_declarative_shadow_roots(allow);
     }
 
     /// Appends `text` to the input.
@@ -216,8 +222,29 @@ pub fn parse_fragment(
     max_depth: usize,
     markup: &str,
 ) {
+    parse_fragment_with(
+        document,
+        container,
+        context,
+        (scripting, false),
+        max_depth,
+        markup,
+    );
+}
+
+/// [`parse_fragment`] with its scripting flag and whether declarative
+/// shadow roots are attached (`setHTMLUnsafe`'s, HTML section 8.5.1).
+pub fn parse_fragment_with(
+    document: &mut Document,
+    container: NodeId,
+    context: (&Namespace, &str),
+    (scripting, declarative): (bool, bool),
+    max_depth: usize,
+    markup: &str,
+) {
     let (ns, context) = context;
     let mut parser = Parser::fragment(container, context, ns, scripting, max_depth);
+    parser.set_declarative_shadow_roots(declarative);
     parser.feed(markup);
     parser.end();
     parse_whole(&mut parser, document);
@@ -282,7 +309,24 @@ pub struct DecodedDocument {
 /// it and parsed again from the start, certain (§13.2.3.4). So a
 /// document is parsed at most twice.
 pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> DecodedDocument {
+    decode_document(bytes, transport, true)
+}
+
+/// [`parse_document_from_bytes`] for XMLHttpRequest's document response
+/// (section 4.8.4), whose document allows no declarative shadow roots.
+pub fn parse_response_document(bytes: &[u8], transport: Option<Encoding>) -> DecodedDocument {
+    decode_document(bytes, transport, false)
+}
+
+/// A document from its bytes, its `template`s with a `shadowrootmode`
+/// attaching shadow roots when `declarative`.
+fn decode_document(
+    bytes: &[u8],
+    transport: Option<Encoding>,
+    declarative: bool,
+) -> DecodedDocument {
     let mut load = Load::new(transport, false);
+    load.set_declarative_shadow_roots(declarative);
     load.push(bytes);
     load.end();
     let mut document = Document::new();
@@ -308,9 +352,12 @@ pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> D
 /// Parses `input` as a document of its own, scripting off, as HTML's
 /// `DOMParser.parseFromString` and `Document.parseHTMLUnsafe` do (section
 /// 8.5.1): its tree, its scripts never run and its `noscript` content
-/// markup, and the mode its doctype gave it.
-pub fn parse_detached(input: &str) -> (Document, tree_builder::QuirksMode) {
+/// markup, and the mode its doctype gave it. Its `template`s with a
+/// `shadowrootmode` attach shadow roots when `declarative`, as
+/// `parseHTMLUnsafe`'s do and `DOMParser`'s do not.
+pub fn parse_detached(input: &str, declarative: bool) -> (Document, tree_builder::QuirksMode) {
     let mut parser = Parser::new(false);
+    parser.set_declarative_shadow_roots(declarative);
     parser.feed(input);
     parser.end();
     let mut document = Document::new();
@@ -399,14 +446,14 @@ mod tests {
     fn a_document_parsed_alone_has_scripting_off_and_its_doctypes_mode() {
         // D67, `DOMParser`'s: `noscript` holds markup, and the mode is
         // the doctype's.
-        let (document, quirks) = parse_detached("<noscript><p>a</p></noscript>");
+        let (document, quirks) = parse_detached("<noscript><p>a</p></noscript>", false);
         assert_eq!(quirks, tree_builder::QuirksMode::Quirks);
         assert!(
             document
                 .subtree(document.root())
                 .any(|n| document.tag(n) == Some("p"))
         );
-        let (_, quirks) = parse_detached("<!DOCTYPE html><p>a");
+        let (_, quirks) = parse_detached("<!DOCTYPE html><p>a", false);
         assert_eq!(quirks, tree_builder::QuirksMode::NoQuirks);
         let decoded = parse_document_from_bytes(b"<!DOCTYPE html><p>a", None);
         assert_eq!(decoded.quirks, tree_builder::QuirksMode::NoQuirks);

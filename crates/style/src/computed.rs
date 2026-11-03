@@ -3035,6 +3035,10 @@ pub struct Motion {
     pub animation_fill_mode: Vec<AnimationFillMode>,
     /// `animation-composition` (Animations 2).
     pub animation_composition: Vec<Composite>,
+    /// Not a property: the shadow root of the tree whose declaration
+    /// gave `animation-name`, `None` for the document's, where its names
+    /// are looked up first (CSS Scoping 1 section 3.5, D69).
+    pub animation_names_tree: Option<dom::NodeId>,
 }
 
 impl Default for Motion {
@@ -3054,6 +3058,7 @@ impl Default for Motion {
             animation_delay: vec![0.0],
             animation_fill_mode: vec![AnimationFillMode::None],
             animation_composition: vec![Composite::Replace],
+            animation_names_tree: None,
         }
     }
 }
