@@ -363,7 +363,8 @@
   // ---- Binding chunks, made at their first use (D64) -----------------------
   // A few big chunks of the bindings most realms never use: WebGPU and
   // WebGL (M41), Intl, IndexedDB and `navigator.storage`, Web Audio,
-  // WebAssembly, and the 2D canvas and OffscreenCanvas. Made at once,
+  // WebAssembly, the 2D canvas and OffscreenCanvas, and the Web
+  // Animations API (D75). Made at once,
   // they cost every realm that made them: WebGPU and WebGL a third more
   // time (T4.3), the others a fifth more again (D64).
   // Each is a module of its own, compiled once a process and read by
@@ -1745,11 +1746,13 @@
   const ANIMATION = 4096;
   const TRANSITION = 8192;
   const ANIMATION_INIT = members(EVENT_INIT, [
+    ["animation", "CSSAnimation?", null],
     ["animationName", "DOMString", ""],
     ["elapsedTime", "double", 0],
     ["pseudoElement", "DOMString", ""],
   ], "AnimationEventInit");
   const TRANSITION_INIT = members(EVENT_INIT, [
+    ["animation", "CSSTransition?", null],
     ["elapsedTime", "double", 0],
     ["propertyName", "DOMString", ""],
     ["pseudoElement", "DOMString", ""],
@@ -1768,6 +1771,11 @@
       );
       super(args[0], args[1]);
       eventState(this).kinds |= ANIMATION;
+    }
+
+    // The CSSAnimation it is of (Animations 2 section 5.1).
+    get animation() {
+      return fieldsOf(this, ANIMATION).animation;
     }
 
     get animationName() {
@@ -1794,6 +1802,11 @@
       );
       super(args[0], args[1]);
       eventState(this).kinds |= TRANSITION;
+    }
+
+    // The CSSTransition it is of (Transitions 2 section 5.1).
+    get animation() {
+      return fieldsOf(this, TRANSITION).animation;
     }
 
     get propertyName() {
@@ -23679,10 +23692,42 @@
     },
   }.localeCompare);
 
+  // ---- The Web Animations API, a chunk made at its first use (D64, D75) ----
+  // Its interfaces, `animate()` and `getAnimations()` on elements, and
+  // `getAnimations()` and `timeline` on the document, are the chunk's
+  // accessors until a page reaches one of them.
+  if (!WORKER) {
+    chunkInterfaces("animations", [
+      "Animation", "AnimationEffect", "AnimationPlaybackEvent", "AnimationTimeline",
+      "CSSAnimation", "CSSTransition", "DocumentTimeline", "KeyframeEffect",
+    ]);
+    chunkLazy("animations", Element.prototype, "animate", true, true);
+    chunkLazy("animations", Element.prototype, "getAnimations", true, true);
+    chunkLazy("animations", Document.prototype, "getAnimations", true, true);
+    chunkLazy("animations", Document.prototype, "timeline", true, false);
+  }
+
+  // A property set in an element's `style` attribute as a script's
+  // `style.setProperty()` sets it, by the setter kept before any page ran:
+  // what `commitStyles()` writes (D75).
+  const StyleSetProperty = CSSStyleDeclaration.prototype.setProperty;
+  function setStyleProperty(element, name, value) {
+    ReflectApply(StyleSetProperty, styleOf(element), [name, value]);
+  }
+
   // Each chunk's names of the bootstrap's (D64), as `chunkInstall` gives
   // them to it.
   const CHUNK_ENVS = {
     __proto__: null,
+    animations: () => ({
+      $DOMException, $FinalizationRegistry, $Map, $Number, $Promise, $TypeError, ArrayPush,
+      ArraySort, CharCodeAt, Document, EVENT_INIT, Element, Event, EventTarget, JSONParse,
+      JSONStringify, KEY, MapDelete, MapGet, MapSet, ObjectCreate, PromiseResolve, PromiseThen,
+      ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys, Register, StringSlice,
+      ToUpperCase, defineHandlers, defineProperty, dispatching, eventArgs, eventState, expose,
+      handleOf, illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need,
+      setStyleProperty, str, wrap,
+    }),
     gpu: () => ({
       $ArrayBuffer, $DOMException, $DataView, $Map, $MapForEach, $Number, $NumberIsFinite, $Promise,
       $RangeError, $Set, $TypeError, $Uint8Array, $WeakMap, ArrayBufferIsView, ArrayIsArray,
@@ -23770,6 +23815,11 @@
       if (typeof init.submitter === "number") {
         init.submitter = wrap(init.submitter);
       }
+      // A CSS animation's or transition's event names its animation by
+      // its number (D75).
+      if (typeof init.animation === "number") {
+        init.animation = chunkInstall("animations").animationFor(init.animation);
+      }
       // A `storage` event's area, which the engine names (M28).
       if (typeof init.storageArea === "boolean") {
         init.storageArea = storageArea(init.storageArea);
@@ -23802,6 +23852,12 @@
     audio: (text, bytes) => chunkInstall("audio").audioTask(text, bytes),
     gpu: (text, bytes) => chunkInstall("gpu").gpuTask(text, bytes),
     media: mediaTask,
+    // What the engine tells the animations scripts hold at a frame (D75):
+    // nothing to tell before a page reached them.
+    animations(text) {
+      const part = chunkParts.animations;
+      return part === undefined ? nothing() : part.animationsTask(text);
+    },
     mediaChanged,
     mutations: mutationsTask,
     observations: observationsTask,

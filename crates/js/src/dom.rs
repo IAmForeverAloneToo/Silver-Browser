@@ -732,6 +732,9 @@ pub enum Call {
     Audio(String, Vec<u8>),
     /// A media element's call (M40), as JSON: its answer, as JSON.
     Media(String),
+    /// A call of the Web Animations API's (D75), as JSON: its answer, as
+    /// JSON, with what it owes the promises the script holds.
+    Animation(String),
     /// A `FetchEvent`'s answer (M39): its head as JSON and its body.
     ServiceWorkerRespond(String, Vec<u8>),
     /// The bytes the document's storage key uses (M36.8).

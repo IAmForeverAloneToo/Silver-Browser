@@ -24,9 +24,9 @@ pub(super) const BOOTSTRAP_NAME: &str = "bootstrap";
 /// function of the bootstrap's names it uses. By the name the bootstrap
 /// asks for it by (`native.chunk`), the name its frames carry in a stack,
 /// and its source: WebGPU and WebGL's (M41), `Intl`, IndexedDB and
-/// `navigator.storage`, Web Audio, WebAssembly, and the 2D canvas and
-/// `OffscreenCanvas`.
-pub(super) const CHUNKS: [(&str, &str, &str); 6] = [
+/// `navigator.storage`, Web Audio, WebAssembly, the 2D canvas and
+/// `OffscreenCanvas`, and the Web Animations API (D75).
+pub(super) const CHUNKS: [(&str, &str, &str); 7] = [
     ("gpu", "bootstrap-gpu", include_str!("bootstrap_gpu.js")),
     ("intl", "bootstrap-intl", include_str!("bootstrap_intl.js")),
     ("idb", "bootstrap-idb", include_str!("bootstrap_idb.js")),
@@ -40,6 +40,11 @@ pub(super) const CHUNKS: [(&str, &str, &str); 6] = [
         "canvas",
         "bootstrap-canvas",
         include_str!("bootstrap_canvas.js"),
+    ),
+    (
+        "animations",
+        "bootstrap-animations",
+        include_str!("bootstrap_animations.js"),
     ),
 ];
 
@@ -864,6 +869,7 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("idbWake", |_| Ok(Call::IdbWake)),
     ("media", |a| Ok(Call::Media(a.string(0)?))),
+    ("animation", |a| Ok(Call::Animation(a.string(0)?))),
     ("audio", |a| {
         Ok(Call::Audio(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
     }),

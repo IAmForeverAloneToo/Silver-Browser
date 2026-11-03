@@ -2964,6 +2964,8 @@ pub struct Motion {
     pub animation_delay: Vec<f64>,
     /// `animation-fill-mode`.
     pub animation_fill_mode: Vec<AnimationFillMode>,
+    /// `animation-composition` (Animations 2).
+    pub animation_composition: Vec<Composite>,
 }
 
 impl Default for Motion {
@@ -2982,6 +2984,7 @@ impl Default for Motion {
             animation_play_state: vec![AnimationPlayState::Running],
             animation_delay: vec![0.0],
             animation_fill_mode: vec![AnimationFillMode::None],
+            animation_composition: vec![Composite::Replace],
         }
     }
 }
@@ -3024,6 +3027,7 @@ impl Motion {
                 play_state: *coordinated(&self.animation_play_state, i),
                 delay: *coordinated(&self.animation_delay, i),
                 fill_mode: *coordinated(&self.animation_fill_mode, i),
+                composition: *coordinated(&self.animation_composition, i),
             })
     }
 }
@@ -3074,6 +3078,42 @@ pub enum AnimationFillMode {
     Both,
 }
 
+/// A composite operation (Web Animations 1 section 5.4.4): how an
+/// effect's value combines with the value below it; one item of
+/// `animation-composition` (Animations 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Composite {
+    /// The effect's value replaces the one below.
+    #[default]
+    Replace,
+    /// It is added to it.
+    Add,
+    /// It is accumulated onto it.
+    Accumulate,
+}
+
+impl Composite {
+    /// Its keyword.
+    pub fn name(self) -> &'static str {
+        match self {
+            Composite::Replace => "replace",
+            Composite::Add => "add",
+            Composite::Accumulate => "accumulate",
+        }
+    }
+
+    /// The operation a keyword names, ASCII case-insensitively as CSS
+    /// reads it; `None` for another word.
+    pub fn from_name(name: &str) -> Option<Composite> {
+        match name.to_ascii_lowercase().as_str() {
+            "replace" => Some(Composite::Replace),
+            "add" => Some(Composite::Add),
+            "accumulate" => Some(Composite::Accumulate),
+            _ => None,
+        }
+    }
+}
+
 /// One transition an element's style asks for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SingleTransition<'m> {
@@ -3100,6 +3140,7 @@ pub struct SingleAnimation<'m> {
     /// In seconds.
     pub delay: f64,
     pub fill_mode: AnimationFillMode,
+    pub composition: Composite,
 }
 
 /// `text-decoration-style`'s computed value.

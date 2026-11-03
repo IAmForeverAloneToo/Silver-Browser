@@ -25,7 +25,7 @@ use css::Token;
 use super::{LengthBases, components, single_ident, single_token, trim};
 use crate::calc::{self, Want};
 use crate::computed::{
-    AnimationDirection, AnimationFillMode, AnimationPlayState, TransitionBehavior,
+    AnimationDirection, AnimationFillMode, AnimationPlayState, Composite, TransitionBehavior,
     TransitionProperty,
 };
 use crate::custom::is_custom_ident;
@@ -53,6 +53,7 @@ pub(super) fn is_motion_property(name: &str) -> bool {
             | "animation-play-state"
             | "animation-delay"
             | "animation-fill-mode"
+            | "animation-composition"
     )
 }
 
@@ -451,6 +452,11 @@ fn fill_mode(word: &str) -> Option<AnimationFillMode> {
 /// `animation-fill-mode`.
 pub(super) fn parse_fill_modes(tokens: &[Token]) -> Option<Vec<AnimationFillMode>> {
     list(tokens, |item| fill_mode(single_ident(item)?))
+}
+
+/// `animation-composition` (Animations 2): `<single-animation-composition>#`.
+pub(super) fn parse_compositions(tokens: &[Token]) -> Option<Vec<Composite>> {
+    list(tokens, |item| Composite::from_name(single_ident(item)?))
 }
 
 /// The longhands `transition` sets, one item each for every transition.

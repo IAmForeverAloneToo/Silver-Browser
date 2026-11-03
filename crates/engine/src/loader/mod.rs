@@ -7,6 +7,8 @@ mod acceptance_tests;
 #[cfg(test)]
 pub(crate) mod adversarial_tests;
 #[cfg(test)]
+mod animation_tests;
+#[cfg(test)]
 mod body_tests;
 #[cfg(test)]
 mod cache_api_tests;
@@ -1303,6 +1305,9 @@ pub(crate) struct Parsing {
     pub(crate) referrer: String,
     /// What the preload scanner's hints are resolved against (M38).
     pub(crate) hints: preload::Hints,
+    /// The animations its scripts made until it is shown, when they go
+    /// with it (D75).
+    pub(crate) animations: style::animation::Animations,
 }
 
 /// The language the response's `Content-Language` gives its document,

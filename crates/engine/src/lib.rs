@@ -176,6 +176,7 @@ pub use scripts::{
     ScriptState,
 };
 pub use storage::{FLUSH_INTERVAL, STORAGE_QUOTA, StorageDriver};
+use style::animation::PlaybackEvent;
 pub use style::animation::{AnimationEvent, EventKind, Running as RunningAnimation};
 pub use style::computed::Cursor;
 pub use style::{ColorScheme, MediaType, Preferences};
@@ -805,7 +806,8 @@ impl Shown {
         let mut lent = scripts::Lent {
             document: &mut self.document,
             images: None,
-            animations: None,
+            animations: Some(self.animations.get_mut()),
+            styled: Some(&mut self.styled),
             page: &mut self.page,
             parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
             network,
@@ -813,6 +815,30 @@ impl Shown {
             window,
         };
         self.scripts.dispatch(&mut lent, target, event)
+    }
+
+    /// Tells the animations this document's scripts hold what a frame's
+    /// update of them did (D75), `text` as the bindings read it, with
+    /// what the run needs lent.
+    fn tell_animations(
+        &mut self,
+        network: &mut loader::Network,
+        window: scripts::WindowEnv,
+        ready: scripts::ReadyState,
+        text: String,
+    ) {
+        let mut lent = scripts::Lent {
+            document: &mut self.document,
+            images: None,
+            animations: Some(self.animations.get_mut()),
+            styled: Some(&mut self.styled),
+            page: &mut self.page,
+            parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network,
+            ready,
+            window,
+        };
+        self.scripts.run_task(&mut lent, js::Task::Animations(text));
     }
 
     /// Runs the DevTools console's `expression` in this document (M36),
@@ -828,7 +854,8 @@ impl Shown {
         let mut lent = scripts::Lent {
             document: &mut self.document,
             images: None,
-            animations: None,
+            animations: Some(self.animations.get_mut()),
+            styled: Some(&mut self.styled),
             page: &mut self.page,
             parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
             network,
@@ -1055,6 +1082,9 @@ struct CachedStyle {
     /// The viewport the cascade resolved its units against.
     viewport: (u32, u32),
     styles: Styles,
+    /// The document's version the styles are of, which a script's flush
+    /// compares with its own (D75).
+    version: u64,
 }
 
 /// The engine's fonts, lent to the cascade for the font-relative units.
@@ -2126,6 +2156,7 @@ impl Engine {
             document: &mut shown.document,
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -2181,6 +2212,35 @@ impl Engine {
     /// on (M26), as a task: its changes are taken after. Whether a
     /// listener canceled it; `None` when nothing was dispatched, scripts
     /// being off or the document having no listener at all.
+    /// The shown document's animations brought to the frame's time and
+    /// its replaced animations removed, then what that owes the promises
+    /// its scripts hold told to them, their microtasks run after (Web
+    /// Animations 1 section 4.2, D75).
+    fn update_animations(&mut self) {
+        let animations = self.shown.animations.get_mut();
+        animations.update_timelines();
+        animations.remove_replaced();
+        let notices = animations.take_notices();
+        if !notices.is_empty() {
+            let text =
+                devtools::Json::object([("notices", scripts::notices_json(notices))]).write();
+            self.tell_animations(text);
+        }
+    }
+
+    /// Tells the shown document's scripts `text` of their animations
+    /// (D75).
+    fn tell_animations(&mut self, text: String) {
+        if !self.scripts_run() || self.shown.made {
+            return;
+        }
+        let ready = self.ready_state();
+        let window = self.window_env();
+        self.shown
+            .tell_animations(&mut self.network, window, ready, text);
+        self.scripts_ran();
+    }
+
     fn fire(&mut self, target: js::Target, event: js::EventInit) -> Option<bool> {
         if !self.scripts_run() || self.shown.made {
             return None;
@@ -3584,12 +3644,61 @@ impl Engine {
                 }
             }
         }
-        for event in events {
-            if self.shown.document.contains(event.node) {
-                self.fire(
-                    js::Target::Node(scripts::handle(event.node)),
-                    animation_event(&event),
-                );
+        // The animations' update (HTML's "update animations and send
+        // events", Web Animations 1 section 4.2; D75): the pending tasks
+        // of those ready run at the frame's time and their finished
+        // states are updated, what that owes the promises scripts hold is
+        // carried out, its microtasks the finish notifications, the
+        // replaced animations are removed, and the events are sent: the
+        // CSS ones the last frame queued, then the playback events.
+        self.update_animations();
+        // Both kinds by their scheduled times, then by their animations'
+        // composite order: transitions, CSS animations, then the others.
+        let playback = self.shown.animations.get_mut().take_playback_events();
+        // An event by its scheduled time and its class.
+        type Queued = (f64, u8, Result<AnimationEvent, PlaybackEvent>);
+        let mut queue: Vec<Queued> = events
+            .into_iter()
+            .map(|event| {
+                let class = u8::from(!matches!(
+                    event.kind,
+                    EventKind::TransitionRun
+                        | EventKind::TransitionStart
+                        | EventKind::TransitionEnd
+                        | EventKind::TransitionCancel
+                ));
+                (event.scheduled, class, Ok(event))
+            })
+            .chain(
+                playback
+                    .into_iter()
+                    .map(|event| (event.scheduled, event.rank.0, Err(event))),
+            )
+            .collect();
+        queue.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, _, event) in queue {
+            match event {
+                Ok(event) => {
+                    if self.shown.document.contains(event.node) {
+                        self.fire(
+                            js::Target::Node(scripts::handle(event.node)),
+                            animation_event(&event),
+                        );
+                    }
+                }
+                Err(event) => {
+                    let text = devtools::Json::object([(
+                        "event",
+                        devtools::Json::object([
+                            ("id", devtools::Json::from(event.animation)),
+                            ("type", devtools::Json::from(event.kind.name())),
+                            ("currentTime", json_time(event.current_time)),
+                            ("timelineTime", json_time(event.timeline_time)),
+                        ]),
+                    )])
+                    .write();
+                    self.tell_animations(text);
+                }
             }
         }
         let media = self.shown.scripts.has_media_lists();
@@ -3607,6 +3716,7 @@ impl Engine {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
                 page: &mut shown.page,
                 parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                 network: &mut self.network,
@@ -3893,6 +4003,7 @@ impl Engine {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
                 page: &mut shown.page,
                 parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                 network: &mut self.network,
@@ -3923,11 +4034,17 @@ impl Engine {
         {
             return;
         }
-        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let loader::Parsing {
+            load,
+            scripts,
+            animations,
+            ..
+        } = &mut **parsing;
         let mut lent = scripts::Lent {
             document,
             images: None,
-            animations: None,
+            animations: Some(animations),
+            styled: None,
             page: incoming,
             parser: Some(load),
             network: &mut self.network,
@@ -4209,6 +4326,7 @@ impl Engine {
             document: &mut shown.document,
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -4237,14 +4355,20 @@ impl Engine {
         else {
             return;
         };
-        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let loader::Parsing {
+            load,
+            scripts,
+            animations,
+            ..
+        } = &mut **parsing;
         let Some((task, nesting)) = scripts.take_next_task() else {
             return;
         };
         let mut lent = scripts::Lent {
             document,
             images: None,
-            animations: None,
+            animations: Some(animations),
+            styled: None,
             page,
             parser: Some(load),
             network: &mut self.network,
@@ -5514,11 +5638,17 @@ impl Engine {
                     && path.is_empty()
                     && document.tag(owner) == Some("link")
                 {
-                    let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                    let loader::Parsing {
+                        load,
+                        scripts,
+                        animations,
+                        ..
+                    } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
                         images: None,
-                        animations: None,
+                        animations: Some(animations),
+                        styled: None,
                         page: incoming,
                         parser: Some(load),
                         network: &mut self.network,
@@ -5690,6 +5820,7 @@ impl Engine {
                     sandbox,
                     referrer,
                     hints: loader::preload::Hints::default(),
+                    animations: style::animation::Animations::new(),
                 }),
             };
         }
@@ -5720,11 +5851,17 @@ impl Engine {
         // parser waits for its pending parsing-blocking script (M24.3).
         // A realm that dies says so once its document is shown.
         preload_hints(&mut self.network, page, document, parsing, scripting);
-        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+        let loader::Parsing {
+            load,
+            scripts,
+            animations,
+            ..
+        } = &mut **parsing;
         let mut lent = scripts::Lent {
             document,
             images: None,
-            animations: None,
+            animations: Some(animations),
+            styled: None,
             page,
             parser: Some(load),
             network: &mut self.network,
@@ -5807,11 +5944,17 @@ impl Engine {
                             activated,
                         );
                     }
-                    let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                    let loader::Parsing {
+                        load,
+                        scripts,
+                        animations,
+                        ..
+                    } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
                         images: None,
-                        animations: None,
+                        animations: Some(animations),
+                        styled: None,
                         page,
                         parser: Some(load),
                         network: &mut self.network,
@@ -5832,11 +5975,17 @@ impl Engine {
                     loader::preload::preload_links(document, page, &mut self.network);
                     // A `<link rel=modulepreload>` parsed (D61).
                     if self.scripting && !page.sandbox().has(sandbox::Sandbox::SCRIPTS) {
-                        let loader::Parsing { load, scripts, .. } = &mut **parsing;
+                        let loader::Parsing {
+                            load,
+                            scripts,
+                            animations,
+                            ..
+                        } = &mut **parsing;
                         let mut lent = scripts::Lent {
                             document,
                             images: None,
-                            animations: None,
+                            animations: Some(animations),
+                            styled: None,
                             page,
                             parser: Some(load),
                             network: &mut self.network,
@@ -5881,6 +6030,7 @@ impl Engine {
             scripts: queue,
             images,
             animations,
+            styled,
             ..
         } = &mut self.shown
         else {
@@ -5893,6 +6043,7 @@ impl Engine {
             document,
             images: Some(images),
             animations: Some(animations.get_mut()),
+            styled: Some(styled),
             page,
             parser: Some(&mut parsing.load),
             network: &mut self.network,
@@ -5958,6 +6109,7 @@ impl Engine {
                         scripts: queue,
                         images,
                         animations,
+                        styled,
                         ..
                     } = &mut self.shown
                 {
@@ -5965,6 +6117,7 @@ impl Engine {
                         document,
                         images: Some(images),
                         animations: Some(animations.get_mut()),
+                        styled: Some(styled),
                         page,
                         parser: Some(&mut parsing.load),
                         network: &mut self.network,
@@ -6003,6 +6156,7 @@ impl Engine {
             document: &mut shown.document,
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
             page: &mut shown.page,
             parser: None,
             network: &mut self.network,
@@ -6297,6 +6451,7 @@ impl Engine {
             let mut parsing = parsing;
             let mut shown = Shown::new(*document, *page);
             shown.scripts = std::mem::take(&mut parsing.scripts);
+            *shown.animations.get_mut() = std::mem::take(&mut parsing.animations);
             shown.parsing = Some(parsing);
             self.commit(shown, url, handling);
             return;
@@ -6365,6 +6520,7 @@ impl Engine {
                 document: &mut shown.document,
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
                 page: &mut shown.page,
                 parser: None,
                 network: &mut self.network,
@@ -6741,6 +6897,7 @@ impl Engine {
                     document: &mut shown.document,
                     images: Some(&mut shown.images),
                     animations: Some(shown.animations.get_mut()),
+                    styled: Some(&mut shown.styled),
                     page: &mut shown.page,
                     parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
                     network: &mut self.network,
@@ -7090,11 +7247,24 @@ impl Engine {
             // A change of style from the styles cached, when there are
             // some: a change of the sheets, the viewport or the medium
             // starts transitions as a change of the document does.
+            // The scripts' last flush is the before-change style when it
+            // is newer than the frame's styles: a style change event of
+            // its own (CSS Transitions 1 section 3, D75).
             let before = self.shown.styled.take();
+            let flushed = self
+                .shown
+                .scripts
+                .flushed_styles()
+                .filter(|(version, _)| {
+                    before
+                        .as_ref()
+                        .is_none_or(|cached| cached.version < *version)
+                })
+                .map(|(_, styles)| styles);
             let styles = self.cascade(
                 self.viewport,
                 &self.shown.animations,
-                before.as_ref().map(|cached| &cached.styles),
+                flushed.or(before.as_ref().map(|cached| &cached.styles)),
             );
             self.shown.recascade = false;
             self.style_runs += 1;
@@ -7105,6 +7275,7 @@ impl Engine {
             self.shown.styled = Some(CachedStyle {
                 viewport: self.viewport,
                 styles,
+                version: self.shown.document.version(),
             });
             self.request_css_images();
         } else if !self.shown.pending.is_empty() || !self.shown.animated.is_empty() {
@@ -7133,6 +7304,7 @@ impl Engine {
             // Styles that did not depend on the viewport stand for this
             // one; any computed now used it.
             cached.viewport = self.viewport;
+            cached.version = self.shown.document.version();
             if restyle.full {
                 self.style_runs += 1;
                 self.shown.layout_cache.clear();
@@ -7511,7 +7683,14 @@ impl Engine {
         // The timeline moves before the frame's callbacks run, so that
         // what they read of the animations is at the frame's time (HTML's
         // "update animations and send events" comes first).
-        let origin = *self.shown.timeline_origin.get_or_insert(time.now);
+        // A document whose scripts run has its timeline at its time
+        // origin, so that `document.timeline.currentTime` is the frame
+        // callbacks' time (Web Animations 1 section 4.2.1, D75); another
+        // at its first frame's.
+        let origin = match self.shown.scripts.origin() {
+            Some(origin) if self.scripts_run() => origin.at,
+            _ => *self.shown.timeline_origin.get_or_insert(time.now),
+        };
         let timeline = time.now.saturating_sub(origin).as_secs_f64();
         self.shown.animations.get_mut().set_time(timeline);
         self.update_the_rendering(width, height, time.now);
@@ -7594,6 +7773,7 @@ impl Engine {
         }
         self.cached_styles();
         let animations = self.shown.animations.get_mut();
+        animations.styles_seen();
         animations.start_pending();
         // What the restyle changed, a timing a script set or an
         // animation it started, is sampled for its events as well, so
@@ -8202,6 +8382,7 @@ impl Engine {
             document: &mut shown.document,
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
             page: &mut shown.page,
             parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
             network: &mut self.network,
@@ -8673,6 +8854,11 @@ fn focus_event(kind: &str, bubbles: bool, related: Option<NodeId>) -> js::EventI
 /// as a script sees it (M26): an AnimationEvent or a TransitionEvent,
 /// bubbling and not cancelable, with its name, elapsed time and
 /// pseudo-element.
+/// A time of an `AnimationPlaybackEvent`'s, in milliseconds, or `null`.
+fn json_time(time: Option<f64>) -> devtools::Json {
+    time.map_or(devtools::Json::Null, devtools::Json::from)
+}
+
 fn animation_event(event: &AnimationEvent) -> js::EventInit {
     let transition = matches!(
         event.kind,
@@ -8697,6 +8883,7 @@ fn animation_event(event: &AnimationEvent) -> js::EventInit {
         .with(name, js::Field::String(event.name.to_string()))
         .with("elapsedTime", js::Field::Number(event.elapsed))
         .with("pseudoElement", js::Field::String(pseudo.to_owned()))
+        .with("animation", js::Field::Number(event.animation as f64))
 }
 
 #[cfg(test)]

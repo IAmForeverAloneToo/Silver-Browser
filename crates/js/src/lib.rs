@@ -519,6 +519,10 @@ pub enum Task {
     /// What a document's media elements do (M40), as JSON: actions to
     /// carry out, or a pipeline's report to hear.
     Media(String),
+    /// What a frame's update of the animations tells the animations a
+    /// script holds (D75), as JSON: the notices their pending tasks owe
+    /// their promises, or a playback event to dispatch at one.
+    Animations(String),
     /// A `BroadcastChannel` message (gap batch A, D46): for the channels
     /// of `name` but the one numbered `sender`, its data as serialized,
     /// and the origin it came from.

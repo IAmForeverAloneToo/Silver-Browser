@@ -28,7 +28,7 @@ fn evaluated(source: &str) -> String {
 const NAMES: &str = "
 const g = globalThis;
 const targets = [['global', g]];
-for (const name of ['Navigator', 'WorkerNavigator', 'HTMLCanvasElement']) {
+for (const name of ['Navigator', 'WorkerNavigator', 'HTMLCanvasElement', 'Element', 'Document']) {
   const d = Object.getOwnPropertyDescriptor(g, name);
   if (d !== undefined && 'value' in d) targets.push([name + '.prototype', d.value.prototype]);
 }
@@ -98,9 +98,13 @@ fn each_chunks_names_are_the_same_before_and_after_it_is_made() {
                 "global.ImageBitmap",
                 "global.GPUBuffer",
                 "global.GPUBufferUsage",
+                "global.Animation",
+                "global.KeyframeEffect",
+                "Element.prototype.animate",
+                "Document.prototype.getAnimations",
             ]
             .as_slice(),
-            115,
+            126,
         ),
         (
             RealmKind::DedicatedWorker {

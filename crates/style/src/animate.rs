@@ -239,6 +239,7 @@ longhands! {
     AnimationPlayState = "animation-play-state": NotAnimatable,
     AnimationDelay = "animation-delay": NotAnimatable,
     AnimationFillMode = "animation-fill-mode": NotAnimatable,
+    AnimationComposition = "animation-composition": NotAnimatable,
     BreakBefore = "break-before": Discrete,
     BreakAfter = "break-after": Discrete,
     BreakInside = "break-inside": Discrete,
@@ -724,6 +725,9 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         AnimationFillMode => {
             copy_group!(to, from, motion, motion, motion_mut, animation_fill_mode)
         }
+        AnimationComposition => {
+            copy_group!(to, from, motion, motion, motion_mut, animation_composition)
+        }
         BreakBefore => copy_group!(
             to,
             from,
@@ -1089,6 +1093,9 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         AnimationPlayState => a.motion().animation_play_state == b.motion().animation_play_state,
         AnimationDelay => a.motion().animation_delay == b.motion().animation_delay,
         AnimationFillMode => a.motion().animation_fill_mode == b.motion().animation_fill_mode,
+        AnimationComposition => {
+            a.motion().animation_composition == b.motion().animation_composition
+        }
         BreakBefore => a.fragmentation().break_before == b.fragmentation().break_before,
         BreakAfter => a.fragmentation().break_after == b.fragmentation().break_after,
         BreakInside => a.fragmentation().break_inside == b.fragmentation().break_inside,
@@ -2410,6 +2417,257 @@ fn paint_color(paint: &computed::SvgPaint, style: &ComputedStyle) -> Option<comp
     }
 }
 
+/// The shorthands the cascade knows, which a keyframe may name for their
+/// longhands (Web Animations 1 section 5.3.3): each a name
+/// [`longhands_of`] expands.
+pub const SHORTHANDS: &[&str] = &[
+    "background",
+    "background-position",
+    "margin",
+    "font",
+    "font-variant",
+    "white-space",
+    "text-wrap",
+    "text-spacing",
+    "padding",
+    "border-width",
+    "border-color",
+    "border-style",
+    "border",
+    "border-image",
+    "border-top",
+    "border-radius",
+    "outline",
+    "border-right",
+    "border-bottom",
+    "border-left",
+    "flex",
+    "flex-flow",
+    "gap",
+    "place-content",
+    "place-items",
+    "place-self",
+    "grid-template",
+    "grid",
+    "grid-row",
+    "grid-column",
+    "grid-area",
+    "list-style",
+    "text-decoration",
+    "text-align",
+    "page-break-before",
+    "page-break-after",
+    "page-break-inside",
+    "transition",
+    "animation",
+];
+
+/// What every additive value is added onto, its zero: the lengths none,
+/// the numbers zero, the lists and the transforms empty (D75).
+const ZEROS: &str = "font-size: 0px; letter-spacing: 0px; word-spacing: 0px; \
+    text-indent: 0px; width: 0px; height: 0px; min-width: 0px; min-height: 0px; \
+    max-width: 0px; max-height: 0px; margin: 0px; padding: 0px; \
+    border-width: 0px; border-style: solid; top: 0px; right: 0px; bottom: 0px; left: 0px; \
+    border-spacing: 0px; outline-width: 0px; outline-style: solid; outline-offset: 0px; \
+    vertical-align: 0px; flex-grow: 0; flex-shrink: 0; flex-basis: 0px; row-gap: 0px; \
+    column-gap: 0px; transform: none; transform-origin: 0px 0px 0px; translate: none; \
+    rotate: none; scale: none; perspective: 0px; perspective-origin: 0px 0px; opacity: 0; \
+    box-shadow: none; filter: none; text-shadow: none; text-decoration-thickness: 0px; \
+    text-underline-offset: 0px; fill-opacity: 0; stroke-opacity: 0; stroke-width: 0px; \
+    stroke-dashoffset: 0px; stop-opacity: 0; x: 0px; y: 0px; cx: 0px; cy: 0px; r: 0px; \
+    rx: 0px; ry: 0px; background-position: 0px 0px; object-position: 0px 0px; \
+    border-radius: 0px";
+
+thread_local! {
+    /// The style of [`ZEROS`], made once a thread.
+    static ZERO: ComputedStyle = crate::cascade::style_apart(ZEROS);
+}
+
+/// `property`'s value in `value` composited onto its value in
+/// `underlying` by `op` (Web Animations 1 section 5.4.4), into `to`.
+/// `replace` takes the value; `add` and `accumulate` sum the two by the
+/// property's type, as Values 4 section 3.2 says: lengths, numbers and
+/// percentages added, colours added channel by channel with their alpha
+/// premultiplied (Color 4 section 13.3), integers added; a transform
+/// list added is the two lists one after the other and accumulated is
+/// function by function, as are `translate` and `rotate`; `scale` added
+/// multiplies; shadow and filter lists added are the two lists. A pair
+/// of values that do not sum, and every discrete property, take the
+/// value, as `replace` does.
+pub fn composite(
+    property: Longhand,
+    underlying: &ComputedStyle,
+    value: &ComputedStyle,
+    op: crate::computed::Composite,
+    to: &mut ComputedStyle,
+) {
+    use crate::computed::Composite;
+    use Longhand::*;
+    if op == Composite::Replace || property.animation_type() != AnimationType::ByComputedValue {
+        copy(property, value, to);
+        return;
+    }
+    let add = op == Composite::Add;
+    let summed = match property {
+        Color => {
+            to.color = color_sum(underlying.color, value.color);
+            true
+        }
+        BackgroundColor => {
+            to.background_color = color_sum(underlying.background_color, value.background_color);
+            true
+        }
+        BorderTopColor | BorderRightColor | BorderBottomColor | BorderLeftColor => {
+            let side = match property {
+                BorderTopColor => TOP,
+                BorderRightColor => RIGHT,
+                BorderBottomColor => BOTTOM,
+                _ => LEFT,
+            };
+            to.border_color[side] =
+                color_sum(underlying.border_color[side], value.border_color[side]);
+            true
+        }
+        OutlineColor => {
+            to.outline_mut().color =
+                Some(color_sum(underlying.outline_color(), value.outline_color()));
+            true
+        }
+        TextDecorationColor => {
+            // `currentcolor`, the initial value, is the style's colour.
+            let a = underlying.decoration().color.unwrap_or(underlying.color);
+            let b = value.decoration().color.unwrap_or(value.color);
+            to.decoration_mut().color = Some(color_sum(a, b));
+            true
+        }
+        Fill | Stroke | StopColor => {
+            // Two colours add, `currentcolor` being the style's colour; a
+            // paint server or `none` does not.
+            let (x, y) = match property {
+                Fill => (&underlying.svg().fill, &value.svg().fill),
+                Stroke => (&underlying.svg().stroke, &value.svg().stroke),
+                _ => (
+                    &underlying.svg_own().stop_color,
+                    &value.svg_own().stop_color,
+                ),
+            };
+            match (paint_color(x, underlying), paint_color(y, value)) {
+                (Some(x), Some(y)) => {
+                    let sum = computed::SvgPaint::Color(color_sum(x, y));
+                    match property {
+                        Fill => to.svg_mut().fill = sum,
+                        Stroke => to.svg_mut().stroke = sum,
+                        _ => to.svg_own_mut().stop_color = sum,
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+        ZIndex => match (underlying.z_index, value.z_index) {
+            (Some(a), Some(b)) => {
+                to.z_index = Some(a.saturating_add(b));
+                true
+            }
+            _ => false,
+        },
+        Order => {
+            to.order = underlying.order.saturating_add(value.order);
+            true
+        }
+        Orphans | Widows => {
+            let (a, b) = (underlying.fragmentation(), value.fragmentation());
+            let (orphans, widows) = (
+                a.orphans.saturating_add(b.orphans),
+                a.widows.saturating_add(b.widows),
+            );
+            let out = to.fragmentation_mut();
+            if property == Orphans {
+                out.orphans = orphans;
+            } else {
+                out.widows = widows;
+            }
+            true
+        }
+        FontWeight => {
+            to.font_mut().weight =
+                (underlying.font().weight + value.font().weight).clamp(1.0, 1000.0);
+            true
+        }
+        FontStretch => {
+            to.font_mut().stretch = (underlying.font().stretch + value.font().stretch).max(0.0);
+            true
+        }
+        Transform if add => {
+            let mut list = underlying.effects().transform.clone();
+            list.extend(value.effects().transform.iter().cloned());
+            to.effects_mut().transform = list;
+            true
+        }
+        Scale if add => {
+            let (a, b) = (underlying.effects().scale, value.effects().scale);
+            to.effects_mut().scale = match (a, b) {
+                (None, None) => None,
+                (a, b) => {
+                    let (a, b) = (a.unwrap_or([1.0; 3]), b.unwrap_or([1.0; 3]));
+                    Some(std::array::from_fn(|i| a[i] * b[i]))
+                }
+            };
+            true
+        }
+        BoxShadow if add => {
+            let mut list = underlying.effects().box_shadow.clone();
+            list.extend(value.effects().box_shadow.iter().cloned());
+            to.effects_mut().box_shadow = list;
+            true
+        }
+        TextShadow if add => {
+            let mut list = underlying.decoration().text_shadow.clone();
+            list.extend(value.decoration().text_shadow.iter().cloned());
+            to.decoration_mut().text_shadow = list;
+            true
+        }
+        Filter if add => {
+            let mut list = underlying.effects().filter.clone();
+            list.extend(value.effects().filter.iter().cloned());
+            to.effects_mut().filter = list;
+            true
+        }
+        _ => ZERO.with(|zero| {
+            // The sum is twice the two's mean, from the zero: what
+            // interpolates linearly sums so, function by function for
+            // the transforms and the shadows.
+            let mut mean = value.clone();
+            interpolate(property, underlying, value, 0.5, &mut mean)
+                && interpolate(property, zero, &mean, 2.0, to)
+        }),
+    };
+    if !summed {
+        copy(property, value, to);
+    }
+}
+
+/// Two colours added (Color 4 section 13.3, Web Animations' colour
+/// addition): their channels premultiplied by their alphas and summed,
+/// the alpha's sum at most one, the channels left past their range for
+/// an interpolation to take, as the reference browser keeps them.
+fn color_sum(a: computed::Color, b: computed::Color) -> computed::Color {
+    if !(a.is_legacy() && b.is_legacy()) {
+        return b;
+    }
+    let alpha = (a.a + b.a).min(1.0);
+    if alpha <= 0.0 {
+        return computed::Color::TRANSPARENT;
+    }
+    let channel = |x: f32, y: f32| (x * a.a + y * b.a) / alpha;
+    computed::Color::rgba(
+        channel(a.r, b.r),
+        channel(a.g, b.g),
+        channel(a.b, b.b),
+        alpha,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2421,6 +2679,50 @@ mod tests {
     /// The cosine of an eighth turn, as the reference browser prints
     /// 0.707107.
     const R: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+    #[test]
+    fn composite_operations_add_and_accumulate_by_type() {
+        use crate::computed::Composite::{Accumulate, Add, Replace};
+        let a = style(
+            "width: 10px; opacity: 0.25; color: rgb(128, 128, 128); \
+             transform: translateX(10px); scale: 2; z-index: 1; position: relative",
+        );
+        let b = style(
+            "width: 20%; opacity: 0.5; color: rgba(255, 0, 0, 0.4); \
+             transform: translateX(5px) rotate(90deg); scale: 3; z-index: 2; position: relative",
+        );
+        let sum = |longhand: Longhand, op| {
+            let mut out = b.clone();
+            composite(longhand, &a, &b, op, &mut out);
+            out
+        };
+        let width = sum(Longhand::Width, Add);
+        let width = width.width.length_percentage().expect("a length");
+        assert!((width.resolve(100.0) - 30.0).abs() < 1e-3, "{width:?}");
+        assert!((sum(Longhand::Opacity, Add).effects().opacity - 0.75).abs() < 1e-6);
+        // Premultiplied channels added, the alpha at most one: 128 + 0.4
+        // of 255.
+        let color = sum(Longhand::Color, Accumulate).color;
+        assert_eq!(((color.r * 255.0).round(), color.a), (230.0, 1.0));
+        // A list added is both, one after the other; replaced, the value.
+        assert_eq!(sum(Longhand::Transform, Add).effects().transform.len(), 3);
+        assert_eq!(
+            sum(Longhand::Transform, Replace).effects().transform.len(),
+            2
+        );
+        // `scale` added multiplies; accumulated it adds to one.
+        assert_eq!(
+            sum(Longhand::Scale, Add).effects().scale,
+            Some([6.0, 6.0, 1.0])
+        );
+        assert_eq!(
+            sum(Longhand::Scale, Accumulate).effects().scale,
+            Some([4.0, 4.0, 1.0])
+        );
+        assert_eq!(sum(Longhand::ZIndex, Add).z_index, Some(3));
+        // A discrete property takes the value whatever the operation.
+        assert_eq!(sum(Longhand::Position, Add).position, b.position);
+    }
 
     /// The computed style of a `div` whose `style` attribute is `css`.
     fn style(css: &str) -> ComputedStyle {

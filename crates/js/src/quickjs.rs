@@ -651,6 +651,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("media")?
                     .call::<_, Value<'_>>((message.as_str(),))
             }),
+            Task::Animations(message) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("animations")?
+                    .call::<_, Value<'_>>((message.as_str(),))
+            }),
             Task::Broadcast {
                 name,
                 data,

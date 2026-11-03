@@ -82,8 +82,9 @@ pub mod font_family;
 pub mod invalidation;
 
 /// `@keyframes` rules (M22): their names, selectors and keyframes,
-/// processed apart from any element.
-mod keyframes;
+/// processed apart from any element; and the keyframes scripts give
+/// (D75).
+pub mod keyframes;
 
 /// Media queries (M20): the environment a document is styled for, and
 /// query lists parsed from tokens and evaluated against it.

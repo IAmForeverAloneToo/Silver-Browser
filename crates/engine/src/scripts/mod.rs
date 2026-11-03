@@ -175,7 +175,7 @@ pub enum ScriptState {
     Stopped { errors: usize },
 }
 
-pub(crate) use host::{DocumentHost, ScriptScroll};
+pub(crate) use host::{DocumentHost, ScriptScroll, notices_json};
 pub(crate) use layout_observers::Measured;
 
 /// `text`, cut to [`MAX_CONSOLE_MESSAGE`] bytes at a character boundary.
@@ -359,6 +359,9 @@ pub(crate) struct Lent<'a> {
     /// The shown document's animations and transitions, which its
     /// `getComputedStyle` and layout queries sample (G46).
     pub(crate) animations: Option<&'a mut style::animation::Animations>,
+    /// The shown document's styles as its last frame computed them, the
+    /// before-change style of a run's first flush (D75).
+    pub(crate) styled: Option<&'a mut Option<crate::CachedStyle>>,
     pub(crate) page: &'a mut Page,
     pub(crate) parser: Option<&'a mut html::Load>,
     pub(crate) network: &'a mut Network,
@@ -1861,6 +1864,13 @@ impl Scripts {
         self.host.origin
     }
 
+    /// The styles the last run's scripts flushed, with the document's
+    /// version they are of: the before-change style of a frame's cascade
+    /// when they are newer than the frame's (D75).
+    pub(crate) fn flushed_styles(&self) -> Option<(u64, &style::Styles)> {
+        self.host.flushed_styles()
+    }
+
     /// Runs `script` in the document's realm, made if it has none, with
     /// what the run needs lent to the host, then the microtask checkpoint
     /// that follows a script (HTML section 8.1.4.4); its errors and those
@@ -3317,6 +3327,7 @@ mod tests {
             document,
             images: None,
             animations: None,
+            styled: None,
             page: &mut page,
             parser: None,
             network: &mut network,

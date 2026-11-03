@@ -40,6 +40,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "align-content",
     "align-items",
     "align-self",
+    "animation-composition",
     "animation-delay",
     "animation-direction",
     "animation-duration",
@@ -1118,6 +1119,12 @@ fn string(text: &str) -> String {
         value: text.to_owned(),
         bad: false,
     }])
+}
+
+/// An easing function as the reference browser writes it, as an
+/// effect's `easing` gives it (Web Animations 1 section 6.7.1).
+pub fn easing(easing: &crate::easing::Easing) -> String {
+    longhands::easing(easing)
 }
 
 /// A custom property's value as text: its tokens written back, white

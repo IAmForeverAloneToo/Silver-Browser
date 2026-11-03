@@ -112,7 +112,7 @@ use css::Token;
 use dom::{Change, Document, NodeId};
 
 use crate::animate::{self, Longhand};
-use crate::animation::{Animations, Phase, Property, Timing, Transitioning, Value, Wanted};
+use crate::animation::{Animations, Property, SampleFrames, Timing, Transitioning, Value, Wanted};
 use crate::calc::{self, LengthUnit, Want};
 use crate::computed::{
     AlignPosition, BOTTOM, BaselinePosition, BorderCollapse, BorderSpacing, BorderStyle, BoxSizing,
@@ -943,6 +943,31 @@ impl Stylesheets {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    /// The keyframes of the `@keyframes` rule named `name` in force under
+    /// `media`, processed, as a CSS animation's effect reads them (D75);
+    /// `None` when no rule of the name is.
+    pub fn keyframes_named(
+        &self,
+        name: &str,
+        media: &Media,
+    ) -> Option<Vec<crate::keyframes::CssKeyframe>> {
+        let answers = self.rules.answers(media);
+        let in_force = self.rules.keyframes_in_force(&self.sheets, &answers);
+        let rule = in_force.get(name)?;
+        Some(
+            rule.keyframes
+                .keyframes
+                .iter()
+                .map(|keyframe| crate::keyframes::CssKeyframe {
+                    offset: keyframe.offset,
+                    easing: keyframe.easing.clone(),
+                    composite: keyframe.composite,
+                    declarations: rule.declarations(keyframe).cloned().collect(),
+                })
+                .collect(),
+        )
     }
 
     /// The answers of the UA sheet's `@media` lists, then these sheets'.
@@ -1890,16 +1915,19 @@ fn wanted(motion: &Motion, keyframes: &HashMap<&str, KeyframesInForce<'_>>) -> V
             let name = item.name?;
             keyframes.contains_key(&**name).then(|| Wanted {
                 name: Arc::clone(name),
+                // The effect's timing is in milliseconds.
                 timing: Timing {
-                    delay: item.delay,
-                    duration: item.duration,
+                    delay: item.delay * 1000.0,
+                    duration: item.duration * 1000.0,
                     iterations: item.iteration_count,
                     direction: item.direction,
                     fill: item.fill_mode,
-                    easing: crate::easing::Easing::Linear,
+                    ..Timing::default()
                 },
                 easing: item.timing_function.clone(),
                 paused: item.play_state == AnimationPlayState::Paused,
+                composite: item.composition,
+                longhands: Arc::from(keyframes[&**name].keyframes.longhands.as_slice()),
             })
         })
         .collect()
@@ -2575,24 +2603,30 @@ impl<'a> Cascader<'a> {
         let mut acts = WillChange::AUTO;
         let mut now = Vec::new();
         for sample in animations.samples(target) {
-            let Some(&keyframes) = self.keyframes.get(sample.name) else {
-                continue;
+            let keyframes = match sample.frames {
+                SampleFrames::Css(name) => match self.keyframes.get(&*name) {
+                    Some(&keyframes) => animated::Frames::Sheet(keyframes),
+                    None => continue,
+                },
+                SampleFrames::Script(keyframes) => animated::Frames::Script(keyframes),
             };
             let progress = sample.progress;
-            if progress.phase != Phase::After || progress.progress.is_some() {
-                for longhand in &keyframes.keyframes.longhands {
+            let longhands = &keyframes.keyframes().longhands;
+            if sample.current || progress.progress.is_some() {
+                for longhand in longhands {
                     if let Some(feature) = WillChange::feature(longhand.name()) {
                         acts = acts.with(feature);
                     }
                 }
             }
             if let Some(p) = progress.progress {
-                now.extend_from_slice(&keyframes.keyframes.longhands);
+                now.extend_from_slice(longhands);
                 samples.push(animated::Sampled {
                     keyframes,
+                    composite: sample.composite,
                     progress: p,
                     before: progress.before,
-                    easing: sample.easing.clone(),
+                    easing: sample.easing,
                 });
             }
         }
@@ -2653,12 +2687,11 @@ impl<'a> Cascader<'a> {
             for &child in &children {
                 let rem = root_font_size.unwrap_or(ComputedStyle::default().font_size_px);
                 let replaced = old.and_then(|old| old.computed(child));
-                let before = match old {
-                    Some(_) => Before::Known(
-                        replaced
-                            .filter(|old| !old.unrendered)
-                            .map(|old| &*old.style),
-                    ),
+                // An element the styles replaced do not hold is one they
+                // did not see, not one not rendered: what came before it
+                // is unknown (D75), as a script's flush may have seen it.
+                let before = match replaced {
+                    Some(old) => Before::Known((!old.unrendered).then_some(&*old.style)),
                     None => Before::Unknown,
                 };
                 let computed = self.style_of(child, Parent::of(&parent), rem, before, replaced);
@@ -5343,6 +5376,9 @@ fn apply_declaration(
         "animation-fill-mode" => set_motion(style, motion::parse_fill_modes(value), |m, v| {
             m.animation_fill_mode = v
         }),
+        "animation-composition" => set_motion(style, motion::parse_compositions(value), |m, v| {
+            m.animation_composition = v
+        }),
         "animation" => set_motion(style, motion::parse_animation(value, bases), |m, v| {
             m.animation_name = v.name;
             m.animation_duration = v.duration;
@@ -5352,6 +5388,8 @@ fn apply_declaration(
             m.animation_play_state = v.play_state;
             m.animation_delay = v.delay;
             m.animation_fill_mode = v.fill_mode;
+            // A reset-only longhand of the shorthand (Animations 2).
+            m.animation_composition = vec![crate::computed::Composite::Replace];
         }),
         "break-before" => {
             set_fragmentation(style, fragmentation::parse_break_between(value), |f, v| {
@@ -6450,6 +6488,9 @@ fn apply_css_wide(
         "animation-fill-mode" => copy_motion(style, src, |m, s| {
             m.animation_fill_mode = s.animation_fill_mode.clone()
         }),
+        "animation-composition" => copy_motion(style, src, |m, s| {
+            m.animation_composition = s.animation_composition.clone()
+        }),
         "animation" => copy_motion(style, src, |m, s| {
             m.animation_name = s.animation_name.clone();
             m.animation_duration = s.animation_duration.clone();
@@ -6459,6 +6500,7 @@ fn apply_css_wide(
             m.animation_play_state = s.animation_play_state.clone();
             m.animation_delay = s.animation_delay.clone();
             m.animation_fill_mode = s.animation_fill_mode.clone();
+            m.animation_composition = s.animation_composition.clone();
         }),
         "break-before" | "page-break-before" => {
             copy_fragmentation(style, src, |f, s| f.break_before = s.break_before)
@@ -7957,6 +7999,124 @@ pub(crate) fn canonical_name(name: &str) -> &str {
 /// read apart from any element: a math function's lengths against the
 /// initial font size and the default viewport; a list's first item.
 pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing> {
+    easings_apart(tokens)?.into_iter().next()
+}
+
+/// A list of easing functions read apart from any element, as
+/// [`keyframe_easing`] reads one; `None` when it does not parse.
+pub(crate) fn easings_apart(tokens: &[Token]) -> Option<Vec<crate::easing::Easing>> {
+    apart(|bases| motion::parse_easings(tokens, bases))
+}
+
+/// A `<number>` read apart from any element, a math function's among
+/// them, as [`keyframe_easing`] reads an easing; `None` when it is none.
+pub(crate) fn number_apart(tokens: &[Token]) -> Option<f64> {
+    match tokens {
+        [Token::Number { value, .. }] => Some(*value),
+        _ if calc::is_math_function(tokens) => {
+            apart(
+                |bases| match calc::parse(tokens, calc::Want::Number)?.compute(bases, None) {
+                    calc::Computed::Value(n) => Some(n),
+                    _ => None,
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The initial style with the declarations of `text` applied, read
+/// apart from any element as [`keyframe_easing`] reads an easing: what
+/// a composite operation adds a value onto as its zero (D75).
+pub(crate) fn style_apart(text: &str) -> ComputedStyle {
+    let parent = ComputedStyle::default();
+    let mut style = ComputedStyle::default();
+    let declarations = css::parse_style_attribute(text).unwrap_or_default();
+    apart(|bases| {
+        for declaration in &declarations {
+            apply_declaration(
+                &mut style,
+                canonical_name(&declaration.name),
+                &declaration.value,
+                bases,
+                &parent,
+                &mut [true; 4],
+            );
+        }
+    });
+    style
+}
+
+/// The longhands `declarations` set, each with its computed value as
+/// `getComputedStyle` writes it, the declarations applied onto `base`
+/// apart from any element, and the custom properties' values as their
+/// tokens: what `getKeyframes` gives of a CSS animation's keyframe or of
+/// a computed value (Animations 2 section 4.1). Each property once, at
+/// its first place, its last declaration's value.
+pub fn declared_values(
+    base: &ComputedStyle,
+    declarations: &[css::Declaration],
+) -> Vec<(String, String)> {
+    let mut style = base.clone();
+    let mut names: Vec<String> = Vec::new();
+    let mut custom: Vec<(String, String)> = Vec::new();
+    apart(|bases| {
+        for declaration in declarations {
+            let name = canonical_name(&declaration.name);
+            if custom::is_custom_property_name(name) {
+                custom.retain(|(n, _)| n != name);
+                custom.push((
+                    name.to_owned(),
+                    crate::serialize::tokens(&declaration.value),
+                ));
+                continue;
+            }
+            // Its `var()`s of the element's custom properties.
+            let specified = substituted(
+                &declaration.value,
+                None,
+                name,
+                base.custom.as_ref(),
+                bases.resolution,
+            );
+            let value: &[Token] = match &specified {
+                Specified::Written(value) => value,
+                Specified::Substituted(value) => value,
+                Specified::Invalid | Specified::Ignored => continue,
+            };
+            // The font size has a pass of its own in the cascade.
+            if name == "font-size" {
+                let Some(size) =
+                    declared_font_size(Specified::Written(value), false, base, bases.resolution)
+                else {
+                    continue;
+                };
+                style.font_size_px = size;
+            } else if !apply_declaration(&mut style, name, value, bases, base, &mut [true; 4]) {
+                continue;
+            }
+            for longhand in crate::animate::longhands_of(name) {
+                if longhand.is_animatable() && !names.iter().any(|n| n == longhand.name()) {
+                    names.push(longhand.name().to_owned());
+                }
+            }
+        }
+    });
+    let mut out: Vec<(String, String)> = names
+        .into_iter()
+        .filter_map(|name| {
+            let value = crate::serialize::computed_value(&style, &name)?;
+            Some((name, value))
+        })
+        .collect();
+    out.extend(custom);
+    out
+}
+
+/// `f` of the bases a value is read with apart from any element: a math
+/// function's lengths against the initial font size and the default
+/// viewport.
+fn apart<T>(f: impl FnOnce(&LengthBases<'_>) -> T) -> T {
     let context = CascadeContext::default();
     let viewport_used = Cell::new(false);
     let substitutions = Substitutions::new(0);
@@ -7982,7 +8142,7 @@ pub(crate) fn keyframe_easing(tokens: &[Token]) -> Option<crate::easing::Easing>
         color: Color::BLACK,
         dark: false,
     };
-    motion::parse_easings(tokens, &bases)?.into_iter().next()
+    f(&bases)
 }
 
 /// `overflow` (M9.3): the four keywords, one value for both axes. The

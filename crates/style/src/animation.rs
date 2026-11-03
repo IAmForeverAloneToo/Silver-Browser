@@ -1,61 +1,79 @@
-//! The timing model of Web Animations (Web Animations Level 1 §4.6,
-//! §4.7, §5.3.4; M22) for the two kinds of animation CSS makes: one
-//! timeline, a playback rate of one, an iteration start of zero and
-//! `replace` composition.
+//! The timing model of Web Animations (Web Animations Level 1 section
+//! 4, section 5.3.4; M22, D75) and the animations a document runs: CSS
+//! animations, CSS transitions and the animations scripts make, in one
+//! store.
 //!
 //! [`Timing`](crate::animation::Timing) is an effect's timing: its
-//! delay, iteration duration, iteration count, direction, fill mode and
-//! easing. Given a local time it gives the effect's
+//! delay, end delay, iteration duration, iteration count and start,
+//! direction, fill mode and easing. Given a local time and the
+//! direction its animation plays in, it gives the effect's
 //! [`Progress`](crate::animation::Progress): its phase, its active time
 //! as the fill mode allows one, its current iteration, and its
 //! transformed progress with the before flag.
 //! [`interval`](crate::animation::interval) then finds the keyframes on
 //! either side of that progress among one property's keyframes
-//! (§5.3.4).
+//! (section 5.3.4).
 //!
-//! Times are seconds in an `f64`. An infinite iteration count makes the
-//! active duration infinite; a zero iteration duration or count makes
+//! Times are milliseconds in an `f64`. An infinite iteration count makes
+//! the active duration infinite; a zero iteration duration or count makes
 //! it zero; no step computes an infinity less an infinity or zero times
 //! an infinity, so that every result is a number or `None`.
 //!
-//! [`Animations`](crate::animation::Animations) is what a document runs
-//! (M22.1 to M22.3): its timeline's time, which the caller moves on and
-//! which never goes back, and each target's CSS animations and
-//! transitions with their clocks. The cascade keeps them as it computes
-//! styles — an element's `animation-name` matched to the animations it
-//! had (Animations 1 §2), its transitions started, replaced and
-//! cancelled at a change of its style (`transition`), each new one
-//! waiting for the next frame to start it — and reads their progress at
-//! the timeline's time; a frame moves the timeline on, starts what
-//! waits, ends the transitions past their end, and asks which targets'
-//! animations and transitions give something new, to be restyled.
+//! [`Animations`](crate::animation::Animations) is what a document runs:
+//! its timeline's time, which the caller moves on and which never goes
+//! back, and every animation by its number, each with its playback
+//! ([`player`]), its keyframe effect, the timeline it runs on and its
+//! replace state (D75). Its CSS animations are listed by their owning
+//! element in `animation-name`'s order and its running transitions by
+//! theirs; every effect is listed by its target. The cascade keeps the
+//! CSS ones as it computes styles -- an element's `animation-name` matched
+//! to the animations it had (Animations 1 section 2), its transitions
+//! started, replaced and cancelled at a change of its style
+//! (`transition`) -- and reads every effect on a target at the timeline's
+//! time, in composite order; a frame moves the timeline on, runs the
+//! pending tasks of the animations ready, updates their finished state,
+//! ends the transitions past their end, and asks which targets'
+//! animations give something new, to be restyled. Scripts reach the same
+//! animations by their numbers (`script`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use dom::NodeId;
 
-use crate::computed::{AnimationDirection, AnimationFillMode};
+use crate::computed::{AnimationDirection, AnimationFillMode, Composite};
 use crate::easing::Easing;
+use crate::keyframes::ScriptKeyframes;
 use crate::selector_matching::PseudoElement;
 
 mod events;
+pub mod player;
+mod script;
 mod transition;
 
-pub use events::{AnimationEvent, EventKind, Running};
+pub use events::{AnimationEvent, EventKind, PlaybackEvent, PlaybackKind, Running};
 use events::{Reported, animation_events, cancelled};
-use transition::{Completed, CssTransition};
+use player::{Context, Notice, PlayState, Player};
+pub use script::{
+    AnimationState, ComputedTiming, EffectInput, KeyframesSource, ScriptError, TimingInput,
+    TransitionValue, pseudo_element, pseudo_element_name,
+};
+use transition::{Completed, TransitionValues};
 pub(crate) use transition::{Property, Transitioning, Value};
 
-/// An animation effect's timing.
+/// An animation effect's timing (section 4.5), in milliseconds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Timing {
-    /// The start delay, in seconds, negative to start part way.
+    /// The start delay, negative to start part way.
     pub delay: f64,
-    /// The iteration duration, in seconds, not below zero.
+    /// The end delay, after the active interval.
+    pub end_delay: f64,
+    /// The iteration duration, not below zero.
     pub duration: f64,
     /// The iteration count, not below zero, infinite for `infinite`.
     pub iterations: f64,
+    /// The iteration start, not below zero.
+    pub iteration_start: f64,
     /// The playback direction.
     pub direction: AnimationDirection,
     /// The fill mode.
@@ -65,7 +83,24 @@ pub struct Timing {
     pub easing: Easing,
 }
 
-/// Where an effect's local time falls (§4.6.6).
+impl Default for Timing {
+    /// Web Animations' defaults: no delays, a zero duration, one
+    /// iteration from the start, forwards, no fill, linear.
+    fn default() -> Self {
+        Timing {
+            delay: 0.0,
+            end_delay: 0.0,
+            duration: 0.0,
+            iterations: 1.0,
+            iteration_start: 0.0,
+            direction: AnimationDirection::Normal,
+            fill: AnimationFillMode::None,
+            easing: Easing::Linear,
+        }
+    }
+}
+
+/// Where an effect's local time falls (section 4.6.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Before its active interval.
@@ -90,13 +125,14 @@ pub struct Progress {
     /// The transformed progress, the iteration's progress through the
     /// direction and the easing; `None` when not in effect.
     pub progress: Option<f64>,
-    /// The before flag (§4.7.7): set going forwards in the before phase.
+    /// The before flag (section 4.7.7): set going forwards in the before
+    /// phase, or backwards in the after phase.
     pub before: bool,
 }
 
 impl Timing {
-    /// The active duration (§4.7.1): the iteration duration times the
-    /// count, zero when either is.
+    /// The active duration (section 4.7.1): the iteration duration times
+    /// the count, zero when either is.
     pub fn active_duration(&self) -> f64 {
         if self.duration == 0.0 || self.iterations == 0.0 {
             0.0
@@ -105,43 +141,61 @@ impl Timing {
         }
     }
 
-    /// The end time: the delay and the active duration together, not
-    /// below zero (§4.6.1).
+    /// The end time: the delays and the active duration together, not
+    /// below zero (section 4.6.1).
     pub fn end_time(&self) -> f64 {
-        (self.delay + self.active_duration()).max(0.0)
+        let end = self.delay + self.active_duration() + self.end_delay;
+        if end.is_nan() { 0.0 } else { end.max(0.0) }
     }
 
-    /// The phase at `local` (§4.6.6), the playback going forwards.
+    /// The phase at `local` (section 4.6.6), the playback going
+    /// forwards.
     pub fn phase(&self, local: f64) -> Phase {
+        self.phase_in(local, false)
+    }
+
+    /// The phase at `local`, the animation playing `backwards` (its
+    /// playback rate below zero) or forwards: a boundary belongs to the
+    /// phase the playback leaves.
+    pub fn phase_in(&self, local: f64, backwards: bool) -> Phase {
         let end = self.end_time();
         let before_active = self.delay.min(end).max(0.0);
         let active_after = (self.delay + self.active_duration()).min(end).max(0.0);
-        if local < before_active {
+        if local < before_active || (backwards && local == before_active) {
             Phase::Before
-        } else if local >= active_after {
+        } else if local > active_after || (!backwards && local == active_after) {
             Phase::After
         } else {
             Phase::Active
         }
     }
 
-    /// What the effect gives at the local time `local` (§4.7).
+    /// What the effect gives at the local time `local` (section 4.7),
+    /// the playback going forwards.
     pub fn progress(&self, local: f64) -> Progress {
-        let phase = self.phase(local);
+        self.progress_in(local, false)
+    }
+
+    /// What the effect gives at the local time `local`, the animation
+    /// playing `backwards` or forwards.
+    pub fn progress_in(&self, local: f64, backwards: bool) -> Progress {
+        let phase = self.phase_in(local, backwards);
         let active_duration = self.active_duration();
-        let backwards = matches!(
+        let fills_backwards = matches!(
             self.fill,
             AnimationFillMode::Backwards | AnimationFillMode::Both
         );
-        let forwards = matches!(
+        let fills_forwards = matches!(
             self.fill,
             AnimationFillMode::Forwards | AnimationFillMode::Both
         );
-        // §4.7.2.
+        // Section 4.7.2.
         let active_time = match phase {
-            Phase::Before => backwards.then(|| (local - self.delay).max(0.0)),
+            Phase::Before => fills_backwards.then(|| (local - self.delay).max(0.0)),
             Phase::Active => Some(local - self.delay),
-            Phase::After => forwards.then(|| (local - self.delay).min(active_duration).max(0.0)),
+            Phase::After => {
+                fills_forwards.then(|| (local - self.delay).min(active_duration).max(0.0))
+            }
         };
         let Some(active_time) = active_time else {
             return Progress {
@@ -152,7 +206,7 @@ impl Timing {
                 before: false,
             };
         };
-        // §4.7.3: the overall progress.
+        // Section 4.7.3: the overall progress, from the iteration start.
         let overall = if self.duration == 0.0 {
             if phase == Phase::Before {
                 0.0
@@ -161,11 +215,11 @@ impl Timing {
             }
         } else {
             active_time / self.duration
-        };
-        // §4.7.4: the simple iteration progress, the end of an iteration
-        // being one of it rather than zero of the next.
+        } + self.iteration_start;
+        // Section 4.7.4: the simple iteration progress, the end of an
+        // iteration being one of it rather than zero of the next.
         let mut simple = if overall.is_infinite() {
-            0.0
+            self.iteration_start % 1.0
         } else {
             overall % 1.0
         };
@@ -176,7 +230,7 @@ impl Timing {
         {
             simple = 1.0;
         }
-        // §4.7.5: the current iteration.
+        // Section 4.7.5: the current iteration.
         let iteration = if phase == Phase::After && self.iterations.is_infinite() {
             f64::INFINITY
         } else if simple == 1.0 {
@@ -184,7 +238,7 @@ impl Timing {
         } else {
             overall.floor()
         };
-        // §4.7.6: the direction.
+        // Section 4.7.6: the direction.
         let reverse = match self.direction {
             AnimationDirection::Normal => false,
             AnimationDirection::Reverse => true,
@@ -198,7 +252,7 @@ impl Timing {
             }
         };
         let directed = if reverse { 1.0 - simple } else { simple };
-        // §4.7.7: the before flag and the easing.
+        // Section 4.7.7: the before flag and the easing.
         let before = (!reverse && phase == Phase::Before) || (reverse && phase == Phase::After);
         Progress {
             phase,
@@ -210,7 +264,8 @@ impl Timing {
     }
 }
 
-/// The keyframes around a progress among one property's (§5.3.4).
+/// The keyframes around a progress among one property's (section
+/// 5.3.4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Interval {
     /// One keyframe alone gives the value.
@@ -226,7 +281,7 @@ pub enum Interval {
 
 /// The interval of a property's keyframes, whose offsets `offsets` are
 /// in order and include 0 and 1, that the iteration progress `progress`
-/// falls in (§5.3.4): beyond either end, the end's first or last
+/// falls in (section 5.3.4): beyond either end, the end's first or last
 /// keyframe alone when more than one sits there, and otherwise the two
 /// whose offsets the progress lies between or the end two.
 pub fn interval(offsets: &[f64], progress: f64) -> Interval {
@@ -260,10 +315,14 @@ pub fn interval(offsets: &[f64], progress: f64) -> Interval {
     Interval::Between { from, to, distance }
 }
 
-/// The most animations and transitions a document runs together: past it
-/// a new one does not start. No page meets it; one built to exhaust the
-/// engine does.
+/// The most animations a document keeps together, CSS's and scripts':
+/// past it a new one does not start. No page meets it; one built to
+/// exhaust the engine does.
 pub const MAX_ANIMATIONS: usize = 65_536;
+
+/// The most document timelines a document's scripts make beside its
+/// own: past it the constructor gives the document's.
+pub const MAX_TIMELINES: usize = 1024;
 
 /// What an animation animates: an element, or its `::before`, `::after`
 /// or `::marker`.
@@ -280,174 +339,531 @@ fn take<V>(map: &mut HashMap<Target, V>, target: &Target) -> Option<V> {
     }
 }
 
-/// Where an animation's current time comes from (Web Animations §4.4).
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Clock {
-    /// Playing, its start time not resolved yet: it shows the time `from`
-    /// until the next frame starts it from there, as the pending play
-    /// task resolves at the next animation frame (§4.4.4).
-    Pending { from: f64 },
-    /// Playing since the timeline's time `start`.
-    Running { start: f64 },
-    /// Paused at the time `at`, its hold time.
-    Held { at: f64 },
+/// An animation's replace state (section 5.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceState {
+    Active,
+    Removed,
+    Persisted,
 }
 
-/// A CSS animation (Animations 1 §2): the `@keyframes` name it runs, the
-/// timing the element's properties give it, and its clock.
+impl ReplaceState {
+    /// Its name, as `replaceState` gives it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ReplaceState::Active => "active",
+            ReplaceState::Removed => "removed",
+            ReplaceState::Persisted => "persisted",
+        }
+    }
+}
+
+/// What kind an animation is, which decides its composite order (section
+/// 5.4.2; Animations 2 section 4.3, Transitions 2 section 6.2), and what
+/// its kind keeps.
 #[derive(Debug, Clone, PartialEq)]
-struct CssAnimation {
-    name: Arc<str>,
-    /// Its effect's timing, its easing linear: an animation's timing
-    /// function is its keyframes'.
-    timing: Timing,
-    /// The easing of a keyframe that declares none: the animation's
-    /// `animation-timing-function`.
-    easing: Easing,
-    clock: Clock,
+pub(crate) enum Class {
+    /// A CSS transition of `property`, owned by its element while it
+    /// runs, of the `generation` of the change of style that started it
+    /// (Transitions 2 section 6.2).
+    Transition {
+        owner: Option<Target>,
+        property: Property,
+        generation: u64,
+    },
+    /// A CSS animation of the `@keyframes` named `name`, owned by its
+    /// element while its `animation-name` names it. `scripted` once a
+    /// script played or paused it, after which `animation-play-state`
+    /// no longer does; `paused` what that property last said.
+    Css {
+        owner: Option<Target>,
+        name: Arc<str>,
+        scripted: bool,
+        paused: bool,
+    },
+    /// An animation a script made.
+    Script,
+}
+
+/// An animation (section 4.4).
+#[derive(Debug, Clone)]
+pub(crate) struct Animation {
+    pub(crate) class: Class,
+    pub(crate) player: Player,
+    /// Its associated effect's number.
+    pub(crate) effect: Option<u64>,
+    /// Its timeline, by its place among the document's; `None` for none.
+    pub(crate) timeline: Option<usize>,
+    pub(crate) replace: ReplaceState,
     /// What the last sample gave, for the next frame to compare with.
     last: Sampled,
     /// The phase and current iteration at the last animation frame, for
-    /// the events.
+    /// the CSS events.
     reported: Reported,
     reported_iteration: Option<f64>,
+    /// Whether a script holds an object for it, which hears its notices
+    /// and its playback events.
+    pub(crate) held: bool,
+    /// Whether a script's style flush made it and the frame's styles
+    /// have not seen it yet.
+    unseen: bool,
+}
+
+/// What a keyframe effect's keyframes are.
+#[derive(Debug, Clone)]
+pub(crate) enum Frames {
+    /// A CSS animation's: its `@keyframes` rule's by name, read where the
+    /// cascade reads the sheets, the easing of a keyframe that declares
+    /// none, and the longhands the rule animated when its element last
+    /// named it.
+    Css {
+        name: Arc<str>,
+        easing: Easing,
+        longhands: Arc<[crate::animate::Longhand]>,
+    },
+    /// A script's (`KeyframeEffect`, `setKeyframes`).
+    Script(Arc<ScriptKeyframes>),
+    /// A CSS transition's, from its start value to its end value.
+    Transition(Box<TransitionValues>),
+}
+
+/// Which members of a CSS animation's effect a script set, which its
+/// element's `animation-*` properties no longer do (Animations 2 section
+/// 4.2): bits of [`Overridden`].
+type Overridden = u16;
+const SET_DELAY: Overridden = 1;
+const SET_END_DELAY: Overridden = 1 << 1;
+const SET_DURATION: Overridden = 1 << 2;
+const SET_ITERATIONS: Overridden = 1 << 3;
+const SET_DIRECTION: Overridden = 1 << 4;
+const SET_FILL: Overridden = 1 << 5;
+const SET_EASING: Overridden = 1 << 6;
+const SET_ITERATION_START: Overridden = 1 << 7;
+const SET_KEYFRAMES: Overridden = 1 << 8;
+const SET_COMPOSITE: Overridden = 1 << 9;
+
+/// A keyframe effect (section 5.3).
+#[derive(Debug, Clone)]
+pub(crate) struct Effect {
+    /// Its effect target, and the pseudo-element it names apart from it:
+    /// a script may name one before it gives the element.
+    pub(crate) target: Option<Target>,
+    pub(crate) pseudo: Option<PseudoElement>,
+    /// The animation it is associated with.
+    pub(crate) animation: Option<u64>,
+    pub(crate) timing: Timing,
+    /// Whether its duration is `auto` and its fill `auto`, as `getTiming`
+    /// gives them; the timing holds what they compute to.
+    pub(crate) duration_auto: bool,
+    pub(crate) fill_auto: bool,
+    /// What a script set of a CSS animation's effect.
+    overridden: Overridden,
+    pub(crate) composite: Composite,
+    pub(crate) frames: Frames,
+    /// Whether a script holds an object for it.
+    pub(crate) held: bool,
 }
 
 /// What a sample gives that a style is computed from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Sampled {
-    phase: Phase,
+    phase: Option<Phase>,
     progress: Option<f64>,
     before: bool,
 }
 
-impl From<Progress> for Sampled {
-    fn from(progress: Progress) -> Self {
-        Sampled {
-            phase: progress.phase,
-            progress: progress.progress,
-            before: progress.before,
+impl Sampled {
+    const NOTHING: Sampled = Sampled {
+        phase: None,
+        progress: None,
+        before: false,
+    };
+}
+
+impl From<Option<Progress>> for Sampled {
+    fn from(progress: Option<Progress>) -> Self {
+        match progress {
+            Some(progress) => Sampled {
+                phase: Some(progress.phase),
+                progress: progress.progress,
+                before: progress.before,
+            },
+            None => Sampled::NOTHING,
         }
     }
 }
 
-/// An animation an element's style asks for (Animations 1 §2): an item
-/// of its `animation-name` that names keyframes in force, with the other
-/// properties' items at its place.
+/// An animation an element's style asks for (Animations 1 section 2):
+/// an item of its `animation-name` that names keyframes in force, with
+/// the other properties' items at its place.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wanted {
     pub(crate) name: Arc<str>,
     pub(crate) timing: Timing,
     pub(crate) easing: Easing,
     pub(crate) paused: bool,
+    pub(crate) composite: Composite,
+    /// The longhands its keyframes animate.
+    pub(crate) longhands: Arc<[crate::animate::Longhand]>,
 }
 
-/// One of a target's animations at the timeline's time: the keyframes
-/// it runs, its default keyframe easing and what its effect gives.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Sample<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) easing: &'a Easing,
+/// The keyframes a sample reads.
+#[derive(Debug, Clone)]
+pub(crate) enum SampleFrames {
+    /// The `@keyframes` rule of the name.
+    Css(Arc<str>),
+    /// A script's.
+    Script(Arc<ScriptKeyframes>),
+}
+
+/// One of a target's animation effects at the timeline's time: the
+/// keyframes it reads, its default keyframe easing, its composite
+/// operation and what its effect gives.
+#[derive(Debug, Clone)]
+pub(crate) struct Sample {
+    pub(crate) frames: SampleFrames,
+    pub(crate) easing: Easing,
+    pub(crate) composite: Composite,
     pub(crate) progress: Progress,
+    /// Whether the effect is current (section 4.5.2), which makes the
+    /// engine act as if `will-change` named what it animates.
+    pub(crate) current: bool,
 }
 
-/// The animations and transitions a document runs, and its timeline
-/// (M22.1 to M22.3).
-#[derive(Debug, Clone, Default)]
+/// The animations a document runs, and its timelines (M22.1 to M22.3,
+/// D75).
+#[derive(Debug, Clone)]
 pub struct Animations {
-    /// The timeline's time, in seconds from its origin.
+    /// The document timeline's time, in milliseconds from its origin.
     time: f64,
-    /// Each target's CSS animations, in its `animation-name`'s order,
-    /// the last of which wins a property they share.
-    css: HashMap<Target, Vec<CssAnimation>>,
-    /// Each target's running transitions, one for a property.
-    transitions: HashMap<Target, Vec<CssTransition>>,
-    /// Each target's completed transitions (Transitions 1 §3).
+    /// The origins of the document timelines scripts made, on the
+    /// document's; the document's own is the first, at zero.
+    origins: Vec<f64>,
+    /// The number the next animation or effect takes.
+    next: u64,
+    /// Every animation by its number, which is its place in the global
+    /// animation list.
+    animations: BTreeMap<u64, Animation>,
+    /// Every keyframe effect by its number.
+    effects: HashMap<u64, Effect>,
+    /// Each element's CSS animations, in its `animation-name`'s order.
+    css: HashMap<Target, Vec<u64>>,
+    /// Each element's running transitions, one for a property.
+    transitions: HashMap<Target, Vec<u64>>,
+    /// Each element's completed transitions (Transitions 1 section 3).
     completed: HashMap<Target, Vec<Completed>>,
+    /// Each target's effects, by their numbers.
+    targeted: HashMap<Target, Vec<u64>>,
     /// The longhands each target's animations gave its last style: what
     /// a change of its style starts no transition for, as in the
     /// reference browser, since an animation's values hold them.
     styled: HashMap<Target, Vec<crate::animate::Longhand>>,
-    /// How many animations and running transitions there are together,
-    /// at most [`MAX_ANIMATIONS`].
-    count: usize,
-    /// The events queued since they were last taken (M22.2).
+    /// The CSS events queued since they were last taken (M22.2).
     events: Vec<AnimationEvent>,
+    /// The playback events (`finish`, `cancel`, `remove`) queued for the
+    /// next animation frame to dispatch.
+    playback: Vec<PlaybackEvent>,
+    /// What the procedures owe the promises scripts hold, by animation.
+    notices: Vec<(u64, Notice)>,
+    /// The elements a script's call changed the animated values of, for
+    /// the next restyle, and how many times one has been.
+    touched: Vec<NodeId>,
+    touches: u64,
+    /// The animation whose effect stack `commitStyles()` reads (section
+    /// 6.4): the effects above it in composite order give nothing while
+    /// it is set.
+    committing: Option<u64>,
+    /// How many changes of style have looked for transitions to start.
+    transition_generation: u64,
+    /// Whether the store is lent to a script's run, whose style flushes
+    /// the frame's styles do not see.
+    in_script: bool,
+}
+
+impl Default for Animations {
+    /// None, at the time zero, the document's timeline the only one.
+    fn default() -> Self {
+        Animations::new()
+    }
 }
 
 impl Animations {
     /// None, at the time zero.
     pub fn new() -> Self {
-        Animations::default()
+        Animations {
+            time: 0.0,
+            origins: vec![0.0],
+            next: 0,
+            animations: BTreeMap::new(),
+            effects: HashMap::new(),
+            css: HashMap::new(),
+            transitions: HashMap::new(),
+            completed: HashMap::new(),
+            targeted: HashMap::new(),
+            styled: HashMap::new(),
+            events: Vec::new(),
+            playback: Vec::new(),
+            notices: Vec::new(),
+            touched: Vec::new(),
+            touches: 0,
+            committing: None,
+            transition_generation: 0,
+            in_script: false,
+        }
     }
 
     /// The timeline's time, in seconds.
     pub fn time(&self) -> f64 {
+        self.time / 1000.0
+    }
+
+    /// The timeline's time, in milliseconds.
+    pub fn time_ms(&self) -> f64 {
         self.time
     }
 
     /// Moves the timeline to `time`, in seconds: never back, and never
     /// to a time that is not a number.
     pub fn set_time(&mut self, time: f64) {
+        let time = time * 1000.0;
         if time > self.time && time.is_finite() {
             self.time = time;
         }
     }
 
-    /// How many animations and running transitions there are.
+    /// How many animations there are.
     pub fn len(&self) -> usize {
-        self.count
+        self.animations.len()
     }
 
     /// Whether there are none.
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.animations.is_empty()
     }
 
-    /// The clocks of every animation and running transition.
-    fn clocks(&self) -> impl Iterator<Item = (&Clock, &Timing)> {
-        self.css
-            .values()
-            .flatten()
-            .map(|a| (&a.clock, &a.timing))
-            .chain(
-                self.transitions
-                    .values()
-                    .flatten()
-                    .map(|t| (&t.clock, &t.timing)),
-            )
+    /// A new number.
+    fn number(&mut self) -> u64 {
+        self.next += 1;
+        self.next
     }
 
-    /// Starts every animation and transition waiting for a frame at the
-    /// timeline's time, the frame's: its current time goes on from what
-    /// it showed.
-    pub fn start_pending(&mut self) {
-        let time = self.time;
-        let clocks = self.css.values_mut().flatten().map(|a| &mut a.clock).chain(
-            self.transitions
-                .values_mut()
-                .flatten()
-                .map(|t| &mut t.clock),
-        );
-        for clock in clocks {
-            if let Clock::Pending { from } = *clock {
-                *clock = Clock::Running { start: time - from };
+    /// The current time of timeline `timeline`, `None` for none.
+    fn timeline_time(&self, timeline: Option<usize>) -> Option<f64> {
+        let origin = *self.origins.get(timeline?)?;
+        Some(self.time - origin)
+    }
+
+    /// What `animation`'s procedures need: its timeline's time and its
+    /// effect's end.
+    fn context(&self, animation: &Animation) -> Context {
+        let end = animation
+            .effect
+            .and_then(|e| self.effects.get(&e))
+            .map_or(0.0, |e| e.timing.end_time());
+        Context {
+            timeline: self.timeline_time(animation.timeline),
+            end,
+        }
+    }
+
+    /// `animation`'s effect's progress at its current time, `None` when
+    /// it has no effect or no current time.
+    fn progress_of(&self, animation: &Animation) -> Option<Progress> {
+        let effect = self.effects.get(&animation.effect?)?;
+        let local = animation.player.current_time(&self.context(animation))?;
+        Some(
+            effect
+                .timing
+                .progress_in(local, animation.player.playback_rate < 0.0),
+        )
+    }
+
+    /// Whether `animation`'s effect is current (section 4.5.2): in play,
+    /// or yet to play in the direction it plays.
+    fn is_current(&self, animation: &Animation) -> bool {
+        let Some(progress) = self.progress_of(animation) else {
+            return false;
+        };
+        let cx = self.context(animation);
+        let rate = animation.player.playback_rate;
+        (progress.phase == Phase::Active && animation.player.play_state(&cx) != PlayState::Finished)
+            || (rate > 0.0 && progress.phase == Phase::Before)
+            || (rate < 0.0 && progress.phase == Phase::After)
+    }
+
+    /// Whether `animation` is relevant (section 4.5.2): its effect
+    /// current or in effect, and it not removed.
+    fn is_relevant(&self, animation: &Animation) -> bool {
+        animation.replace != ReplaceState::Removed
+            && (self.is_current(animation)
+                || self
+                    .progress_of(animation)
+                    .is_some_and(|p| p.active_time.is_some()))
+    }
+
+    /// Keeps what a procedure on animation `id` owes its promises: for
+    /// the script that holds it, or carried out at once when none does,
+    /// the finish notification steps among them.
+    fn owe(&mut self, id: u64, notices: Vec<Notice>) {
+        if notices.is_empty() {
+            return;
+        }
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        if animation.held {
+            self.notices
+                .extend(notices.into_iter().map(|notice| (id, notice)));
+            return;
+        }
+        if notices
+            .iter()
+            .any(|n| matches!(n, Notice::FinishNotify { .. }))
+        {
+            let cx = self.context(animation);
+            if let Some(animation) = self.animations.get_mut(&id) {
+                animation.player.notify_finished(&cx);
             }
         }
     }
 
-    /// Samples every animation and transition at the timeline's time: the
-    /// elements whose animations or transitions give something other than
-    /// at the last sample, a transition that ended among them, which a
-    /// frame restyles, each once, in order.
+    /// Lists effect `effect` under its target.
+    fn index_target(&mut self, effect: u64) {
+        if let Some(target) = self.effects.get(&effect).and_then(|e| e.target) {
+            let list = self.targeted.entry(target).or_default();
+            if !list.contains(&effect) {
+                list.push(effect);
+            }
+        }
+    }
+
+    /// Takes effect `effect` off its target's list.
+    fn unindex_target(&mut self, effect: u64) {
+        if let Some(target) = self.effects.get(&effect).and_then(|e| e.target)
+            && let Some(list) = self.targeted.get_mut(&target)
+        {
+            list.retain(|&e| e != effect);
+            if list.is_empty() {
+                self.targeted.remove(&target);
+            }
+        }
+    }
+
+    /// Records that `effect`'s target's animated values may have changed.
+    fn touch_effect(&mut self, effect: Option<u64>) {
+        if let Some(target) = effect
+            .and_then(|e| self.effects.get(&e))
+            .and_then(|e| e.target)
+        {
+            self.touches += 1;
+            if !self.touched.contains(&target.0) {
+                self.touched.push(target.0);
+            }
+        }
+    }
+
+    /// Forgets animation `id` and its effect, unless a script holds the
+    /// effect.
+    fn forget(&mut self, id: u64) {
+        let Some(animation) = self.animations.remove(&id) else {
+            return;
+        };
+        if let Some(effect) = animation.effect {
+            let held = self.effects.get(&effect).is_some_and(|e| e.held);
+            if held {
+                if let Some(e) = self.effects.get_mut(&effect) {
+                    e.animation = None;
+                }
+            } else {
+                self.unindex_target(effect);
+                self.effects.remove(&effect);
+            }
+        }
+    }
+
+    /// Runs the pending tasks of every animation waiting for a frame,
+    /// each ready at its timeline's time, the frame's: its current time
+    /// goes on from what it showed.
+    pub fn start_pending(&mut self) {
+        let waiting: Vec<u64> = self
+            .animations
+            .iter()
+            .filter(|(_, a)| a.player.pending())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in waiting {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let cx = self.context(animation);
+            // An animation on no timeline, or an inactive one, waits.
+            let Some(ready) = cx.timeline else {
+                continue;
+            };
+            let mut notices = Vec::new();
+            if let Some(animation) = self.animations.get_mut(&id) {
+                animation.player.ready(ready, &cx, &mut notices);
+            }
+            self.owe(id, notices);
+        }
+    }
+
+    /// The store is lent to a script's run, or given back from one: the
+    /// animations its style flushes make are the frame's to see.
+    pub fn set_in_script(&mut self, in_script: bool) {
+        self.in_script = in_script;
+    }
+
+    /// The frame's styles have seen every animation there is.
+    pub fn styles_seen(&mut self) {
+        for animation in self.animations.values_mut() {
+            animation.unseen = false;
+        }
+    }
+
+    /// The animations' part of a frame's update of the animations (Web
+    /// Animations 1 section 4.2, HTML's "update animations and send
+    /// events"): the pending tasks of those ready run at the timeline's
+    /// time, and every finished state updated, before the frame's
+    /// callbacks run.
+    pub fn update_timelines(&mut self) {
+        self.start_pending();
+        self.update_finished();
+    }
+
+    /// Updates every animation's finished state at the timeline's time
+    /// (section 4.4.15), as moving the timeline does.
+    fn update_finished(&mut self) {
+        let ids: Vec<u64> = self.animations.keys().copied().collect();
+        for id in ids {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let cx = self.context(animation);
+            let mut notices = Vec::new();
+            if let Some(animation) = self.animations.get_mut(&id) {
+                animation
+                    .player
+                    .update_finished_state(false, false, &cx, &mut notices);
+            }
+            self.owe(id, notices);
+        }
+    }
+
+    /// Samples every animation at the timeline's time: the elements whose
+    /// animations or transitions give something other than at the last
+    /// sample, a transition that ended among them, which a frame
+    /// restyles, each once, in order.
     ///
-    /// It is an animation frame: each animation and transition not
-    /// waiting for one queues the events its change of phase since the
-    /// last asks for (Animations 2 §5.1, Transitions 2 §5.1), the frame's
-    /// by element, a transition's before an animation's as their
-    /// composite order has them, each one's in the order of its table.
+    /// It is an animation frame: the finished states are updated, and
+    /// each animation not waiting for one queues the events its change of
+    /// phase since the last asks for (Animations 2 section 5.1,
+    /// Transitions 2 section 5.1), the frame's by element, a transition's
+    /// before an animation's as their composite order has them, each
+    /// one's in the order of its table. The scripts' animations no script
+    /// holds that are no longer relevant are forgotten.
     pub fn sample(&mut self) -> Vec<NodeId> {
-        let time = self.time;
+        self.update_finished();
         let queued = self.events.len();
         self.report_transitions();
         let mut changed: Vec<NodeId> = self
@@ -455,39 +871,111 @@ impl Animations {
             .into_iter()
             .map(|(node, _)| node)
             .collect();
+        changed.append(&mut self.touched);
         let mut events = Vec::new();
-        for (&target, animations) in &mut self.css {
-            for animation in animations {
-                let progress = animation.timing.progress(current_time(animation, time));
-                if !matches!(animation.clock, Clock::Pending { .. }) {
-                    let reported = Reported::from(progress.phase);
-                    for (kind, elapsed) in animation_events(
-                        &animation.timing,
-                        animation.reported,
-                        reported,
-                        animation.reported_iteration,
-                        progress.iteration,
-                    ) {
-                        events.push(event(target, &animation.name, kind, elapsed));
-                    }
-                    animation.reported = reported;
-                    animation.reported_iteration = progress.iteration;
+        let ids: Vec<u64> = self.animations.keys().copied().collect();
+        let mut forgotten = Vec::new();
+        for id in ids {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let target = animation
+                .effect
+                .and_then(|e| self.effects.get(&e))
+                .and_then(|e| e.target);
+            let mut progress = self.progress_of(animation);
+            let mut timing = animation
+                .effect
+                .and_then(|e| self.effects.get(&e))
+                .map(|e| e.timing.clone());
+            // A CSS animation a script took the effect of plays an effect
+            // of no duration, past whose end it is (Animations 2 section
+            // 4.2): its events say it ended.
+            if timing.is_none() && matches!(animation.class, Class::Css { .. }) {
+                let none = Timing::default();
+                let local = animation.player.current_time(&self.context(animation));
+                progress = local.map(|local| none.progress(local));
+                timing = Some(none);
+            }
+            let gone =
+                animation.class == Class::Script && !animation.held && !self.is_relevant(animation);
+            let owner = match &animation.class {
+                Class::Css {
+                    owner: Some(owner),
+                    name,
+                    ..
+                } => Some((*owner, Arc::clone(name))),
+                _ => None,
+            };
+            let pending = animation.player.pending();
+            let time = self.time;
+            let schedule =
+                |delay: f64, elapsed: f64| scheduled(&animation.player, time, delay, elapsed);
+            let mut queued = Vec::new();
+            if let (Some((owner, name)), Some(timing)) = (&owner, &timing)
+                && !pending
+            {
+                let reported = progress.map_or(Reported::Idle, |p| Reported::from(p.phase));
+                let iteration = progress.and_then(|p| p.iteration);
+                for (kind, elapsed) in animation_events(
+                    timing,
+                    animation.reported,
+                    reported,
+                    animation.reported_iteration,
+                    iteration,
+                ) {
+                    queued.push(event(
+                        (*owner, id),
+                        name,
+                        kind,
+                        elapsed,
+                        schedule(timing.delay, elapsed),
+                    ));
                 }
-                let now = Sampled::from(progress);
-                if now != animation.last {
-                    animation.last = now;
+            }
+            events.append(&mut queued);
+            let Some(animation) = self.animations.get_mut(&id) else {
+                continue;
+            };
+            if owner.is_some() && timing.is_some() && !pending {
+                animation.reported = progress.map_or(Reported::Idle, |p| Reported::from(p.phase));
+                animation.reported_iteration = progress.and_then(|p| p.iteration);
+            }
+            let now = Sampled::from(progress);
+            if now != animation.last {
+                animation.last = now;
+                if let Some(target) = target {
                     changed.push(target.0);
                 }
             }
+            if gone {
+                forgotten.push(id);
+            }
+        }
+        for id in forgotten {
+            if let Some(target) = self
+                .animations
+                .get(&id)
+                .and_then(|a| a.effect)
+                .and_then(|e| self.effects.get(&e))
+                .and_then(|e| e.target)
+            {
+                changed.push(target.0);
+            }
+            self.forget(id);
         }
         self.events.extend(events);
-        // Sorted by a key that borrows the name rather than clones it.
-        fn order(e: &AnimationEvent) -> (NodeId, u8, bool, &str) {
+        // Sorted by their scheduled times, then by element, an element's
+        // own before its `::marker`'s, `::before`'s and `::after`'s, a
+        // transition's before an animation's as their composite order has
+        // them; by a key that borrows the name rather than clones it.
+        fn order(e: &AnimationEvent) -> (f64, NodeId, u8, bool, &str) {
             let pseudo = match e.pseudo {
                 None => 0,
-                Some(PseudoElement::Before) => 1,
-                Some(PseudoElement::After) => 2,
-                Some(_) => 3,
+                Some(PseudoElement::Marker) => 1,
+                Some(PseudoElement::Before) => 2,
+                Some(PseudoElement::After) => 3,
+                Some(_) => 4,
             };
             let animation = !matches!(
                 e.kind,
@@ -496,84 +984,175 @@ impl Animations {
                     | EventKind::TransitionEnd
                     | EventKind::TransitionCancel
             );
-            (e.node, pseudo, animation, &*e.name)
+            (e.scheduled, e.node, pseudo, animation, &*e.name)
         }
-        self.events[queued..].sort_by(|a, b| order(a).cmp(&order(b)));
-        for (&(node, _), transitions) in &mut self.transitions {
-            for transition in transitions {
-                let now = Sampled::from(
-                    transition
-                        .timing
-                        .progress(clock_time(&transition.clock, time)),
-                );
-                if now != transition.last {
-                    transition.last = now;
-                    changed.push(node);
-                }
-            }
-        }
+        self.events[queued..].sort_by(|a, b| {
+            let (x, y) = (order(a), order(b));
+            x.0.total_cmp(&y.0)
+                .then_with(|| (x.1, x.2, x.3, x.4).cmp(&(y.1, y.2, y.3, y.4)))
+        });
         changed.sort_unstable();
         changed.dedup();
         changed
     }
 
-    /// Whether a frame is wanted now: an animation or a transition waits
-    /// for one to start it, or plays in its active phase, its values
-    /// changing with the time.
+    /// Whether a frame is wanted now: an animation waits for one to
+    /// start it, or plays in its active phase, its values changing with
+    /// the time; or what a script holds waits for the frame's update.
     pub fn needs_frame(&self) -> bool {
-        let time = self.time;
-        self.clocks().any(|(clock, timing)| match *clock {
-            Clock::Pending { .. } => true,
-            Clock::Running { start } => timing.phase(time - start) == Phase::Active,
-            Clock::Held { .. } => false,
+        if !self.notices.is_empty() || !self.playback.is_empty() || !self.touched.is_empty() {
+            return true;
+        }
+        self.animations.values().any(|animation| {
+            if animation.player.pending() {
+                return self.timeline_time(animation.timeline).is_some();
+            }
+            let cx = self.context(animation);
+            animation.player.play_state(&cx) == PlayState::Running
+                && animation.player.playback_rate != 0.0
+                && self
+                    .progress_of(animation)
+                    .is_some_and(|p| p.phase == Phase::Active)
         })
     }
 
-    /// The timeline's time at which a frame is next wanted when none is
-    /// now: the soonest end of a playing animation's or transition's
-    /// delay; `None` when none is in its delay.
+    /// The timeline's time, in seconds, at which a frame is next wanted
+    /// when none is now: the soonest end of a playing animation's delay,
+    /// or of an effect's active interval past which its finished state
+    /// changes; `None` when there is none to wait for.
     pub fn next_change(&self) -> Option<f64> {
-        let time = self.time;
-        self.clocks()
-            .filter_map(|(clock, timing)| match *clock {
-                Clock::Running { start } if timing.phase(time - start) == Phase::Before => {
-                    let end = timing.end_time();
-                    Some(start + timing.delay.min(end).max(0.0))
-                }
-                _ => None,
-            })
-            .min_by(f64::total_cmp)
+        let mut soonest: Option<f64> = None;
+        for animation in self.animations.values() {
+            let cx = self.context(animation);
+            let (Some(start), Some(timeline)) = (animation.player.start_time, cx.timeline) else {
+                continue;
+            };
+            if animation.player.hold_time.is_some()
+                || animation.player.play_state(&cx) != PlayState::Running
+            {
+                continue;
+            }
+            let rate = animation.player.playback_rate;
+            let Some(effect) = animation.effect.and_then(|e| self.effects.get(&e)) else {
+                continue;
+            };
+            if rate <= 0.0 {
+                continue;
+            }
+            let timing = &effect.timing;
+            let end = timing.end_time();
+            let local = (timeline - start) * rate;
+            // One in its active phase wants every frame already.
+            if timing.phase(local) == Phase::Active {
+                continue;
+            }
+            // The next boundary ahead: the end of the delay, or the end.
+            let boundary = [timing.delay.min(end).max(0.0), end]
+                .into_iter()
+                .find(|&b| b > local);
+            if let Some(boundary) = boundary {
+                let at = start + boundary / rate;
+                let origin = animation
+                    .timeline
+                    .and_then(|t| self.origins.get(t))
+                    .copied()
+                    .unwrap_or(0.0);
+                let at = (at + origin) / 1000.0;
+                soonest = Some(soonest.map_or(at, |s: f64| s.min(at)));
+            }
+        }
+        soonest
     }
 
-    /// Keeps the animations and transitions of the elements `keep` says,
-    /// cancelling the others': those of elements no longer in the
-    /// document.
+    /// Keeps the animations of the elements `keep` says, cancelling the
+    /// CSS animations and transitions of the others: those of elements no
+    /// longer in the document. A script's animation of such an element
+    /// stays, its effect having nothing to apply to.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
-        let time = self.time;
-        let count = &mut self.count;
-        let events = &mut self.events;
-        self.css.retain(|&target, animations| {
-            let kept = keep(target.0);
-            if !kept {
-                *count -= animations.len();
-                for animation in animations.iter() {
-                    animation_cancelled(events, target, animation, time);
+        let gone: Vec<Target> = self
+            .css
+            .keys()
+            .chain(self.transitions.keys())
+            .filter(|target| !keep(target.0))
+            .copied()
+            .collect();
+        for target in gone {
+            if let Some(ids) = take(&mut self.css, &target) {
+                for id in ids {
+                    self.drop_css(id, target);
                 }
             }
-            kept
-        });
-        self.transitions.retain(|&target, transitions| {
-            let kept = keep(target.0);
-            if !kept {
-                *count -= transitions.len();
-                for transition in transitions.iter() {
-                    transition.cancelled(events, target, time);
-                }
-            }
-            kept
-        });
+            self.cancel_transitions(target);
+        }
         self.completed.retain(|&(node, _), _| keep(node));
         self.styled.retain(|&(node, _), _| keep(node));
+    }
+
+    /// Cancels CSS animation `id`, which its owner `target` no longer
+    /// names: its cancel event queued, and it forgotten unless a script
+    /// holds it, which then holds an idle animation of no owner.
+    fn drop_css(&mut self, id: u64, target: Target) {
+        let time = self.time;
+        if let Some(animation) = self.animations.get(&id)
+            && let Class::Css { name, .. } = &animation.class
+        {
+            let name = Arc::clone(name);
+            let local = animation.player.current_time(&self.context(animation));
+            let timing = animation
+                .effect
+                .and_then(|e| self.effects.get(&e))
+                .map(|e| e.timing.clone());
+            if let (Some(timing), Some(local)) = (timing, local)
+                && let Some(elapsed) = cancelled(&timing, animation.reported, local)
+            {
+                self.events.push(event(
+                    (target, id),
+                    &name,
+                    EventKind::AnimationCancel,
+                    elapsed,
+                    self.time,
+                ));
+            }
+        }
+        let _ = time;
+        self.cancel_animation(id);
+        if let Some(animation) = self.animations.get_mut(&id) {
+            animation.reported = Reported::Idle;
+            animation.reported_iteration = None;
+            if let Class::Css { owner, .. } = &mut animation.class {
+                *owner = None;
+            }
+            if !animation.held {
+                self.forget(id);
+            }
+        }
+    }
+
+    /// Cancels animation `id` (section 4.4.16), its `cancel` event due if
+    /// it was not idle.
+    fn cancel_animation(&mut self, id: u64) {
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        let cx = self.context(animation);
+        let effect = animation.effect;
+        let mut notices = Vec::new();
+        let due = self
+            .animations
+            .get_mut(&id)
+            .is_some_and(|a| a.player.cancel(&cx, &mut notices));
+        if due && self.animations.get(&id).is_some_and(|a| a.held) {
+            self.playback.push(PlaybackEvent {
+                animation: id,
+                kind: PlaybackKind::Cancel,
+                current_time: None,
+                timeline_time: cx.timeline,
+                scheduled: self.time,
+                rank: self.event_rank(id),
+            });
+        }
+        self.owe(id, notices);
+        self.touch_effect(effect);
     }
 
     /// The longhands `target`'s animations gave its last style.
@@ -594,19 +1173,20 @@ impl Animations {
         }
     }
 
-    /// Whether `target` has an animation.
+    /// Whether `target` has a CSS animation, or an effect targets it.
     pub(crate) fn animates(&self, target: Target) -> bool {
-        self.css.contains_key(&target)
+        (!self.css.is_empty() && self.css.contains_key(&target))
+            || (!self.targeted.is_empty() && self.targeted.contains_key(&target))
     }
 
-    /// Matches `target`'s animations to `wanted`, what its style asks
-    /// for now, by Animations 1 §2: the list is walked from its last item
-    /// to its first, each taking the last animation of its name not
-    /// taken yet, which keeps its clock and takes the item's timing and
-    /// play state; an item that finds none starts an animation, waiting
-    /// for the next frame, or held at zero when it is paused; an
-    /// animation no item takes is cancelled. Each is sampled at the
-    /// timeline's time.
+    /// Matches `target`'s CSS animations to `wanted`, what its style asks
+    /// for now, by Animations 1 section 2: the list is walked from its
+    /// last item to its first, each taking the last animation of its
+    /// name not taken yet, which keeps its playback and takes the item's
+    /// timing and play state, but for what a script set of them; an item
+    /// that finds none starts an animation, waiting for the next frame,
+    /// or paused at zero when it is paused; an animation no item takes is
+    /// cancelled.
     pub(crate) fn update(&mut self, target: Target, wanted: &[Wanted]) {
         let old = if wanted.is_empty() {
             match take(&mut self.css, &target) {
@@ -616,54 +1196,37 @@ impl Animations {
         } else {
             take(&mut self.css, &target).unwrap_or_default()
         };
-        let time = self.time;
         let mut taken = vec![false; old.len()];
         let mut new = Vec::with_capacity(wanted.len());
         for item in wanted.iter().rev() {
-            let found = (0..old.len())
-                .rev()
-                .find(|&i| !taken[i] && old[i].name == item.name);
-            let mut animation = match found {
+            let found = (0..old.len()).rev().find(|&i| {
+                !taken[i]
+                    && self.animations.get(&old[i]).is_some_and(
+                        |a| matches!(&a.class, Class::Css { name, .. } if *name == item.name),
+                    )
+            });
+            let id = match found {
                 Some(i) => {
                     taken[i] = true;
-                    old[i].clone()
+                    old[i]
                 }
-                None if self.count < MAX_ANIMATIONS => {
-                    self.count += 1;
-                    CssAnimation {
-                        name: Arc::clone(&item.name),
-                        timing: item.timing.clone(),
-                        easing: item.easing.clone(),
-                        // Held at zero below when it is paused.
-                        clock: Clock::Pending { from: 0.0 },
-                        last: Sampled {
-                            phase: Phase::Before,
-                            progress: None,
-                            before: false,
-                        },
-                        reported: Reported::Idle,
-                        reported_iteration: None,
-                    }
-                }
+                None if self.animations.len() < MAX_ANIMATIONS => self.start_css(target, item),
                 None => continue,
             };
-            animation.timing = item.timing.clone();
-            animation.easing = item.easing.clone();
-            animation.clock = match (animation.clock, item.paused) {
-                (Clock::Running { start }, true) => Clock::Held { at: time - start },
-                (Clock::Pending { from }, true) => Clock::Held { at: from },
-                (Clock::Held { at }, false) => Clock::Pending { from: at },
-                (clock, _) => clock,
-            };
-            animation.last = animation
-                .timing
-                .progress(current_time(&animation, time))
-                .into();
-            new.push(animation);
+            self.restyle_css(id, item);
+            // Sampled at the timeline's time, which its style shows: the
+            // frame's styles, which a script's flush does not change, so
+            // that the next frame restyles what changed since them.
+            let sampled = self.animations.get(&id).map(|a| self.progress_of(a).into());
+            if !self.in_script
+                && let (Some(animation), Some(sampled)) = (self.animations.get_mut(&id), sampled)
+            {
+                animation.last = sampled;
+            }
+            new.push(id);
         }
-        for (animation, _) in old.iter().zip(&taken).filter(|(_, taken)| !**taken) {
-            self.count -= 1;
-            animation_cancelled(&mut self.events, target, animation, time);
+        for (&id, _) in old.iter().zip(&taken).filter(|(_, taken)| !**taken) {
+            self.drop_css(id, target);
         }
         if !new.is_empty() {
             new.reverse();
@@ -671,25 +1234,170 @@ impl Animations {
         }
     }
 
+    /// A new CSS animation of `item` owned by `target`, played or paused
+    /// as its style says: its number.
+    fn start_css(&mut self, target: Target, item: &Wanted) -> u64 {
+        let effect = self.number();
+        self.effects.insert(
+            effect,
+            Effect {
+                target: Some(target),
+                pseudo: target.1,
+                animation: None,
+                timing: item.timing.clone(),
+                duration_auto: false,
+                fill_auto: false,
+                overridden: 0,
+                composite: item.composite,
+                frames: Frames::Css {
+                    name: Arc::clone(&item.name),
+                    easing: item.easing.clone(),
+                    longhands: Arc::clone(&item.longhands),
+                },
+                held: false,
+            },
+        );
+        self.index_target(effect);
+        let id = self.number();
+        if let Some(e) = self.effects.get_mut(&effect) {
+            e.animation = Some(id);
+        }
+        self.animations.insert(
+            id,
+            Animation {
+                class: Class::Css {
+                    owner: Some(target),
+                    name: Arc::clone(&item.name),
+                    scripted: false,
+                    paused: item.paused,
+                },
+                player: Player::new(),
+                effect: Some(effect),
+                timeline: Some(0),
+                replace: ReplaceState::Active,
+                last: Sampled::NOTHING,
+                reported: Reported::Idle,
+                reported_iteration: None,
+                held: false,
+                unseen: self.in_script,
+            },
+        );
+        let Some(animation) = self.animations.get(&id) else {
+            return id;
+        };
+        let cx = self.context(animation);
+        let mut notices = Vec::new();
+        if let Some(animation) = self.animations.get_mut(&id) {
+            let _ = if item.paused {
+                animation.player.pause(&cx, &mut notices)
+            } else {
+                animation.player.play(true, &cx, &mut notices)
+            };
+        }
+        self.owe(id, notices);
+        id
+    }
+
+    /// Gives CSS animation `id` what `item` asks of it now: the timing,
+    /// keyframe easing and composite operation a script did not set, and
+    /// a change of its play state, unless a script played or paused it.
+    fn restyle_css(&mut self, id: u64, item: &Wanted) {
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        if let Some(effect) = animation.effect.and_then(|e| self.effects.get_mut(&e))
+            && matches!(&effect.frames, Frames::Css { name, .. } if *name == item.name)
+        {
+            let set = effect.overridden;
+            let timing = &mut effect.timing;
+            let wanted = &item.timing;
+            if set & SET_DELAY == 0 {
+                timing.delay = wanted.delay;
+            }
+            if set & SET_DURATION == 0 {
+                timing.duration = wanted.duration;
+            }
+            if set & SET_ITERATIONS == 0 {
+                timing.iterations = wanted.iterations;
+            }
+            if set & SET_DIRECTION == 0 {
+                timing.direction = wanted.direction;
+            }
+            if set & SET_FILL == 0 {
+                timing.fill = wanted.fill;
+            }
+            if set & SET_COMPOSITE == 0 {
+                effect.composite = item.composite;
+            }
+            if set & SET_KEYFRAMES == 0
+                && let Frames::Css {
+                    easing, longhands, ..
+                } = &mut effect.frames
+            {
+                *easing = item.easing.clone();
+                *longhands = Arc::clone(&item.longhands);
+            }
+        }
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        let cx = self.context(animation);
+        let Class::Css {
+            scripted, paused, ..
+        } = animation.class
+        else {
+            return;
+        };
+        // One a script cancelled stays idle whatever the property says.
+        let idle = animation.player.play_state(&cx) == PlayState::Idle;
+        let mut notices = Vec::new();
+        if let Some(animation) = self.animations.get_mut(&id) {
+            if !scripted && !idle && paused != item.paused {
+                let _ = if item.paused {
+                    animation.player.pause(&cx, &mut notices)
+                } else {
+                    animation.player.play(false, &cx, &mut notices)
+                };
+            }
+            if let Class::Css { paused, .. } = &mut animation.class {
+                *paused = item.paused;
+            }
+            // A change of its timing may finish it, or take it back.
+            animation
+                .player
+                .update_finished_state(false, false, &cx, &mut notices);
+        }
+        self.owe(id, notices);
+    }
+
     /// Finishes every transition running, as a script's `finish()` of
-    /// each would (Web Animations 1 §4.4.13): its current time put at
-    /// its end, so that the next sample ends it, its element showing the
-    /// value it was going to. Says whether there was one.
+    /// each would (Web Animations 1 section 4.4.14): its current time put
+    /// at its end, so that the next sample ends it, its element showing
+    /// the value it was going to. Says whether there was one.
     pub fn finish_transitions(&mut self) -> bool {
         let time = self.time;
-        let mut any = false;
-        for transition in self.transitions.values_mut().flatten() {
-            let end = transition.timing.end_time();
+        let ids: Vec<u64> = self.transitions.values().flatten().copied().collect();
+        for &id in &ids {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let end = self.context(animation).end;
             // The start that long before the time can round to a current
             // time short of the end; each step down an ulp lengthens it.
             let mut start = time - end;
             while time - start < end {
                 start = start.next_down();
             }
-            transition.clock = Clock::Running { start };
-            any = true;
+            if let Some(animation) = self.animations.get_mut(&id) {
+                let player = &mut animation.player;
+                player.pending = None;
+                player.hold_time = None;
+                player.playback_rate = 1.0;
+                player.pending_playback_rate = None;
+                player.start_time = Some(start);
+            }
         }
-        any
+        !ids.is_empty()
     }
 
     /// The events queued since this was last asked, in the order they
@@ -698,445 +1406,215 @@ impl Animations {
         std::mem::take(&mut self.events)
     }
 
-    /// Every animation and transition running, sorted by element, kind
-    /// and name: for the tests.
+    /// The playback events queued for the scripts' animations, in the
+    /// order they were queued, and none after.
+    pub fn take_playback_events(&mut self) -> Vec<PlaybackEvent> {
+        std::mem::take(&mut self.playback)
+    }
+
+    /// The elements a script's call changed the animated values of since
+    /// the last frame, which a restyle takes, and a count that grows with
+    /// each change, so that a restyle between frames takes them once.
+    pub fn touched(&self) -> (&[NodeId], u64) {
+        (&self.touched, self.touches)
+    }
+
+    /// Every CSS animation and transition running, sorted by element,
+    /// kind and name: for the tests.
     pub fn running(&self) -> Vec<Running> {
-        let time = self.time;
-        let state = |clock: &Clock, timing: &Timing| {
-            let local = clock_time(clock, time);
-            let phase = (!matches!(clock, Clock::Pending { .. })).then(|| timing.phase(local));
-            (phase, local, matches!(clock, Clock::Held { .. }))
-        };
         let mut running: Vec<Running> = Vec::new();
-        for (&(node, pseudo), animations) in &self.css {
-            for a in animations {
-                let (phase, current_time, paused) = state(&a.clock, &a.timing);
-                running.push(Running {
-                    node,
-                    pseudo,
-                    name: Arc::clone(&a.name),
-                    transition: false,
-                    phase,
-                    current_time,
-                    paused,
-                });
-            }
-        }
-        for (&(node, pseudo), transitions) in &self.transitions {
-            for t in transitions {
-                let (phase, current_time, paused) = state(&t.clock, &t.timing);
-                running.push(Running {
-                    node,
-                    pseudo,
-                    name: t.property.name(),
-                    transition: true,
-                    phase,
-                    current_time,
-                    paused,
-                });
-            }
+        for animation in self.animations.values() {
+            let (owner, name, transition) = match &animation.class {
+                Class::Css {
+                    owner: Some(owner),
+                    name,
+                    ..
+                } => (*owner, Arc::clone(name), false),
+                Class::Transition {
+                    owner: Some(owner),
+                    property,
+                    ..
+                } => (*owner, property.name(), true),
+                _ => continue,
+            };
+            let cx = self.context(animation);
+            let current_time = animation.player.current_time(&cx).unwrap_or(0.0) / 1000.0;
+            let phase = if animation.player.pending() {
+                None
+            } else {
+                self.progress_of(animation).map(|p| p.phase)
+            };
+            let paused = animation.player.play_state(&cx) == PlayState::Paused;
+            running.push(Running {
+                node: owner.0,
+                pseudo: owner.1,
+                name,
+                transition,
+                phase,
+                current_time,
+                paused,
+            });
         }
         running
             .sort_by(|a, b| (a.node, a.transition, &a.name).cmp(&(b.node, b.transition, &b.name)));
         running
     }
 
-    /// What `target`'s animations give at the timeline's time, in their
-    /// order.
-    pub(crate) fn samples(&self, target: Target) -> Vec<Sample<'_>> {
-        let time = self.time;
-        self.css.get(&target).map_or_else(Vec::new, |animations| {
-            animations
-                .iter()
-                .map(|a| Sample {
-                    name: &a.name,
-                    easing: &a.easing,
-                    progress: a.timing.progress(current_time(a, time)),
-                })
-                .collect()
-        })
+    /// The rank in composite order of animation `id`'s playback events:
+    /// transitions, CSS animations, then the others, each kind in the
+    /// order its animations were made.
+    pub(crate) fn event_rank(&self, id: u64) -> (u8, u64) {
+        let class = match self.animations.get(&id).map(|a| &a.class) {
+            Some(Class::Transition { owner: Some(_), .. }) => 0,
+            Some(Class::Css { owner: Some(_), .. }) => 1,
+            _ => 2,
+        };
+        (class, id)
+    }
+
+    /// The rank of animation `id` in composite order among the effects of
+    /// one target (section 5.4.2): transitions first, then CSS animations
+    /// by their owners and their places in `animation-name`, then every
+    /// other by its place in the global animation list.
+    fn composite_rank(&self, id: u64) -> (u8, u64, u64) {
+        let Some(animation) = self.animations.get(&id) else {
+            return (3, 0, id);
+        };
+        match &animation.class {
+            Class::Transition { owner: Some(_), .. } => (0, 0, id),
+            Class::Css {
+                owner: Some(owner), ..
+            } => {
+                let place = self
+                    .css
+                    .get(owner)
+                    .and_then(|list| list.iter().position(|&a| a == id))
+                    .unwrap_or(0);
+                (1, owner.0.to_bits(), place as u64)
+            }
+            _ => (2, 0, id),
+        }
+    }
+
+    /// What `target`'s keyframe effects give at the timeline's time, in
+    /// composite order: every one but a transition's, whose values
+    /// [`Animations::transitioning`] gives, and but those of animations
+    /// removed by a later one.
+    pub(crate) fn samples(&self, target: Target) -> Vec<Sample> {
+        let Some(effects) = (!self.targeted.is_empty())
+            .then(|| self.targeted.get(&target))
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let mut found: Vec<((u8, u64, u64), Sample)> = Vec::new();
+        for &e in effects {
+            let Some(effect) = self.effects.get(&e) else {
+                continue;
+            };
+            let Some(id) = effect.animation else {
+                continue;
+            };
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            if animation.replace == ReplaceState::Removed && self.committing != Some(id) {
+                continue;
+            }
+            let (frames, easing) = match &effect.frames {
+                Frames::Css { name, easing, .. } => {
+                    (SampleFrames::Css(Arc::clone(name)), easing.clone())
+                }
+                Frames::Script(keyframes) => {
+                    (SampleFrames::Script(Arc::clone(keyframes)), Easing::Linear)
+                }
+                Frames::Transition(_) => continue,
+            };
+            let progress = if self.committing == Some(id) {
+                // The animation `commitStyles()` commits gives its value
+                // as if it filled both ways (Web Animations 1 section 6.4).
+                animation
+                    .player
+                    .current_time(&self.context(animation))
+                    .map(|local| {
+                        let both = Timing {
+                            fill: AnimationFillMode::Both,
+                            ..effect.timing.clone()
+                        };
+                        both.progress_in(local, animation.player.playback_rate < 0.0)
+                    })
+            } else {
+                self.progress_of(animation)
+            };
+            let Some(progress) = progress else {
+                continue;
+            };
+            if let Some(limit) = self.committing
+                && self.composite_rank(id) > self.composite_rank(limit)
+            {
+                continue;
+            }
+            found.push((
+                self.composite_rank(id),
+                Sample {
+                    frames,
+                    easing,
+                    composite: effect.composite,
+                    progress,
+                    current: self.is_current(animation),
+                },
+            ));
+        }
+        found.sort_by_key(|(rank, _)| *rank);
+        found.into_iter().map(|(_, sample)| sample).collect()
+    }
+
+    /// The effect targets of every relevant animation and its owner's
+    /// CSS ones: what [`Animations::relevant`] sorts.
+    fn relevant_ids(&self) -> Vec<u64> {
+        self.animations
+            .iter()
+            .filter(|(_, a)| self.is_relevant(a))
+            .map(|(&id, _)| id)
+            .collect()
     }
 }
 
-/// `animation`'s current time when the timeline's is `time`.
-fn current_time(animation: &CssAnimation, time: f64) -> f64 {
-    clock_time(&animation.clock, time)
+/// When on the timeline an event of an animation playing as `player`
+/// does, the timeline's time being `time`: its effect's local time at the
+/// start delay `delay` and the elapsed time `elapsed` reached at the
+/// playback rate from the start time, no later than now; now for one not
+/// playing.
+fn scheduled(player: &Player, time: f64, delay: f64, elapsed: f64) -> f64 {
+    match player.start_time {
+        Some(start) if player.playback_rate != 0.0 && player.hold_time.is_none() => {
+            let at = start + (delay + elapsed) / player.playback_rate;
+            if at.is_finite() { at.min(time) } else { time }
+        }
+        _ => time,
+    }
 }
 
-/// An event of `kind` from `target`'s animation or transition `name`.
-fn event(target: Target, name: &Arc<str>, kind: EventKind, elapsed: f64) -> AnimationEvent {
+/// An event of `kind` from `target`'s animation or transition `name`,
+/// its elapsed time in seconds from `elapsed` milliseconds, scheduled at
+/// `scheduled` milliseconds.
+fn event(
+    (target, animation): (Target, u64),
+    name: &Arc<str>,
+    kind: EventKind,
+    elapsed: f64,
+    scheduled: f64,
+) -> AnimationEvent {
     AnimationEvent {
         kind,
         node: target.0,
         pseudo: target.1,
         name: Arc::clone(name),
-        elapsed,
-    }
-}
-
-/// Queues the cancel event of `target`'s `animation`, cancelled at the
-/// timeline's time `time`, if one is due.
-fn animation_cancelled(
-    events: &mut Vec<AnimationEvent>,
-    target: Target,
-    animation: &CssAnimation,
-    time: f64,
-) {
-    let local = current_time(animation, time);
-    if let Some(elapsed) = cancelled(&animation.timing, animation.reported, local) {
-        events.push(event(
-            target,
-            &animation.name,
-            EventKind::AnimationCancel,
-            elapsed,
-        ));
-    }
-}
-
-/// A clock's current time when the timeline's is `time`.
-fn clock_time(clock: &Clock, time: f64) -> f64 {
-    match *clock {
-        Clock::Pending { from } => from,
-        Clock::Running { start } => time - start,
-        Clock::Held { at } => at,
+        elapsed: elapsed / 1000.0,
+        animation,
+        scheduled,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn timing(delay: f64, duration: f64, iterations: f64) -> Timing {
-        Timing {
-            delay,
-            duration,
-            iterations,
-            direction: AnimationDirection::Normal,
-            fill: AnimationFillMode::None,
-            easing: Easing::Linear,
-        }
-    }
-
-    #[test]
-    fn phases_and_active_times_follow_the_fill_mode() {
-        let mut t = timing(1.0, 2.0, 1.0);
-        assert_eq!(t.phase(0.5), Phase::Before);
-        assert_eq!(t.phase(1.0), Phase::Active);
-        assert_eq!(t.phase(2.999), Phase::Active);
-        assert_eq!(t.phase(3.0), Phase::After);
-        // No fill: nothing outside the active interval.
-        assert_eq!(t.progress(0.5).progress, None);
-        assert_eq!(t.progress(3.5).progress, None);
-        assert_eq!(t.progress(2.0).progress, Some(0.5));
-        // Backwards: the start in the delay; forwards: the end after.
-        t.fill = AnimationFillMode::Backwards;
-        assert_eq!(t.progress(0.5).progress, Some(0.0));
-        assert!(t.progress(0.5).before);
-        t.fill = AnimationFillMode::Both;
-        assert_eq!(t.progress(4.0).progress, Some(1.0));
-        assert_eq!(t.progress(4.0).active_time, Some(2.0));
-        // A negative delay starts part way, as `animation: m 1s paused
-        // -0.25s` shows a quarter in the reference browser.
-        let late = timing(-0.25, 1.0, 1.0);
-        assert_eq!(late.progress(0.0).progress, Some(0.25));
-        assert_eq!(late.end_time(), 0.75);
-        // A delay past the whole: in its after phase from the start.
-        let gone = timing(-5.0, 1.0, 2.0);
-        assert_eq!(gone.phase(0.0), Phase::After);
-    }
-
-    #[test]
-    fn iterations_end_at_one_and_alternate() {
-        let mut t = timing(0.0, 1.0, 3.0);
-        t.fill = AnimationFillMode::Forwards;
-        // The end of the last iteration is one of it, not zero of the
-        // next.
-        let end = t.progress(3.0);
-        assert_eq!((end.progress, end.iteration), (Some(1.0), Some(2.0)));
-        assert_eq!(t.progress(1.25).iteration, Some(1.0));
-        assert_eq!(t.progress(1.0).progress, Some(0.0));
-        // A fractional count ends part way.
-        t.iterations = 2.5;
-        assert_eq!(t.progress(10.0).progress, Some(0.5));
-        assert_eq!(t.progress(10.0).iteration, Some(2.0));
-        // Directions.
-        t.iterations = 4.0;
-        let at = |direction, local| {
-            let mut t = t.clone();
-            t.direction = direction;
-            t.progress(local).progress.unwrap()
-        };
-        assert_eq!(at(AnimationDirection::Reverse, 0.25), 0.75);
-        assert_eq!(at(AnimationDirection::Alternate, 0.25), 0.25);
-        assert_eq!(at(AnimationDirection::Alternate, 1.25), 0.75);
-        assert_eq!(at(AnimationDirection::AlternateReverse, 0.25), 0.75);
-        assert_eq!(at(AnimationDirection::AlternateReverse, 1.25), 0.25);
-        // An even count alternated ends at its start.
-        assert_eq!(at(AnimationDirection::Alternate, 10.0), 0.0);
-        // Infinite: never after, its active duration infinite.
-        let forever = timing(0.0, 1.0, f64::INFINITY);
-        assert_eq!(forever.end_time(), f64::INFINITY);
-        assert_eq!(forever.progress(1e9 + 0.5).progress, Some(0.5));
-        assert_eq!(forever.phase(1e300), Phase::Active);
-    }
-
-    #[test]
-    fn a_zero_duration_jumps_to_its_end() {
-        let mut t = timing(1.0, 0.0, 2.0);
-        t.fill = AnimationFillMode::Both;
-        assert_eq!(t.active_duration(), 0.0);
-        assert_eq!(t.progress(0.5).progress, Some(0.0));
-        assert_eq!(t.progress(1.0).phase, Phase::After);
-        assert_eq!(t.progress(1.0).progress, Some(1.0));
-        assert_eq!(t.progress(1.0).iteration, Some(1.0));
-        // Zero times infinity is not computed.
-        let mut never = timing(0.0, 0.0, f64::INFINITY);
-        never.fill = AnimationFillMode::Forwards;
-        assert_eq!(never.active_duration(), 0.0);
-        let p = never.progress(1.0);
-        // Its end is one of an iteration (§4.7.4), the infinite one.
-        assert_eq!((p.progress, p.iteration), (Some(1.0), Some(f64::INFINITY)));
-    }
-
-    #[test]
-    fn the_effect_easing_takes_the_before_flag() {
-        // `steps(4, jump-start)` in a backwards-filled delay is at its
-        // bottom step, as the reference browser shows it.
-        let mut t = timing(1.0, 1.0, 1.0);
-        t.fill = AnimationFillMode::Backwards;
-        t.easing = Easing::Steps {
-            count: 4,
-            position: crate::easing::StepPosition::JumpStart,
-        };
-        assert_eq!(t.progress(0.5).progress, Some(0.0));
-        assert_eq!(t.progress(1.0).progress, Some(0.25));
-        // Reversed, the flag is set in the after phase.
-        let mut back = t.clone();
-        back.direction = AnimationDirection::Reverse;
-        back.fill = AnimationFillMode::Forwards;
-        let after = back.progress(5.0);
-        assert!(after.before);
-    }
-
-    fn wanted(name: &str, delay: f64, paused: bool) -> Wanted {
-        Wanted {
-            name: Arc::from(name),
-            timing: Timing {
-                delay,
-                duration: 1.0,
-                iterations: 1.0,
-                direction: AnimationDirection::Normal,
-                fill: AnimationFillMode::None,
-                easing: Easing::Linear,
-            },
-            easing: Easing::Linear,
-            paused,
-        }
-    }
-
-    fn node(index: usize) -> NodeId {
-        let mut document = dom::Document::new();
-        let mut last = document.root();
-        for _ in 0..=index {
-            last = document.create_element("div").expect("room");
-        }
-        last
-    }
-
-    /// The current times of `target`'s animations, by name.
-    fn times(animations: &Animations, target: Target) -> Vec<(String, f64)> {
-        animations.css.get(&target).map_or_else(Vec::new, |list| {
-            list.iter()
-                .map(|a| (a.name.to_string(), current_time(a, animations.time)))
-                .collect()
-        })
-    }
-
-    #[test]
-    fn animations_wait_for_a_frame_and_hold_while_paused() {
-        let target = (node(0), None);
-        let mut animations = Animations::new();
-        animations.set_time(10.0);
-        animations.update(target, &[wanted("a", 0.0, false)]);
-        // Made between frames, it shows its start until the next frame.
-        assert!(animations.needs_frame());
-        animations.set_time(12.0);
-        assert_eq!(times(&animations, target), vec![("a".into(), 0.0)]);
-        animations.start_pending();
-        animations.set_time(12.25);
-        assert_eq!(times(&animations, target), vec![("a".into(), 0.25)]);
-        // Paused, it holds its time; played again, it goes on from there
-        // once a frame starts it.
-        animations.update(target, &[wanted("a", 0.0, true)]);
-        animations.set_time(20.0);
-        assert_eq!(times(&animations, target), vec![("a".into(), 0.25)]);
-        assert!(!animations.needs_frame());
-        animations.update(target, &[wanted("a", 0.0, false)]);
-        animations.set_time(21.0);
-        animations.start_pending();
-        animations.set_time(21.5);
-        assert_eq!(times(&animations, target), vec![("a".into(), 0.75)]);
-        // One made paused holds zero.
-        let other = (node(1), Some(PseudoElement::Before));
-        animations.update(other, &[wanted("b", -0.5, true)]);
-        animations.set_time(30.0);
-        animations.start_pending();
-        animations.set_time(30.5);
-        assert_eq!(times(&animations, other), vec![("b".into(), 0.0)]);
-        assert_eq!(animations.samples(other)[0].progress.progress, Some(0.5));
-        // The timeline never goes back, nor to a time that is not one.
-        animations.set_time(1.0);
-        animations.set_time(f64::NAN);
-        animations.set_time(f64::INFINITY);
-        assert_eq!(animations.time(), 30.5);
-    }
-
-    #[test]
-    fn a_changed_name_list_keeps_the_animations_it_still_names() {
-        let target = (node(0), None);
-        let mut animations = Animations::new();
-        animations.update(target, &[wanted("a", 0.0, false), wanted("b", 0.0, false)]);
-        animations.start_pending();
-        animations.set_time(0.5);
-        animations.update(target, &[wanted("c", 0.0, false)]);
-        animations.update(target, &[]);
-        assert!(animations.is_empty());
-        animations.update(target, &[wanted("a", 0.0, false), wanted("b", 0.0, false)]);
-        animations.start_pending();
-        animations.set_time(0.75);
-        // Reordered, each keeps its clock and takes its new place.
-        animations.update(target, &[wanted("b", 0.0, false), wanted("a", 0.0, false)]);
-        assert_eq!(
-            times(&animations, target),
-            vec![("b".into(), 0.25), ("a".into(), 0.25)]
-        );
-        // A name twice: the last takes the animation, the first is new.
-        animations.update(target, &[wanted("a", 0.0, false), wanted("a", 0.0, false)]);
-        assert_eq!(
-            times(&animations, target),
-            vec![("a".into(), 0.0), ("a".into(), 0.25)]
-        );
-        assert_eq!(animations.len(), 2);
-        // A name dropped is cancelled.
-        animations.update(target, &[wanted("a", 0.0, false)]);
-        assert_eq!(times(&animations, target), vec![("a".into(), 0.25)]);
-        assert_eq!(animations.len(), 1);
-        animations.retain(|_| false);
-        assert!(animations.is_empty() && animations.css.is_empty());
-    }
-
-    #[test]
-    fn a_frame_restyles_the_targets_whose_animations_moved_and_waits_out_delays() {
-        let (a, b) = ((node(0), None), (node(1), None));
-        let mut animations = Animations::new();
-        animations.update(a, &[wanted("a", 0.0, false)]);
-        animations.start_pending();
-        animations.set_time(0.25);
-        animations.update(b, &[wanted("b", 2.0, false)]);
-        animations.start_pending();
-        // `a` moved on since it was made; nothing since then.
-        assert_eq!(animations.sample(), vec![a.0]);
-        assert_eq!(animations.sample(), Vec::<NodeId>::new());
-        animations.set_time(0.5);
-        // `a` plays; `b` waits out its delay with nothing to show.
-        assert_eq!(animations.sample(), vec![a.0]);
-        assert!(animations.needs_frame());
-        // `b` started at 0.25.
-        assert_eq!(animations.next_change(), Some(2.25));
-        animations.set_time(1.5);
-        // `a` ended: once more, for its end.
-        assert_eq!(animations.sample(), vec![a.0]);
-        assert!(!animations.needs_frame());
-        assert_eq!(animations.sample(), Vec::<NodeId>::new());
-        animations.set_time(2.25);
-        assert_eq!(animations.sample(), vec![b.0]);
-        assert!(animations.needs_frame());
-        assert_eq!(animations.next_change(), None);
-    }
-
-    #[test]
-    fn no_more_than_the_limit_run() {
-        let mut animations = Animations::new();
-        let mut document = dom::Document::new();
-        let names: Vec<Wanted> = (0..64)
-            .map(|i| wanted(&format!("n{i}"), 0.0, false))
-            .collect();
-        for _ in 0..MAX_ANIMATIONS / 64 {
-            let node = document.create_element("div").expect("room");
-            animations.update((node, None), &names);
-        }
-        assert_eq!(animations.len(), MAX_ANIMATIONS);
-        let node = document.create_element("div").expect("room");
-        animations.update((node, None), &names);
-        assert_eq!(animations.len(), MAX_ANIMATIONS);
-        assert!(!animations.animates((node, None)));
-    }
-
-    #[test]
-    fn intervals_follow_web_animations() {
-        let offsets = [0.0, 0.5, 1.0];
-        assert_eq!(
-            interval(&offsets, 0.25),
-            Interval::Between {
-                from: 0,
-                to: 1,
-                distance: 0.5
-            }
-        );
-        assert_eq!(
-            interval(&offsets, 0.5),
-            Interval::Between {
-                from: 1,
-                to: 2,
-                distance: 0.0
-            }
-        );
-        assert_eq!(
-            interval(&offsets, 1.0),
-            Interval::Between {
-                from: 1,
-                to: 2,
-                distance: 1.0
-            }
-        );
-        // Past the ends: the end two, extrapolated.
-        assert_eq!(
-            interval(&offsets, -0.5),
-            Interval::Between {
-                from: 0,
-                to: 1,
-                distance: -1.0
-            }
-        );
-        assert_eq!(
-            interval(&offsets, 1.5),
-            Interval::Between {
-                from: 1,
-                to: 2,
-                distance: 2.0
-            }
-        );
-        // Two keyframes at an end: the first or the last alone past it.
-        let jumps = [0.0, 0.0, 1.0, 1.0];
-        assert_eq!(interval(&jumps, -0.1), Interval::At(0));
-        assert_eq!(interval(&jumps, 1.0), Interval::At(3));
-        assert_eq!(
-            interval(&jumps, 0.0),
-            Interval::Between {
-                from: 1,
-                to: 2,
-                distance: 0.0
-            }
-        );
-        // Two at one inner offset: the later from there.
-        let step = [0.0, 0.5, 0.5, 1.0];
-        assert_eq!(
-            interval(&step, 0.5),
-            Interval::Between {
-                from: 2,
-                to: 3,
-                distance: 0.0
-            }
-        );
-    }
-}
+mod tests;

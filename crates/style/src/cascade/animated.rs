@@ -20,15 +20,24 @@
 //! their type where they can be (D73). A keyframe's `revert` and
 //! `revert-layer` are the value of the user agent's declarations (D73),
 //! the animations' origin rolling back past the author's.
+//!
+//! A keyframe whose composite operation, or whose effect's, is `add` or
+//! `accumulate` (Web Animations 1 section 5.4.4; Animations 2's
+//! `animation-composition`) has its value composited onto the underlying
+//! value before the two around the progress are mixed. A script's
+//! keyframes (D75) are read as a rule's are, from the effect that holds
+//! them.
+
+use std::sync::Arc;
 
 use css::Token;
 
 use crate::animate::{self, Longhand};
 use crate::animation::{Interval, interval};
-use crate::computed::{BOTTOM, Color, ComputedStyle, LEFT, RIGHT, TOP};
+use crate::computed::{BOTTOM, Color, Composite, ComputedStyle, LEFT, RIGHT, TOP};
 use crate::custom;
 use crate::easing::Easing;
-use crate::keyframes::Keyframe;
+use crate::keyframes::{Keyframe, Keyframes, ScriptKeyframes};
 use crate::rule_set::KeyframesInForce;
 
 use super::{
@@ -42,10 +51,46 @@ pub(super) struct Animated<'a> {
     pub(super) samples: Vec<Sampled<'a>>,
 }
 
+/// The keyframes an animation runs: a rule's in force, or a script's.
+pub(super) enum Frames<'a> {
+    Sheet(KeyframesInForce<'a>),
+    Script(Arc<ScriptKeyframes>),
+}
+
+impl Frames<'_> {
+    /// The keyframes, processed.
+    pub(super) fn keyframes(&self) -> &Keyframes {
+        match self {
+            Frames::Sheet(frames) => frames.keyframes,
+            Frames::Script(frames) => frames.processed(),
+        }
+    }
+
+    /// The declarations of `keyframe`, one of [`Frames::keyframes`]', in
+    /// order, each with what the substitutions know it by: a sheet's
+    /// place, none for a script's, which it may drop before the cascade
+    /// ends.
+    fn declarations<'s>(
+        &'s self,
+        keyframe: &'s Keyframe,
+    ) -> Box<dyn Iterator<Item = (&'s css::Declaration, Option<usize>)> + 's> {
+        match self {
+            Frames::Sheet(frames) => Box::new(
+                frames
+                    .declarations(keyframe)
+                    .map(|d| (d, Some(std::ptr::from_ref(d) as usize))),
+            ),
+            Frames::Script(frames) => Box::new(frames.declarations(keyframe).map(|d| (d, None))),
+        }
+    }
+}
+
 /// One animation in effect at the timeline's time.
 pub(super) struct Sampled<'a> {
     /// The keyframes it runs.
-    pub(super) keyframes: KeyframesInForce<'a>,
+    pub(super) keyframes: Frames<'a>,
+    /// Its effect's composite operation, a keyframe's own aside.
+    pub(super) composite: Composite,
     /// Its transformed progress, where the keyframes are read.
     pub(super) progress: f64,
     /// Its before flag, which the keyframes' easings take too.
@@ -80,10 +125,19 @@ impl Read {
     }
 }
 
-impl<'a> Sampled<'a> {
+impl Sampled<'_> {
     /// The keyframes, in order.
-    fn keyframes(&self) -> &'a [Keyframe] {
-        &self.keyframes.keyframes.keyframes
+    fn keyframes(&self) -> &[Keyframe] {
+        &self.keyframes.keyframes().keyframes
+    }
+
+    /// The composite operation of keyframe `k`, an implicit one's
+    /// `replace`: its value is the underlying one already.
+    fn composite_of(&self, k: Option<usize>) -> Composite {
+        match k {
+            Some(k) => self.keyframes()[k].composite.unwrap_or(self.composite),
+            None => Composite::Replace,
+        }
     }
 
     /// Where the property whose keyframes `sets` picks out has its value
@@ -126,14 +180,14 @@ impl<'a> Sampled<'a> {
         }
     }
 
-    /// The last declaration of `name` in keyframe `k`: the one that wins
-    /// there, every declaration of a keyframe being valid where it was
-    /// parsed.
-    fn last_declaration(&self, k: usize, name: &str) -> Option<&'a css::Declaration> {
-        let keyframes: &'a [Keyframe] = self.keyframes();
+    /// The last declaration of `name` in keyframe `k`, with what the
+    /// substitutions know it by: the one that wins there, every
+    /// declaration of a keyframe being valid where it was parsed.
+    fn last_declaration(&self, k: usize, name: &str) -> Option<(&css::Declaration, Option<usize>)> {
+        let keyframes = self.keyframes();
         self.keyframes
             .declarations(&keyframes[k])
-            .filter(|d| d.name == name)
+            .filter(|(d, _)| d.name == name)
             .last()
     }
 }
@@ -147,7 +201,7 @@ impl<'a> Animated<'a> {
                 sample
                     .keyframes
                     .declarations(keyframe)
-                    .any(|d| revert_keyword(&d.value).is_some())
+                    .any(|(d, _)| revert_keyword(&d.value).is_some())
             })
         })
     }
@@ -158,7 +212,7 @@ impl<'a> Animated<'a> {
     /// without them.
     pub(super) fn sets_only(&self, only: &[Longhand]) -> bool {
         self.samples.iter().all(|sample| {
-            let keyframes = &sample.keyframes.keyframes;
+            let keyframes = sample.keyframes.keyframes();
             keyframes.custom.is_empty()
                 && keyframes
                     .longhands
@@ -176,10 +230,10 @@ impl<'a> Animated<'a> {
     pub(super) fn custom_declarations(
         &self,
         typed: &dyn Fn(&str) -> bool,
-    ) -> Vec<custom::Declaration<'a>> {
+    ) -> Vec<custom::Declaration<'_>> {
         let mut out = Vec::new();
         for sample in &self.samples {
-            for name in &sample.keyframes.keyframes.custom {
+            for name in &sample.keyframes.keyframes().custom {
                 if typed(name) {
                     continue;
                 }
@@ -194,12 +248,12 @@ impl<'a> Animated<'a> {
                     }
                 };
                 if let Some(k) = place
-                    && let Some(declaration) = sample.last_declaration(k, name)
+                    && let Some((declaration, identity)) = sample.last_declaration(k, name)
                 {
                     out.push(custom::Declaration {
                         name: &declaration.name,
                         value: &declaration.value,
-                        identity: Some(std::ptr::from_ref(declaration) as usize),
+                        identity,
                         animated: true,
                     });
                 }
@@ -213,12 +267,12 @@ impl<'a> Animated<'a> {
     /// keyframes around the progress and how far between them, a keyframe
     /// by the value of its last declaration of the name, `None` for an
     /// implicit one, whose value is the underlying one.
-    pub(super) fn typed_custom(&self, typed: &dyn Fn(&str) -> bool) -> Vec<TypedMix<'a>> {
+    pub(super) fn typed_custom(&self, typed: &dyn Fn(&str) -> bool) -> Vec<TypedMix<'_>> {
         let mut out = Vec::new();
         for sample in &self.samples {
             for name in sample
                 .keyframes
-                .keyframes
+                .keyframes()
                 .custom
                 .iter()
                 .filter(|n| typed(n))
@@ -226,7 +280,7 @@ impl<'a> Animated<'a> {
                 let value = |place: Option<usize>| {
                     place
                         .and_then(|k| sample.last_declaration(k, name))
-                        .map(|d| &*d.value)
+                        .map(|(d, _)| &*d.value)
                 };
                 let (from, to, p) = match sample.read(|k| k.sets_custom(name)) {
                     Read::At(place) => (value(place), value(place), 0.0),
@@ -253,7 +307,7 @@ impl<'a> Animated<'a> {
         for sample in &self.samples {
             if sample
                 .keyframes
-                .keyframes
+                .keyframes()
                 .longhands
                 .binary_search(&Longhand::FontSize)
                 .is_err()
@@ -262,13 +316,12 @@ impl<'a> Animated<'a> {
             }
             let underlying = style.font_size_px;
             let value = |place: Option<usize>| {
-                place
+                let value = place
                     .and_then(|k| sample.last_declaration(k, "font-size"))
-                    .and_then(|declaration| {
+                    .and_then(|(declaration, identity)| {
                         if revert_keyword(&declaration.value).is_some() {
                             return Some(reverted.unwrap_or(parent.font_size_px));
                         }
-                        let identity = Some(std::ptr::from_ref(declaration) as usize);
                         let specified = substituted(
                             &declaration.value,
                             identity,
@@ -278,7 +331,13 @@ impl<'a> Animated<'a> {
                         );
                         declared_font_size(specified, false, parent, resolution)
                     })
-                    .unwrap_or(underlying)
+                    .unwrap_or(underlying);
+                match sample.composite_of(place) {
+                    Composite::Replace => value,
+                    Composite::Add | Composite::Accumulate => {
+                        animate::font_size(0.0, value + underlying, 1.0)
+                    }
+                }
             };
             style.font_size_px = match sample.read(|k| k.sets(Longhand::FontSize)) {
                 Read::At(place) => value(place),
@@ -307,7 +366,7 @@ impl<'a> Animated<'a> {
             for sample in &self.samples {
                 let longhands: Vec<Longhand> = sample
                     .keyframes
-                    .keyframes
+                    .keyframes()
                     .longhands
                     .iter()
                     .copied()
@@ -338,16 +397,39 @@ impl<'a> Animated<'a> {
                             ));
                         }
                     }
+                    // A keyframe whose operation is not `replace` gives
+                    // its value composited onto the underlying one.
+                    let composited = |place: Option<usize>| match sample.composite_of(place) {
+                        Composite::Replace => None,
+                        op => place.map(|k| {
+                            let value = values[k].as_ref().expect("computed above");
+                            let mut out = value.clone();
+                            animate::composite(longhand, &underlying, value, op, &mut out);
+                            out
+                        }),
+                    };
+                    let (first, second) = match read {
+                        Read::At(place) => (composited(place), None),
+                        Read::Mix { from, to, .. } => (composited(from), composited(to)),
+                    };
                     let value = |place: Option<usize>| match place {
                         Some(k) => values[k].as_ref().expect("computed above"),
                         None => &underlying,
                     };
                     match read {
                         Read::At(None) => continue,
-                        Read::At(place) => animate::copy(longhand, value(place), style),
-                        Read::Mix { from, to, p } => {
-                            animate::blend(longhand, value(from), value(to), p, style)
-                        }
+                        Read::At(place) => animate::copy(
+                            longhand,
+                            first.as_ref().unwrap_or_else(|| value(place)),
+                            style,
+                        ),
+                        Read::Mix { from, to, p } => animate::blend(
+                            longhand,
+                            first.as_ref().unwrap_or_else(|| value(from)),
+                            second.as_ref().unwrap_or_else(|| value(to)),
+                            p,
+                            style,
+                        ),
                     }
                     if let Some(side) = border_color_side(longhand) {
                         border_color_set[side] = true;
@@ -406,7 +488,7 @@ fn keyframe_style(
 ) -> ComputedStyle {
     let mut style = underlying.clone();
     let mut set = [true; 4];
-    for declaration in sample.keyframes.declarations(&sample.keyframes()[k]) {
+    for (declaration, identity) in sample.keyframes.declarations(&sample.keyframes()[k]) {
         let name = canonical_name(&declaration.name);
         if custom::is_custom_property_name(name) || name == "font-size" {
             continue;
@@ -415,7 +497,6 @@ fn keyframe_style(
             apply_revert(&mut style, name, reverted, parent, &mut set);
             continue;
         }
-        let identity = Some(std::ptr::from_ref(declaration) as usize);
         match substituted(
             &declaration.value,
             identity,

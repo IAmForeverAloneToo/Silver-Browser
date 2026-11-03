@@ -32,6 +32,9 @@ use crate::loader::Page;
 use crate::sandbox::{NO_SAME_ORIGIN, Sandbox};
 use crate::storage;
 
+mod animations;
+pub(crate) use animations::notices_json;
+
 /// A script running, innermost last.
 struct Frame {
     /// Its element: `document.currentScript`.
@@ -117,6 +120,9 @@ struct ComputedStyles {
     mark: usize,
     /// The fonts' faces they were computed with ([`fonts_key`]).
     fonts: (usize, usize, usize),
+    /// How many changes of the animated values a script made the styles
+    /// take (D75): `Animations::touched`'s count when they were.
+    touches: u64,
 }
 
 /// What tells one state of `fonts`' document faces from another: the
@@ -299,6 +305,16 @@ pub(crate) struct DocumentHost {
     window: WindowEnv,
     /// The styles a run's `getComputedStyle` computed, kept for the run.
     computed: Option<ComputedStyles>,
+    /// Those the last run left, with the document's version they were
+    /// computed at, which the next run's first flush cascades from, so
+    /// that a change of style it finds starts its transitions (D75),
+    /// unless the frame styled the document since.
+    previous_styles: Option<(u64, Styles)>,
+    /// The shown document's styles as its last frame computed them, lent
+    /// for a run: the before-change style of a run's first flush when the
+    /// frame's are newer than the last run's (CSS Transitions 1 section
+    /// 3).
+    frame_styled: Option<crate::CachedStyle>,
     /// The shown document's animations and transitions, lent for a run
     /// (G46), or the run's own for a document not shown; and whether
     /// they were lent.
@@ -2395,6 +2411,7 @@ impl DocumentHost {
                 self.webgl.call(*call, &env)
             }
             Call::Media(request) => Ok(Answer::String(self.media_call(&request))),
+            Call::Animation(request) => Ok(Answer::String(self.animation_call(&request))),
             Call::IdbWake => {
                 let now = self.now();
                 self.outputs.messages.push((now, js::Task::Idb));
@@ -3897,6 +3914,8 @@ impl DocumentHost {
             .as_deref_mut()
             .map(std::mem::take)
             .unwrap_or_default();
+        self.animations.get_mut().set_in_script(true);
+        self.frame_styled = lent.styled.as_deref_mut().and_then(Option::take);
         self.computed = None;
         self.svg_questions = None;
         self.laid_out = None;
@@ -3912,6 +3931,14 @@ impl DocumentHost {
         }];
     }
 
+    /// The styles the last run left, with the document's version they are
+    /// of.
+    pub(crate) fn flushed_styles(&self) -> Option<(u64, &Styles)> {
+        self.previous_styles
+            .as_ref()
+            .map(|(version, styles)| (*version, styles))
+    }
+
     /// Gives back what was lent, and what the run leaves the engine to do.
     pub(crate) fn give_back(&mut self, lent: &mut Lent<'_>) -> Outputs {
         *lent.document = std::mem::take(&mut self.document);
@@ -3923,6 +3950,13 @@ impl DocumentHost {
         }
         if let Some(images) = lent.images.as_deref_mut() {
             *images = std::mem::take(&mut self.images);
+        }
+        self.animations.get_mut().set_in_script(false);
+        if let Some(computed) = self.computed.take() {
+            self.previous_styles = Some((computed.version, computed.styles));
+        }
+        if let Some(styled) = lent.styled.as_deref_mut() {
+            *styled = self.frame_styled.take();
         }
         let animations = std::mem::take(self.animations.get_mut());
         if let Some(lent) = lent.animations.as_deref_mut()
@@ -6008,8 +6042,25 @@ impl DocumentHost {
                     .get(cached.mark..)
                     .is_some_and(|since| touches_sheets(&self.document, since))
         });
+        // The elements whose animations a script's call changed since the
+        // styles last took them (D75).
+        let (touched, touches) = {
+            let animations = self.animations.borrow();
+            let (nodes, count) = animations.touched();
+            (nodes.to_vec(), count)
+        };
         match &mut self.computed {
-            Some(cached) if cached.version == version => {}
+            Some(cached) if cached.version == version && cached.touches == touches => {}
+            Some(cached) if cached.version == version => {
+                cached.sheets.restyle_animated(
+                    &self.document,
+                    &context,
+                    &mut cached.styles,
+                    &[],
+                    &touched,
+                );
+                cached.touches = touches;
+            }
             Some(cached) if !whole && cached.mark <= changes.len() => {
                 let since = changes[cached.mark..].to_vec();
                 self.work += since.len() as u64;
@@ -6040,6 +6091,7 @@ impl DocumentHost {
                         cached.raw = raw;
                     }
                 }
+                matched.extend(touched.iter().copied());
                 cached.sheets.restyle_animated(
                     &self.document,
                     &context,
@@ -6049,13 +6101,29 @@ impl DocumentHost {
                 );
                 cached.mark = changes.len();
                 cached.version = version;
+                cached.touches = touches;
             }
             _ => {
                 self.work += self.document.len() as u64;
                 let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
                 let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
                     .with_registered(page.registered_properties().to_vec());
-                let styles = sheets.cascade(&self.document, &context);
+                // The before-change style: the last run's styles, or the
+                // frame's when it styled the document since.
+                let previous = self.previous_styles.take();
+                let frame = self.frame_styled.as_ref().filter(|frame| {
+                    previous
+                        .as_ref()
+                        .is_none_or(|(version, _)| *version <= frame.version)
+                });
+                let before = match frame {
+                    Some(frame) => Some(&frame.styles),
+                    None => previous.as_ref().map(|(_, styles)| styles),
+                };
+                let styles = match before {
+                    Some(before) => sheets.cascade_from(&self.document, &context, before),
+                    None => sheets.cascade(&self.document, &context),
+                };
                 self.computed = Some(ComputedStyles {
                     sheets,
                     raw,
@@ -6063,6 +6131,7 @@ impl DocumentHost {
                     version,
                     mark: changes.len(),
                     fonts: fonts_now,
+                    touches,
                 });
             }
         }

@@ -9,24 +9,28 @@
 //! effect is Web Animations' with the transition's delay, duration and
 //! timing function, one iteration and a backwards fill, so that it shows
 //! its start value through its delay; it waits for the next frame to
-//! start, as a CSS animation does, and ends at its end time, when it
-//! joins the completed transitions. A completed transition is kept while
-//! the element's style before a change and after it still differ in its
-//! property, which is when §3's rules ask of it, and forgotten after.
+//! start, as a CSS animation does, and ends when its animation finishes,
+//! when it joins the completed transitions. A completed transition is
+//! kept while the element's style before a change and after it still
+//! differ in its property, which is when section 3's rules ask of it, and
+//! forgotten after. Each is an animation of the document's store, by its
+//! number, which a script reaches as a `CSSTransition` (D75): its own
+//! property's values live in its effect's frames.
 
 use std::sync::Arc;
 
 use css::Token;
 
 use super::events::{Reported, cancelled, transition_events};
+use super::player::{PlayState, Player};
 use super::{
-    AnimationEvent, Animations, Clock, EventKind, MAX_ANIMATIONS, Phase, Sampled, Target, Timing,
-    clock_time, event, take,
+    Animation, Animations, Class, Effect, EventKind, Frames, MAX_ANIMATIONS, ReplaceState, Sampled,
+    Target, Timing, event, scheduled, take,
 };
 use crate::animate::{self, AnimationType, Longhand, longhands_of};
 use crate::cascade::canonical_name;
 use crate::computed::{
-    AnimationDirection, AnimationFillMode, ComputedStyle, TransitionBehavior, TransitionProperty,
+    AnimationFillMode, Composite, ComputedStyle, TransitionBehavior, TransitionProperty,
 };
 use crate::easing::Easing;
 
@@ -88,56 +92,15 @@ impl Value {
     }
 }
 
-/// A running transition (Transitions 1 §3).
+/// What a transition's keyframe effect runs between (Transitions 1 section 3):
+/// its start and end values, and its reversing-adjusted start value and
+/// shortening factor (section 3.1).
 #[derive(Debug, Clone)]
-pub(super) struct CssTransition {
-    pub(super) property: Property,
-    /// Its effect's timing: the transition's delay, duration and timing
-    /// function, one iteration, filled backwards.
-    pub(super) timing: Timing,
-    pub(super) clock: Clock,
-    start: Value,
-    end: Value,
-    /// The reversing-adjusted start value (§3.1).
+pub(crate) struct TransitionValues {
+    pub(crate) start: Value,
+    pub(crate) end: Value,
     reversing_start: Value,
-    /// The reversing shortening factor (§3.1).
     shortening: f64,
-    pub(super) last: Sampled,
-    /// Its phase at the last animation frame, for the events.
-    reported: Reported,
-}
-
-impl CssTransition {
-    /// Queues the events of its change of phase to the one at the
-    /// timeline's time `time`.
-    fn report(&mut self, events: &mut Vec<AnimationEvent>, target: Target, time: f64) {
-        if matches!(self.clock, Clock::Pending { .. }) {
-            return;
-        }
-        let now = Reported::from(self.timing.phase(clock_time(&self.clock, time)));
-        // Its name made only for an event: a frame samples every running
-        // transition twice (M26.13).
-        let mut name = None;
-        for (kind, elapsed) in transition_events(&self.timing, self.reported, now) {
-            let name = name.get_or_insert_with(|| self.property.name());
-            events.push(event(target, name, kind, elapsed));
-        }
-        self.reported = now;
-    }
-
-    /// Queues its cancel event, it being cancelled at the timeline's time
-    /// `time`, if one is due.
-    pub(super) fn cancelled(&self, events: &mut Vec<AnimationEvent>, target: Target, time: f64) {
-        let local = clock_time(&self.clock, time);
-        if let Some(elapsed) = cancelled(&self.timing, self.reported, local) {
-            events.push(event(
-                target,
-                &self.property.name(),
-                EventKind::TransitionCancel,
-                elapsed,
-            ));
-        }
-    }
 }
 
 /// A completed transition: its property and end value.
@@ -174,19 +137,18 @@ impl Matching<'_> {
     }
 
     /// The effect timing of a transition it starts, shortened by
-    /// `shortening` (§3.1).
+    /// `shortening` (section 3.1), in milliseconds.
     fn timing(&self, shortening: f64) -> Timing {
         Timing {
             delay: if self.delay < 0.0 {
                 self.delay * shortening
             } else {
                 self.delay
-            },
-            duration: self.duration * shortening,
-            iterations: 1.0,
-            direction: AnimationDirection::Normal,
+            } * 1000.0,
+            duration: self.duration * shortening * 1000.0,
             fill: AnimationFillMode::Backwards,
             easing: self.easing.clone(),
+            ..Timing::default()
         }
     }
 }
@@ -234,6 +196,186 @@ fn value_in(property: &Property, style: &Arc<ComputedStyle>) -> Value {
 }
 
 impl Animations {
+    /// Transition `id`'s property, values and timing, if it is one.
+    fn transition(&self, id: u64) -> Option<(&Property, &TransitionValues, &Timing)> {
+        let animation = self.animations.get(&id)?;
+        let Class::Transition { property, .. } = &animation.class else {
+            return None;
+        };
+        let effect = self.effects.get(&animation.effect?)?;
+        let Frames::Transition(values) = &effect.frames else {
+            return None;
+        };
+        Some((property, values, &effect.timing))
+    }
+
+    /// The property transition `id` transitions.
+    fn property_of(&self, id: u64) -> Option<&Property> {
+        match &self.animations.get(&id)?.class {
+            Class::Transition { property, .. } => Some(property),
+            _ => None,
+        }
+    }
+
+    /// Whether transition `id` has ended by the timeline's time: it
+    /// started, and it is finished.
+    fn ended(&self, id: u64) -> bool {
+        self.animations.get(&id).is_some_and(|animation| {
+            !animation.player.pending()
+                && animation.player.play_state(&self.context(animation)) == PlayState::Finished
+        })
+    }
+
+    /// Queues the events of transition `id`'s change of phase since the
+    /// last animation frame, owned by `target`.
+    fn report_transition(&mut self, id: u64, target: Target) {
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        if animation.player.pending() {
+            return;
+        }
+        let now = self
+            .progress_of(animation)
+            .map_or(Reported::Idle, |p| Reported::from(p.phase));
+        let before = animation.reported;
+        let player = animation.player.clone();
+        let Some((property, _, timing)) = self.transition(id) else {
+            return;
+        };
+        // Its name made only for an event: a frame samples every running
+        // transition twice (M26.13).
+        let mut name = None;
+        let mut queued = Vec::new();
+        for (kind, elapsed) in transition_events(timing, before, now) {
+            let name = name.get_or_insert_with(|| property.name());
+            let at = scheduled(&player, self.time, timing.delay, elapsed);
+            queued.push(event((target, id), name, kind, elapsed, at));
+        }
+        self.events.extend(queued);
+        if let Some(animation) = self.animations.get_mut(&id) {
+            animation.reported = now;
+        }
+    }
+
+    /// Cancels transition `id`, owned by `target` until now: its cancel
+    /// event queued if one is due, it forgotten unless a script holds it.
+    pub(super) fn cancel_transition(&mut self, id: u64, target: Target) {
+        if let Some(animation) = self.animations.get(&id)
+            && let Some(local) = animation.player.current_time(&self.context(animation))
+            && let Some((property, _, timing)) = self.transition(id)
+            && let Some(elapsed) = cancelled(timing, animation.reported, local)
+        {
+            let name = property.name();
+            self.events.push(event(
+                (target, id),
+                &name,
+                EventKind::TransitionCancel,
+                elapsed,
+                self.time,
+            ));
+        }
+        self.cancel_animation(id);
+        self.disown_transition(id);
+    }
+
+    /// Transition `id` no longer runs on its element: no owner, and
+    /// forgotten unless a script holds it.
+    fn disown_transition(&mut self, id: u64) {
+        let Some(animation) = self.animations.get_mut(&id) else {
+            return;
+        };
+        animation.reported = Reported::Idle;
+        if let Class::Transition { owner, .. } = &mut animation.class {
+            *owner = None;
+        }
+        if !animation.held {
+            self.forget(id);
+        }
+    }
+
+    /// Transition `id` as a completed transition: its property and end
+    /// value.
+    pub(super) fn completed_of(&self, id: u64) -> Option<Completed> {
+        let (property, values, _) = self.transition(id)?;
+        Some(Completed {
+            property: property.clone(),
+            end: values.end.clone(),
+        })
+    }
+
+    /// Transition `id`, ended: completed, its end value kept among
+    /// `completed`.
+    fn complete_transition(&mut self, id: u64, completed: &mut Vec<Completed>) {
+        if let Some((property, values, _)) = self.transition(id) {
+            let done = Completed {
+                property: property.clone(),
+                end: values.end.clone(),
+            };
+            completed.retain(|c| c.property != done.property);
+            completed.push(done);
+        }
+        self.disown_transition(id);
+    }
+
+    /// A transition of `property` on `target` from `values`' start to
+    /// its end, waiting for the next frame to start it: its number.
+    fn start_transition(
+        &mut self,
+        target: Target,
+        property: Property,
+        timing: Timing,
+        values: TransitionValues,
+    ) -> u64 {
+        let effect = self.number();
+        self.effects.insert(
+            effect,
+            Effect {
+                target: Some(target),
+                pseudo: target.1,
+                animation: None,
+                timing,
+                duration_auto: false,
+                fill_auto: false,
+                overridden: 0,
+                composite: Composite::Replace,
+                frames: Frames::Transition(Box::new(values)),
+                held: false,
+            },
+        );
+        self.index_target(effect);
+        let id = self.number();
+        if let Some(e) = self.effects.get_mut(&effect) {
+            e.animation = Some(id);
+        }
+        let mut animation = Animation {
+            class: Class::Transition {
+                owner: Some(target),
+                property,
+                generation: self.transition_generation,
+            },
+            player: Player::new(),
+            effect: Some(effect),
+            timeline: Some(0),
+            replace: ReplaceState::Active,
+            last: Sampled::NOTHING,
+            reported: Reported::Idle,
+            reported_iteration: None,
+            held: false,
+            unseen: self.in_script,
+        };
+        let cx = self.context(&animation);
+        let mut notices = Vec::new();
+        let _ = animation.player.play(true, &cx, &mut notices);
+        // What the frame's styles show of it; nothing when a script's
+        // flush made it, which the frame's styles do not hold.
+        if !self.in_script {
+            animation.last = self.progress_of(&animation).into();
+        }
+        self.animations.insert(id, animation);
+        id
+    }
+
     /// Transitions 1 §3 for `target` at a change of its style: `before` is
     /// its style as the last change left it, `None` when it has none — it
     /// was not rendered, or not in the document — and `after` its style
@@ -248,12 +390,25 @@ impl Animations {
         after: &ComputedStyle,
         skip: &dyn Fn(Longhand) -> bool,
     ) {
-        let time = self.time;
         let has_any = (!self.transitions.is_empty() || !self.completed.is_empty())
             && (self.transitions.contains_key(&target) || self.completed.contains_key(&target));
         let Some(before) = before else {
             if has_any {
-                self.cancel_transitions(target);
+                // One a script's style flush started, which the frame's
+                // styles have not seen, stays: the flush saw the element
+                // rendered.
+                let running = take(&mut self.transitions, &target).unwrap_or_default();
+                let (kept, gone): (Vec<u64>, Vec<u64>) = running
+                    .into_iter()
+                    .partition(|id| self.animations.get(id).is_some_and(|a| a.unseen));
+                for id in gone {
+                    self.cancel_transition(id, target);
+                }
+                if kept.is_empty() {
+                    take(&mut self.completed, &target);
+                } else {
+                    self.transitions.insert(target, kept);
+                }
             }
             return;
         };
@@ -266,6 +421,8 @@ impl Animations {
             return;
         }
         let items: Vec<_> = after.motion().transitions().collect();
+        // The transitions this change starts are of one generation.
+        self.transition_generation += 1;
         // The matching item of each property: the last that names it.
         let mut longhands: Vec<Option<usize>> = vec![None; Longhand::ALL.len()];
         let mut custom: Vec<(Arc<str>, usize)> = Vec::new();
@@ -314,56 +471,44 @@ impl Animations {
                 .iter()
                 .map(|(name, _)| Property::Custom(Arc::clone(name))),
         );
+        let mut running = self.transitions.remove(&target).unwrap_or_default();
+        let mut completed = self.completed.remove(&target).unwrap_or_default();
         // The longhands with a running or completed transition: those
         // looked for among them, the rest only when they change.
         let mut tracked = vec![false; Longhand::ALL.len()];
-        for property in self
-            .transitions
-            .get(&target)
-            .into_iter()
-            .flatten()
-            .map(|t| &t.property)
-            .chain(
-                self.completed
-                    .get(&target)
-                    .into_iter()
-                    .flatten()
-                    .map(|c| &c.property),
-            )
-        {
-            let named = match property {
+        let kept: Vec<Property> = running
+            .iter()
+            .filter_map(|&id| self.property_of(id).cloned())
+            .chain(completed.iter().map(|c| c.property.clone()))
+            .collect();
+        for property in kept {
+            let named = match &property {
                 Property::Longhand(longhand) => {
                     let seen =
                         longhands[*longhand as usize].is_some() || tracked[*longhand as usize];
                     tracked[*longhand as usize] = true;
                     seen
                 }
-                Property::Custom(_) => properties.contains(property),
+                Property::Custom(_) => properties.contains(&property),
             };
             if !named {
-                properties.push(property.clone());
+                properties.push(property);
             }
         }
         let mut before_style: Option<Arc<ComputedStyle>> = None;
         let mut after_style: Option<Arc<ComputedStyle>> = None;
-        let mut running = self.transitions.remove(&target).unwrap_or_default();
-        let mut completed = self.completed.remove(&target).unwrap_or_default();
         // A transition past its end time is completed, whether or not a
         // frame has said so yet: its events are queued as a frame's.
-        let events = &mut self.events;
-        running.retain_mut(|t| {
-            let over = ended(t, time);
-            if over {
-                t.report(events, target, time);
-                self.count -= 1;
-                completed.retain(|c| c.property != t.property);
-                completed.push(Completed {
-                    property: t.property.clone(),
-                    end: t.end.clone(),
-                });
-            }
-            !over
-        });
+        let over: Vec<u64> = running
+            .iter()
+            .copied()
+            .filter(|&id| self.ended(id))
+            .collect();
+        running.retain(|id| !over.contains(id));
+        for id in over {
+            self.report_transition(id, target);
+            self.complete_transition(id, &mut completed);
+        }
         for property in properties {
             if let Property::Longhand(longhand) = property
                 && skip(longhand)
@@ -385,7 +530,9 @@ impl Animations {
                 continue;
             }
             let matching = matching(&property);
-            let at = running.iter().position(|t| t.property == property);
+            let at = running
+                .iter()
+                .position(|&id| self.property_of(id) == Some(&property));
             let done = completed.iter().position(|c| c.property == property);
             if at.is_none() && done.is_none() && (!differs || matching.is_none()) {
                 continue;
@@ -415,30 +562,22 @@ impl Animations {
                         )
                         && done.is_none_or(|d| !completed[d].end.same(&property, &after_value)) =>
                 {
-                    Some((
-                        matching.timing(1.0),
-                        before_value.clone(),
-                        before_value,
-                        1.0,
-                    ))
+                    Some(matching.timing(1.0))
                 }
                 _ => None,
             };
-            if let Some((timing, from, reversing_start, shortening)) = start {
+            if let Some(timing) = start {
                 if let Some(d) = done {
                     completed.remove(d);
                 }
-                if self.count < MAX_ANIMATIONS {
-                    self.count += 1;
-                    running.push(new_transition(
-                        property,
-                        timing,
-                        from,
-                        after_value,
-                        reversing_start,
-                        shortening,
-                        time,
-                    ));
+                if self.animations.len() < MAX_ANIMATIONS {
+                    let values = TransitionValues {
+                        start: before_value.clone(),
+                        end: after_value,
+                        reversing_start: before_value,
+                        shortening: 1.0,
+                    };
+                    running.push(self.start_transition(target, property, timing, values));
                 }
                 continue;
             }
@@ -453,21 +592,33 @@ impl Animations {
                 continue;
             };
             let Some(matching) = matching else {
-                running.remove(at).cancelled(&mut self.events, target, time);
-                self.count -= 1;
+                let id = running.remove(at);
+                self.cancel_transition(id, target);
                 continue;
             };
-            if running[at].end.same(&property, &after_value) {
+            let old = running[at];
+            let Some((_, values, _)) = self.transition(old) else {
+                running.remove(at);
+                continue;
+            };
+            if values.end.same(&property, &after_value) {
                 continue;
             }
             // The running transition's end is no longer the property's
             // value: cancelled, replaced or reversed.
-            let old = running.remove(at);
-            old.cancelled(&mut self.events, target, time);
-            self.count -= 1;
-            let progress = old.timing.progress(clock_time(&old.clock, time));
-            let p = progress.progress.unwrap_or(1.0);
-            let current = old.start.towards(&property, &old.end, p);
+            let p = self
+                .animations
+                .get(&old)
+                .and_then(|a| self.progress_of(a))
+                .and_then(|progress| progress.progress)
+                .unwrap_or(1.0);
+            let current = values.start.towards(&property, &values.end, p);
+            let reversing = values
+                .reversing_start
+                .same(&property, &after_value)
+                .then(|| (values.end.clone(), values.shortening));
+            running.remove(at);
+            self.cancel_transition(old, target);
             if current.same(&property, &after_value)
                 || !transitionable(
                     &property,
@@ -480,25 +631,22 @@ impl Animations {
             {
                 continue;
             }
-            let (timing, reversing_start, shortening) =
-                if old.reversing_start.same(&property, &after_value) {
-                    let shortening = (p * old.shortening + 1.0 - old.shortening)
+            let (timing, reversing_start, shortening) = match reversing {
+                Some((old_end, old_shortening)) => {
+                    let shortening = (p * old_shortening + 1.0 - old_shortening)
                         .abs()
                         .clamp(0.0, 1.0);
-                    (matching.timing(shortening), old.end.clone(), shortening)
-                } else {
-                    (matching.timing(1.0), current.clone(), 1.0)
-                };
-            self.count += 1;
-            running.push(new_transition(
-                property,
-                timing,
-                current,
-                after_value,
+                    (matching.timing(shortening), old_end, shortening)
+                }
+                None => (matching.timing(1.0), current.clone(), 1.0),
+            };
+            let values = TransitionValues {
+                start: current,
+                end: after_value,
                 reversing_start,
                 shortening,
-                time,
-            ));
+            };
+            running.push(self.start_transition(target, property, timing, values));
         }
         if !running.is_empty() {
             self.transitions.insert(target, running);
@@ -512,9 +660,8 @@ impl Animations {
     /// ones: it is no longer rendered, or no longer in the document.
     pub(crate) fn cancel_transitions(&mut self, target: Target) {
         if let Some(running) = take(&mut self.transitions, &target) {
-            self.count -= running.len();
-            for transition in &running {
-                transition.cancelled(&mut self.events, target, self.time);
+            for id in running {
+                self.cancel_transition(id, target);
             }
         }
         take(&mut self.completed, &target);
@@ -523,18 +670,28 @@ impl Animations {
     /// Queues the events of every running transition's change of phase
     /// since the last animation frame: this one.
     pub(super) fn report_transitions(&mut self) {
-        let time = self.time;
-        let events = &mut self.events;
-        for (&target, running) in &mut self.transitions {
-            for transition in running {
-                transition.report(events, target, time);
-            }
+        let running: Vec<(Target, u64)> = self
+            .transitions
+            .iter()
+            .flat_map(|(&target, ids)| ids.iter().map(move |&id| (target, id)))
+            .collect();
+        for (target, id) in running {
+            self.report_transition(id, target);
         }
     }
 
-    /// Whether `target` has a running transition.
+    /// Whether `target` has a running transition, or a transition's
+    /// effect a script played again after its element let it go.
     pub(crate) fn transitions_of(&self, target: Target) -> bool {
-        self.transitions.contains_key(&target)
+        (!self.transitions.is_empty() && self.transitions.contains_key(&target))
+            || (!self.targeted.is_empty()
+                && self.targeted.get(&target).is_some_and(|effects| {
+                    effects.iter().any(|e| {
+                        self.effects
+                            .get(e)
+                            .is_some_and(|e| matches!(e.frames, Frames::Transition(_)))
+                    })
+                }))
     }
 
     /// How many completed transitions are kept, for the tests.
@@ -546,89 +703,63 @@ impl Animations {
     /// The values `target`'s running transitions give at the timeline's
     /// time, in no order that matters: one transition for a property.
     pub(crate) fn transitioning(&self, target: Target) -> Vec<Transitioning> {
-        let time = self.time;
-        self.transitions
-            .get(&target)
-            .map_or_else(Vec::new, |running| {
-                running
-                    .iter()
-                    .filter_map(|t| {
-                        let progress = t.timing.progress(clock_time(&t.clock, time));
-                        Some(Transitioning {
-                            property: t.property.clone(),
-                            start: t.start.clone(),
-                            end: t.end.clone(),
-                            progress: progress.progress?,
-                        })
-                    })
-                    .collect()
+        // Its running transitions, and those its element let go of that a
+        // script holds and plays: every transition's effect on it.
+        let mut ids: Vec<u64> = self.transitions.get(&target).cloned().unwrap_or_default();
+        for effect in self.targeted.get(&target).into_iter().flatten() {
+            if let Some(e) = self.effects.get(effect)
+                && matches!(e.frames, Frames::Transition(_))
+                && let Some(id) = e.animation
+                && !ids.contains(&id)
+            {
+                ids.push(id);
+            }
+        }
+        ids.iter()
+            .filter_map(|&id| {
+                let animation = self.animations.get(&id)?;
+                if animation.replace == ReplaceState::Removed {
+                    return None;
+                }
+                let (property, values, _) = self.transition(id)?;
+                let progress = self.progress_of(animation)?;
+                Some(Transitioning {
+                    property: property.clone(),
+                    start: values.start.clone(),
+                    end: values.end.clone(),
+                    progress: progress.progress?,
+                })
             })
+            .collect()
     }
 
     /// Moves the transitions that have ended by the timeline's time to the
     /// completed ones: the targets they were on.
     pub(super) fn end_transitions(&mut self) -> Vec<Target> {
-        let time = self.time;
         let mut targets = Vec::new();
-        let mut count = self.count;
-        for (&target, running) in &mut self.transitions {
-            let before = running.len();
-            let mut done = Vec::new();
-            running.retain(|t| {
-                let over = ended(t, time);
-                if over {
-                    done.push(Completed {
-                        property: t.property.clone(),
-                        end: t.end.clone(),
-                    });
-                }
-                !over
-            });
-            if running.len() != before {
-                count -= before - running.len();
+        let all: Vec<Target> = self.transitions.keys().copied().collect();
+        for target in all {
+            let Some(mut running) = self.transitions.remove(&target) else {
+                continue;
+            };
+            let over: Vec<u64> = running
+                .iter()
+                .copied()
+                .filter(|&id| self.ended(id))
+                .collect();
+            if !over.is_empty() {
                 targets.push(target);
-                let completed = self.completed.entry(target).or_default();
-                for c in done {
-                    completed.retain(|o| o.property != c.property);
-                    completed.push(c);
+                running.retain(|id| !over.contains(id));
+                let mut completed = self.completed.remove(&target).unwrap_or_default();
+                for id in over {
+                    self.complete_transition(id, &mut completed);
                 }
+                self.completed.insert(target, completed);
+            }
+            if !running.is_empty() {
+                self.transitions.insert(target, running);
             }
         }
-        self.count = count;
-        self.transitions.retain(|_, running| !running.is_empty());
         targets
-    }
-}
-
-/// Whether `transition` has ended by the timeline's time `time`: it
-/// started, and its effect is past its active interval.
-fn ended(transition: &CssTransition, time: f64) -> bool {
-    matches!(transition.clock, Clock::Running { .. })
-        && transition.timing.phase(clock_time(&transition.clock, time)) == Phase::After
-}
-
-/// A transition of `property` from `start` to `end`, waiting for the next
-/// frame to start it.
-fn new_transition(
-    property: Property,
-    timing: Timing,
-    start: Value,
-    end: Value,
-    reversing_start: Value,
-    shortening: f64,
-    time: f64,
-) -> CssTransition {
-    let clock = Clock::Pending { from: 0.0 };
-    let last = timing.progress(clock_time(&clock, time)).into();
-    CssTransition {
-        property,
-        timing,
-        clock,
-        start,
-        end,
-        reversing_start,
-        shortening,
-        last,
-        reported: Reported::Idle,
     }
 }

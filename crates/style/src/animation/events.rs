@@ -1,8 +1,8 @@
 //! The events of CSS animations and transitions (Animations 2 §5.1,
 //! Transitions 2 §5.1; M22.2): which a change of phase between two
 //! animation frames queues, with the elapsed time the drafts' tables give.
-//! Nothing listens to them yet; the engine hands each frame's to its
-//! caller (M26 dispatches them).
+//! The engine dispatches each frame's at the next (M26); the playback
+//! events of the animations scripts hold are queued beside them (D75).
 
 use std::sync::Arc;
 
@@ -54,6 +54,52 @@ pub struct AnimationEvent {
     pub name: Arc<str>,
     /// The elapsed time, in seconds.
     pub elapsed: f64,
+    /// The number of the animation or transition it is of, which its
+    /// `animation` gives (Animations 2 section 5.1, Transitions 2
+    /// section 5.1).
+    pub animation: u64,
+    /// Its scheduled event time (Animations 2 section 4.4, Web
+    /// Animations 1 section 4.4.19): when on the document's timeline
+    /// what it tells of happened, in milliseconds, which orders the
+    /// frame's events.
+    pub scheduled: f64,
+}
+
+/// What a playback event says happened to an animation (Web Animations 1
+/// section 4.4.19, section 5.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackKind {
+    Finish,
+    Cancel,
+    Remove,
+}
+
+impl PlaybackKind {
+    /// The event's type, as a listener names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            PlaybackKind::Finish => "finish",
+            PlaybackKind::Cancel => "cancel",
+            PlaybackKind::Remove => "remove",
+        }
+    }
+}
+
+/// An `AnimationPlaybackEvent` an animation a script holds queued, for
+/// the next animation frame to dispatch at its object: its current time
+/// and its timeline's, in milliseconds, either `None` for an unresolved
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaybackEvent {
+    pub animation: u64,
+    pub kind: PlaybackKind,
+    pub current_time: Option<f64>,
+    pub timeline_time: Option<f64>,
+    /// Its scheduled event time, in milliseconds on the document's
+    /// timeline, and its animation's place in composite order, which
+    /// order the frame's events.
+    pub scheduled: f64,
+    pub rank: (u8, u64),
 }
 
 /// An animation or a transition running, as [`super::Animations::running`]
@@ -107,7 +153,9 @@ fn interval_end(timing: &Timing) -> f64 {
 }
 
 /// The events of a CSS animation whose phase went from `before` to `now`
-/// and whose current iteration from `was` to `is` (Animations 2 §5.1).
+/// and whose current iteration from `was` to `is` (Animations 2 section 5.1),
+/// their elapsed times in milliseconds; an animation with no current
+/// time is idle.
 pub(super) fn animation_events(
     timing: &Timing,
     before: Reported,
@@ -133,6 +181,10 @@ pub(super) fn animation_events(
         (Reported::Active, Reported::After) => vec![(AnimationEnd, end)],
         (Reported::After, Reported::Active) => vec![(AnimationStart, end)],
         (Reported::After, Reported::Before) => vec![(AnimationStart, end), (AnimationEnd, start)],
+        // No longer playing: cancelled, with no active time to tell.
+        (Reported::Before | Reported::Active, Reported::Idle) => {
+            vec![(EventKind::AnimationCancel, 0.0)]
+        }
         _ => Vec::new(),
     }
 }
@@ -166,12 +218,17 @@ pub(super) fn transition_events(
         (Reported::After, Reported::Before) => {
             vec![(TransitionStart, end), (TransitionEnd, start)]
         }
+        // No longer playing (its timeline taken away, say): cancelled,
+        // with no active time to tell.
+        (Reported::Before | Reported::Active, Reported::Idle) => {
+            vec![(EventKind::TransitionCancel, 0.0)]
+        }
         _ => Vec::new(),
     }
 }
 
-/// The elapsed time of a cancel event: the active time at `local`,
-/// computed with a fill mode of both; `None` when the animation or
+/// The elapsed time of a cancel event, in milliseconds: the active time
+/// at `local`, computed with a fill mode of both; `None` when the animation or
 /// transition reported no phase, or the after phase, which no cancel
 /// event follows.
 pub(super) fn cancelled(timing: &Timing, reported: Reported, local: f64) -> Option<f64> {

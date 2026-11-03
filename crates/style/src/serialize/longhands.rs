@@ -367,6 +367,9 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             }
             .to_owned()
         }),
+        "animation-composition" => list(&style.motion().animation_composition, |c| {
+            c.name().to_owned()
+        }),
         "animation-fill-mode" => list(&style.motion().animation_fill_mode, |f| {
             match f {
                 AnimationFillMode::None => "none",

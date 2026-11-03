@@ -216,6 +216,7 @@ fn check_timing(style: &ComputedStyle, times: &[f64]) {
                 .copied()
                 .unwrap_or(AnimationFillMode::None),
             easing: Easing::Linear,
+            ..Timing::default()
         };
         for &t in times.iter().filter(|t| t.is_finite()) {
             let progress = timing.progress(t);

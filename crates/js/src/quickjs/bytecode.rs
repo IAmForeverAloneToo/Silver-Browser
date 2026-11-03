@@ -49,7 +49,15 @@ static CHUNKS: [Bindings; super::dom::CHUNKS.len()] = {
             bytecode: OnceLock::new(),
         }
     }
-    [chunk(0), chunk(1), chunk(2), chunk(3), chunk(4), chunk(5)]
+    [
+        chunk(0),
+        chunk(1),
+        chunk(2),
+        chunk(3),
+        chunk(4),
+        chunk(5),
+        chunk(6),
+    ]
 };
 
 /// `bindings`' bytecode: compiled the first time it is asked for, in a
