@@ -294,10 +294,25 @@ element's font when the colour computes.
   `text-orientation`), which logical properties would map by: the
   engine lays out horizontal text only, and `direction` alone decides
   the inline sides here.
-- What Chrome 156 does not ship, which the engine refuses as it does:
-  `display: run-in`, author-defined environment variables, and whatever
-  of `contrast-color()`, `@color-profile` and `env()` in descriptors a
-  probe of it finds missing.
+- What Chrome 156 does not ship, which the engine refuses as it does
+  (each probed): `display: run-in`, author-defined environment
+  variables, `@custom-media`, `env()` in media queries, `@color-profile`,
+  the `text-spacing` shorthand, `iterationComposite`, `EventTrigger`,
+  `streamHTML()` and `appendHTML()`, `::highlight(*)`,
+  `setSequentialFocusStartingPoint()`, `ariaOwnsElements` and
+  ElementInternals' `behaviors`. Its initial `text-autospace` is
+  `no-autospace`, which `auto` computes to as well, and the engine's is
+  too.
+- What the maintainer capped: the batch grew to more than twice its 19
+  gaps by the rule that a gap found while closing gaps is closed in it,
+  and was stopped there. What it found and did not build is G233 to
+  G246 in the roadmap: `calc-size()` and `interpolate-size`, animation
+  triggers, `overlay` with the top layer, the rest of scroll-driven
+  animations, anchor positioning, `unicode-bidi` in layout,
+  `field-sizing` and `overflow-clip-margin`, the pseudo-elements' rest,
+  positioning's corners, buttons, the markers of pseudo-elements,
+  scroll anchoring, reftests to diagnose, and the expected failures
+  whose reasons named a step the batch built.
 
 ## 3. Order of work
 
@@ -327,4 +342,78 @@ element's font when the colour computes.
 
 ## 4. Corrected to the code
 
-(Written at the end of the batch.)
+What the work found that this note did not say, or said otherwise, by
+step. The steps were worked by agents in parallel, each from the main
+branch of its time and merged by patch; where two built the same thing
+the merge kept one.
+
+- **A second document (step 1, D67).** Other documents are parentless
+  `Document` nodes in the page's arena, their facts in its rare state;
+  a node's owner is its tree's root document, a detached one's
+  recorded. Attributes keep their namespace in a side table. XML
+  serialization is DOM Parsing's namespace algorithm, and innerHTML of
+  an XML document refuses what is not well formed. The tests this let
+  run found `window.history` missing for scripts (now on the engine's
+  session history), the Sanitizer API (`Sanitizer`, `setHTML`,
+  `Document.parseHTML`), the table API, DOM's records for
+  `replaceChild` and `replaceChildren`, and Selection and
+  IntersectionObserver across documents; ranges are indexed by the
+  nodes they point into.
+- **Shadow trees (steps 2 and 3, D68, D69).** Shadow roots are arena
+  nodes; the flat tree is what the box tree, inheritance, focus and
+  container queries walk. Each tree's sheets, adopted ones too, make a
+  rule set shared between trees with the same sheets; `@scope`,
+  `@keyframes` names and container queries find their roots, names and
+  containers by tree. The WPT runner sends keys, clicks, and later
+  pointer, wheel and touch actions.
+- **Custom elements (step 4, D70).** Reactions run when the whole
+  `[CEReactions]` call returns, the parser constructing synchronously in
+  HTML and XML. A node's object lives as long as its tree can be
+  reached: a tree's objects form a group that holds its members, the
+  page's held for good, custom elements' groups held out of the
+  document until a sweep; one collection policy, as the document's
+  nodes double or the held groups grow. `::part()` and `::slotted()`
+  take a pseudo-element after them as Chrome 156 does
+  (`PseudoElementSelector::then`).
+- **The cascade (steps 5 and 7, D71, D73).** Nesting flattens against
+  the parent under a bound on nesting weight; `&` is `:is()` of the
+  parent. `revert-rule` is taken with `revert-layer`. Registered
+  properties compute, inherit and interpolate by their syntax.
+  `@custom-media` is not built: the reference browser does not take it.
+- **Containers and selectors (steps 6 and 8, D72, D74).** The frame lays
+  out, restyles the containers whose answers changed, and lays out
+  again, at most `MAX_CONTAINER_PASSES` (64) times; a pseudo-element's
+  `@container` blocks are weighed once its element's style is known.
+  `scroll-state()` queries answer from scroll snapping, sticky shifts
+  and the last relative scroll, and snapping became a module of its own
+  (`engine::scroll_snap`) with Scroll Snap 2's events,
+  `scroll-initial-target` and `pair`. `direction` is a property, and
+  boxes overflow toward the start in right to left. A size container
+  gets style containment for its counters; tables get no size
+  containment.
+- **Display and colours (steps 9 and 10, D77, D78).** `display:
+  contents` is boxed through `flat_children()`, which shadow trees then
+  redirected. MathML Core lays out by the font's MATH table with TeX's
+  fallbacks. Specified `calc()` is written in its canonical form
+  everywhere, not in colours alone. The pull's tests found
+  `vertical-align` never applied to inline-level boxes; it is now, by
+  CSS2 section 10.8.1.
+- **Animations (steps 11 to 13, D75, D76).** One store holds CSS
+  animations, transitions and script animations; a script's first
+  flush and the frame each take the other's styles as the before-change
+  style. Scroll and view timelines, `animation-range`,
+  `@starting-style`, `overlay` (which only the user agent declares),
+  discrete transitions of the values that hide, a transition acting as
+  `will-change` from its start (G33) and the reduced-motion setting are
+  built; triggers, `calc-size()` and the rest went to G233 to G236. The
+  WPT runner's page clock runs between its moves, which ended a set of
+  timing flakes.
+- **What the found gaps added.** The top layer (`<dialog>`, popovers,
+  `commandfor`, `interestfor`, close watchers, `referenceTarget`);
+  `content-visibility`, `contain` and `contain-intrinsic-size` in one
+  containment model with the containers'; the Custom Highlight API,
+  `caretPositionFromPoint` and OpaqueRange; `focusgroup`, the
+  sequential focus navigation starting point and focus fixup at the
+  rendering update; reading-flow; HTML's rendering section's sheet and
+  hints, sticky positioning by axis, `unicode-bidi` and `appearance` as
+  computed properties; `@font-palette-values` and `font-palette`.

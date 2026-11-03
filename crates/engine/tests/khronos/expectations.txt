@@ -21,7 +21,6 @@ conformance/canvas/draw-webgl-to-canvas-test.html	drawImage: Should be [#, #, #,
 conformance/canvas/to-data-url-after-composite.html	toDataURL loaded into image, drawn into #D context, should be green / at (#, #) expected: #,#,# was #,#,#
 conformance/context/context-attribute-preserve-drawing-buffer.html	Did not render ok with preserveDrawingBuffer false.
 conformance/context/context-attribute-preserve-drawing-buffer.html	Did not render ok with preserveDrawingBuffer true.
-conformance/extensions/oes-texture-float-with-video.html	exception Uncaught NotFoundError: The node is no longer there.
 conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '"' in ifdef-out #preproc MUST compile.
 conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '"' in ifdef-out MUST compile.
 conformance/glsl/bugs/character-set.html	[unexpected fragment shader compile status] (expected: true) Out-of-charset string '#line # "foo.glsl"' in ifdef-out #preproc MUST compile.

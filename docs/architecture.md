@@ -2453,3 +2453,32 @@ target's comparison. The WPT subset is 12,069 tests (XHTML, variants,
 seek still to be done and `decodeAudioData` decoding what its length
 refused, both mended. 3,651 tests pass workspace-wide, three ignored.
 
+Gap batch H (web components, the cascade and animations;
+`docs/design/components-cascade-animations.md`, D67 to D78): other
+documents in the page's arena (`dom::document::documents`), shadow trees
+and the flat tree (`dom::document::shadow`, `engine::scripts::host::
+shadow`), custom elements and their reactions (`dom::document::custom`),
+a node's object living as long as its tree can be reached (tree groups
+in the bindings, swept as the document grows); nesting, `@scope`,
+`revert-layer` and registered properties (`style::property`,
+`style::cascade::revert`), container queries answered after layout
+(`style::container`), `:has()` invalidated by its anchors, `:dir()`,
+`direction` and the logical properties (`style::cascade::logical`);
+`display: contents`, ruby and MathML (`layout::ruby`, `layout::math`),
+relative colours; the Web Animations API, scroll and view timelines and
+`@starting-style` (`style::animation::{player,script,timeline}`,
+`engine::timelines`). The rule that a gap found is closed in the batch
+grew it by the top layer (`dom::document::top_layer`,
+`engine::top_layer`), popovers, invokers and close watchers;
+`content-visibility` and containment (`style::cascade::containment`,
+`layout::contain`); highlights, caret positions and OpaqueRange
+(`engine::highlights`, `engine::scripts::caret`); `focusgroup` and the
+focus starting point (`engine::focus_group`,
+`dom::document::focus_navigation`); scroll snapping with Scroll Snap 2
+(`engine::scroll_snap`, `engine::scroll_state`); `window.history`, the
+Sanitizer API, `vertical-align`, sticky positioning by axis and HTML's
+rendering sheet; until the maintainer capped it, its rest G233 to G246.
+The WPT subset is 15,355 tests, the runner given keys, pointers, wheels
+and touches and a page clock that runs between its moves. 4,084 tests
+pass workspace-wide, three ignored.
+

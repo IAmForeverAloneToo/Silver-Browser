@@ -604,6 +604,11 @@ earlier milestones say why each is what it is):
 | `dom` | `MAX_ITERATORS` | `1 << 12` | The most node iterators a document keeps at once (gap batch D). |
 | `dom` | `MAX_DEFINITIONS` | `1 << 16` | The most custom element definitions a document keeps, every registry's together (gap batch H, D70): past it `define()` throws. Their names, an element's `is` value, its custom states and a form-associated custom element's submission value and validation message count to `MAX_DATA_BYTES`. |
 | `dom` | `MAX_CUSTOM_STATES` | `1 << 10` | The most custom states (`ElementInternals.states`) one element has (D70): past it `add()` throws. |
+| `dom` | `MAX_TOP_LAYER` | `1 << 12` | The most elements the top layer, the popover lists and the open dialogs each hold, and the most close watchers (gap batch H): past it the oldest go, so that a script showing popovers in a loop stays within a bound. |
+| `dom` | `MAX_DETAILS_TOGGLES` | `1 << 12` | The most `details` toggles kept waiting for the bindings (gap batch H): past it the oldest go. |
+| `dom` | `MAX_EXPLICIT_ELEMENTS` | `1 << 12` | The most elements a script may set for one element-reference attribute (`ariaLabelledByElements` and the like; gap batch H). |
+| `dom` | `MAX_AUTOFOCUS` | `1 << 12` | The most autofocus candidates a document keeps (gap batch H): past it the oldest go. |
+| `dom` | `MAX_MEMORIES` | `1 << 12` | The most focusgroup owners whose last focused item a document remembers (gap batch H): past it those that left the document go, then the oldest. |
 | `engine` | `MAX_CONTROL` | `1 << 24` | The most bytes a text control holds, the document's own limit standing behind it. |
 | `engine` | `MAX_FRAMES` | `100` | The most frames a tab has, those of the documents its history keeps included: past them an `iframe` stays empty (the reference browser allows 1,000 a page; a frame here is a whole engine). |
 | `engine` | `MAX_FRAME_DEPTH` | `16` | How deep frames nest: a frame this deep makes none of its own. |
@@ -721,6 +726,9 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_AUDIO_TRACKS` | `256` | The most live `MediaStreamTrack`s a document's `MediaStreamAudioDestinationNode`s make; past them, a new one is refused (gap batch D). |
 | `engine` | `MAX_SCRIPT_BUFFERS_OWED` | `64` | The most `ScriptProcessorNode` buffers a context hands its document that it has not answered: past them a realtime one's are not handed out, and play as silence, so that a page that does not keep up does not fill its inbox (gap batch D). |
 | `engine` | `MAX_WEBGL_BYTES` | `1 << 30` | The most bytes a context's textures and renderbuffers hold, as their storage keeps them: an image past it is GL's `OUT_OF_MEMORY` rather than made. |
+| `engine` | `MAX_REGISTERED` | `1 << 14` | The most custom properties a document's scripts may register with `CSS.registerProperty` (gap batch H, D73). |
+| `engine` | `MAX_WALK` | `1 << 16` | The most elements a focusgroup walk visits (gap batch H), past which the rest of a subtree is not the owner's. |
+| `engine` | `MAX_GRID` | `1 << 12` | The most rows and columns a grid focusgroup reads of a table, as HTML caps `rowspan` and `colspan` (gap batch H). |
 | `glsl` | `MAX_SHADER_SOURCE` | `1 << 20` | The most bytes a shader's source may have (M41). |
 | `glsl` | `MAX_GLSL_TOKENS` | `1 << 20` | The most tokens a shader may have after preprocessing. |
 | `glsl` | `MAX_GLSL_DEPTH` | `64` | The most nesting of blocks, expressions and macros. |
@@ -859,6 +867,10 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_FONT_FEATURES` | `64` | The most features a `font-feature-settings` may list: a longer list is invalid (gap batch D). |
 | `style` | `MAX_FONT_SOURCES` | `16` | The most sources a rule's `src` may list (gap batch D). |
 | `style` | `MAX_UNICODE_RANGES` | `256` | The most ranges a `unicode-range` may list (gap batch D). |
+| `style` | `MAX_NESTED_WEIGHT` | `1 << 16` | The heaviest a nested rule's selector may be once flattened against its parents (gap batch H, D71), each `&` as heavy as its parent's: past it the rule and those in it are dropped, so that `& &` nested deep cannot ask for exponentially many matches. |
+| `style` | `MAX_CYCLE_WALK` | `1024` | How many custom properties one value's cycle check follows (gap batch H, D73). |
+| `style` | `MAX_RESUBSTITUTION` | `8` | How deep a chain of unregistered custom properties is followed to give each the computed value of a registered one it reads (gap batch H, D73). |
+| `style` | `MAX_TIMELINES` | `1024` | The most document timelines a document's scripts make beside its own (gap batch H, D75): past it the constructor gives the document's. |
 | `svg` | `MAX_SVG_ELEMENTS` | `1 << 18` | The most elements a render tree is built from, `<use>`s' instances counted; past it, what was built is drawn. |
 | `svg` | `MAX_USE_DEPTH` | `32` | The most `<use>`s within one another, and the longest chain of gradients' templates; a `<use>` past it draws nothing. |
 | `svg` | `MAX_GRADIENT_STOPS` | `1_024` | The most stops a gradient takes; the rest are left out. |

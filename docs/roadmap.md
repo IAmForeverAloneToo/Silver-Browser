@@ -2744,7 +2744,7 @@ design note first and the milestones' method:
        compared with Chrome 156 over 200,000 outputs; every gap the
        batch found closed in it, at the maintainer's word of 30 October;
        what is left in the note's section 2.
-- [ ] GH Web components, the cascade and animations
+- [x] GH Web components, the cascade and animations
        (`docs/design/components-cascade-animations.md`, D67-D78), the
        priorities' groups H, G and N with their neighbours: custom
        elements and shadow trees (G53), declarative shadow roots and the
@@ -2759,6 +2759,9 @@ design note first and the milestones' method:
        second document (G47, G51, G70), relative colours (G224) and
        values past the finite (G228). Opened at the maintainer's word,
        3 November 2026.
+       Done 4 November 2026 (the note's section 4): grown by the gaps it
+       found to more than twice its size, it was capped at the
+       maintainer's word, its rest G233 to G246.
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -2790,11 +2793,14 @@ Deferred from the milestones above, each with what it waits on:
        a page asking for the dark scheme gets, `light-dark()` and the
        system colours (CSS Color Adjustment 1). Deferred from M20.3.
        Done in gap batch E (D49).
-- [ ] G7 `revert` and `revert-layer`, which roll a property back to an
+- [x] G7 `revert` and `revert-layer`, which roll a property back to an
        origin or a layer. Deferred from M20.2.
-- [ ] G8 `@container`, `@scope`, CSS nesting (with `@media` inside a
+       Done in gap batch H (D73), with `revert-rule`.
+- [x] G8 `@container`, `@scope`, CSS nesting (with `@media` inside a
        style rule) and custom media queries (`@custom-media`), which the
        cascade passes over. Deferred from M20.1.
+       Done in gap batch H (D71, D72); `@custom-media` refused, as the
+       reference browser refuses it.
 - [ ] G9 The user's colour scheme and reduced motion on Linux from the
        XDG desktop portal, over D-Bus; and the resolution media feature
        at the display's scale factor, once the engine draws at it.
@@ -2809,7 +2815,7 @@ Deferred from the milestones above, each with what it waits on:
        margin collapses through the root's box here, which the root's
        box should not let it, so that the root's box starts below the
        margin. Found at M20. Done in gap batch E.
-- [ ] G12 What M20's web-platform-tests ask of the rest of the engine:
+- [x] G12 What M20's web-platform-tests ask of the rest of the engine:
        the `visibility` property; `@font-face` and the page's fonts,
        which `font-format()` and `font-tech()` would answer; `:has()`;
        `::details-content` and the pseudo-elements of form controls; and
@@ -2817,14 +2823,17 @@ Deferred from the milestones above, each with what it waits on:
        M20. Its fonts (with `font-format()` and `font-tech()` answered),
        `visibility` and the in head noscript mode done in gap batch D
        (D53, D54, D57); `:has()` and the pseudo-elements remain.
+       Done in gap batch H (D74) but for `getComputedStyle` of the form
+       controls' pseudo-elements, which is G240.
 - [ ] G13 The print reftests of the web-platform-tests, which compare
        paginated renderings: the harness renders the screen alone.
        Deferred from M20.
-- [ ] G14 Registered custom properties: `@property` and
+- [x] G14 Registered custom properties: `@property` and
        `CSS.registerProperty()`, a syntax, an initial value and
        inheritance of a property's own, computed and animated by its
        type (CSS Properties and Values API 1). Deferred from M21.1;
        `docs/design/values.md`, section 2.
+       Done in gap batch H (D73).
 - [ ] G15 The other math functions: `round()`, `mod()`, `rem()`,
        `abs()`, `sign()`, the trigonometric functions, `pow()`,
        `sqrt()`, `hypot()`, `log()` and `exp()`; Values 5's
@@ -2846,9 +2855,11 @@ Deferred from the milestones above, each with what it waits on:
        counter styles of Counter Styles 3 §7 (the longhand Chinese,
        Japanese and Korean styles, `ethiopic-numeric`) and `speak-as`.
        Deferred from M21.4.
-- [ ] G18 `env()` and `var()` outside properties, in media queries and
+- [x] G18 `env()` and `var()` outside properties, in media queries and
        `@page`'s descriptors; author-defined environment variables.
        Deferred from M21.3.
+       Done in gap batch H (D73); `env()` in media queries refused, as
+       the reference browser refuses it.
 - [ ] G19 Markers on `::before` and `::after`, `display: inline
        list-item` and `flow-root list-item`, `marker-side`, and a
        marker beside a table placed off its first row as the reference
@@ -2869,42 +2880,51 @@ Deferred from the milestones above, each with what it waits on:
        items holds. Registered at M21. Done in gap batch D (D53).
 - [x] G23 `display: flow-root`, which the cascade does not take. Found
        at M21. Done in gap batch E.
-- [ ] G24 Logical properties (`padding-inline-start` and the rest) and
+- [x] G24 Logical properties (`padding-inline-start` and the rest) and
        `:dir()`, which HTML's rules give lists, so that a right-to-left
        list is padded on its right. Found at M21.6.
+       Done in gap batch H (D74) for horizontal writing modes; vertical
+       ones are its note's section 2.
 - [ ] G25 A grid's rows sized a second time for an item's percentage of
        the first sizing's height (css-grid-2 §11), as the reference
        browser grows an `auto` row for an item's `min-height:
        calc(25px + 50%)`, where this engine takes the percentage of
        zero. Found at M21.
-- [ ] G26 The Web Animations API: `Element.animate()`,
+- [x] G26 The Web Animations API: `Element.animate()`,
        `getAnimations()`, the `Animation`, `KeyframeEffect`,
        `CSSAnimation` and `CSSTransition` objects, playback rates,
        seeking and reversing, iteration start, and the `add` and
        `accumulate` composite operations with Animations 2's
        `animation-composition`. Deferred from M22;
        `docs/design/animations.md`, section 2.
-- [ ] G27 Scroll-driven animations: `animation-timeline`, `scroll()`
+       Done in gap batch H (D75).
+- [x] G27 Scroll-driven animations: `animation-timeline`, `scroll()`
        and `view()` timelines, `animation-range`, keyframe selectors of
        a timeline's ranges, and `animation-delay-start` and
        `-end`. Deferred from M22.
-- [ ] G28 Entry transitions and sizes: `@starting-style`, `overlay`,
+       Done in gap batch H (D75) but for triggers (G234) and what G236
+       names.
+- [x] G28 Entry transitions and sizes: `@starting-style`, `overlay`,
        and `interpolate-size` with `calc-size()` (G15), so that an
        element just shown transitions from a style and a size from
        `auto`. Deferred from M22.
+       Done in gap batch H (D76) but for `calc-size()` (G233) and
+       `overlay` with the top layer (G235).
 - [ ] G29 A compositor thread: transform and opacity animations kept at
        their rate while a page's own work takes longer than a frame.
        Here they are composited without layout, on the engine's one
        thread. Deferred from M22.4.
-- [ ] G30 A user's setting to stop or slow animations (Transitions 1
+- [x] G30 A user's setting to stop or slow animations (Transitions 1
        §10.1), their events still sent. Deferred from M22.5.
-- [ ] G31 What M22's web-platform-tests ask of the rest of the engine:
+       Done in gap batch H (D76).
+- [x] G31 What M22's web-platform-tests ask of the rest of the engine:
        shadow trees, declarative shadow roots among them, which no
        milestone holds; and the root's or the body's overflow carried
        to the viewport (css-overflow-3 §3.3), which tests since M17
        have asked for. Found at M22. *(M33: the viewport takes it for
        its scrollbar and the user's scrolling; the element still clips
        as its own box.)*
+       Done in gap batch H (D68, D77).
 - [x] G32 `border-radius`, `box-shadow` and `filter`, which no
        milestone holds: M22's spinner is a square ring for want of the
        first. Found at M22. Done in gap batch E (D50-D52); what remains
@@ -2982,7 +3002,7 @@ Deferred from the milestones above, each with what it waits on:
        queries (`offsetWidth`, `clientWidth`, `getBoundingClientRect`,
        `scrollTop`, `scrollTo`, `innerText`). Found at M25. Done in gap
        batch D (D65).
-- [ ] G47 More kinds of node: `Comment`, `DocumentFragment`,
+- [x] G47 More kinds of node: `Comment`, `DocumentFragment`,
        `DocumentType`, `ProcessingInstruction`, `CDATASection`, `Attr`
        and `attributes`, with `createComment`, `createDocumentFragment`
        and `template`'s content, which the parser's comments and
@@ -2990,6 +3010,7 @@ Deferred from the milestones above, each with what it waits on:
        (D58) but for a template's contents' own owner document, which
        waits on a second document in a realm (`createHTMLDocument`,
        `DOMParser`).
+       Done in gap batch H (D67).
 - [x] G48 `document.open` and `document.close`, and a `document.write`
        with no insertion point replacing the document (a `javascript:`
        URL's string result is M26.6's). Found at M25. Done in gap batch
@@ -3000,15 +3021,17 @@ Deferred from the milestones above, each with what it waits on:
        in `style` and `cssText`, which keep the text they were given;
        `document.styleSheets` and the CSSOM's rule objects. Found at
        M25. Done in gap batch D (D66).
-- [ ] G51 Namespaces: `createElementNS`, and MathML's elements as their
+- [x] G51 Namespaces: `createElementNS`, and MathML's elements as their
        own interfaces (SVG's are M32's). Found at M25. `createElementNS`,
        the namespaced attribute methods for XLink's and XML's, and
        `MathMLElement`: done at M32; attributes of other namespaces,
        `[ns|attr]` selectors and MathML's own interfaces remain.
+       Done in gap batch H (D67).
 - [x] G52 Traversal and ranges: `TreeWalker`, `NodeIterator`, `Range`,
        `Selection`, `compareDocumentPosition`, `isEqualNode`,
        `normalize`. Found at M25. Done in gap batch D (D59).
-- [ ] G53 Custom elements and shadow trees. Found at M25.
+- [x] G53 Custom elements and shadow trees. Found at M25.
+       Done in gap batch H (D68 to D70).
 - [x] G54 The window's named properties (HTML 7.2.2.3): an element by
        its id as a global (`toggler.className`), which most of the
        selector invalidation reftests use. Found at M25. Done in gap
@@ -3058,9 +3081,10 @@ Deferred from the milestones above, each with what it waits on:
        navigation to a `blob:` URL is G171's.
 - [x] G69 `TextEncoder` and `TextDecoder`. Named at M27. Done in gap
        batch A, the streaming forms left with Streams (G67).
-- [ ] G70 XHR's `document` response type and `responseXML`, a `Document`
+- [x] G70 XHR's `document` response type and `responseXML`, a `Document`
        sent as a body, `DOMParser`: an XML parser and a second
        document. Named at M27.
+       Done in gap batch H (D67).
 - [ ] G71 HTTP authentication: a 401 or 407 answered with credentials,
        and a URL's credentials (refused by `fetch` and XHR until then).
        Named at M27.
@@ -3668,10 +3692,11 @@ Deferred from the milestones above, each with what it waits on:
        not when `new Worker()` or `importScripts()` parses it: revoked
        at once after, it is gone (the URL Standard binds the entry at
        parse time). Found in gap batch A.
-- [ ] G224 Relative colour syntax (`rgb(from red r g b)` and the
+- [x] G224 Relative colour syntax (`rgb(from red r g b)` and the
        other functions' `from`) and Color 5's `contrast-color()`, and
        `color()`'s custom profiles (`@color-profile`). Found in gap
        batch E (its note's section 2).
+       Done in gap batch H (D78).
 - [ ] G225 Gamut mapping: a colour past sRGB is clipped channel by
        channel when drawn, as the reference browser draws it, not
        mapped by OKLCH chroma reduction as css-color-4 section 13 asks
@@ -3684,19 +3709,22 @@ Deferred from the milestones above, each with what it waits on:
        batch D (D66).
 - [ ] G227 `backdrop-filter`. Found in gap batch E (its note's section
        2).
-- [ ] G228 Infinite and NaN calculations kept as such where the value
+- [x] G228 Infinite and NaN calculations kept as such where the value
        is serialized (`calc(infinity)`, `oklch(0.5 calc(infinity) 0)`),
        and a relative length in a colour's component (`sign(1em -
        10px)`), which needs the element's lengths when the colour
        computes; the engine clamps the first and refuses the second.
        Found in gap batch E.
+       Done in gap batch H (D78).
 - [ ] G229 A box out of flow inside an opacity group is clipped by an
        overflow clip between it and the group that its containing
        block is outside of (CSS2 11.1.1): the clip chain of a group's
        members. Found in gap batch E (css-color's
        `clip-opacity-out-of-flow`).
-- [ ] G230 `display: contents`, `ruby`, `run-in` and `math`. Found in
+- [x] G230 `display: contents`, `ruby`, `run-in` and `math`. Found in
        gap batch E (its note's section 2).
+       Done in gap batch H (D77); `run-in` refused, as the reference
+       browser refuses it.
 - [ ] G231 Rounded corners past what gap batch E draws: dashes and dots
        along a corner, outlines following `border-radius`, hit testing
        by the curve, and a corner's inner radius larger than the box
