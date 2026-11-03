@@ -1373,7 +1373,7 @@ impl Engine {
         // (HTML's "navigate to a fragment", M33.8).
         let shown = self.shown.page.url().map(Url::without_fragment);
         if url.fragment().is_some() && shown == Some(url.without_fragment()) {
-            self.navigate_to_fragment(url, Handling::Push);
+            self.navigate_to_fragment(url, Handling::Push, None);
             return;
         }
         self.cancel_navigation();

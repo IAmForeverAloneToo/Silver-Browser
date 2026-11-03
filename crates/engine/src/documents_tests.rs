@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use net::test_server::Reply;
 
 use crate::testing::*;
-use crate::{Engine, differential};
+use crate::{Engine, FrameTime, differential};
 
 fn test_engine() -> Engine {
     let mut engine = Engine::with_fonts(
@@ -253,6 +253,124 @@ fn a_child_replaced_by_itself_is_taken_out_and_put_back() {
          console.log([r.startContainer === div, r.startOffset, div.firstChild === p].join());",
     );
     assert_eq!(lines, ["true,0,true"]);
+}
+
+#[test]
+fn replace_and_replace_all_are_told_in_the_records_the_dom_queues() {
+    // DOM's "replace": an adoption out of the same parent is a record of
+    // its own before the replacement's; "replace all": one record of
+    // every removal and the insertion, a moved child among both.
+    let lines = said(
+        "<div id=a><b></b><i></i></div><div id=b><b></b><i></i><u></u></div><div id=c></div>",
+        "const names = (list) => Array.from(list).map((n) => n.localName).join('+'); \
+         const tell = (records) => records.map((r) => names(r.removedNodes) + '>' + \
+           names(r.addedNodes) + (r.previousSibling ? ' after ' + r.previousSibling.localName \
+           : '')).join(', '); \
+         const mo = new MutationObserver(() => {}); \
+         const a = document.getElementById('a'); \
+         const b = document.getElementById('b'); \
+         const c = document.getElementById('c'); \
+         for (const n of [a, b, c]) mo.observe(n, {childList: true}); \
+         a.replaceChild(a.lastChild, a.firstChild); \
+         console.log(tell(mo.takeRecords())); \
+         b.replaceChildren(b.childNodes[1]); \
+         console.log(tell(mo.takeRecords())); \
+         c.replaceChildren(a.firstChild, 'text'); \
+         console.log(tell(mo.takeRecords())); \
+         try { c.replaceChildren(c); } catch (e) { console.log(e.name, c.childNodes.length); } \
+         c.replaceChildren(); \
+         console.log(tell(mo.takeRecords()), c.childNodes.length);",
+    );
+    assert_eq!(
+        lines,
+        [
+            "i> after b, b>i",
+            "b+i+u>i",
+            "i>, >i+",
+            "HierarchyRequestError 2",
+            "i+> 0"
+        ]
+    );
+}
+
+#[test]
+fn the_selection_leaves_alone_a_node_of_another_tree() {
+    // The Selection API's "root is not the document" rules: `extend` and
+    // `selectAllChildren` abort for a node of another document or of no
+    // document, before checking the point or the selection.
+    let lines = said(
+        "<!doctype html><p id=a>text</p>",
+        "const s = getSelection(); \
+         const t = document.getElementById('a').firstChild; \
+         const detached = document.createElement('p'); \
+         detached.textContent = 'abc'; \
+         const other = document.implementation.createHTMLDocument(''); \
+         s.collapse(t, 1); \
+         s.extend(detached.firstChild, 9); \
+         s.extend(other, 5); \
+         s.extend(other.doctype, 0); \
+         s.extend(document.createAttribute('x'), 0); \
+         console.log(s.anchorNode === t, s.focusOffset); \
+         s.selectAllChildren(t); \
+         console.log(s.anchorNode === t, s.anchorOffset, s.focusOffset); \
+         s.selectAllChildren(detached); \
+         s.selectAllChildren(other.body); \
+         console.log(s.anchorNode === t); \
+         s.removeAllRanges(); \
+         for (const at of [0, 99]) { \
+           try { s.extend(t, at); } catch (e) { console.log(e.name); } \
+         } \
+         s.collapse(t, 0); \
+         try { s.extend(t, 99); } catch (e) { console.log(e.name); } \
+         document.insertBefore(document.implementation.createDocumentType('html', '', ''), \
+           document.documentElement); \
+         try { s.extend(document.doctype, 0); } \
+         catch (e) { console.log(e.name); }",
+    );
+    assert_eq!(
+        lines,
+        [
+            "true 1",
+            "true 0 0",
+            "true",
+            "InvalidStateError",
+            "InvalidStateError",
+            "IndexSizeError",
+            "InvalidNodeTypeError"
+        ]
+    );
+}
+
+#[test]
+fn an_intersection_observers_target_of_another_document_is_observed_once_adopted() {
+    let mut engine = test_engine();
+    engine.load_document("<body style='margin: 0'>");
+    differential::run_script(
+        &mut engine,
+        "const d = document.implementation.createHTMLDocument('t'); \
+         window.target = d.createElement('div'); \
+         target.style.height = '10px'; \
+         new IntersectionObserver((entries) => entries.forEach((e) => \
+           console.log('seen', e.isIntersecting, e.target === target))).observe(target);",
+    );
+    engine.take_console();
+    let frame = |engine: &mut Engine, ms: u64| {
+        engine.frame_at(200, 100, FrameTime::at(Duration::from_millis(ms)));
+    };
+    frame(&mut engine, 16);
+    frame(&mut engine, 32);
+    assert!(engine.take_console().is_empty(), "nothing while detached");
+    differential::run_script(
+        &mut engine,
+        "document.adoptNode(target); document.body.appendChild(target);",
+    );
+    frame(&mut engine, 48);
+    let lines: Vec<String> = engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(lines, ["seen true true"]);
 }
 
 /// The page of the test below: an XML parse that fails, an XML

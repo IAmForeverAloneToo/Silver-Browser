@@ -24,9 +24,9 @@ use super::import_map::MapError;
 use super::modules::{Modules, Registered};
 use super::workers::{DocumentWorkers, Start, credentials_mode, worker_url};
 use super::{
-    ConsoleEntry, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, ModuleWanted, Place, Prepared,
-    ReadyState, ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut, document_title,
-    is_script, module_place, parser_place, prepare_element, report_text,
+    ConsoleEntry, HistoryOp, How, Lent, MAX_SCRIPT_NESTING, MAX_TIMERS, ModuleWanted, Place,
+    Prepared, ReadyState, ScriptNavigation, Source, TimeOrigin, Wanted, WindowEnv, cut,
+    document_title, is_script, module_place, parser_place, prepare_element, report_text,
 };
 use crate::loader::Page;
 use crate::sandbox::{NO_SAME_ORIGIN, Sandbox};
@@ -65,6 +65,10 @@ pub(crate) struct Outputs {
     pub(crate) errors: usize,
     pub(crate) wanted: Vec<Wanted>,
     pub(crate) navigation: Option<ScriptNavigation>,
+    /// What scripts did to the session history (HTML section 7.2.2),
+    /// and the document's URL before the first of it changed that.
+    pub(crate) history: Vec<super::HistoryOp>,
+    pub(crate) url_before_history: Option<net::Url>,
     /// The events to fire at elements after the run (M26): a script
     /// element's `error` for a `src` that cannot be fetched.
     pub(crate) events: Vec<(NodeId, &'static str)>,
@@ -445,6 +449,7 @@ impl ScriptingHost for DocumentHost {
             call,
             Call::Insert { .. }
                 | Call::Replace { .. }
+                | Call::ReplaceAll { .. }
                 | Call::SetTextContent(..)
                 | Call::SetAttribute(..)
                 | Call::SetAttributeNs(..)
@@ -1059,6 +1064,19 @@ impl DocumentHost {
                 self.adopt(container, made, None)?;
                 Ok(self.give(Some(made)))
             }
+            Call::ParseHtmlFragment(node, markup) => {
+                let node = self.node(node)?;
+                if !self.document.is_element(node) {
+                    return Err(refused(MutationError::WrongKind));
+                }
+                let context = self.fragment_context(node);
+                let container = self.parse_fragment_as(&context, node, &markup, false)?;
+                let made = self.document.create_fragment().map_err(refused)?;
+                let owner = self.document.owner_document(node);
+                self.made_for(made, owner);
+                self.adopt(container, made, None)?;
+                Ok(self.give(Some(made)))
+            }
             Call::CreateDoctype(name, public_id, system_id, document) => {
                 self.work += (name.len() + public_id.len() + system_id.len()) as u64 / 64;
                 let document = self.document_for(document)?;
@@ -1464,6 +1482,12 @@ impl DocumentHost {
                 let (parent, node, child) =
                     (self.node(parent)?, self.node(node)?, self.node(child)?);
                 self.replace(parent, node, child)?;
+                Ok(Answer::Nothing)
+            }
+            Call::ReplaceAll { parent, node } => {
+                let parent = self.node(parent)?;
+                let node = node.map(|node| self.node(node)).transpose()?;
+                self.replace_all(parent, node)?;
                 Ok(Answer::Nothing)
             }
             Call::Clone { node, deep } => {
@@ -2455,6 +2479,9 @@ impl DocumentHost {
                     .ok_or_else(|| {
                         DomError::new("SyntaxError", format!("'{url}' is not a valid URL."))
                     })?;
+                if self.navigate_to_fragment(&parsed, replace) {
+                    return Ok(Answer::Bool(true));
+                }
                 self.outputs.navigation = Some(ScriptNavigation {
                     url: Some(parsed),
                     replace,
@@ -2467,7 +2494,7 @@ impl DocumentHost {
                 });
                 Ok(Answer::Nothing)
             }
-            Call::Reload => {
+            Call::Reload | Call::HistoryGo(0) => {
                 self.outputs.navigation = Some(ScriptNavigation {
                     url: None,
                     replace: true,
@@ -2478,6 +2505,28 @@ impl DocumentHost {
                     form: false,
                     element: None,
                 });
+                Ok(Answer::Nothing)
+            }
+            Call::HistoryGo(delta) => {
+                self.outputs.history.push(HistoryOp::Traverse(delta));
+                Ok(Answer::Nothing)
+            }
+            Call::HistoryLength => Ok(Answer::Number(self.window.history.length as f64)),
+            Call::HistoryState => Ok(Answer::MaybeString(
+                self.window.history.state.as_deref().map(str::to_owned),
+            )),
+            Call::HistoryScroll(set) => {
+                if let Some(manual) = set {
+                    self.history_op(HistoryOp::ScrollRestoration(manual));
+                }
+                Ok(Answer::Bool(self.window.history.manual))
+            }
+            Call::HistoryPush {
+                state,
+                url,
+                replace,
+            } => {
+                self.push_state(state.into(), url, replace)?;
                 Ok(Answer::Nothing)
             }
             Call::NavigatorInfo => {
@@ -5738,6 +5787,19 @@ impl DocumentHost {
         under: NodeId,
         markup: &str,
     ) -> Result<NodeId, DomError> {
+        let xml = self.document.is_xml_node(under);
+        self.parse_fragment_as(context, under, markup, xml)
+    }
+
+    /// [`DocumentHost::parse_fragment`] by the XML parser when `xml`, else
+    /// by HTML's, whatever the document's type.
+    fn parse_fragment_as(
+        &mut self,
+        context: &(Namespace, String),
+        under: NodeId,
+        markup: &str,
+        xml: bool,
+    ) -> Result<NodeId, DomError> {
         self.work += markup.len() as u64 / 64;
         let container = self.document.create_element("html").map_err(refused)?;
         let depth = std::iter::once(under)
@@ -5748,7 +5810,7 @@ impl DocumentHost {
         let max_depth = (dom::MAX_DEPTH + 1).saturating_sub(depth);
         // An XML document's fragment is the XML parser's, in the context
         // of the element it goes under (DOM Parsing section 2.4).
-        if self.document.is_xml_node(under) {
+        if xml {
             let parsed = html::xml::parse_xml_fragment(
                 &mut self.document,
                 container,
@@ -5920,8 +5982,8 @@ impl DocumentHost {
         ))
     }
 
-    /// The DOM's "replace a child": its checks, in its order, then `child`
-    /// taken out and `node` put in its place.
+    /// The DOM's "replace a child": its checks, in its order, then `node`
+    /// adopted, `child` taken out and `node` put in its place.
     fn replace(&mut self, parent: NodeId, node: NodeId, child: NodeId) -> Result<(), DomError> {
         self.check_insert(
             parent,
@@ -5931,9 +5993,12 @@ impl DocumentHost {
             "The node to be replaced is not a child of this node.",
         )?;
         let document = &self.document;
-        // `dom` takes a reference that is `node` itself for the place after
-        // it, as the DOM's step does by hand.
-        let before = document.next_sibling(child);
+        // Steps 7 and 8: the place after `child`, past `node` when that
+        // is where `node` is.
+        let mut before = document.next_sibling(child);
+        if before == Some(node) {
+            before = document.next_sibling(node);
+        }
         if document.first_child(node).is_some() {
             self.work += document.subtree(node).count() as u64;
         }
@@ -5941,16 +6006,178 @@ impl DocumentHost {
             Some(NodeData::DocumentFragment) => document.children(node).collect(),
             _ => vec![node],
         };
-        // A child replaced by itself is still removed and inserted again
-        // (DOM's "replace", steps 7 to 13), the ranges in it moving to
-        // its parent.
-        self.document.remove_child(parent, child).map_err(refused)?;
-        self.taken_out(child);
+        // Step 11: adopting `node` takes it out of its parent first, a
+        // removal mutation observers are told of in a record of its own,
+        // before the replacement's; a child replaced by itself is then
+        // no longer there to be removed, and is inserted again (steps 13
+        // and 15), the ranges in it moving to its parent.
+        if let Some(old) = self.document.parent(node) {
+            self.document.remove_child(old, node).map_err(refused)?;
+            self.observe_changes(true);
+        }
+        if self.document.parent(child) == Some(parent) {
+            self.document.remove_child(parent, child).map_err(refused)?;
+            self.taken_out(child);
+        }
         self.document
             .insert_before(parent, node, before)
             .map_err(refused)?;
         for node in moved {
             self.put_in(node);
+        }
+        Ok(())
+    }
+
+    /// `op` done to the session history: the view the document's scripts
+    /// read changed as the engine will change the history after the run.
+    fn history_op(&mut self, op: HistoryOp) {
+        self.window.history.after(&op);
+        self.outputs.history.push(op);
+    }
+
+    /// HTML's "shared history push/replace state steps" for `state`, as
+    /// serialized, and `url`: a URL given, unless empty, is parsed against
+    /// the document's base URL, and the document's URL must be one that
+    /// can be rewritten to it, or a `SecurityError` says so in the
+    /// reference browser's words; the document then has that URL, and the
+    /// engine puts the entry in after the run.
+    fn push_state(
+        &mut self,
+        state: Arc<str>,
+        url: Option<String>,
+        replace: bool,
+    ) -> Result<(), DomError> {
+        let Some(page) = self.page.as_mut() else {
+            return Err(DomError::not_supported());
+        };
+        let current = page
+            .url()
+            .cloned()
+            .unwrap_or_else(|| net::Url::parse("about:blank").expect("about:blank parses"));
+        let refused = |target: &str| {
+            DomError::new(
+                "SecurityError",
+                format!(
+                    "A history state object with URL '{target}' cannot be created in a \
+                     document with origin '{}' and URL '{current}'.",
+                    page.origin().serialization()
+                ),
+            )
+        };
+        let target = match url.as_deref() {
+            None | Some("") => current.clone(),
+            Some(text) => page
+                .resolve(&self.document, text)
+                .ok_or_else(|| refused(text))?,
+        };
+        if !can_rewrite(&current, &target) {
+            return Err(refused(target.as_str()));
+        }
+        page.set_url(target.clone());
+        self.outputs.url_before_history.get_or_insert(current);
+        let scroll = self.scroll_state().0;
+        self.history_op(match replace {
+            true => HistoryOp::Replace { url: target, state },
+            false => HistoryOp::Push {
+                url: target,
+                state,
+                scroll,
+            },
+        });
+        Ok(())
+    }
+
+    /// A navigation of the document's own to `url` that is HTML's
+    /// "navigate to a fragment": `url` is the document's but for a
+    /// fragment it has. The document has `url` at once, in a new entry
+    /// or the current one's place (`replace`, or while it is still
+    /// loading, or the initial `about:blank`'s), which the engine puts in
+    /// after the run, and is scrolled to its fragment; the bindings fire
+    /// `popstate`. False for any other navigation, which the engine
+    /// starts after the run.
+    fn navigate_to_fragment(&mut self, url: &net::Url, replace: bool) -> bool {
+        let Some(page) = self.page.as_mut() else {
+            return false;
+        };
+        let same = url.fragment().is_some()
+            && page
+                .url()
+                .is_some_and(|current| current.without_fragment() == url.without_fragment());
+        if !same {
+            return false;
+        }
+        if let Some(current) = page.url().cloned() {
+            self.outputs.url_before_history.get_or_insert(current);
+        }
+        page.set_url(url.clone());
+        let replace = replace || self.ready != ReadyState::Complete;
+        let scroll = self.scroll_state().0;
+        self.history_op(HistoryOp::Fragment {
+            url: url.clone(),
+            replace,
+            scroll,
+        });
+        // HTML's "scroll to the fragment", within the navigation: the
+        // indicated part scrolled into view as `scrollIntoView` scrolls,
+        // its `scroll-behavior` honoured.
+        match crate::indicated_part(&self.document, url.fragment().unwrap_or_default()) {
+            Some(crate::Indicated::Element(node)) => {
+                self.scroll_into_view(node, "start", "nearest", "auto");
+            }
+            Some(crate::Indicated::Top) => self.outputs.scrolls.push(ScriptScroll {
+                node: None,
+                x: Some(0.0),
+                y: Some(0.0),
+                smooth: false,
+            }),
+            None => {}
+        }
+        true
+    }
+
+    /// The DOM's "replace all" of `parent`'s children with `node`, after
+    /// "ensure pre-insert validity" (`replaceChildren`): every child taken
+    /// out and `node` put in, which mutation observers are told of in one
+    /// record of the nodes removed and inserted, an inserted node that
+    /// was a child among both; an adoption from another parent, and a
+    /// fragment's emptying, in records of their own before it.
+    fn replace_all(&mut self, parent: NodeId, node: Option<NodeId>) -> Result<(), DomError> {
+        if let Some(node) = node {
+            self.check_insert(
+                parent,
+                node,
+                None,
+                None,
+                "The node before which the new node is to be inserted is not a child of this node.",
+            )?;
+        }
+        let children: Vec<NodeId> = self.document.children(parent).collect();
+        self.work += children.len() as u64;
+        for child in children {
+            self.document.remove_child(parent, child).map_err(refused)?;
+            self.taken_out(child);
+        }
+        if let Some(node) = node {
+            let document = &self.document;
+            if document.first_child(node).is_some() {
+                self.work += document.subtree(node).count() as u64;
+            }
+            let moved: Vec<NodeId> = match document.data(node) {
+                Some(NodeData::DocumentFragment) => document.children(node).collect(),
+                _ => vec![node],
+            };
+            self.document
+                .insert_before(parent, node, None)
+                .map_err(refused)?;
+            for node in moved {
+                self.put_in(node);
+            }
+        }
+        if self.mutations.observing() {
+            let changes = self.document.take_observed();
+            if !changes.is_empty() {
+                self.mutations.record_replace_all(changes, parent);
+            }
         }
         Ok(())
     }
@@ -6652,6 +6879,27 @@ pub(crate) const PLATFORM: &str = "Win32";
 pub(crate) const PLATFORM: &str = "MacIntel";
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) const PLATFORM: &str = "Linux x86_64";
+
+/// HTML's "can have its URL rewritten" (section 7.2.4): a document at
+/// `document` may be given `target` by `pushState` and `replaceState`
+/// when they differ in none of scheme, credentials, host and port, and,
+/// but for HTTP(S), where only those count, not in path either, nor in
+/// query unless the scheme is `file`.
+pub(crate) fn can_rewrite(document: &net::Url, target: &net::Url) -> bool {
+    if document.scheme() != target.scheme()
+        || document.username() != target.username()
+        || document.password() != target.password()
+        || document.host() != target.host()
+        || document.port() != target.port()
+    {
+        return false;
+    }
+    match target.scheme() {
+        "http" | "https" => true,
+        "file" => document.path() == target.path(),
+        _ => document.path() == target.path() && document.query() == target.query(),
+    }
+}
 
 /// The parts of `url` as `Location` gives them; `about:blank`'s for a
 /// document with none.

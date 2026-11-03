@@ -681,6 +681,15 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("mutations")?
                     .call::<_, Value<'_>>(())
             }),
+            Task::PopState(state) => self.stepped(&entries, |ctx, entries| {
+                let state = match state {
+                    Some(text) => rquickjs::String::from_str(ctx.clone(), text)?.into_value(),
+                    None => Value::new_null(ctx.clone()),
+                };
+                entries
+                    .get::<_, Function<'_>>("popState")?
+                    .call::<_, Value<'_>>((state,))
+            }),
             Task::MediaChanged(ids) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("mediaChanged")?

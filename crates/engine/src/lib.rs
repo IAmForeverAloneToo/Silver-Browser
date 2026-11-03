@@ -112,6 +112,8 @@ mod focus;
 mod frames;
 mod geometry;
 pub mod gpu;
+#[cfg(test)]
+mod history_tests;
 pub mod idb;
 mod image_store;
 mod inspect;
@@ -132,6 +134,8 @@ mod print;
 mod prompts;
 pub mod renderer;
 mod sandbox;
+#[cfg(test)]
+mod sanitizer_tests;
 mod scripts;
 mod select;
 pub mod service;
@@ -142,6 +146,8 @@ mod settings_tests;
 mod storage;
 mod submit;
 mod svg_images;
+#[cfg(test)]
+mod tables_tests;
 #[cfg(test)]
 mod testing;
 mod view;
@@ -498,6 +504,10 @@ pub struct Engine {
     /// The `storage` events queued (M28), and the `BroadcastChannel`
     /// messages (gap batch A), each at the page it goes to.
     storage_events: VecDeque<(PageId, js::Task)>,
+    /// The traversals of the session history the shown document's scripts
+    /// asked for (`history.go`), each run as a task of its own, by HTML's
+    /// session history traversal queue.
+    traversals: VecDeque<isize>,
     /// Whether the window is hidden (M26): minimized or covered.
     hidden: bool,
     /// When a hidden document's timer last ran.
@@ -1482,6 +1492,7 @@ impl Engine {
             areas: None,
             asker: None,
             storage_events: VecDeque::new(),
+            traversals: VecDeque::new(),
             hidden: false,
             hidden_ran: None,
             pending_events: Vec::new(),
@@ -1723,7 +1734,7 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|current| current.without_fragment() == url.without_fragment());
         if same_document {
-            self.navigate_to_fragment(url, handling);
+            self.navigate_to_fragment(url, handling, None);
         } else {
             self.start_navigation_with(url, handling, None, source);
         }
@@ -1784,27 +1795,35 @@ impl Engine {
     /// navigation under way goes on, unless it fetches the current
     /// entry's document again for a reload or a traversal, which the
     /// new entry would leave without a place.
-    fn navigate_to_fragment(&mut self, url: Url, handling: Handling) {
-        if matches!(
-            self.navigation
-                .as_ref()
-                .map(|navigation| navigation.handling),
-            Some(Handling::Reload | Handling::Traverse(_))
-        ) {
-            self.cancel_navigation();
-        }
-        let state = self.history.current().state;
-        self.history.current_mut().scroll = self.shown.scroll_target;
+    ///
+    /// The new entry's state is null: `popstate` is fired with it, and
+    /// `hashchange` is queued when the fragment changed (HTML's "update
+    /// document for history step application"). A script's navigation,
+    /// `scripted` with the scroll position it left, was scrolled to and
+    /// told in `popstate` by its scripts' host and bindings as it
+    /// happened.
+    fn navigate_to_fragment(&mut self, url: Url, handling: Handling, scripted: Option<f32>) {
+        self.cancel_same_document_navigation();
+        let old = self.history.current().clone();
+        self.history.current_mut().scroll = scripted.unwrap_or(self.shown.scroll_target);
         if handling == Handling::Push {
-            self.history.push(Some(url.clone()), state);
+            self.history.push(Some(url.clone()), old.state);
         } else {
-            self.history.replace(Some(url.clone()), state);
+            self.history.replace(Some(url.clone()), old.state);
         }
+        self.history.current_mut().manual = old.manual;
         let fragment = url.fragment().unwrap_or_default().to_owned();
-        self.shown.page.set_url(url);
-        self.goal = Some(ScrollGoal::Fragment(fragment));
+        self.shown.page.set_url(url.clone());
+        if scripted.is_none() {
+            self.goal = Some(ScrollGoal::Fragment(fragment));
+            self.scroll_now();
+        }
         self.changed = true;
         self.update_target();
+        if scripted.is_none() {
+            self.pop_state(None);
+        }
+        self.queue_hashchange(old.url.as_ref(), Some(&url));
     }
 
     /// Follows `link`, a click on it having activated it (HTML's "follow
@@ -2205,7 +2224,193 @@ impl Engine {
             partition: self.frame_partition(),
             gpu: self.gpu.clone(),
             asker: self.asker.clone().filter(|_| !self.hidden),
+            history: self.history_view(),
         }
+    }
+
+    /// What the window reports to the scripts of the document on its way:
+    /// the session history as it will be once it is shown.
+    fn incoming_window_env(&self) -> scripts::WindowEnv {
+        scripts::WindowEnv {
+            history: self.incoming_history_view(),
+            ..self.window_env()
+        }
+    }
+
+    /// The session history as the shown document's scripts see it.
+    fn history_view(&self) -> scripts::HistoryView {
+        let entry = self.history.current();
+        scripts::HistoryView {
+            length: self.history.entries().len(),
+            index: self.history.current_index(),
+            state: entry.classic.clone(),
+            manual: entry.manual,
+            initial: self.shown.initial,
+        }
+    }
+
+    /// The session history as the scripts of the document on its way see
+    /// it: as it will be once the document is shown in its entry, with
+    /// what they did to it since applied.
+    fn incoming_history_view(&self) -> scripts::HistoryView {
+        let mut view = self.history_view();
+        view.initial = false;
+        let Some(navigation) = &self.navigation else {
+            return view;
+        };
+        match navigation.handling {
+            Handling::Push if !self.shown.initial => {
+                view.length = (view.index + 2).min(navigation::MAX_ENTRIES);
+                view.index = view.length - 1;
+                view.state = None;
+                view.manual = false;
+            }
+            Handling::Push | Handling::Replace => {
+                view.state = None;
+                view.manual = false;
+            }
+            Handling::Reload => {}
+            Handling::Traverse(index) => {
+                view.index = index;
+                if let Some(entry) = self.history.entries().get(index) {
+                    view.state = entry.classic.clone();
+                    view.manual = entry.manual;
+                }
+            }
+        }
+        if let Some(scripts) = self.incoming_scripts() {
+            for op in scripts.pending_history() {
+                view.after(op);
+            }
+        }
+        view
+    }
+
+    /// What the shown document's scripts did to the session history
+    /// (HTML section 7.2.2), in order: a state pushed or put in the
+    /// current entry's place, a fragment navigated to, the scroll
+    /// restoration mode set; and the traversals they asked for, each
+    /// queued as a task.
+    fn apply_history(&mut self, ops: Vec<scripts::HistoryOp>) {
+        for op in ops {
+            match op {
+                scripts::HistoryOp::Push { url, state, scroll } => {
+                    self.update_history(url, state, Some(scroll));
+                }
+                scripts::HistoryOp::Replace { url, state } => {
+                    self.update_history(url, state, None);
+                }
+                scripts::HistoryOp::Fragment {
+                    url,
+                    replace,
+                    scroll,
+                } => {
+                    let handling = match replace || self.shown.initial {
+                        true => Handling::Replace,
+                        false => Handling::Push,
+                    };
+                    self.navigate_to_fragment(url, handling, Some(scroll));
+                }
+                scripts::HistoryOp::ScrollRestoration(manual) => {
+                    self.history.current_mut().manual = manual;
+                }
+                scripts::HistoryOp::Traverse(delta) => {
+                    self.traversals.push_back(delta as isize);
+                }
+            }
+        }
+    }
+
+    /// HTML's "URL and history update steps" for `pushState` and
+    /// `replaceState`, the document already at `url`: a new entry of the
+    /// current one's document state, with `state` and the current one's
+    /// scroll restoration mode, pushed after it, the current one keeping
+    /// the scroll position `pushed` gives, or put in its place for `None`
+    /// or when the document is the initial `about:blank`. Nothing is
+    /// fetched, scrolled or fired; a reload or a traversal under way,
+    /// which the new entry would leave without a place, is canceled.
+    fn update_history(&mut self, url: Url, state: Arc<str>, pushed: Option<f32>) {
+        self.cancel_same_document_navigation();
+        let current = self.history.current().clone();
+        match pushed.filter(|_| !self.shown.initial) {
+            None => {
+                let entry = self.history.current_mut();
+                entry.url = Some(url.clone());
+                entry.classic = Some(state);
+            }
+            Some(scroll) => {
+                self.history.current_mut().scroll = scroll;
+                self.history.push(Some(url.clone()), current.state);
+                let entry = self.history.current_mut();
+                entry.classic = Some(state);
+                entry.manual = current.manual;
+            }
+        }
+        self.shown.page.set_url(url);
+    }
+
+    /// Cancels a navigation under way that fetches the current entry's
+    /// document again, for a reload or a traversal: a same-document
+    /// change of the current entry leaves it without a place.
+    fn cancel_same_document_navigation(&mut self) {
+        if matches!(
+            self.navigation
+                .as_ref()
+                .map(|navigation| navigation.handling),
+            Some(Handling::Reload | Handling::Traverse(_))
+        ) {
+            self.cancel_navigation();
+        }
+    }
+
+    /// Fires `popstate` at the shown document's window with `state`, as
+    /// a traversal or a fragment navigation between its entries does
+    /// (HTML's "update document for history step application"), its
+    /// scripts on.
+    fn pop_state(&mut self, state: Option<Arc<str>>) {
+        if !self.scripts_run() || self.shown.made {
+            return;
+        }
+        let ready = self.ready_state();
+        let window = self.window_env();
+        let shown = &mut self.shown;
+        let mut lent = scripts::Lent {
+            document: &mut shown.document,
+            images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
+            page: &mut shown.page,
+            parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network: &mut self.network,
+            ready,
+            window,
+        };
+        let task = js::Task::PopState(state.map(|state| state.to_string()));
+        shown.scripts.run_task(&mut lent, task);
+        self.scripts_ran();
+    }
+
+    /// Queues `hashchange` at the shown document's window, the URL having
+    /// gone from `old` to `new`, when their fragments differ (HTML's
+    /// "update document for history step application", step 5.4).
+    fn queue_hashchange(&mut self, old: Option<&Url>, new: Option<&Url>) {
+        let (Some(old), Some(new)) = (old, new) else {
+            return;
+        };
+        if old.fragment() == new.fragment() || !self.scripts_run() || self.shown.made {
+            return;
+        }
+        let now = self.now();
+        let event = js::EventInit::new("HashChangeEvent", "hashchange")
+            .with("oldURL", js::Field::String(old.to_string()))
+            .with("newURL", js::Field::String(new.to_string()));
+        self.shown.scripts.post(
+            now,
+            js::Task::Dispatch {
+                target: js::Target::Window,
+                event,
+            },
+        );
     }
 
     /// Dispatches `event` at `target` in the document shown, with scripts
@@ -3781,6 +3986,10 @@ impl Engine {
                 self.fire_storage_event(page, task);
                 continue;
             }
+            if let Some(delta) = self.traversals.pop_front() {
+                self.traverse(delta);
+                continue;
+            }
             if self.shown.scripts.content_loaded_due(now) {
                 self.content_loaded();
                 continue;
@@ -3861,8 +4070,10 @@ impl Engine {
             .and_then(scripts::Scripts::next_task_at);
         let storage = self.storage();
         let flush = storage.flush_at(&self.network.cookies());
-        let events = (!self.storage_events.is_empty() || storage.has_changes(self.listener))
-            .then_some(Duration::ZERO);
+        let events = (!self.storage_events.is_empty()
+            || storage.has_changes(self.listener)
+            || !self.traversals.is_empty())
+        .then_some(Duration::ZERO);
         drop(storage);
         let frames = self
             .frames_next_task_at()
@@ -4015,7 +4226,7 @@ impl Engine {
             return;
         }
         let media = self.media(self.viewport);
-        let window = self.window_env();
+        let window = self.incoming_window_env();
         let Some(Navigation {
             incoming:
                 Incoming::Parsing {
@@ -4342,7 +4553,7 @@ impl Engine {
     /// takes the navigation's place, and the sheets it makes are found.
     fn run_incoming_timer(&mut self) {
         let media = self.media(self.viewport);
-        let window = self.window_env();
+        let window = self.incoming_window_env();
         let Some(Navigation {
             incoming:
                 Incoming::Parsing {
@@ -4866,20 +5077,38 @@ impl Engine {
         self.cancel_navigation();
         self.history.current_mut().scroll = self.shown.scroll_target;
         let left_state = self.history.current().state;
+        let left_url = self.history.current().url.clone();
         if state == left_state {
             self.history.go_to(index);
-            if let Some(url) = url {
-                self.shown.page.set_url(url);
+            let (classic, manual) = {
+                let entry = self.history.current();
+                (entry.classic.clone(), entry.manual)
+            };
+            if let Some(url) = &url {
+                self.shown.page.set_url(url.clone());
             }
-            self.goal = Some(ScrollGoal::Offset(scroll));
+            // An entry whose scroll restoration mode is manual leaves the
+            // scroll position where it is.
+            if !manual {
+                self.goal = Some(ScrollGoal::Offset(scroll));
+                self.scroll_now();
+            }
             self.changed = true;
             self.settle_load_state();
             self.update_target();
+            // Another entry of the document's (HTML's "update document
+            // for history step application"): its state is the
+            // document's, fired in `popstate`, and a changed fragment is
+            // told in `hashchange` after.
+            self.pop_state(classic);
+            self.queue_hashchange(left_url.as_ref(), url.as_ref());
         } else if let Some(kept) = self.history.take_kept(state) {
             self.history.go_to(index);
             let left = self.show(*kept);
             self.leave(left, left_state);
-            self.goal = Some(ScrollGoal::Offset(scroll));
+            if !self.history.current().manual {
+                self.goal = Some(ScrollGoal::Offset(scroll));
+            }
             self.settle_load_state();
             // Shown again from the cache (M26).
             self.fire(
@@ -5610,7 +5839,7 @@ impl Engine {
         id: loader::FetchId,
         result: Result<net::Response, LoadError>,
     ) {
-        let window = self.window_env();
+        let window = self.incoming_window_env();
         let scripting = self.scripting;
         let mut asked = None;
         match &mut self.navigation {
@@ -5833,7 +6062,7 @@ impl Engine {
     /// `<meta>` that changes the encoding starts it again (M24.8).
     fn parse_incoming(&mut self) {
         let media = self.media(self.viewport);
-        let window = self.window_env();
+        let window = self.incoming_window_env();
         let scripting = self.scripting;
         let Some(Navigation {
             incoming:
@@ -6250,6 +6479,10 @@ impl Engine {
         if self.shown.scripts.take_stop_navigation() {
             self.cancel_navigation();
         }
+        let history = self.shown.scripts.take_history();
+        if !history.is_empty() {
+            self.apply_history(history);
+        }
         if let Some(navigation) = self.shown.scripts.take_navigation() {
             self.script_navigation(navigation);
         }
@@ -6447,7 +6680,9 @@ impl Engine {
             else {
                 unreachable!("checked above");
             };
-            let url = page.url().cloned();
+            // Its entry is at the URL it came from, before its scripts
+            // pushed states.
+            let url = parsing.scripts.history_base().or(page.url()).cloned();
             let mut parsing = parsing;
             let mut shown = Shown::new(*document, *page);
             shown.scripts = std::mem::take(&mut parsing.scripts);
@@ -6562,18 +6797,24 @@ impl Engine {
                 self.history.replace(url, state);
                 self.history.current_mut().posted = posted;
             }
+            // A manual scroll restoration mode leaves the new document's
+            // position its own.
             Handling::Reload => {
                 let entry = self.history.current_mut();
                 entry.url = url;
                 entry.posted |= posted;
-                goal = Some(ScrollGoal::Offset(entry.scroll));
+                if !entry.manual {
+                    goal = Some(ScrollGoal::Offset(entry.scroll));
+                }
             }
             Handling::Traverse(index) => {
                 self.history.go_to(index);
                 let entry = self.history.entry_mut(index);
                 entry.url = url;
                 entry.posted |= posted;
-                goal = Some(ScrollGoal::Offset(entry.scroll));
+                if !entry.manual {
+                    goal = Some(ScrollGoal::Offset(entry.scroll));
+                }
             }
         }
         let left = self.show(shown);
@@ -6596,6 +6837,12 @@ impl Engine {
             self.leave(left, left_state);
         }
         self.goal = goal;
+        // What its scripts did to the session history while it was on its
+        // way, now that it has its entry.
+        let history = self.shown.scripts.take_history();
+        if !history.is_empty() {
+            self.apply_history(history);
+        }
         self.settle_load_state();
     }
 
@@ -8588,6 +8835,43 @@ impl Engine {
             node,
             url,
         })
+    }
+
+    /// Scrolls to the goal of a navigation within the document shown at
+    /// once, when a frame has given it a viewport, as HTML's "scroll to
+    /// the fragment" and "restore persisted state" do within the
+    /// navigation: what runs before the next frame (its `popstate` and
+    /// `hashchange`) reads the position. The next frames apply it again
+    /// until the load is over.
+    fn scroll_now(&mut self) {
+        if self.viewport.0 == 0 {
+            return;
+        }
+        let Some(goal) = self.goal.clone() else {
+            return;
+        };
+        let from = self.shown.scroll_y;
+        self.scroll_to_goal(&goal);
+        // The root's `scroll-behavior: smooth` makes it a smooth scroll
+        // (CSSOM View's "perform a scroll"): from where it was, over the
+        // frames to come, with no goal to snap to.
+        if self.shown.scroll_y != from && self.root_scrolls_smoothly() {
+            self.shown.scroll_y = from;
+            self.goal = None;
+            self.changed = true;
+            self.settle_scrolls();
+        }
+    }
+
+    /// Whether the document element's `scroll-behavior` is `smooth`,
+    /// which the viewport's scrolls follow.
+    fn root_scrolls_smoothly(&mut self) -> bool {
+        let Some(root) = self.shown.document.document_element() else {
+            return false;
+        };
+        self.cached_styles()
+            .get(root)
+            .is_some_and(|style| style.effects().scroll_behavior_smooth)
     }
 
     /// Scrolls to `goal`, at once: an entry's saved offset, or the part

@@ -169,6 +169,11 @@ pub enum Call {
     /// (DOM Parsing's `createContextualFragment`, a range's start): a
     /// new document fragment, whose scripts run once inserted.
     ContextualFragment(Handle, String),
+    /// `markup` parsed by HTML's fragment parsing algorithm in the context
+    /// of the element (`setHTML`, `setHTMLUnsafe`), whatever its document's
+    /// type: a new document fragment of the element's document, whose
+    /// scripts never run.
+    ParseHtmlFragment(Handle, String),
     /// A new doctype: its name, which the bindings checked, and public
     /// and system identifiers.
     CreateDoctype(String, String, String, Option<Handle>),
@@ -346,6 +351,13 @@ pub enum Call {
         parent: Handle,
         node: Handle,
         child: Handle,
+    },
+    /// Puts `node`, if any, in the place of all of `parent`'s children,
+    /// after the DOM's pre-insertion checks: its "replace all", told
+    /// to mutation observers in one record.
+    ReplaceAll {
+        parent: Handle,
+        node: Option<Handle>,
     },
     /// A copy of the node, and of its descendants if `deep`, detached.
     Clone {
@@ -754,6 +766,28 @@ pub enum Call {
     },
     /// The document fetched again, after the run.
     Reload,
+    /// The number of entries of the session history (HTML section
+    /// 7.2.2, `history.length`).
+    HistoryLength,
+    /// The serialized state of the session history entry the document is
+    /// shown for, as the document was given it: what `history.state` is
+    /// until a script or a traversal sets it; `None` for none.
+    HistoryState,
+    /// `history.scrollRestoration`: whether the current entry's mode is
+    /// `manual`, after setting it to the value given, if one is.
+    HistoryScroll(Option<bool>),
+    /// `pushState` or `replaceState` (HTML's "shared history push/replace
+    /// state steps"): the state as serialized, the URL as given (`None`
+    /// for none) and whether the current entry is replaced; a
+    /// `SecurityError` for a URL the document's cannot be rewritten to.
+    HistoryPush {
+        state: String,
+        url: Option<String>,
+        replace: bool,
+    },
+    /// `history.go(delta)`: the session history traversed by `delta`
+    /// after the run, the document reloaded for 0.
+    HistoryGo(i32),
     /// `window.open(url, target)` (M37): a URL parsed against the
     /// document's base URL, `about:blank` for none, opened in a new tab
     /// or in the navigable `target` names; a `SyntaxError` for one that

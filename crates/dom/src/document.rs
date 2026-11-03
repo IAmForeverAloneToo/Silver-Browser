@@ -1224,7 +1224,7 @@ impl Document {
                     child: node,
                 });
                 self.observe_insertion(parent, node);
-                if self.has_names(node) && self.connected(parent) {
+                if self.connected(parent) && self.has_names(node) {
                     self.index_names(node, true);
                 }
             }
@@ -1244,7 +1244,7 @@ impl Document {
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
-        if self.has_names(child) && self.connected(parent) {
+        if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
         }
         Ok(())
@@ -1301,7 +1301,7 @@ impl Document {
             child: node,
         });
         self.observe_insertion(parent, node);
-        if self.has_names(node) && self.connected(parent) {
+        if self.connected(parent) && self.has_names(node) {
             self.index_names(node, true);
         }
         self.record_change(Change::Moved {
@@ -1334,7 +1334,7 @@ impl Document {
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
-        if self.has_names(child) && self.connected(parent) {
+        if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
         }
         Ok(())
@@ -2269,7 +2269,7 @@ impl Document {
         let Some(parent) = record.parent else {
             return;
         };
-        if self.has_names(child) && self.connected(child) {
+        if self.connected(child) && self.has_names(child) {
             self.index_names(child, false);
         }
         // Taken out of another document's tree, it stays that document's.

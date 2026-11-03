@@ -5,8 +5,16 @@
 //! offsets. A range let go of by its script object is dropped
 //! ([`Document::drop_range`]); at most [`MAX_RANGES`] live at once, and
 //! [`MAX_ITERATORS`] node iterators.
+//!
+//! The ranges a script let go of are dropped when its realm finalizes
+//! their objects, which a long script's run may not do before it ends,
+//! so a document may hold thousands: each node's boundary points are
+//! kept by the node, so that a change touches only those of the nodes it
+//! changes, and a removal finds those under the node removed without
+//! walking up from every boundary point.
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 use super::{Document, MutationError, NodeData, NodeId};
 
@@ -46,6 +54,9 @@ pub struct IteratorState {
 pub(super) struct Live {
     ranges: Vec<Option<LiveRange>>,
     free_ranges: Vec<u32>,
+    /// The boundary points each node holds: each its range's id and
+    /// whether it is the range's end.
+    holding: HashMap<NodeId, Vec<(u32, bool)>>,
     iterators: Vec<Option<IteratorState>>,
     free_iterators: Vec<u32>,
     count: usize,
@@ -75,6 +86,23 @@ pub(super) struct Live {
 impl Live {
     fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    /// Range `id`'s start, or its end, is now in `node`.
+    fn hold(&mut self, node: NodeId, point: (u32, bool)) {
+        self.holding.entry(node).or_default().push(point);
+    }
+
+    /// Range `id`'s start, or its end, is no longer in `node`.
+    fn unhold(&mut self, node: NodeId, point: (u32, bool)) {
+        if let Some(points) = self.holding.get_mut(&node) {
+            if let Some(at) = points.iter().position(|&p| p == point) {
+                points.swap_remove(at);
+            }
+            if points.is_empty() {
+                self.holding.remove(&node);
+            }
+        }
     }
 }
 
@@ -156,7 +184,7 @@ impl Document {
         new.push_str(&text[end..]);
         self.store_data(node, &new)?;
         let added = units(data);
-        self.each_boundary(|_, b| {
+        self.each_boundary(&[node], |b| {
             if b.node != node {
                 return;
             }
@@ -187,7 +215,7 @@ impl Document {
         if let Some(parent) = self.parent(node) {
             let index = self.index_of(node);
             self.insert_before(parent, made, self.next_sibling(node))?;
-            self.each_boundary(|_, b| {
+            self.each_boundary(&[node, parent], |b| {
                 if b.node == node && b.offset > offset {
                     *b = Boundary {
                         node: made,
@@ -226,7 +254,7 @@ impl Document {
                 let data = self.character_data(next).unwrap_or_default().to_owned();
                 self.replace_data(text, length, 0, &data)?;
                 let index = self.index_of(next);
-                self.each_boundary(|_, b| {
+                self.each_boundary(&[next, parent], |b| {
                     if b.node == next {
                         *b = Boundary {
                             node: text,
@@ -389,7 +417,7 @@ impl Document {
             return Err(MutationError::TooManyNodes);
         }
         live.count += 1;
-        Ok(match live.free_ranges.pop() {
+        let id = match live.free_ranges.pop() {
             Some(id) => {
                 live.ranges[id as usize] = range;
                 id
@@ -398,16 +426,21 @@ impl Document {
                 live.ranges.push(range);
                 live.ranges.len() as u32 - 1
             }
-        })
+        };
+        live.hold(node, (id, false));
+        live.hold(node, (id, true));
+        Ok(id)
     }
 
     /// Lets go of range `id`.
     pub fn drop_range(&mut self, id: u32) {
         if let Some(slot) = self.rare.ranges.get_mut(id as usize)
-            && slot.take().is_some()
+            && let Some(range) = slot.take()
         {
             self.rare.free_ranges.push(id);
             self.rare.count -= 1;
+            self.rare.unhold(range.start.node, (id, false));
+            self.rare.unhold(range.end.node, (id, true));
         }
     }
 
@@ -424,7 +457,12 @@ impl Document {
         }
         match self.rare.ranges.get_mut(id as usize) {
             Some(Some(slot)) => {
-                *slot = range;
+                let old = std::mem::replace(slot, range);
+                let live = &mut self.rare;
+                live.unhold(old.start.node, (id, false));
+                live.unhold(old.end.node, (id, true));
+                live.hold(range.start.node, (id, false));
+                live.hold(range.end.node, (id, true));
                 Ok(())
             }
             _ => Err(MutationError::NoSuchNode),
@@ -492,17 +530,54 @@ impl Document {
             .collect()
     }
 
-    /// Each live range's boundary points, changed by `f`.
-    fn each_boundary(&mut self, mut f: impl FnMut(&Document, &mut Boundary)) {
-        if self.rare.ranges.is_empty() {
-            return;
+    /// The live ranges' boundary points in `nodes`, which are distinct,
+    /// changed by `f`, the nodes keeping those that are theirs.
+    fn each_boundary(&mut self, nodes: &[NodeId], mut f: impl FnMut(&mut Boundary)) {
+        let live = &mut *self.rare;
+        let mut points: Vec<(u32, bool)> = Vec::new();
+        for node in nodes {
+            if let Some(held) = live.holding.get(node) {
+                points.extend_from_slice(held);
+            }
         }
-        let mut ranges = std::mem::take(&mut self.rare.ranges);
-        for range in ranges.iter_mut().flatten() {
-            f(self, &mut range.start);
-            f(self, &mut range.end);
+        for (id, end) in points {
+            let Some(Some(range)) = live.ranges.get_mut(id as usize) else {
+                continue;
+            };
+            let b = if end {
+                &mut range.end
+            } else {
+                &mut range.start
+            };
+            let was = b.node;
+            f(b);
+            let now = b.node;
+            if now != was {
+                live.unhold(was, (id, end));
+                live.hold(now, (id, end));
+            }
         }
-        self.rare.ranges = ranges;
+    }
+
+    /// The nodes holding boundary points that are `child` or under it:
+    /// found by walking its subtree when that is no larger than the
+    /// number of nodes holding any, else by asking of each of those.
+    fn held_under(&self, child: NodeId) -> HashSet<NodeId> {
+        let holding = &self.rare.holding;
+        let mut found = HashSet::new();
+        for (walked, node) in self.subtree(child).enumerate() {
+            if walked >= holding.len() {
+                return holding
+                    .keys()
+                    .copied()
+                    .filter(|&node| self.is_inclusive_ancestor(child, node))
+                    .collect();
+            }
+            if holding.contains_key(&node) {
+                found.insert(node);
+            }
+        }
+        found
     }
 
     /// Before `child` is taken out of `parent`: the live ranges in it go
@@ -514,8 +589,11 @@ impl Document {
             return;
         }
         let index = self.index_of(child);
-        self.each_boundary(|document, b| {
-            if document.is_inclusive_ancestor(child, b.node) {
+        let under = self.held_under(child);
+        let mut nodes: Vec<NodeId> = under.iter().copied().collect();
+        nodes.push(parent);
+        self.each_boundary(&nodes, |b| {
+            if under.contains(&b.node) {
                 *b = Boundary {
                     node: parent,
                     offset: index,
@@ -568,11 +646,11 @@ impl Document {
     /// After `child` went in under `parent`: the live ranges after it in
     /// `parent` on one (the "insert" step 6).
     pub(super) fn live_inserted(&mut self, parent: NodeId, child: NodeId) {
-        if self.rare.ranges.is_empty() {
+        if !self.rare.holding.contains_key(&parent) {
             return;
         }
         let index = self.index_of(child);
-        self.each_boundary(|_, b| {
+        self.each_boundary(&[parent], |b| {
             if b.node == parent && b.offset > index {
                 b.offset += 1;
             }
@@ -583,7 +661,7 @@ impl Document {
     /// units long ([`Document::set_text`]): the live ranges in it go to
     /// its start.
     pub(super) fn live_replaced(&mut self, node: NodeId, old: u32) {
-        self.each_boundary(|_, b| {
+        self.each_boundary(&[node], |b| {
             if b.node == node && b.offset > 0 && b.offset <= old {
                 b.offset = 0;
             }
@@ -673,6 +751,109 @@ mod tests {
         );
         doc.drop_range(id);
         assert_eq!(doc.range(id), None);
+        doc.validate().unwrap();
+    }
+
+    #[test]
+    fn a_removal_moves_the_points_under_it_among_many_ranges() {
+        let (mut doc, p, t) = paragraph(&["ab", "cd", "ef"]);
+        let root = doc.root();
+        // The paragraph moved into a body.
+        doc.remove_child(root, p).unwrap();
+        let body = doc.create_element("body").unwrap();
+        doc.append_child(root, body).unwrap();
+        doc.append_child(body, p).unwrap();
+        // Many ranges in a tree of their own, which no change here moves.
+        let other = doc.create_element("div").unwrap();
+        let far = doc.create_text("far").unwrap();
+        doc.append_child(other, far).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..40 {
+            let id = doc.create_range(far).unwrap();
+            let point = at(far, i % 3);
+            doc.set_range(
+                id,
+                LiveRange {
+                    start: point,
+                    end: point,
+                },
+            )
+            .unwrap();
+            ids.push(id);
+        }
+        let inside = doc.create_range(p).unwrap();
+        doc.set_range(
+            inside,
+            LiveRange {
+                start: at(t[1], 1),
+                end: at(p, 3),
+            },
+        )
+        .unwrap();
+        // The paragraph's subtree is smaller than the nodes holding points:
+        // it is walked. The point in the text goes to where the paragraph
+        // was, the one in the paragraph itself too.
+        doc.remove_child(body, p).unwrap();
+        assert_eq!(
+            doc.range(inside).unwrap(),
+            LiveRange {
+                start: at(body, 0),
+                end: at(body, 0)
+            }
+        );
+        // A subtree larger than the nodes holding points is not walked:
+        // each node holding one is asked about instead.
+        let holder = doc.create_element("section").unwrap();
+        doc.append_child(body, holder).unwrap();
+        let big = doc.create_element("ul").unwrap();
+        doc.append_child(holder, big).unwrap();
+        let mut last = big;
+        for _ in 0..100 {
+            last = doc.create_element("li").unwrap();
+            doc.append_child(big, last).unwrap();
+        }
+        let deep = doc.create_range(last).unwrap();
+        doc.remove_child(holder, big).unwrap();
+        let point = at(holder, 0);
+        assert_eq!(
+            doc.range(deep).unwrap(),
+            LiveRange {
+                start: point,
+                end: point
+            }
+        );
+        for (i, id) in ids.iter().enumerate() {
+            let point = at(far, i as u32 % 3);
+            assert_eq!(doc.range(*id).unwrap().start, point);
+        }
+        // Moved there, or set there, the points follow the changes of
+        // their new node: on past a node inserted before them, not one at
+        // or after them.
+        let before = doc.create_element("p").unwrap();
+        doc.insert_before(holder, before, None).unwrap();
+        assert_eq!(doc.range(deep).unwrap().end, at(holder, 0));
+        let point = at(holder, 1);
+        doc.set_range(
+            deep,
+            LiveRange {
+                start: point,
+                end: point,
+            },
+        )
+        .unwrap();
+        doc.insert_before(holder, big, Some(before)).unwrap();
+        assert_eq!(doc.range(deep).unwrap().end, at(holder, 2));
+        doc.replace_data(far, 0, 3, "").unwrap();
+        assert!(
+            ids.iter()
+                .all(|&id| doc.range(id).unwrap().end == at(far, 0))
+        );
+        for id in ids {
+            doc.drop_range(id);
+        }
+        doc.drop_range(inside);
+        doc.drop_range(deep);
+        assert!(doc.rare.holding.is_empty(), "every point let go of");
         doc.validate().unwrap();
     }
 

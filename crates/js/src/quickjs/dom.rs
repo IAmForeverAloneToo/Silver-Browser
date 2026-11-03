@@ -218,6 +218,7 @@ type Decode = fn(&Args<'_, '_>) -> rquickjs::Result<Call>;
 const RUN_SCRIPTS: &[&str] = &[
     "insert",
     "replace",
+    "replaceAll",
     "setTextContent",
     "setAttribute",
     "setAttributeNS",
@@ -524,6 +525,12 @@ const NATIVES: &[(&str, Decode)] = &[
             child: a.handle(2)?,
         })
     }),
+    ("replaceAll", |a| {
+        Ok(Call::ReplaceAll {
+            parent: a.handle(0)?,
+            node: a.maybe_handle(1)?,
+        })
+    }),
     ("clone", |a| {
         Ok(Call::Clone {
             node: a.handle(0)?,
@@ -558,6 +565,9 @@ const NATIVES: &[(&str, Decode)] = &[
     }),
     ("contextualFragment", |a| {
         Ok(Call::ContextualFragment(a.handle(0)?, a.string(1)?))
+    }),
+    ("parseHtmlFragment", |a| {
+        Ok(Call::ParseHtmlFragment(a.handle(0)?, a.string(1)?))
     }),
     ("insertAdjacentHTML", |a| {
         Ok(Call::InsertAdjacentHtml {
@@ -897,6 +907,22 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("reload", |_| Ok(Call::Reload)),
+    ("historyLength", |_| Ok(Call::HistoryLength)),
+    ("historyState", |_| Ok(Call::HistoryState)),
+    ("historyScroll", |a| {
+        let set = a.value(0);
+        Ok(Call::HistoryScroll(
+            (!set.is_undefined()).then(|| set.as_bool().unwrap_or(false)),
+        ))
+    }),
+    ("historyPush", |a| {
+        Ok(Call::HistoryPush {
+            state: a.string(0)?,
+            url: a.maybe_string(1)?,
+            replace: a.bool(2),
+        })
+    }),
+    ("historyGo", |a| Ok(Call::HistoryGo(a.integer(0) as i32))),
     ("openWindow", |a| {
         Ok(Call::OpenWindow {
             url: a.string(0)?,

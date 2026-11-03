@@ -502,6 +502,7 @@
     "insert",
     "remove",
     "replace",
+    "replaceAll",
     "setTextContent",
     "setInnerHTML",
     "setOuterHTML",
@@ -1743,6 +1744,53 @@
     }
   }
 
+  // The session history's events (HTML section 7.2.2): `popstate` with an
+  // entry's state, `hashchange` with the URLs a fragment changed between.
+  const POP_STATE = 1048576;
+  const HASH_CHANGE = 2097152;
+  const POP_STATE_INIT = members(EVENT_INIT, [
+    ["hasUAVisualTransition", "boolean", false],
+    ["state", "any", null],
+  ], "PopStateEventInit");
+  const HASH_CHANGE_INIT = members(EVENT_INIT, [
+    ["newURL", "USVString", ""],
+    ["oldURL", "USVString", ""],
+  ], "HashChangeEventInit");
+
+  class PopStateEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, POP_STATE_INIT,
+        "PopStateEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= POP_STATE;
+    }
+
+    get state() {
+      return fieldsOf(this, POP_STATE).state;
+    }
+
+    get hasUAVisualTransition() {
+      return fieldsOf(this, POP_STATE).hasUAVisualTransition;
+    }
+  }
+
+  class HashChangeEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, HASH_CHANGE_INIT,
+        "HashChangeEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= HASH_CHANGE;
+    }
+
+    get oldURL() {
+      return fieldsOf(this, HASH_CHANGE).oldURL;
+    }
+
+    get newURL() {
+      return fieldsOf(this, HASH_CHANGE).newURL;
+    }
+  }
+
   const ANIMATION = 4096;
   const TRANSITION = 8192;
   const ANIMATION_INIT = members(EVENT_INIT, [
@@ -2028,6 +2076,8 @@
     ["SubmitEvent", SubmitEvent, SUBMIT_INIT],
     ["ErrorEvent", ErrorEvent, ERROR_INIT],
     ["PageTransitionEvent", PageTransitionEvent, PAGE_TRANSITION_INIT],
+    ["PopStateEvent", PopStateEvent, POP_STATE_INIT],
+    ["HashChangeEvent", HashChangeEvent, HASH_CHANGE_INIT],
     ["AnimationEvent", AnimationEvent, ANIMATION_INIT],
     ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
     ["ProgressEvent", ProgressEvent, PROGRESS_INIT],
@@ -2054,6 +2104,7 @@
     ["event", Event, EVENT_INIT],
     ["events", Event, EVENT_INIT],
     ["focusevent", FocusEvent, FOCUS_INIT],
+    ["hashchangeevent", HashChangeEvent, HASH_CHANGE_INIT],
     ["htmlevents", Event, EVENT_INIT],
     ["keyboardevent", KeyboardEvent, KEYBOARD_INIT],
     ["mouseevent", MouseEvent, MOUSE_INIT],
@@ -7605,17 +7656,19 @@
       const parent = self(this);
       const iface = parentIface(this);
       const handles = convert(nodes, "replaceChildren", iface);
-      // One operation for mutation observers.
-      native.mutationScope(true);
+      // The DOM's "replace all", after "ensure pre-insert validity": one
+      // record for mutation observers.
       try {
-        let child = native.firstChild(parent);
-        while (child !== null) {
-          native.remove(parent, child);
-          child = native.firstChild(parent);
+        native.replaceAll(parent, handles.length === 0 ? null : handles[0]);
+      } catch (error) {
+        // As `insertAll` leaves them.
+        if (handles.made) {
+          for (let child = native.firstChild(handles[0]); child !== null;
+            child = native.firstChild(handles[0])) {
+            native.remove(handles[0], child);
+          }
         }
-        insertAll(parent, handles, null, "replaceChildren", iface);
-      } finally {
-        native.mutationScope(false);
+        throw failed(error, "replaceChildren", iface);
       }
     },
   };
@@ -8458,18 +8511,6 @@
         }
       }
       super(key, handle, kind, name);
-    }
-
-    // `Document.parseHTMLUnsafe` (HTML section 8.5.1): `html` parsed as
-    // a document of its own, scripting off.
-    static parseHTMLUnsafe(html) {
-      need(arguments.length, 1, "parseHTMLUnsafe", "Document");
-      const markup = str(html);
-      try {
-        return wrap(native.parseDocument(markup, "text/html"));
-      } catch (error) {
-        throw failed(error, "parseHTMLUnsafe", "Document");
-      }
     }
 
     get documentElement() {
@@ -10880,11 +10921,14 @@
       selectionBackward = false;
     }
 
+    // The Selection API's `extend()`: a node of another tree (another
+    // document's, a detached one, an attribute) aborts before anything
+    // is checked of the selection or of the point.
     extend(node, offset = 0) {
       selectionOf(this);
       need(arguments.length, 1, "extend", "Selection");
-      const [handle, at] = checkPoint(node, offset, "extend", "Selection");
-      if (rootHandle(handle) !== native.document()) {
+      const target = nodeArgument(node, 1, "extend", "Selection");
+      if (node instanceof Attr || rootHandle(target) !== native.document()) {
         return;
       }
       if (selectionRange === null) {
@@ -10895,6 +10939,7 @@
           "Selection",
         );
       }
+      const [handle, at] = checkPoint(node, offset, "extend", "Selection");
       const b = boundsOf(selectionRange);
       const anchor = selectionBackward ? [b[2], b[3]] : [b[0], b[1]];
       const range = new Range();
@@ -10944,8 +10989,10 @@
       if (rootHandle(handle) !== native.document()) {
         return;
       }
+      // From before its first child to after its last: a character data
+      // node's children are none, whatever its length.
       const range = new Range();
-      native.setRange(rangeId(range), handle, 0, handle, native.nodeLength(handle));
+      native.setRange(rangeId(range), handle, 0, handle, native.children(handle).length);
       selectionRange = range;
       selectionBackward = false;
     }
@@ -14520,6 +14567,1614 @@
     },
     [MapGet(interfaces, "template").prototype],
   );
+  // ---- Tables (HTML section 4.9) ---------------------------------------
+
+  // Whether `handle` is an HTML element whose local name is one of
+  // `names`.
+  function isHtmlNamed(handle, names) {
+    if (native.kind(handle) !== 1) {
+      return false;
+    }
+    const element = wrap(handle);
+    return nsOf(element) === HTML_NS && includesString(names, element.localName);
+  }
+
+  // The children of `handle` that are HTML elements named one of `names`.
+  function childrenNamed(handle, names) {
+    const found = [];
+    const children = native.elementChildren(handle);
+    for (let i = 0; i < children.length; i++) {
+      if (isHtmlNamed(children[i], names)) {
+        ArrayPush(found, children[i]);
+      }
+    }
+    return found;
+  }
+
+  function firstChildNamed(handle, name) {
+    const children = native.elementChildren(handle);
+    for (let i = 0; i < children.length; i++) {
+      if (isHtmlNamed(children[i], [name])) {
+        return children[i];
+      }
+    }
+    return null;
+  }
+
+  // A table's `rows` (section 4.9.1): the rows of its `thead`s, then its
+  // own and its `tbody`s', then its `tfoot`s', each in tree order.
+  function tableRows(table) {
+    const head = [];
+    const body = [];
+    const foot = [];
+    const children = native.elementChildren(table);
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      if (isHtmlNamed(child, ["tr"])) {
+        ArrayPush(body, child);
+      } else if (isHtmlNamed(child, ["thead", "tbody", "tfoot"])) {
+        const rows = childrenNamed(child, ["tr"]);
+        const into = native.tag(child) === "thead" ? head : native.tag(child) === "tbody"
+          ? body : foot;
+        for (let j = 0; j < rows.length; j++) {
+          ArrayPush(into, rows[j]);
+        }
+      }
+    }
+    for (let i = 0; i < body.length; i++) {
+      ArrayPush(head, body[i]);
+    }
+    for (let i = 0; i < foot.length; i++) {
+      ArrayPush(head, foot[i]);
+    }
+    return head;
+  }
+
+  // A new HTML element named `name` of the document `handle` is of.
+  function createIn(handle, name) {
+    return native.createElementNS(HTML_NS, name, native.ownerDocument(handle));
+  }
+
+  // The live collection of `fetch`'s handles that `name` of `element`
+  // is, made at its first ask and the same object after.
+  const tableCollections = new $WeakMap();
+  function tableCollection(element, name, fetch) {
+    let made = WeakMapGet(tableCollections, element);
+    if (made === undefined) {
+      made = {};
+      WeakMapSet(tableCollections, element, made);
+    }
+    if (made[name] === undefined) {
+      const handle = self(element);
+      made[name] = collection(HTMLCollection, element, () => fetch(handle), true);
+    }
+    return made[name];
+  }
+
+  // A `long` argument, as Web IDL converts it.
+  function longArgument(value) {
+    return $Number(value) | 0;
+  }
+
+  // Removes `handle` from its parent, if it has one.
+  function removeFromParent(handle) {
+    const parent = native.parent(handle);
+    if (parent !== null) {
+      native.remove(parent, handle);
+    }
+  }
+
+  // The `tr` a section's or a table's `insertRow` made, put before the
+  // `index`th of `rows` in its parent, or after the last in `parent`.
+  function insertRowAt(rows, index, parent, owner) {
+    const row = createIn(owner, "tr");
+    if (index === -1 || index === rows.length) {
+      native.insert(parent, row, null);
+    } else {
+      native.insert(native.parent(rows[index]), row, rows[index]);
+    }
+    return wrap(row);
+  }
+
+  include(
+    {
+      get caption() {
+        return wrap(firstChildNamed(self(this), "caption"));
+      },
+
+      set caption(value) {
+        const handle = self(this);
+        if (value !== null && !(value instanceof MapGet(interfaces, "caption"))) {
+          throw new $TypeError("Failed to set the 'caption' property on 'HTMLTableElement': " +
+            "Failed to convert value to 'HTMLTableCaptionElement'.");
+        }
+        const old = firstChildNamed(handle, "caption");
+        if (old !== null) {
+          native.remove(handle, old);
+        }
+        if (value !== null) {
+          try {
+            native.insert(handle, self(value), native.firstChild(handle));
+          } catch (error) {
+            throw failedSet(error, "caption", "HTMLTableElement");
+          }
+        }
+      },
+
+      createCaption() {
+        const handle = self(this);
+        let caption = firstChildNamed(handle, "caption");
+        if (caption === null) {
+          caption = createIn(handle, "caption");
+          native.insert(handle, caption, native.firstChild(handle));
+        }
+        return wrap(caption);
+      },
+
+      deleteCaption() {
+        const handle = self(this);
+        const caption = firstChildNamed(handle, "caption");
+        if (caption !== null) {
+          native.remove(handle, caption);
+        }
+      },
+
+      get tHead() {
+        return wrap(firstChildNamed(self(this), "thead"));
+      },
+
+      set tHead(value) {
+        tableSection(this, value, "thead", "tHead");
+      },
+
+      createTHead() {
+        const handle = self(this);
+        let head = firstChildNamed(handle, "thead");
+        if (head === null) {
+          head = createIn(handle, "thead");
+          native.insert(handle, head, afterCaptions(handle));
+        }
+        return wrap(head);
+      },
+
+      deleteTHead() {
+        const handle = self(this);
+        const head = firstChildNamed(handle, "thead");
+        if (head !== null) {
+          native.remove(handle, head);
+        }
+      },
+
+      get tFoot() {
+        return wrap(firstChildNamed(self(this), "tfoot"));
+      },
+
+      set tFoot(value) {
+        tableSection(this, value, "tfoot", "tFoot");
+      },
+
+      createTFoot() {
+        const handle = self(this);
+        let foot = firstChildNamed(handle, "tfoot");
+        if (foot === null) {
+          foot = createIn(handle, "tfoot");
+          native.insert(handle, foot, null);
+        }
+        return wrap(foot);
+      },
+
+      deleteTFoot() {
+        const handle = self(this);
+        const foot = firstChildNamed(handle, "tfoot");
+        if (foot !== null) {
+          native.remove(handle, foot);
+        }
+      },
+
+      get tBodies() {
+        self(this);
+        return tableCollection(this, "tBodies", (handle) => childrenNamed(handle, ["tbody"]));
+      },
+
+      // A new `tbody` after the table's last, or at its end.
+      createTBody() {
+        const handle = self(this);
+        const bodies = childrenNamed(handle, ["tbody"]);
+        const body = createIn(handle, "tbody");
+        const before = bodies.length === 0 ? null
+          : native.nextSibling(bodies[bodies.length - 1]);
+        native.insert(handle, body, before);
+        return wrap(body);
+      },
+
+      get rows() {
+        self(this);
+        return tableCollection(this, "rows", tableRows);
+      },
+
+      // A new row (section 4.9.1): in a new `tbody` of a table with no
+      // rows and no `tbody`, in its last `tbody` when it has no rows, else
+      // before the `index`th row or after the last in that row's parent.
+      insertRow(index = -1) {
+        const handle = self(this);
+        const at = longArgument(index);
+        const rows = tableRows(handle);
+        if (at < -1) {
+          throw domError("IndexSizeError", "The index provided (" + at + ") is less than -1.",
+            "insertRow", "HTMLTableElement");
+        }
+        if (at > rows.length) {
+          throw domError("IndexSizeError", "The index provided (" + at +
+            ") is greater than the number of rows in the table (" + rows.length + ").",
+          "insertRow", "HTMLTableElement");
+        }
+        if (rows.length === 0) {
+          const bodies = childrenNamed(handle, ["tbody"]);
+          const row = createIn(handle, "tr");
+          if (bodies.length === 0) {
+            const body = createIn(handle, "tbody");
+            native.insert(body, row, null);
+            native.insert(handle, body, null);
+          } else {
+            native.insert(bodies[bodies.length - 1], row, null);
+          }
+          return wrap(row);
+        }
+        const last = native.parent(rows[rows.length - 1]);
+        return insertRowAt(rows, at, last, handle);
+      },
+
+      deleteRow(index) {
+        const handle = self(this);
+        need(arguments.length, 1, "deleteRow", "HTMLTableElement");
+        const at = longArgument(index);
+        const rows = tableRows(handle);
+        if (at < -1) {
+          throw domError("IndexSizeError", "The index provided (" + at + ") is less than -1.",
+            "deleteRow", "HTMLTableElement");
+        }
+        if (at >= rows.length) {
+          throw domError("IndexSizeError", "The index provided (" + at +
+            ") is greater than the number of rows in the table (" + rows.length + ").",
+          "deleteRow", "HTMLTableElement");
+        }
+        if (at === -1) {
+          if (rows.length > 0) {
+            removeFromParent(rows[rows.length - 1]);
+          }
+          return;
+        }
+        removeFromParent(rows[at]);
+      },
+    },
+    [MapGet(interfaces, "table").prototype],
+  );
+
+  // The first child of `table` that is neither a `caption` nor a
+  // `colgroup`, where a new `thead` goes.
+  function afterCaptions(table) {
+    let child = native.firstChild(table);
+    while (child !== null && (native.kind(child) !== 1 ||
+      isHtmlNamed(child, ["caption", "colgroup"]))) {
+      child = native.nextSibling(child);
+    }
+    return child;
+  }
+
+  // The `tHead` and `tFoot` setters: `value` in place of the table's
+  // first `name`, a `thead` after its captions and column groups, a
+  // `tfoot` at its end.
+  function tableSection(table, value, name, member) {
+    const handle = self(table);
+    if (value !== null && !(value instanceof MapGet(interfaces, "tbody"))) {
+      throw new $TypeError("Failed to set the '" + member + "' property on " +
+        "'HTMLTableElement': Failed to convert value to 'HTMLTableSectionElement'.");
+    }
+    if (value !== null && value.localName !== name) {
+      throw new $DOMException("Failed to set the '" + member + "' property on " +
+        "'HTMLTableElement': Not a " + name + " element.", "HierarchyRequestError");
+    }
+    const old = firstChildNamed(handle, name);
+    if (old !== null) {
+      native.remove(handle, old);
+    }
+    if (value !== null) {
+      const before = name === "thead" ? afterCaptions(handle) : null;
+      try {
+        native.insert(handle, self(value), before);
+      } catch (error) {
+        throw failedSet(error, member, "HTMLTableElement");
+      }
+    }
+  }
+
+  include(
+    {
+      get rows() {
+        self(this);
+        return tableCollection(this, "rows", (handle) => childrenNamed(handle, ["tr"]));
+      },
+
+      insertRow(index = -1) {
+        const handle = self(this);
+        const at = longArgument(index);
+        const rows = childrenNamed(handle, ["tr"]);
+        if (at < -1 || at > rows.length) {
+          // The reference browser's words, its parenthesis unclosed.
+          throw domError("IndexSizeError", "The provided index (" + at +
+            " is outside the range [-1, " + rows.length + "].",
+          "insertRow", "HTMLTableSectionElement");
+        }
+        return insertRowAt(rows, at, handle, handle);
+      },
+
+      deleteRow(index) {
+        const handle = self(this);
+        need(arguments.length, 1, "deleteRow", "HTMLTableSectionElement");
+        const at = longArgument(index);
+        const rows = childrenNamed(handle, ["tr"]);
+        if (at === -1) {
+          if (rows.length > 0) {
+            native.remove(handle, rows[rows.length - 1]);
+          }
+          return;
+        }
+        if (at < -1 || at >= rows.length) {
+          throw domError("IndexSizeError", "The provided index (" + at +
+            " is outside the range [-1, " + rows.length + "].",
+          "deleteRow", "HTMLTableSectionElement");
+        }
+        native.remove(handle, rows[at]);
+      },
+    },
+    [MapGet(interfaces, "tbody").prototype],
+  );
+
+  // A row's index in `rows`, or -1.
+  function indexIn(rows, handle) {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i] === handle) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  include(
+    {
+      // Its index in its table's `rows`, its parent the table or one of
+      // the table's sections; else -1.
+      get rowIndex() {
+        const handle = self(this);
+        const parent = native.parent(handle);
+        if (parent === null) {
+          return -1;
+        }
+        if (isHtmlNamed(parent, ["table"])) {
+          return indexIn(tableRows(parent), handle);
+        }
+        if (isHtmlNamed(parent, ["thead", "tbody", "tfoot"])) {
+          const table = native.parent(parent);
+          if (table !== null && isHtmlNamed(table, ["table"])) {
+            return indexIn(tableRows(table), handle);
+          }
+        }
+        return -1;
+      },
+
+      // Its index in its parent's `rows`, a table's or a section's.
+      get sectionRowIndex() {
+        const handle = self(this);
+        const parent = native.parent(handle);
+        if (parent === null) {
+          return -1;
+        }
+        if (isHtmlNamed(parent, ["table"])) {
+          return indexIn(tableRows(parent), handle);
+        }
+        if (isHtmlNamed(parent, ["thead", "tbody", "tfoot"])) {
+          return indexIn(childrenNamed(parent, ["tr"]), handle);
+        }
+        return -1;
+      },
+
+      get cells() {
+        self(this);
+        return tableCollection(this, "cells", (handle) => childrenNamed(handle, ["td", "th"]));
+      },
+
+      insertCell(index = -1) {
+        const handle = self(this);
+        const at = longArgument(index);
+        const cells = childrenNamed(handle, ["td", "th"]);
+        if (at < -1 || at > cells.length) {
+          throw domError("IndexSizeError", "The value provided (" + at +
+            ") is outside the range [-1, " + cells.length + "].",
+          "insertCell", "HTMLTableRowElement");
+        }
+        const cell = createIn(handle, "td");
+        native.insert(handle, cell, at === -1 || at === cells.length ? null : cells[at]);
+        return wrap(cell);
+      },
+
+      deleteCell(index) {
+        const handle = self(this);
+        need(arguments.length, 1, "deleteCell", "HTMLTableRowElement");
+        const at = longArgument(index);
+        const cells = childrenNamed(handle, ["td", "th"]);
+        if (at === -1) {
+          if (cells.length > 0) {
+            native.remove(handle, cells[cells.length - 1]);
+          }
+          return;
+        }
+        if (at < -1 || at >= cells.length) {
+          throw domError("IndexSizeError", "The value provided (" + at +
+            ") is outside the range [0, " + cells.length + ").",
+          "deleteCell", "HTMLTableRowElement");
+        }
+        native.remove(handle, cells[at]);
+      },
+    },
+    [MapGet(interfaces, "tr").prototype],
+  );
+
+  include(
+    {
+      // Its index in its row's `cells`, or -1.
+      get cellIndex() {
+        const handle = self(this);
+        const parent = native.parent(handle);
+        if (parent === null || !isHtmlNamed(parent, ["tr"])) {
+          return -1;
+        }
+        return indexIn(childrenNamed(parent, ["td", "th"]), handle);
+      },
+    },
+    [MapGet(interfaces, "td").prototype],
+  );
+
+  // ---- The Sanitizer API (HTML section 8.5.3, as Chrome 156 ships it) ----
+
+  // A configuration is kept canonical: each element a name and a
+  // namespace (null for none), with its own `attributes` or
+  // `removeAttributes`; each attribute a name and a namespace; each
+  // processing instruction a target; an allow list or a remove list of
+  // elements, of attributes and of processing instructions, never both;
+  // `comments`, and `dataAttributes` with an allow list of attributes.
+
+  // The built-in safe default configuration, the reference browser's:
+  // the elements of each namespace and their own attributes, and the
+  // attributes allowed on any element.
+  const SAFE_DEFAULT_ELEMENTS = [
+    [MATHML_NS, "math merror mfrac mi mmultiscripts mn mo mover mpadded mphantom " +
+      "mprescripts mroot mrow ms mspace msqrt mstyle msub msubsup msup mtable mtd mtext mtr " +
+      "munder munderover semantics", {
+      __proto__: null,
+      mo: "fence form largeop lspace maxsize minsize movablelimits rspace separator " +
+        "stretchy symmetric",
+      mover: "accent",
+      mpadded: "depth height lspace voffset width",
+      mspace: "depth height width",
+      mtd: "columnspan rowspan",
+      munder: "accentunder",
+      munderover: "accent accentunder",
+    }],
+    [HTML_NS, "a abbr address article aside b bdi bdo blockquote body br caption cite " +
+      "code col colgroup data dd del dfn div dl dt em figcaption figure footer h1 h2 h3 h4 h5 " +
+      "h6 head header hgroup hr html i ins kbd li main mark menu nav ol p pre q rp rt ruby s " +
+      "samp search section small span strong sub sup table tbody td tfoot th thead time " +
+      "title tr u ul var wbr", {
+      __proto__: null,
+      a: "href hreflang type",
+      blockquote: "cite",
+      col: "span",
+      colgroup: "span",
+      data: "value",
+      del: "cite datetime",
+      ins: "cite datetime",
+      li: "value",
+      ol: "reversed start type",
+      td: "colspan headers rowspan",
+      th: "abbr colspan headers rowspan scope",
+      time: "datetime",
+    }],
+    [SVG_NS, "a circle defs desc ellipse foreignObject g line marker metadata path " +
+      "polygon polyline rect svg text textPath title tspan", {
+      __proto__: null,
+      a: "href hreflang type",
+      circle: "cx cy pathLength r",
+      ellipse: "cx cy pathLength rx ry",
+      foreignObject: "height width x y",
+      line: "pathLength x1 x2 y1 y2",
+      marker: "markerHeight markerUnits markerWidth orient preserveAspectRatio refX refY " +
+        "viewBox",
+      path: "d pathLength",
+      polygon: "pathLength points",
+      polyline: "pathLength points",
+      rect: "height pathLength rx ry width x y",
+      svg: "height preserveAspectRatio viewBox width x y",
+      text: "dx dy lengthAdjust rotate textLength x y",
+      textPath: "lengthAdjust method path side spacing startOffset textLength",
+      tspan: "dx dy lengthAdjust rotate textLength x y",
+    }],
+  ];
+  const SAFE_DEFAULT_ATTRIBUTES = "alignment-baseline baseline-shift clip-path clip-rule " +
+    "color color-interpolation cursor dir direction display displaystyle dominant-baseline " +
+    "fill fill-opacity fill-rule font-family font-size font-size-adjust font-stretch " +
+    "font-style font-variant font-weight lang letter-spacing marker-end marker-mid " +
+    "marker-start mathbackground mathcolor mathsize opacity paint-order pointer-events " +
+    "scriptlevel shape-rendering stop-color stop-opacity stroke stroke-dasharray " +
+    "stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit stroke-opacity " +
+    "stroke-width text-anchor text-decoration text-overflow text-rendering title transform " +
+    "transform-origin unicode-bidi vector-effect visibility white-space word-spacing " +
+    "writing-mode";
+
+  // The built-in safe baseline: the elements that run script or load a
+  // document, and the event handler content attributes, the reference
+  // browser's.
+  const SAFE_BASELINE_ELEMENTS = [
+    [HTML_NS, "base"], [HTML_NS, "embed"], [HTML_NS, "frame"], [HTML_NS, "iframe"],
+    [HTML_NS, "object"], [HTML_NS, "script"], [SVG_NS, "script"], [SVG_NS, "use"],
+  ];
+  const EVENT_HANDLER_ATTRIBUTES = "onabort onactivate onafterprint onanimationcancel " +
+    "onanimationend onanimationiteration onanimationstart onautofill onauxclick onbeforecopy " +
+    "onbeforecut onbeforefilter onbeforeinput onbeforepaste onbeforeprint onbeforetoggle " +
+    "onbeforeunload onbegin onblur oncancel oncanplay oncanplaythrough onchange onclick " +
+    "onclose oncommand oncontentvisibilityautostatechange oncontextlost oncontextmenu " +
+    "oncontextrestored oncopy oncuechange oncut ondblclick ondrag ondragend ondragenter " +
+    "ondragleave ondragover ondragstart ondrop ondurationchange onemptied onend onended " +
+    "onerror onfocus onfocusin onfocusout onformdata ongotpointercapture onhashchange " +
+    "oninput oninstallresult oninvalid onkeydown onkeypress onkeyup onlanguagechange onload " +
+    "onloadeddata onloadedmetadata onloadstart onlocation onlostpointercapture onmessage " +
+    "onmessageerror onmousedown onmouseenter onmouseleave onmousemove onmouseout " +
+    "onmouseover onmouseup onmousewheel onmove onoffline ononline onorientationchange " +
+    "onpagehide onpageshow onpaste onpause onplay onplaying onpointercancel onpointerdown " +
+    "onpointerenter onpointerleave onpointermove onpointerout onpointerover " +
+    "onpointerrawupdate onpointerup onpopstate onprogress onpromptaction onpromptdismiss " +
+    "onratechange onrepeat onreset onresize onscroll onscrollend onscrollsnapchange " +
+    "onscrollsnapchanging onsearch onsecuritypolicyviolation onseeked onseeking onselect " +
+    "onselectionchange onselectstart onshow onslotchange onstalled onstorage onstream " +
+    "onsubmit onsuspend ontimeupdate ontimezonechange ontoggle ontouchcancel ontouchend " +
+    "ontouchmove ontouchstart ontransitionend onunload onvalidationstatuschange " +
+    "onvolumechange onwaiting onwebkitanimationend onwebkitanimationiteration " +
+    "onwebkitanimationstart onwebkitfullscreenchange onwebkitfullscreenerror " +
+    "onwebkittransitionend onwheel";
+
+  // The words of `text`, split at spaces.
+  function words(text) {
+    const out = [];
+    let word = "";
+    for (let i = 0; i <= text.length; i++) {
+      if (i === text.length || text[i] === " ") {
+        if (word !== "") {
+          ArrayPush(out, word);
+        }
+        word = "";
+      } else {
+        word += text[i];
+      }
+    }
+    return out;
+  }
+
+  function noNamespace(names) {
+    const out = [];
+    const list = words(names);
+    for (let i = 0; i < list.length; i++) {
+      ArrayPush(out, { name: list[i], namespace: null });
+    }
+    return out;
+  }
+
+  // The built-in safe default configuration, made once; each Sanitizer
+  // made of it is given a copy.
+  let safeDefault = null;
+  function safeDefaultConfig() {
+    if (safeDefault === null) {
+      const elements = [];
+      for (let i = 0; i < SAFE_DEFAULT_ELEMENTS.length; i++) {
+        const [ns, names, own] = SAFE_DEFAULT_ELEMENTS[i];
+        const list = words(names);
+        for (let j = 0; j < list.length; j++) {
+          const attributes = own[list[j]] !== undefined ? noNamespace(own[list[j]]) : [];
+          ArrayPush(elements, { name: list[j], namespace: ns, attributes });
+        }
+      }
+      safeDefault = {
+        elements,
+        attributes: noNamespace(SAFE_DEFAULT_ATTRIBUTES),
+        processingInstructions: [],
+        comments: false,
+        dataAttributes: false,
+      };
+    }
+    return safeDefault;
+  }
+
+  // ---- Names and lists
+
+  function sameName(a, b) {
+    return a.name === b.name && a.namespace === b.namespace;
+  }
+
+  function sameTarget(a, b) {
+    return a.target === b.target;
+  }
+
+  function indexOfItem(list, item, same) {
+    for (let i = 0; i < list.length; i++) {
+      if (same(list[i], item)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  function hasItem(list, item, same = sameName) {
+    return list !== undefined && indexOfItem(list, item, same) >= 0;
+  }
+
+  // Removes `item` from `list`; whether it was there.
+  function removeItem(list, item, same = sameName) {
+    if (list === undefined) {
+      return false;
+    }
+    const at = indexOfItem(list, item, same);
+    if (at < 0) {
+      return false;
+    }
+    ArraySplice(list, at, 1);
+    return true;
+  }
+
+  function hasDuplicates(list, same = sameName) {
+    if (list === undefined) {
+      return false;
+    }
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (same(list[i], list[j])) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function intersects(a, b) {
+    if (a === undefined || b === undefined) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (hasItem(b, a[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A custom data attribute's name (HTML section 3.2.6.6), of no
+  // namespace.
+  function isDataAttribute(attribute) {
+    return attribute.namespace === null && attribute.name.length > 5 &&
+      StringSlice(attribute.name, 0, 5) === "data-";
+  }
+
+  function copyList(list) {
+    if (list === undefined) {
+      return undefined;
+    }
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      const copy = item.target !== undefined ? { target: item.target }
+        : { name: item.name, namespace: item.namespace };
+      if (item.attributes !== undefined) {
+        copy.attributes = copyList(item.attributes);
+      }
+      if (item.removeAttributes !== undefined) {
+        copy.removeAttributes = copyList(item.removeAttributes);
+      }
+      ArrayPush(out, copy);
+    }
+    return out;
+  }
+
+  const CONFIG_LISTS = [
+    "attributes", "elements", "processingInstructions", "removeAttributes", "removeElements",
+    "removeProcessingInstructions", "replaceWithChildrenElements",
+  ];
+
+  function copyConfig(config) {
+    const out = {};
+    for (let i = 0; i < CONFIG_LISTS.length; i++) {
+      if (config[CONFIG_LISTS[i]] !== undefined) {
+        out[CONFIG_LISTS[i]] = copyList(config[CONFIG_LISTS[i]]);
+      }
+    }
+    out.comments = config.comments;
+    if (config.dataAttributes !== undefined) {
+      out.dataAttributes = config.dataAttributes;
+    }
+    return out;
+  }
+
+  // ---- Converting a configuration (Web IDL's dictionaries and unions)
+
+  function isObjectValue(value) {
+    return (typeof value === "object" && value !== null) || typeof value === "function";
+  }
+
+  // A sequence of `value`, each item converted by `convert`; `at` the
+  // words its errors start with.
+  function sanitizerSequence(value, at, convert) {
+    const iterate = isObjectValue(value) ? value[iteratorSymbol] : undefined;
+    if (typeof iterate !== "function") {
+      throw new $TypeError(at + "The provided value cannot be converted to a sequence.");
+    }
+    const iterator = ReflectApply(iterate, value, []);
+    const next = iterator.next;
+    const items = [];
+    for (;;) {
+      const step = ReflectApply(next, iterator, []);
+      if (!isObjectValue(step)) {
+        throw new $TypeError(at + "The iterator's result is not an object.");
+      }
+      if (step.done) {
+        return items;
+      }
+      ArrayPush(items, convert(step.value, at));
+    }
+  }
+
+  function readMember(at, member, dictionary) {
+    return at + "Failed to read the '" + member + "' property from '" + dictionary + "': ";
+  }
+
+  // A namespace member: `fallback` when missing, null for null or empty.
+  function namespaceMember(value, fallback) {
+    if (value === undefined) {
+      return fallback;
+    }
+    if (value === null) {
+      return null;
+    }
+    const ns = str(value);
+    return ns === "" ? null : ns;
+  }
+
+  function requiredName(value, at, dictionary, member) {
+    if (value === undefined) {
+      throw new $TypeError(readMember(at, member, dictionary) + "Required member is undefined.");
+    }
+    return str(value);
+  }
+
+  // A SanitizerAttribute, canonical: a string is of no namespace.
+  function canonicalAttribute(value, at) {
+    if (!isObjectValue(value) && value !== null && value !== undefined) {
+      return { name: str(value), namespace: null };
+    }
+    const dict = value === null || value === undefined ? {} : value;
+    const name = requiredName(dict.name, at, "SanitizerAttributeNamespace", "name");
+    return { name, namespace: namespaceMember(dict.namespace, null) };
+  }
+
+  function attributeList(value, at, member, dictionary) {
+    return sanitizerSequence(value, readMember(at, member, dictionary), canonicalAttribute);
+  }
+
+  // A SanitizerElement, canonical: a string is HTML's; with
+  // `attributes` its own attributes, given or not.
+  function canonicalElement(value, at, attributes) {
+    if (!isObjectValue(value) && value !== null && value !== undefined) {
+      const element = { name: str(value), namespace: HTML_NS };
+      if (attributes) {
+        element.removeAttributes = [];
+      }
+      return element;
+    }
+    const dict = value === null || value === undefined ? {} : value;
+    const name = requiredName(dict.name, at, "SanitizerElementNamespace", "name");
+    const element = { name, namespace: namespaceMember(dict.namespace, HTML_NS) };
+    if (attributes) {
+      const where = "SanitizerElementNamespaceWithAttributes";
+      if (dict.attributes !== undefined) {
+        element.attributes = attributeList(dict.attributes, at, "attributes", where);
+      }
+      if (dict.removeAttributes !== undefined) {
+        element.removeAttributes = attributeList(dict.removeAttributes, at, "removeAttributes",
+          where);
+      }
+      if (element.attributes === undefined && element.removeAttributes === undefined) {
+        element.removeAttributes = [];
+      }
+    }
+    return element;
+  }
+
+  function canonicalInstruction(value, at) {
+    if (!isObjectValue(value) && value !== null && value !== undefined) {
+      return { target: str(value) };
+    }
+    const dict = value === null || value === undefined ? {} : value;
+    return { target: requiredName(dict.target, at, "SanitizerProcessingInstruction", "target") };
+  }
+
+  // A SanitizerConfig dictionary, read in its members' order and made
+  // canonical: the lists not given are empty remove lists, `comments`,
+  // and `dataAttributes` with an allow list of attributes, are `allow`
+  // when not given (HTML's "set a configuration").
+  function configFrom(value, at, allow) {
+    const dict = value === null || value === undefined ? {} : value;
+    const config = {};
+    const lists = [
+      ["attributes", (v, w) => attributeList(v, w, "attributes", "SanitizerConfig")],
+      ["comments", null],
+      ["dataAttributes", null],
+      ["elements", (v, w) => sanitizerSequence(v, readMember(w, "elements", "SanitizerConfig"),
+        (item, a) => canonicalElement(item, a, true))],
+      ["processingInstructions", (v, w) => sanitizerSequence(v,
+        readMember(w, "processingInstructions", "SanitizerConfig"), canonicalInstruction)],
+      ["removeAttributes", (v, w) => attributeList(v, w, "removeAttributes", "SanitizerConfig")],
+      ["removeElements", (v, w) => sanitizerSequence(v,
+        readMember(w, "removeElements", "SanitizerConfig"),
+        (item, a) => canonicalElement(item, a, false))],
+      ["removeProcessingInstructions", (v, w) => sanitizerSequence(v,
+        readMember(w, "removeProcessingInstructions", "SanitizerConfig"), canonicalInstruction)],
+      ["replaceWithChildrenElements", (v, w) => sanitizerSequence(v,
+        readMember(w, "replaceWithChildrenElements", "SanitizerConfig"),
+        (item, a) => canonicalElement(item, a, false))],
+    ];
+    for (let i = 0; i < lists.length; i++) {
+      const [member, convert] = lists[i];
+      const given = dict[member];
+      if (given === undefined) {
+        continue;
+      }
+      config[member] = convert === null ? !!given : convert(given, at);
+    }
+    if (config.elements === undefined && config.removeElements === undefined) {
+      config.removeElements = [];
+    }
+    if (config.processingInstructions === undefined &&
+      config.removeProcessingInstructions === undefined) {
+      config.removeProcessingInstructions = [];
+    }
+    if (config.attributes === undefined && config.removeAttributes === undefined) {
+      config.removeAttributes = [];
+    }
+    if (config.comments === undefined) {
+      config.comments = allow;
+    }
+    if (config.attributes !== undefined && config.dataAttributes === undefined) {
+      config.dataAttributes = allow;
+    }
+    return config;
+  }
+
+  // Whether a canonical configuration is valid (HTML's "valid" Sanitizer
+  // configuration): one list of each kind, none with a name twice, no
+  // element both allowed or removed and replaced by its children, no
+  // `html` replaced, and each element's own attributes in keeping with
+  // the configuration's.
+  function validConfig(config) {
+    if ((config.elements !== undefined) === (config.removeElements !== undefined) ||
+      (config.attributes !== undefined) === (config.removeAttributes !== undefined) ||
+      (config.processingInstructions !== undefined) ===
+        (config.removeProcessingInstructions !== undefined)) {
+      return false;
+    }
+    if (hasDuplicates(config.elements) || hasDuplicates(config.removeElements) ||
+      hasDuplicates(config.replaceWithChildrenElements) || hasDuplicates(config.attributes) ||
+      hasDuplicates(config.removeAttributes) ||
+      hasDuplicates(config.processingInstructions, sameTarget) ||
+      hasDuplicates(config.removeProcessingInstructions, sameTarget)) {
+      return false;
+    }
+    if (intersects(config.elements !== undefined ? config.elements : config.removeElements,
+      config.replaceWithChildrenElements)) {
+      return false;
+    }
+    if (hasItem(config.replaceWithChildrenElements, { name: "html", namespace: HTML_NS })) {
+      return false;
+    }
+    if (config.attributes === undefined && config.dataAttributes !== undefined) {
+      return false;
+    }
+    const elements = config.elements !== undefined ? config.elements : [];
+    for (let i = 0; i < elements.length; i++) {
+      const element = elements[i];
+      if (element.attributes !== undefined && element.removeAttributes !== undefined) {
+        return false;
+      }
+      if (hasDuplicates(element.attributes) || hasDuplicates(element.removeAttributes)) {
+        return false;
+      }
+      if (config.attributes !== undefined) {
+        if (intersects(element.attributes, config.attributes)) {
+          return false;
+        }
+        const removed = element.removeAttributes !== undefined ? element.removeAttributes : [];
+        for (let j = 0; j < removed.length; j++) {
+          if (!hasItem(config.attributes, removed[j])) {
+            return false;
+          }
+        }
+        if (config.dataAttributes === true && element.attributes !== undefined) {
+          for (let j = 0; j < element.attributes.length; j++) {
+            if (isDataAttribute(element.attributes[j])) {
+              return false;
+            }
+          }
+        }
+      } else if (intersects(element.attributes, config.removeAttributes) ||
+        intersects(element.removeAttributes, config.removeAttributes)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // ---- Changing a configuration (the Sanitizer's methods), each saying
+  // whether it changed anything
+
+  function sameElementEntry(a, b) {
+    if (!sameName(a, b)) {
+      return false;
+    }
+    const sameList = (x, y) => {
+      if (x === undefined || y === undefined) {
+        return x === y;
+      }
+      if (x.length !== y.length) {
+        return false;
+      }
+      for (let i = 0; i < x.length; i++) {
+        if (!sameName(x[i], y[i])) {
+          return false;
+        }
+      }
+      return true;
+    };
+    return sameList(a.attributes, b.attributes) &&
+      sameList(a.removeAttributes, b.removeAttributes);
+  }
+
+  function withoutDuplicates(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (!hasItem(out, list[i])) {
+        ArrayPush(out, list[i]);
+      }
+    }
+    return out;
+  }
+
+  function without(list, removed, keep) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (hasItem(removed, list[i]) === keep) {
+        ArrayPush(out, list[i]);
+      }
+    }
+    return out;
+  }
+
+  function allowElementIn(config, element) {
+    if (element.attributes !== undefined && element.removeAttributes !== undefined) {
+      return false;
+    }
+    if (config.elements !== undefined) {
+      if (config.attributes !== undefined) {
+        if (element.attributes !== undefined) {
+          let own = without(withoutDuplicates(element.attributes), config.attributes, false);
+          if (config.dataAttributes === true) {
+            const kept = [];
+            for (let i = 0; i < own.length; i++) {
+              if (!isDataAttribute(own[i])) {
+                ArrayPush(kept, own[i]);
+              }
+            }
+            own = kept;
+          }
+          element.attributes = own;
+        }
+        if (element.removeAttributes !== undefined) {
+          element.removeAttributes = without(withoutDuplicates(element.removeAttributes),
+            config.attributes, true);
+        }
+      } else {
+        if (element.attributes !== undefined) {
+          element.attributes = without(withoutDuplicates(element.attributes),
+            config.removeAttributes, false);
+        }
+        if (element.removeAttributes !== undefined) {
+          element.removeAttributes = without(withoutDuplicates(element.removeAttributes),
+            config.removeAttributes, false);
+        }
+      }
+      const modified = removeItem(config.replaceWithChildrenElements, element);
+      const at = indexOfItem(config.elements, element, sameName);
+      if (at < 0) {
+        ArrayPush(config.elements, element);
+        return true;
+      }
+      if (sameElementEntry(config.elements[at], element)) {
+        return modified;
+      }
+      ArraySplice(config.elements, at, 1);
+      ArrayPush(config.elements, element);
+      return true;
+    }
+    if (element.attributes !== undefined ||
+      (element.removeAttributes !== undefined && element.removeAttributes.length > 0)) {
+      return false;
+    }
+    const modified = removeItem(config.replaceWithChildrenElements, element);
+    return removeItem(config.removeElements, element) || modified;
+  }
+
+  function removeElementIn(config, element) {
+    const modified = removeItem(config.replaceWithChildrenElements, element);
+    if (config.elements !== undefined) {
+      return removeItem(config.elements, element) || modified;
+    }
+    if (hasItem(config.removeElements, element)) {
+      return modified;
+    }
+    ArrayPush(config.removeElements, element);
+    return true;
+  }
+
+  function replaceElementIn(config, element) {
+    if (element.name === "html" && element.namespace === HTML_NS) {
+      return false;
+    }
+    if (hasItem(config.replaceWithChildrenElements, element)) {
+      return false;
+    }
+    removeItem(config.removeElements, element);
+    removeItem(config.elements, element);
+    if (config.replaceWithChildrenElements === undefined) {
+      config.replaceWithChildrenElements = [];
+    }
+    ArrayPush(config.replaceWithChildrenElements, element);
+    return true;
+  }
+
+  function allowAttributeIn(config, attribute) {
+    if (config.attributes !== undefined) {
+      if (config.dataAttributes === true && isDataAttribute(attribute)) {
+        return false;
+      }
+      if (hasItem(config.attributes, attribute)) {
+        return false;
+      }
+      const elements = config.elements !== undefined ? config.elements : [];
+      for (let i = 0; i < elements.length; i++) {
+        removeItem(elements[i].attributes, attribute);
+      }
+      ArrayPush(config.attributes, attribute);
+      return true;
+    }
+    return removeItem(config.removeAttributes, attribute);
+  }
+
+  function removeAttributeIn(config, attribute) {
+    const elements = config.elements !== undefined ? config.elements : [];
+    if (config.attributes !== undefined) {
+      let modified = removeItem(config.attributes, attribute);
+      for (let i = 0; i < elements.length; i++) {
+        modified = removeItem(elements[i].attributes, attribute) || modified;
+        modified = removeItem(elements[i].removeAttributes, attribute) || modified;
+      }
+      return modified;
+    }
+    if (hasItem(config.removeAttributes, attribute)) {
+      return false;
+    }
+    for (let i = 0; i < elements.length; i++) {
+      removeItem(elements[i].attributes, attribute);
+      removeItem(elements[i].removeAttributes, attribute);
+    }
+    ArrayPush(config.removeAttributes, attribute);
+    return true;
+  }
+
+  function allowInstructionIn(config, instruction) {
+    if (config.processingInstructions !== undefined) {
+      if (hasItem(config.processingInstructions, instruction, sameTarget)) {
+        return false;
+      }
+      ArrayPush(config.processingInstructions, instruction);
+      return true;
+    }
+    return removeItem(config.removeProcessingInstructions, instruction, sameTarget);
+  }
+
+  function removeInstructionIn(config, instruction) {
+    if (config.processingInstructions !== undefined) {
+      return removeItem(config.processingInstructions, instruction, sameTarget);
+    }
+    if (hasItem(config.removeProcessingInstructions, instruction, sameTarget)) {
+      return false;
+    }
+    ArrayPush(config.removeProcessingInstructions, instruction);
+    return true;
+  }
+
+  // HTML's "remove unsafe": the built-in safe baseline's elements and
+  // attributes removed from the configuration.
+  function removeUnsafeIn(config) {
+    for (let i = 0; i < SAFE_BASELINE_ELEMENTS.length; i++) {
+      const [namespace, name] = SAFE_BASELINE_ELEMENTS[i];
+      removeElementIn(config, { name, namespace });
+    }
+    const handlers = words(EVENT_HANDLER_ATTRIBUTES);
+    for (let i = 0; i < handlers.length; i++) {
+      removeAttributeIn(config, { name: handlers[i], namespace: null });
+    }
+  }
+
+  // ---- The Sanitizer interface
+
+  const sanitizerConfigs = new $WeakMap();
+
+  function sanitizerOf(value) {
+    const config = WeakMapGet(sanitizerConfigs, value);
+    if (config === undefined) {
+      throw illegalInvocation();
+    }
+    return config;
+  }
+
+  // A list of a configuration's, sorted by namespace, no namespace
+  // first, then by name, or by target, as `get()` gives them.
+  function sortedList(list) {
+    const out = copyList(list);
+    const before = (a, b) => {
+      if (a.target !== undefined) {
+        return a.target < b.target;
+      }
+      if (a.namespace !== b.namespace) {
+        return a.namespace === null || (b.namespace !== null && a.namespace < b.namespace);
+      }
+      return a.name < b.name;
+    };
+    for (let i = 1; i < out.length; i++) {
+      const item = out[i];
+      let j = i - 1;
+      while (j >= 0 && before(item, out[j])) {
+        out[j + 1] = out[j];
+        j--;
+      }
+      out[j + 1] = item;
+    }
+    for (let i = 0; i < out.length; i++) {
+      if (out[i].attributes !== undefined) {
+        out[i].attributes = sortedList(out[i].attributes);
+      }
+      if (out[i].removeAttributes !== undefined) {
+        out[i].removeAttributes = sortedList(out[i].removeAttributes);
+      }
+    }
+    return out;
+  }
+
+  class Sanitizer {
+    constructor(configuration = "default") {
+      const where = "Failed to construct 'Sanitizer': ";
+      let config;
+      if (isObjectValue(configuration) || configuration === null) {
+        config = configFrom(configuration, where, true);
+        if (!validConfig(config)) {
+          throw new $TypeError(where + "Invalid Sanitizer configuration.");
+        }
+      } else {
+        const preset = str(configuration);
+        if (preset !== "default") {
+          throw new $TypeError(where + "The provided value '" + preset +
+            "' is not a valid enum value of type SanitizerPresets.");
+        }
+        config = copyConfig(safeDefaultConfig());
+      }
+      WeakMapSet(sanitizerConfigs, this, config);
+    }
+
+    // The configuration, its keys and lists in order.
+    get() {
+      const config = sanitizerOf(this);
+      const out = {};
+      if (config.attributes !== undefined) {
+        out.attributes = sortedList(config.attributes);
+      }
+      out.comments = config.comments;
+      if (config.dataAttributes !== undefined) {
+        out.dataAttributes = config.dataAttributes;
+      }
+      const rest = [
+        "elements", "processingInstructions", "removeAttributes", "removeElements",
+        "removeProcessingInstructions", "replaceWithChildrenElements",
+      ];
+      for (let i = 0; i < rest.length; i++) {
+        if (config[rest[i]] !== undefined) {
+          out[rest[i]] = sortedList(config[rest[i]]);
+        }
+      }
+      return out;
+    }
+
+    allowElement(element) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "allowElement", "Sanitizer");
+      return allowElementIn(config, canonicalElement(element, prefix("allowElement",
+        "Sanitizer"), true));
+    }
+
+    removeElement(element) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "removeElement", "Sanitizer");
+      return removeElementIn(config, canonicalElement(element, prefix("removeElement",
+        "Sanitizer"), false));
+    }
+
+    replaceElementWithChildren(element) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "replaceElementWithChildren", "Sanitizer");
+      return replaceElementIn(config, canonicalElement(element,
+        prefix("replaceElementWithChildren", "Sanitizer"), false));
+    }
+
+    allowAttribute(attribute) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "allowAttribute", "Sanitizer");
+      return allowAttributeIn(config, canonicalAttribute(attribute,
+        prefix("allowAttribute", "Sanitizer")));
+    }
+
+    removeAttribute(attribute) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "removeAttribute", "Sanitizer");
+      return removeAttributeIn(config, canonicalAttribute(attribute,
+        prefix("removeAttribute", "Sanitizer")));
+    }
+
+    setComments(allow) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "setComments", "Sanitizer");
+      config.comments = !!allow;
+    }
+
+    setDataAttributes(allow) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "setDataAttributes", "Sanitizer");
+      config.dataAttributes = !!allow;
+    }
+
+    removeUnsafe() {
+      removeUnsafeIn(sanitizerOf(this));
+    }
+
+    allowProcessingInstruction(pi) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "allowProcessingInstruction", "Sanitizer");
+      return allowInstructionIn(config, canonicalInstruction(pi,
+        prefix("allowProcessingInstruction", "Sanitizer")));
+    }
+
+    removeProcessingInstruction(pi) {
+      const config = sanitizerOf(this);
+      need(arguments.length, 1, "removeProcessingInstruction", "Sanitizer");
+      return removeInstructionIn(config, canonicalInstruction(pi,
+        prefix("removeProcessingInstruction", "Sanitizer")));
+    }
+  }
+  expose(Sanitizer, "Sanitizer");
+
+  // ---- Sanitizing (HTML's "sanitize" and "set and filter HTML")
+
+  // The configuration `options`' `sanitizer` member gives (HTML's "get a
+  // sanitizer instance from options"): a Sanitizer's, a dictionary's, in
+  // which comments and data attributes are allowed by an unsafe method
+  // alone, or the built-in safe default's; for a safe method, with the
+  // safe baseline removed from a copy. Null for an unsafe method given
+  // none: nothing is removed.
+  function sanitizerConfigFrom(options, safe, method, iface) {
+    const where = prefix(method, iface);
+    const dictionary = safe ? "SetHTMLOptions" : "SetHTMLUnsafeOptions";
+    if (options !== undefined && options !== null && !isObjectValue(options)) {
+      throw new $TypeError(where + "The provided value is not of type '" + dictionary + "'.");
+    }
+    const spec = options === undefined || options === null ? undefined : options.sanitizer;
+    let config;
+    if (spec === undefined) {
+      if (!safe) {
+        return null;
+      }
+      return safeDefaultConfig();
+    }
+    const own = isObjectValue(spec) ? WeakMapGet(sanitizerConfigs, spec) : undefined;
+    if (own !== undefined) {
+      config = own;
+    } else if (isObjectValue(spec) || spec === null) {
+      config = configFrom(spec, readMember(where, "sanitizer", dictionary), !safe);
+      if (!validConfig(config)) {
+        throw new $TypeError(where + "Invalid Sanitizer configuration.");
+      }
+    } else {
+      const preset = str(spec);
+      if (preset !== "default") {
+        throw new $TypeError(readMember(where, "sanitizer", dictionary) + "The provided value '" +
+          preset + "' is not a valid enum value of type SanitizerPresets.");
+      }
+      config = safeDefaultConfig();
+    }
+    // The built-in default holds nothing unsafe.
+    if (safe && config !== safeDefault) {
+      config = copyConfig(config);
+      removeUnsafeIn(config);
+    }
+    return config;
+  }
+
+  // A `javascript:` URL, as the URL parser would find its scheme: the
+  // value with its leading and trailing C0 controls and spaces, and its
+  // tabs and newlines, gone.
+  function isJavascriptUrl(value) {
+    let start = 0;
+    let end = value.length;
+    while (start < end && CharCodeAt(value, start) <= 32) {
+      start++;
+    }
+    while (end > start && CharCodeAt(value, end - 1) <= 32) {
+      end--;
+    }
+    let scheme = "";
+    for (let i = start; i < end && scheme.length < 11; i++) {
+      const c = CharCodeAt(value, i);
+      if (c !== 9 && c !== 10 && c !== 13) {
+        scheme += value[i];
+      }
+    }
+    return ToLowerCase(scheme) === "javascript:";
+  }
+
+  // The built-in navigating URL attributes list: an element's attribute
+  // whose `javascript:` URL a safe method removes.
+  const NAVIGATING_URL_ATTRIBUTES = [
+    [HTML_NS, "a", null, "href"], [HTML_NS, "area", null, "href"],
+    [HTML_NS, "base", null, "href"], [HTML_NS, "button", null, "formaction"],
+    [HTML_NS, "form", null, "action"], [HTML_NS, "input", null, "formaction"],
+    [SVG_NS, "a", null, "href"], [SVG_NS, "a", XLINK_NS, "href"],
+  ];
+
+  // The built-in animating URL attributes list: SVG's animations' target
+  // attributes, which may not name `href`.
+  const ANIMATING_ELEMENTS = ["animate", "animateMotion", "animateTransform", "set"];
+
+  // Whether a safe method removes the attribute of namespace `ns` and
+  // local name `local` of value `value` from the element of namespace
+  // `elementNs` and local name `name` (HTML's "sanitize core", step
+  // 4.8.5): a `javascript:` URL that navigates, or an animation of an
+  // `href`.
+  function unsafeUrl(elementNs, name, ns, local, value) {
+    for (let i = 0; i < NAVIGATING_URL_ATTRIBUTES.length; i++) {
+      const [e, n, a, l] = NAVIGATING_URL_ATTRIBUTES[i];
+      if (e === elementNs && n === name && a === ns && l === local) {
+        return isJavascriptUrl(value);
+      }
+    }
+    if (elementNs === MATHML_NS && local === "href" && (ns === null || ns === XLINK_NS)) {
+      return isJavascriptUrl(value);
+    }
+    return elementNs === SVG_NS && ns === null && local === "attributeName" &&
+      includesString(ANIMATING_ELEMENTS, name) && (value === "href" || value === "xlink:href");
+  }
+
+  function configEntry(list, name, namespace) {
+    if (list === undefined) {
+      return undefined;
+    }
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].name === name && list[i].namespace === namespace) {
+        return list[i];
+      }
+    }
+    return undefined;
+  }
+
+  // HTML's "sanitize core": `handle`'s children kept, removed or replaced
+  // by their own children as `config` says, their attributes likewise,
+  // template contents and what is under each element sanitized too; the
+  // `javascript:` URLs that navigate removed when `safe`. Of a
+  // document's own children, only its element is sanitized.
+  function sanitizeTree(handle, config, safe) {
+    const top = native.kind(handle) === 9;
+    const children = native.children(handle);
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const kind = native.kind(child);
+      if (top && kind !== 1) {
+        continue;
+      }
+      if (kind === 8) {
+        if (config.comments !== true) {
+          native.remove(handle, child);
+        }
+        continue;
+      }
+      if (kind === 7) {
+        const pi = { target: wrap(child).target };
+        if ((config.processingInstructions !== undefined &&
+          !hasItem(config.processingInstructions, pi, sameTarget)) ||
+          hasItem(config.removeProcessingInstructions, pi, sameTarget)) {
+          native.remove(handle, child);
+        }
+        continue;
+      }
+      if (kind !== 1) {
+        continue;
+      }
+      const element = wrap(child);
+      const name = element.localName;
+      const namespace = nsOf(element);
+      const named = { name, namespace };
+      if (hasItem(config.replaceWithChildrenElements, named)) {
+        sanitizeTree(child, config, safe);
+        for (let grand = native.firstChild(child); grand !== null;
+          grand = native.firstChild(child)) {
+          native.insert(handle, grand, child);
+        }
+        native.remove(handle, child);
+        continue;
+      }
+      if (hasItem(config.removeElements, named) ||
+        (config.elements !== undefined && !hasItem(config.elements, named))) {
+        native.remove(handle, child);
+        continue;
+      }
+      if (name === "template" && namespace === HTML_NS) {
+        sanitizeTree(native.templateContent(child), config, safe);
+      }
+      sanitizeAttributes(child, name, namespace, config, safe);
+      sanitizeTree(child, config, safe);
+    }
+  }
+
+  // The attributes of element `child` the configuration does not keep,
+  // removed (HTML's "sanitize core", step 4.8).
+  function sanitizeAttributes(child, name, namespace, config, safe) {
+    const own = configEntry(config.elements, name, namespace);
+    const names = native.attributeNames(child);
+    const namespaces = native.attributeNamespaces(child);
+    const gone = [];
+    for (let i = 0; i < names.length; i++) {
+      const ns = namespaces[i] === "" ? null : namespaces[i];
+      const local = ns === null ? names[i] : localPart(names[i]);
+      const attribute = { name: local, namespace: ns };
+      let remove;
+      if (own !== undefined && hasItem(own.removeAttributes, attribute)) {
+        remove = true;
+      } else if (config.attributes !== undefined) {
+        remove = !hasItem(config.attributes, attribute) &&
+          !(own !== undefined && hasItem(own.attributes, attribute)) &&
+          !(config.dataAttributes === true && isDataAttribute(attribute));
+      } else if (own !== undefined && own.attributes !== undefined) {
+        remove = !hasItem(own.attributes, attribute);
+      } else {
+        remove = hasItem(config.removeAttributes, attribute);
+      }
+      if (!remove && safe) {
+        const value = native.attributeNS(child, ns, local);
+        remove = value !== null && unsafeUrl(namespace, name, ns, local, value);
+      }
+      if (remove) {
+        ArrayPush(gone, [ns, local]);
+      }
+    }
+    for (let i = 0; i < gone.length; i++) {
+      native.removeAttributeNS(child, gone[i][0], gone[i][1]);
+    }
+  }
+
+  // HTML's "set and filter HTML": `html` parsed as a fragment in the
+  // context of the element `context`, sanitized as `options` say, safe
+  // or not, and put in place of `target`'s children in one operation.
+  // A safe method leaves a script element alone. The core of `setHTML`
+  // and `setHTMLUnsafe` whatever `target` is: an element, a template's
+  // contents, or a shadow root, its host the context.
+  function setAndFilterHTML(target, context, html, options, safe, method, iface) {
+    const contextHandle = handleOf(context);
+    if (safe && context.localName === "script" &&
+      (nsOf(context) === HTML_NS || nsOf(context) === SVG_NS)) {
+      return;
+    }
+    const config = sanitizerConfigFrom(options, safe, method, iface);
+    let fragment;
+    try {
+      fragment = native.parseHtmlFragment(contextHandle, html);
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
+    if (config !== null) {
+      sanitizeTree(fragment, config, safe);
+    }
+    try {
+      native.replaceAll(target, fragment);
+    } catch (error) {
+      throw failed(error, method, iface);
+    }
+  }
+
+  // The node an element's markup goes into: a template's contents.
+  function markupTarget(handle) {
+    const contents = native.templateContent(handle);
+    return contents === null ? handle : contents;
+  }
+
+  include(
+    {
+      setHTML(html, options = undefined) {
+        const handle = self(this);
+        need(arguments.length, 1, "setHTML", "Element");
+        setAndFilterHTML(markupTarget(handle), this, str(html), options, true, "setHTML",
+          "Element");
+      },
+
+      setHTMLUnsafe(html, options = undefined) {
+        const handle = self(this);
+        need(arguments.length, 1, "setHTMLUnsafe", "Element");
+        setAndFilterHTML(markupTarget(handle), this, str(html), options, false,
+          "setHTMLUnsafe", "Element");
+      },
+    },
+    [Element.prototype],
+  );
+
+  // `Document.parseHTML` and `parseHTMLUnsafe` (HTML section 8.5.1): `html`
+  // parsed as a document of its own, scripting off, and sanitized as
+  // `options` say, safe or not.
+  function parseHTMLDocument(html, options, safe, method) {
+    const config = sanitizerConfigFrom(options, safe, method, "Document");
+    let document;
+    try {
+      document = native.parseDocument(html, "text/html");
+    } catch (error) {
+      throw failed(error, method, "Document");
+    }
+    if (config !== null) {
+      sanitizeTree(document, config, safe);
+    }
+    return wrap(document);
+  }
+
+  defineProperty(Document, "parseHTML", {
+      __proto__: null,
+    value: {
+      parseHTML(html, options = undefined) {
+        need(arguments.length, 1, "parseHTML", "Document");
+        return parseHTMLDocument(str(html), options, true, "parseHTML");
+      },
+    }.parseHTML,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(Document, "parseHTMLUnsafe", {
+      __proto__: null,
+    value: {
+      parseHTMLUnsafe(html, options = undefined) {
+        need(arguments.length, 1, "parseHTMLUnsafe", "Document");
+        return parseHTMLDocument(str(html), options, false, "parseHTMLUnsafe");
+      },
+    }.parseHTMLUnsafe,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
   // `<style>.sheet` and `<link>.sheet` (D66).
   include(elementSheet, [
     MapGet(interfaces, "style").prototype,
@@ -14713,6 +16368,7 @@
       ["rel", "rel", "string"],
       ["hreflang", "hreflang", "string"],
       ["type", "type", "string"],
+      ["name", "name", "string"],
     ]],
     ["HTMLBaseElement", [
       ["href", "href", "url", "fallback base"],
@@ -15202,10 +16858,21 @@
   // A URL to navigate to, after the run; or the SyntaxError for one that
   // does not parse, in the reference browser's words.
   function navigate(url, replace, member, setter) {
+    let fragment;
     try {
-      native.navigate(url, replace);
+      fragment = native.navigate(url, replace);
     } catch (error) {
       throw setter ? failedSet(error, member, "Location") : failed(error, member, "Location");
+    }
+    // To a fragment of the document's URL, the navigation is done when
+    // the call returns (HTML's "navigate to a fragment"): `popstate` is
+    // fired with the new entry's state, null.
+    if (fragment === true) {
+      historyState = null;
+      historyStateKnown = true;
+      const event = new PopStateEvent("popstate", made(POP_STATE_INIT, ["state", null]));
+      eventState(event).trusted = true;
+      drain(dispatching(global, event));
     }
   }
 
@@ -15269,6 +16936,10 @@
       }
       const href = locationPart(0);
       const at = StringIndexOf(href, "#");
+      // The fragment the URL has already: nothing to navigate to.
+      if (at >= 0 && StringSlice(href, at + 1) === fragment) {
+        return;
+      }
       const base = at < 0 ? href : StringSlice(href, 0, at);
       navigate(base + "#" + fragment, false, "hash", true);
     }
@@ -15293,6 +16964,129 @@
   }
   expose(Location, "Location");
   const location = new Location(KEY);
+
+  // ---- History (HTML section 7.2.2) --------------------------------------
+
+  // The document's history object state, what `history.state` gives: read
+  // from the entry the document was shown for at its first ask, then set
+  // by `pushState`, `replaceState` and the traversals between its
+  // entries, each as its serialized state made again.
+  let historyStateKnown = false;
+  let historyState = null;
+
+  function setHistoryState(text) {
+    try {
+      historyState = deserialize(unwire(text));
+    } catch {
+      historyState = null;
+    }
+    historyStateKnown = true;
+  }
+
+  // HTML's "shared history push/replace state steps": the state
+  // serialized for storage, the URL checked and set by the host, which
+  // puts a new entry after the current one or the current one's place.
+  function pushHistory(data, unused, url, replace, method) {
+    str(unused);
+    const given = url === null ? null : str(url);
+    const text = wire(serialize(data, [], prefix(method, "History"), null));
+    try {
+      native.historyPush(text, given, replace);
+    } catch (error) {
+      throw failed(error, method, "History");
+    }
+    setHistoryState(text);
+  }
+
+  class History {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("History");
+      }
+    }
+
+    get length() {
+      historyOf(this);
+      return native.historyLength();
+    }
+
+    get scrollRestoration() {
+      historyOf(this);
+      return native.historyScroll() ? "manual" : "auto";
+    }
+
+    // An enumeration's attribute: a value not of it is ignored.
+    set scrollRestoration(value) {
+      historyOf(this);
+      const mode = str(value);
+      if (mode === "auto" || mode === "manual") {
+        native.historyScroll(mode === "manual");
+      }
+    }
+
+    get state() {
+      historyOf(this);
+      if (!historyStateKnown) {
+        const text = native.historyState();
+        if (text === null) {
+          historyStateKnown = true;
+        } else {
+          setHistoryState(text);
+        }
+      }
+      return historyState;
+    }
+
+    go(delta = 0) {
+      historyOf(this);
+      native.historyGo($Number(delta) | 0);
+    }
+
+    back() {
+      historyOf(this);
+      native.historyGo(-1);
+    }
+
+    forward() {
+      historyOf(this);
+      native.historyGo(1);
+    }
+
+    pushState(data, unused, url = null) {
+      historyOf(this);
+      need(arguments.length, 2, "pushState", "History");
+      pushHistory(data, unused, url === undefined ? null : url, false, "pushState");
+    }
+
+    replaceState(data, unused, url = null) {
+      historyOf(this);
+      need(arguments.length, 2, "replaceState", "History");
+      pushHistory(data, unused, url === undefined ? null : url, true, "replaceState");
+    }
+  }
+  expose(History, "History");
+  const history = new History(KEY);
+
+  function historyOf(value) {
+    if (value !== history) {
+      throw illegalInvocation();
+    }
+  }
+
+  // A traversal to another entry of the document's (the engine's
+  // `popstate` task): its state is the document's history object state,
+  // and `popstate` is fired at the window with it.
+  function* popStateTask(text) {
+    if (text === null) {
+      historyState = null;
+      historyStateKnown = true;
+    } else {
+      setHistoryState(text);
+    }
+    const event = new PopStateEvent("popstate", made(POP_STATE_INIT, ["state", historyState]));
+    eventState(event).trusted = true;
+    return yield* dispatching(global, event);
+  }
 
   // ---- Navigator (HTML section 8.10.1), by D12 -------------------------
 
@@ -15617,6 +17411,10 @@
 
     set location(value) {
       location.href = value;
+    }
+
+    get history() {
+      return history;
     }
 
     get origin() {
@@ -23861,6 +25659,7 @@
     mediaChanged,
     mutations: mutationsTask,
     observations: observationsTask,
+    popState: popStateTask,
     broadcast: broadcastTask,
     namedSync,
     mutationsQueued: queueMutationObserverMicrotask,

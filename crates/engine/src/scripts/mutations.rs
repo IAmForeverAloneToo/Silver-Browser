@@ -263,6 +263,41 @@ impl MutationObservers {
         }
     }
 
+    /// Queues the records of `changes`, those of one DOM "replace all" of
+    /// `parent`'s children: the changes to them are one record of every
+    /// node removed and every node inserted, a node taken out and put back
+    /// among both, with no siblings, queued after the records of the
+    /// operation's other changes (an adoption from another parent, a
+    /// fragment's emptying), as the DOM queues it last.
+    pub(crate) fn record_replace_all(&mut self, changes: Vec<Mutation>, parent: NodeId) {
+        let (own, others): (Vec<Mutation>, Vec<Mutation>) = changes.into_iter().partition(
+            |m| matches!(m.change, Mutated::ChildList { parent: of, .. } if of == parent),
+        );
+        self.record(others, true);
+        let mut record = Record::new(Kind::ChildList, parent);
+        let mut watched: Option<Vec<NodeId>> = None;
+        for Mutation {
+            change,
+            watched: by,
+        } in own
+        {
+            if by.is_empty() {
+                continue;
+            }
+            if let Mutated::ChildList { added, removed, .. } = change {
+                if let Some(node) = removed {
+                    self.transients(&by, node);
+                }
+                record.added.extend(added);
+                record.removed.extend(removed);
+                watched.get_or_insert(by);
+            }
+        }
+        if let Some(watched) = watched {
+            self.queue(record, &watched);
+        }
+    }
+
     /// DOM's removing steps for observers: each registration with
     /// `subtree` on a watched inclusive ancestor of the parent, as
     /// `watched` gives them, gains a transient one on `node`, taken out

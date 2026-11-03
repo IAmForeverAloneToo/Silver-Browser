@@ -538,6 +538,12 @@ pub enum Task {
     /// Records wait for mutation observers that no call of a script's
     /// queued (the parser's insertions): the realm tells them.
     Mutations,
+    /// The session history was traversed to another entry of the
+    /// document's (HTML's "update document for history step
+    /// application"): the entry's state, as serialized (`None` for
+    /// null), becomes `history.state`, and `popstate` is fired at the
+    /// window with it.
+    PopState(Option<String>),
     /// The `matchMedia()` lists whose answer changed in a frame's update
     /// (gap batch A), by their numbers: a `change` at each.
     MediaChanged(Vec<u32>),

@@ -10,6 +10,8 @@
 //! engine's to say: this module keeps the list, its limits and the
 //! cache's.
 
+use std::sync::Arc;
+
 use net::Url;
 
 /// The most entries a history holds: past it, the oldest goes, as in
@@ -42,6 +44,27 @@ pub(crate) struct Entry {
     /// Whether a form's POST made its document (M26.9): a reload or a
     /// traversal does not send it again.
     pub(crate) posted: bool,
+    /// Its classic history API state (HTML section 7.4.1.1): what
+    /// `pushState` or `replaceState` gave it, as the bindings serialize
+    /// it; none for null.
+    pub(crate) classic: Option<Arc<str>>,
+    /// Whether its scroll restoration mode is `manual`: a traversal to it
+    /// leaves the scroll position as it is.
+    pub(crate) manual: bool,
+}
+
+impl Entry {
+    /// A new entry for `url` of document state `state`.
+    fn new(url: Option<Url>, state: StateId) -> Entry {
+        Entry {
+            url,
+            state,
+            scroll: 0.0,
+            posted: false,
+            classic: None,
+            manual: false,
+        }
+    }
 }
 
 /// The session history, and the back-forward cache of `D`s, the
@@ -59,12 +82,7 @@ impl<D> History<D> {
     /// A history of one entry, for `url`, with a new state.
     pub(crate) fn new(url: Option<Url>) -> History<D> {
         History {
-            entries: vec![Entry {
-                url,
-                state: 0,
-                scroll: 0.0,
-                posted: false,
-            }],
+            entries: vec![Entry::new(url, 0)],
             current: 0,
             next_state: 1,
             kept: Vec::new(),
@@ -99,15 +117,7 @@ impl<D> History<D> {
     /// Makes the history `urls`, each a new state, the current entry the
     /// one at `index`; nothing is kept.
     pub(crate) fn restore(&mut self, urls: Vec<Option<Url>>, index: usize) {
-        self.entries = urls
-            .into_iter()
-            .map(|url| Entry {
-                url,
-                state: 0,
-                scroll: 0.0,
-                posted: false,
-            })
-            .collect();
+        self.entries = urls.into_iter().map(|url| Entry::new(url, 0)).collect();
         for at in 0..self.entries.len() {
             let state = self.new_state();
             self.entries[at].state = state;
@@ -145,12 +155,7 @@ impl<D> History<D> {
     /// go with them.
     pub(crate) fn push(&mut self, url: Option<Url>, state: StateId) {
         self.entries.truncate(self.current + 1);
-        self.entries.push(Entry {
-            url,
-            state,
-            scroll: 0.0,
-            posted: false,
-        });
+        self.entries.push(Entry::new(url, state));
         if self.entries.len() > MAX_ENTRIES {
             let over = self.entries.len() - MAX_ENTRIES;
             self.entries.drain(..over);
@@ -161,12 +166,7 @@ impl<D> History<D> {
 
     /// Puts a new entry in the current one's place.
     pub(crate) fn replace(&mut self, url: Option<Url>, state: StateId) {
-        self.entries[self.current] = Entry {
-            url,
-            state,
-            scroll: 0.0,
-            posted: false,
-        };
+        self.entries[self.current] = Entry::new(url, state);
         self.prune();
     }
 

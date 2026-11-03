@@ -423,6 +423,8 @@ pub(crate) struct WindowEnv {
     /// Who its dialogs are asked of (gap batch A, D43); no one while the
     /// window is hidden, or its document being unloaded.
     pub(crate) asker: Option<Arc<dyn crate::prompts::Asker>>,
+    /// The session history as the document sees it.
+    pub(crate) history: HistoryView,
 }
 
 /// A document's time origin (High Resolution Time): the engine's clock
@@ -459,6 +461,77 @@ pub(crate) struct ScriptNavigation {
     /// The link or form followed, whose `referrerpolicy` and `rel` say
     /// what referrer goes (M33.3).
     pub(crate) element: Option<NodeId>,
+}
+
+/// The session history as a document's scripts see it (HTML section
+/// 7.2.2): how many entries it has, the current one's index, the state
+/// and scroll restoration mode of the entry the document is shown for,
+/// and whether the document is the initial `about:blank`, whose entry a
+/// push replaces.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct HistoryView {
+    pub(crate) length: usize,
+    pub(crate) index: usize,
+    pub(crate) state: Option<Arc<str>>,
+    pub(crate) manual: bool,
+    pub(crate) initial: bool,
+}
+
+impl HistoryView {
+    /// The view after `op`, as the engine will apply it: a push drops
+    /// the entries after the current one, and the oldest past
+    /// [`crate::navigation::MAX_ENTRIES`].
+    pub(crate) fn after(&mut self, op: &HistoryOp) {
+        match op {
+            HistoryOp::Push { state, .. } if !self.initial => {
+                self.length = (self.index + 2).min(crate::navigation::MAX_ENTRIES);
+                self.index = self.length - 1;
+                self.state = Some(state.clone());
+            }
+            HistoryOp::Push { state, .. } | HistoryOp::Replace { state, .. } => {
+                self.state = Some(state.clone());
+            }
+            HistoryOp::Fragment { replace, .. } => {
+                if !replace && !self.initial {
+                    self.length = (self.index + 2).min(crate::navigation::MAX_ENTRIES);
+                    self.index = self.length - 1;
+                }
+                self.state = None;
+            }
+            HistoryOp::ScrollRestoration(manual) => self.manual = *manual,
+            HistoryOp::Traverse(_) => {}
+        }
+    }
+}
+
+/// What a document's scripts did to the session history (HTML section
+/// 7.2.2), which the engine applies after the run, in order: an entry for
+/// `url` with `state` pushed after the current one, of the same document,
+/// or put in its place; the current entry's scroll restoration mode set;
+/// a traversal by a delta queued; or a fragment navigated to. A new
+/// entry's `scroll` is the viewport's offset when it was made, which the
+/// entry it follows keeps, the scripts' scrolls after it apart.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum HistoryOp {
+    Push {
+        url: Url,
+        state: Arc<str>,
+        scroll: f32,
+    },
+    Replace {
+        url: Url,
+        state: Arc<str>,
+    },
+    ScrollRestoration(bool),
+    Traverse(i32),
+    /// A navigation of the document's to a fragment of its URL (HTML's
+    /// "navigate to a fragment"), its URL already the document's and the
+    /// fragment scrolled to by the scripts' host.
+    Fragment {
+        url: Url,
+        replace: bool,
+        scroll: f32,
+    },
 }
 
 /// How a script is run.
@@ -768,6 +841,10 @@ pub(crate) struct Scripts {
     aborted: bool,
     /// The last navigation its scripts asked for, for the engine to start.
     navigation: Option<ScriptNavigation>,
+    /// What its scripts did to the session history, for the engine to
+    /// apply, and the document's URL before they first changed it.
+    history: Vec<HistoryOp>,
+    history_base: Option<Url>,
     /// The element a script focused, to be scrolled into view (M26.6).
     scroll_to: Option<NodeId>,
     /// The scroll offsets scripts set (D65), the viewport's as `None`.
@@ -851,6 +928,8 @@ impl Scripts {
             notice: None,
             aborted: false,
             navigation: None,
+            history: Vec::new(),
+            history_base: None,
             fetching: HashMap::new(),
             answers: VecDeque::new(),
             posted: VecDeque::new(),
@@ -897,6 +976,26 @@ impl Scripts {
     /// last asked, if any: the last of them.
     pub(crate) fn take_navigation(&mut self) -> Option<ScriptNavigation> {
         self.navigation.take()
+    }
+
+    /// What the document's scripts did to the session history since this
+    /// was last asked, in order.
+    pub(crate) fn take_history(&mut self) -> Vec<HistoryOp> {
+        self.history_base = None;
+        std::mem::take(&mut self.history)
+    }
+
+    /// The document's URL before what its scripts did to the session
+    /// history changed it, while that is not taken: the URL of the entry
+    /// a document on its way is shown in.
+    pub(crate) fn history_base(&self) -> Option<&Url> {
+        self.history_base.as_ref()
+    }
+
+    /// What they did that is not yet taken: a document on its way keeps
+    /// it until it is shown.
+    pub(crate) fn pending_history(&self) -> &[HistoryOp] {
+        &self.history
     }
 
     /// The HTML a `javascript:` URL the loading document ran ended with,
@@ -1827,6 +1926,7 @@ impl Scripts {
             scale,
             time,
             |ancestor, node| document.is_inclusive_ancestor(ancestor, node),
+            |node| document.owner_document(node) == document.root(),
         );
         if let Some(told) = told {
             self.enter(lent, &js::Task::Observations(told), 0);
@@ -1967,6 +2067,10 @@ impl Scripts {
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
         }
+        self.history.extend(outputs.history);
+        if self.history_base.is_none() {
+            self.history_base = outputs.url_before_history;
+        }
         if dead {
             self.stop();
         }
@@ -2086,6 +2190,10 @@ impl Scripts {
         self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
+        }
+        self.history.extend(outputs.history);
+        if self.history_base.is_none() {
+            self.history_base = outputs.url_before_history;
         }
         if dead {
             self.stop();

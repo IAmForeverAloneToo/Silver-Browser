@@ -179,7 +179,15 @@ impl LayoutObservers {
     /// The entries a frame's measurements make, as JSON for the realm to
     /// deliver (`None` when there are none): the viewport's size,
     /// `scale` device pixels to a CSS pixel, the time on the document's
-    /// clock, and whether a node is the inclusive ancestor of another.
+    /// clock, whether a node is the inclusive ancestor of another, and
+    /// whether a node is of the document observed, the page's: a target
+    /// of another document (one a script made, or a template's) is never
+    /// rendered, so an observer of the implicit root does not update its
+    /// observations until it is adopted into the page's, as the reference
+    /// browser updates them only in a rendered document's lifecycle; one
+    /// of an element root finds it outside the root, not intersecting
+    /// (Intersection Observer's "update intersection observations", step
+    /// 2.2.1).
     pub(crate) fn observed(
         &mut self,
         measured: &HashMap<NodeId, Measured>,
@@ -187,6 +195,7 @@ impl LayoutObservers {
         scale: f32,
         now: f64,
         is_ancestor: impl Fn(NodeId, NodeId) -> bool,
+        of_page: impl Fn(NodeId) -> bool,
     ) -> Option<String> {
         let mut resize = Vec::new();
         for (&observer, targets) in &mut self.resize {
@@ -237,6 +246,9 @@ impl LayoutObservers {
             });
             let mut entries = Vec::new();
             for t in o.targets.iter_mut() {
+                if o.root.is_none() && !of_page(t.0) {
+                    continue;
+                }
                 let m = measured.get(&t.0);
                 let bounds = m.map_or([0.0; 4], |m| m.bounds);
                 let within = o.root.is_none_or(|r| r != t.0 && is_ancestor(r, t.0));
@@ -333,7 +345,7 @@ mod tests {
         let mut observers = LayoutObservers::default();
         observers.resize_observe(1, a, ObservedBox::Content);
         let mut tell = |m: &HashMap<NodeId, Measured>| {
-            observers.observed(m, (100.0, 100.0), 2.0, 0.0, |_, _| true)
+            observers.observed(m, (100.0, 100.0), 2.0, 0.0, |_, _| true, |_| true)
         };
         let measured: HashMap<_, _> = [(a, boxed([0.0, 0.0, 20.0, 10.0]))].into();
         let told = tell(&measured).expect("the first size");
@@ -359,7 +371,7 @@ mod tests {
         );
         let mut at = |bounds: [f32; 4]| {
             let measured: HashMap<_, _> = [(a, boxed(bounds))].into();
-            observers.observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| true)
+            observers.observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| true, |_| true)
         };
         // Wholly in view: index 3.
         let told = at([10.0, 10.0, 20.0, 20.0]).unwrap();
@@ -393,11 +405,34 @@ mod tests {
         );
         let measured: HashMap<_, _> = [(a, boxed([10.0, 110.0, 20.0, 20.0]))].into();
         let told = observers
-            .observed(&measured, (100.0, 80.0), 1.0, 5.0, |_, _| true)
+            .observed(&measured, (100.0, 80.0), 1.0, 5.0, |_, _| true, |_| true)
             .unwrap();
         assert!(
             told.contains("\"root\":[0,0,100,120]") && told.contains("\"intersecting\":true"),
             "{told}"
         );
+    }
+
+    #[test]
+    fn a_target_of_another_document_is_not_observed_until_it_is_the_pages() {
+        let mut doc = dom::Document::new();
+        let a = node(&mut doc);
+        let mut observers = LayoutObservers::default();
+        observers.intersection_observe(1, a, None, [(0.0, false); 4], vec![0.0]);
+        let measured: HashMap<_, _> = [(a, boxed([10.0, 10.0, 20.0, 20.0]))].into();
+        let mut tell = |ours: bool| {
+            observers.observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| true, |_| ours)
+        };
+        assert_eq!(tell(false), None, "nothing while it is another document's");
+        let told = tell(true).expect("its first observation once it is the page's");
+        assert!(told.contains("\"intersecting\":true"), "{told}");
+        assert_eq!(tell(true), None);
+        // An element root's observer finds it outside the root.
+        let root = doc.create_element("div").unwrap();
+        observers.intersection_observe(2, a, Some(root), [(0.0, false); 4], vec![0.0]);
+        let told = observers
+            .observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| false, |_| false)
+            .expect("an observation of another document's target");
+        assert!(told.contains("\"intersecting\":false"), "{told}");
     }
 }
