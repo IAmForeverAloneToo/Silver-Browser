@@ -323,7 +323,7 @@ impl<'a> Matcher<'a> {
             && ending
                 .states
                 .iter()
-                .all(|state| state_matches(state, self.document.state(element)))
+                .all(|state| state_matches(state, self.document, element))
             && self.matches_compounds(slot, selector)
     }
 
@@ -345,11 +345,12 @@ impl<'a> Matcher<'a> {
         let PseudoArgument::Part(wanted) = &ending.argument else {
             return false;
         };
+        // Its states are a real element's: any of them matched as such.
         wanted.iter().all(|name| names.contains(&name.as_str()))
             && ending
                 .states
                 .iter()
-                .all(|state| state_matches(state, self.document.state(element)))
+                .all(|state| self.matches_pseudo_class(element, state))
             && self.matches_compounds(host, selector)
     }
 
@@ -415,7 +416,7 @@ impl<'a> Matcher<'a> {
             && ending
                 .states
                 .iter()
-                .all(|state| state_matches(state, self.document.state(element)))
+                .all(|state| state_matches(state, self.document, element))
             && self.document.is_element(element)
             && self.matches_compounds(element, selector)
     }
@@ -851,7 +852,9 @@ impl<'a> Matcher<'a> {
             | PseudoClass::Modal
             | PseudoClass::PopoverOpen
             | PseudoClass::InterestSource
-            | PseudoClass::InterestTarget => state_matches(pc, document.state(element)),
+            | PseudoClass::InterestTarget => state_matches(pc, document, element),
+            PseudoClass::Defined => document.is_defined(element),
+            PseudoClass::State(name) => document.has_custom_state(element, name),
             PseudoClass::Visited => false,
             // HTML §4.16.3: `a` and `area` elements with an `href`.
             // An SVG `a` with an `href`, or its `xlink:href`, is one too.
@@ -924,7 +927,8 @@ impl<'a> Matcher<'a> {
     }
 
     /// Where the element's language comes from: the nearest `lang`
-    /// attribute on it or an ancestor, an empty one included, else the
+    /// attribute on it or a shadow-including ancestor (an element of a
+    /// shadow tree has its host's, D68), an empty one included, else the
     /// default. Kept for every element walked, so the elements of a
     /// document cost one walk between them.
     fn language_source(&mut self, element: NodeId) -> LanguageSource {
@@ -945,7 +949,7 @@ impl<'a> Matcher<'a> {
             if document.attr(node, "lang").is_some() {
                 break LanguageSource::Attribute(node);
             }
-            at = document.parent(node);
+            at = document.host_or_parent(node);
         };
         for node in walked {
             self.languages[node.index()] = Some(source);
@@ -1433,24 +1437,26 @@ fn required(document: &Document, element: NodeId) -> Option<bool> {
     applies.then(|| document.attr(element, "required").is_some())
 }
 
-/// Whether a state pseudo-class holds for an element in state `flags`
-/// (M26.4): `:hover`, `:active`, `:focus`, `:focus-visible`,
-/// `:focus-within` and `:target` read them, and the top layer's `:modal`
-/// and `:popover-open` and the invokers' `:interest-source` and
-/// `:interest-target` (gap batch H). After a pseudo-element, its
-/// user-action states are its originating element's, and `:is()`,
-/// `:where()` and `:not()` of them follow from that.
-fn state_matches(state: &PseudoClass, flags: ElementState) -> bool {
+/// Whether a state pseudo-class holds for `element` (M26.4): `:hover`,
+/// `:active`, `:focus`, `:focus-visible`, `:focus-within` and `:target`
+/// read its state flags, and the top layer's `:modal` and
+/// `:popover-open` and the invokers' `:interest-source` and
+/// `:interest-target` (gap batch H); `:state()` reads its custom states
+/// (D70). After a pseudo-element, its states are its originating
+/// element's, and `:is()`, `:where()` and `:not()` of them follow from
+/// that.
+fn state_matches(state: &PseudoClass, document: &Document, element: NodeId) -> bool {
     let any = |list: &SelectorList| {
         list.0.iter().any(|selector| {
             selector.compounds.iter().all(|compound| {
                 compound.simple.iter().all(|simple| match simple {
-                    SimpleSelector::PseudoClass(state) => state_matches(state, flags),
+                    SimpleSelector::PseudoClass(state) => state_matches(state, document, element),
                     _ => false,
                 })
             })
         })
     };
+    let flags = document.state(element);
     match state {
         PseudoClass::Hover => flags.contains(ElementState::HOVER),
         PseudoClass::Active => flags.contains(ElementState::ACTIVE),
@@ -1462,6 +1468,7 @@ fn state_matches(state: &PseudoClass, flags: ElementState) -> bool {
         PseudoClass::PopoverOpen => flags.contains(ElementState::POPOVER_OPEN),
         PseudoClass::InterestSource => flags.contains(ElementState::INTEREST_SOURCE),
         PseudoClass::InterestTarget => flags.contains(ElementState::INTEREST_TARGET),
+        PseudoClass::State(name) => document.has_custom_state(element, name),
         PseudoClass::Not(list) => !any(list),
         PseudoClass::Is(list) | PseudoClass::Where(list) => any(list),
         _ => false,

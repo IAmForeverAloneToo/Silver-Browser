@@ -288,7 +288,7 @@ pub(crate) fn document_height(layout: &DocumentLayout) -> f32 {
 /// ([`crate::Engine::hit_test`]): the node and the clipping boxes
 /// around it, outermost first; the outer `<svg>` hit and the point in
 /// it, for its render tree to answer; and every node under the point,
-/// in paint order.
+/// in paint order, each with whether a text run of it was hit.
 #[allow(clippy::type_complexity)]
 pub(crate) fn hit(
     layout: &DocumentLayout,
@@ -296,7 +296,11 @@ pub(crate) fn hit(
     offsets: &dyn ScrollOffsets,
     x: f32,
     y: f32,
-) -> (Option<(NodeId, Vec<NodeId>)>, Option<SvgPoint>, Vec<NodeId>) {
+) -> (
+    Option<(NodeId, Vec<NodeId>)>,
+    Option<SvgPoint>,
+    Vec<(NodeId, bool)>,
+) {
     // The clips in force, outermost first, each with how many
     // groups deep it was met: the chain around a hit, which a
     // generated box's clip is not part of, as it does not scroll.
@@ -370,14 +374,14 @@ pub(crate) fn hit(
                         chain.push(fragment.node);
                     }
                     hit = Some((fragment.node, chain));
-                    all.push(fragment.node);
+                    all.push((fragment.node, false));
                     in_svg = None;
                 }
             }
             Step::Text { fragment, rect, .. } => {
                 if under(&rect, &clips, &points) {
                     hit = Some((fragment.node, chain(&clips)));
-                    all.push(fragment.node);
+                    all.push((fragment.node, true));
                     let (px, py) = points[points.len() - 1];
                     in_svg = match &fragment.kind {
                         layout::FragmentKind::Replaced(layout::Replaced::Svg { node, .. }) => {

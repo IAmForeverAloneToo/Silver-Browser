@@ -1172,16 +1172,18 @@ impl Stylesheets {
 
     /// The keyframes of the `@keyframes` rule named `name` in force under
     /// `media`, processed, as a CSS animation's effect reads them (D75);
-    /// `None` when no rule of the name is.
+    /// `None` when no rule of the name is. The name is looked up as the
+    /// cascade looks it up for the tree whose rule gave it, `tree` (a
+    /// shadow root, D69): in that tree's sheets, then each host's tree
+    /// outwards, then the document's (CSS Scoping 1 section 3.5).
     pub fn keyframes_named(
         &self,
+        document: &Document,
+        tree: Option<NodeId>,
         name: &str,
         media: &Media,
     ) -> Option<Vec<crate::keyframes::CssKeyframe>> {
-        let answers = self.rules.answers(media);
-        let in_force = self.rules.keyframes_in_force(&self.sheets, &answers);
-        let rule = in_force.get(name)?;
-        Some(
+        let processed = |rule: &KeyframesInForce<'_>| {
             rule.keyframes
                 .keyframes
                 .iter()
@@ -1191,8 +1193,29 @@ impl Stylesheets {
                     composite: keyframe.composite,
                     declarations: rule.declarations(keyframe).cloned().collect(),
                 })
-                .collect(),
-        )
+                .collect()
+        };
+        let mut at = tree;
+        let mut steps = 0;
+        while let Some(root) = at.filter(|_| steps < dom::MAX_DEPTH) {
+            if let Some(set) = self.shadow.get(&root)
+                && set.rules.has_keyframes()
+            {
+                let answers = set.rules.answers(media);
+                let in_force = set.rules.keyframes_in_force(&set.sheets, &answers);
+                if let Some(rule) = in_force.get(name) {
+                    return Some(processed(rule));
+                }
+            }
+            at = document
+                .shadow_host(root)
+                .map(|host| document.root_of(host))
+                .filter(|&outer| document.is_shadow_root(outer));
+            steps += 1;
+        }
+        let answers = self.rules.answers(media);
+        let in_force = self.rules.keyframes_in_force(&self.sheets, &answers);
+        Some(processed(in_force.get(name)?))
     }
 
     /// The answers of the UA sheet's `@media` lists, then these sheets',
@@ -3723,6 +3746,11 @@ struct Applied<'a> {
     /// it gives, as `animation-name` does, is looked up first (CSS
     /// Scoping 1 section 3.5).
     tree: Option<NodeId>,
+    /// For a `::part()` rule's declaration, the host the element is a
+    /// part of in the rule's tree: its originating element, whose
+    /// attributes `attr()` reads (Values 5 section 7.7, as the reference
+    /// browser has it).
+    originating: Option<NodeId>,
     /// A stylesheet's declaration, borrowed, or an inline style's, parsed
     /// for the element.
     decl: Cow<'a, css::Declaration>,
@@ -3840,6 +3868,7 @@ fn declarations_for<'a>(
             rule: ua_important,
             context: own,
             tree: own_root,
+            originating: None,
             decl: Cow::Owned(decl),
             container: None,
         });
@@ -3859,6 +3888,7 @@ fn declarations_for<'a>(
             rule: hints,
             context: own,
             tree: own_root,
+            originating: None,
             decl: Cow::Owned(decl),
             container: None,
         });
@@ -3880,6 +3910,7 @@ fn declarations_for<'a>(
             rule: order,
             context: own,
             tree: own_root,
+            originating: None,
             decl: Cow::Owned(css::Declaration {
                 name: "overlay".to_owned(),
                 value: vec![Token::Ident(keyword.into())],
@@ -3945,6 +3976,7 @@ fn declarations_for<'a>(
                 rule,
                 context: own,
                 tree: own_root,
+                originating: None,
                 decl: Cow::Owned(decl),
                 container: None,
             });
@@ -4002,6 +4034,7 @@ fn scoped_declarations<'a>(
                     TierBase::AuthorSheet,
                     (tree_depth(document, root), Some(root)),
                 ),
+                (element, containers, None),
                 order,
                 out,
                 |selector| matcher.matches_slotted(element, at, selector),
@@ -4018,7 +4051,28 @@ fn scoped_declarations<'a>(
         .attr(element, "part")
         .map(|value| value.split_ascii_whitespace().map(str::to_owned).collect())
         .unwrap_or_default();
-    let mut host = document.shadow_host(document.root_of(element));
+    let own = document.root_of(element);
+    // Its own tree's rules reach it through its host, `:host::part()`
+    // (CSS Shadow Parts 1 section 4.2), by the names it gives itself.
+    if let Some(at) = document.shadow_host(own).filter(|_| !names.is_empty())
+        && let Some(rules) = shadow.get(&own)
+    {
+        matcher.set_shadow_scope(Some(own));
+        let seen: Vec<&str> = names.iter().map(String::as_str).collect();
+        rules.candidates(document, at, candidates);
+        collect_scoped(
+            (rules, candidates),
+            (
+                TierBase::AuthorSheet,
+                (tree_depth(document, own), Some(own)),
+            ),
+            (element, containers, Some(at)),
+            order,
+            out,
+            |selector| matcher.matches_part(element, at, &seen, selector),
+        );
+    }
+    let mut host = document.shadow_host(own);
     while let Some(at) = host.filter(|_| !names.is_empty()) {
         let tree = document.root_of(at);
         let rules = match document.is_shadow_root(tree) {
@@ -4043,6 +4097,7 @@ fn scoped_declarations<'a>(
                         Some(tree).filter(|&tree| document.is_shadow_root(tree)),
                     ),
                 ),
+                (element, containers, Some(at)),
                 order,
                 out,
                 |selector| matcher.matches_part(element, at, &seen, selector),
@@ -4076,16 +4131,20 @@ fn exported_parts(exportparts: Option<&str>, names: &[String]) -> Vec<String> {
 }
 
 /// Pushes the declarations of `sheet`'s rules one of whose `candidates`
-/// ending in `::slotted()` or `::part()` `matches`, for the element,
-/// with the highest specificity among those of a rule that match,
-/// `base`'s tier and the context given.
+/// ending in `::slotted()` or `::part()` `matches`, for the element, or
+/// for its pseudo-element the selector names after them
+/// (`::part(x)::before`), with the highest specificity among those of a
+/// rule that match for each, `base`'s tier and the context given; for
+/// `::part()`, the host `originating` it is a part of.
 fn collect_scoped<'a>(
-    (sheet, candidates): (&[ParsedRule<'a>], &[(u32, u32)]),
+    (sheet, candidates): (&InForce<'a>, &[(u32, u32)]),
     (base, (context, tree)): (TierBase, (u32, Option<NodeId>)),
+    (element, containers, originating): (NodeId, Option<&Containers<'_>>, Option<NodeId>),
     order: &mut u32,
     out: &mut Matched<'a>,
     mut matches: impl FnMut(&'a Selector) -> bool,
 ) {
+    let parent = containers.and_then(|containers| containers.document.flat_parent_element(element));
     let mut next = 0;
     while next < candidates.len() {
         let place = candidates[next].0;
@@ -4095,36 +4154,65 @@ fn collect_scoped<'a>(
         }
         let rule = &sheet[place as usize];
         let list: &'a SelectorList = rule.list;
-        let mut best: Option<Specificity> = None;
+        let mut best: [Option<Specificity>; Target::ALL.len()] = [None; Target::ALL.len()];
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
-            let scoped = selector.pseudo_element.as_ref().is_some_and(|ending| {
+            let Some(ending) = selector.pseudo_element.as_ref().filter(|ending| {
                 matches!(ending.element, PseudoElement::Slotted | PseudoElement::Part)
-            });
-            if scoped && matches(selector) {
-                best = best.max(Some(selector.specificity));
+            }) else {
+                continue;
+            };
+            let target = match ending.then {
+                Some(pseudo) => Target::of(pseudo),
+                None => Some(Target::Element),
+            };
+            if let Some(target) = target
+                && matches(selector)
+            {
+                let at = target as usize;
+                best[at] = best[at].max(Some(selector.specificity));
             }
         }
-        let Some(specificity) = best else {
-            continue;
-        };
-        for (offset, decl) in rule.declarations.iter().enumerate() {
-            out.element().push(Applied {
-                tier: tier(base, decl.important),
-                layer: if decl.important {
-                    rule.important_layer
+        for target in Target::ALL {
+            let Some(specificity) = best[target as usize] else {
+                continue;
+            };
+            // In a `@container` block, the element's query containers
+            // are its flat tree ancestors'; a pseudo-element's block is
+            // weighed once the element's style is known
+            // ([`Matched::of_pseudo`]), its own and theirs (D72).
+            let mut container = None;
+            if let Some(block) = rule.container {
+                if target == Target::Element {
+                    let holds = containers.is_some_and(|containers| {
+                        container_holds(sheet.containers, block, parent, containers)
+                    });
+                    if !holds {
+                        continue;
+                    }
                 } else {
-                    rule.layer
-                },
-                specificity,
-                proximity: UNSCOPED,
-                order: *order + offset as u32,
-                rule: *order,
-                context,
-                tree,
-                decl: Cow::Borrowed(decl),
-                container: None,
-            });
+                    container = Some((sheet.containers, block));
+                }
+            }
+            for (offset, decl) in rule.declarations.iter().enumerate() {
+                out.targets[target as usize].push(Applied {
+                    tier: tier(base, decl.important),
+                    layer: if decl.important {
+                        rule.important_layer
+                    } else {
+                        rule.layer
+                    },
+                    specificity,
+                    proximity: UNSCOPED,
+                    order: *order + offset as u32,
+                    rule: *order,
+                    context,
+                    tree,
+                    originating,
+                    decl: Cow::Borrowed(decl),
+                    container,
+                });
+            }
         }
         *order += rule.declarations.len() as u32;
     }
@@ -4384,6 +4472,7 @@ fn collect_from_sheet_for<'a>(
                     rule: *order,
                     context,
                     tree,
+                    originating: None,
                     decl: Cow::Borrowed(decl),
                     container,
                 });
@@ -5734,6 +5823,18 @@ fn specified<'v>(
     custom: Option<&Arc<CustomProperties>>,
     resolution: &Resolution<'_>,
 ) -> Specified<'v> {
+    // A `::part()` rule's `attr()` reads its originating host's.
+    let of_host;
+    let resolution = match (a.originating, resolution.containers) {
+        (Some(host), Some(containers)) => {
+            of_host = Resolution {
+                attributes: containers.document.attrs(host).unwrap_or_default(),
+                ..*resolution
+            };
+            &of_host
+        }
+        _ => resolution,
+    };
     substituted(
         &a.decl.value,
         a.identity(),
@@ -9533,6 +9634,57 @@ pub(crate) fn canonical_name(name: &str) -> &str {
         "-webkit-animation-play-state" => "animation-play-state",
         "-webkit-animation-delay" => "animation-delay",
         "-webkit-animation-fill-mode" => "animation-fill-mode",
+        // The rest of the aliases the reference browser keeps, each the
+        // name of the property it writes (a probe of Chrome 156).
+        "-webkit-filter" => "filter",
+        "-webkit-box-shadow" => "box-shadow",
+        "-webkit-border-radius" => "border-radius",
+        "-webkit-border-top-left-radius" => "border-top-left-radius",
+        "-webkit-border-top-right-radius" => "border-top-right-radius",
+        "-webkit-border-bottom-left-radius" => "border-bottom-left-radius",
+        "-webkit-border-bottom-right-radius" => "border-bottom-right-radius",
+        "-webkit-background-size" => "background-size",
+        "-webkit-background-origin" => "background-origin",
+        "-webkit-background-clip" => "background-clip",
+        "-webkit-clip-path" => "clip-path",
+        "-webkit-font-feature-settings" => "font-feature-settings",
+        "-webkit-column-count" => "column-count",
+        "-webkit-column-gap" => "column-gap",
+        "-webkit-column-width" => "column-width",
+        "-webkit-columns" => "columns",
+        "-webkit-column-rule" => "column-rule",
+        "-webkit-column-rule-color" => "column-rule-color",
+        "-webkit-column-rule-style" => "column-rule-style",
+        "-webkit-column-rule-width" => "column-rule-width",
+        "-webkit-column-span" => "column-span",
+        "-webkit-shape-outside" => "shape-outside",
+        "-webkit-shape-margin" => "shape-margin",
+        "-webkit-shape-image-threshold" => "shape-image-threshold",
+        "-webkit-text-emphasis" => "text-emphasis",
+        "-webkit-text-emphasis-color" => "text-emphasis-color",
+        "-webkit-text-emphasis-style" => "text-emphasis-style",
+        "-webkit-text-emphasis-position" => "text-emphasis-position",
+        "-webkit-opacity" => "opacity",
+        "-webkit-mask" => "mask",
+        "-webkit-mask-image" => "mask-image",
+        "-webkit-mask-size" => "mask-size",
+        "-webkit-mask-position" => "mask-position",
+        "-webkit-mask-repeat" => "mask-repeat",
+        "-webkit-mask-clip" => "mask-clip",
+        "-webkit-mask-origin" => "mask-origin",
+        "-webkit-mask-composite" => "mask-composite",
+        "-webkit-user-select" => "user-select",
+        "-webkit-text-size-adjust" => "text-size-adjust",
+        "-webkit-margin-start" => "margin-inline-start",
+        "-webkit-margin-end" => "margin-inline-end",
+        "-webkit-padding-start" => "padding-inline-start",
+        "-webkit-padding-end" => "padding-inline-end",
+        "-webkit-logical-width" => "inline-size",
+        "-webkit-logical-height" => "block-size",
+        "-webkit-min-logical-width" => "min-inline-size",
+        "-webkit-max-logical-width" => "max-inline-size",
+        "-webkit-border-start" => "border-inline-start",
+        "-webkit-border-end" => "border-inline-end",
         other => other,
     }
 }
@@ -11236,7 +11388,6 @@ mod tests {
             ("opacity", "1px"),
             ("will-change", "none"),
             ("will-change", "transform, auto"),
-            ("-webkit-opacity", "0.5"),
         ] {
             assert!(!supports(name, value), "{name}: {value}");
         }

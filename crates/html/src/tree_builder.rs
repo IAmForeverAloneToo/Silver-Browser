@@ -565,6 +565,17 @@ pub struct TreeBuilder {
     shadow_contents: HashMap<NodeId, NodeId>,
     /// Declarative templates popped, out of the tree, to free.
     dropped: Vec<NodeId>,
+    /// Whether an element a custom element definition is known for is
+    /// constructed by its definition as it is made (HTML section
+    /// 13.2.6.1, "create an element for a token": "will execute
+    /// script"): a document's parser's, its caller running the
+    /// constructors.
+    construct: bool,
+    /// The element a definition's constructor made for the start tag in
+    /// hand, which the tree builder takes in place of making one.
+    provided: Option<NodeId>,
+    /// Whether that element has the tag's attributes already.
+    provided_attributes: bool,
 }
 
 impl Default for TreeBuilder {
@@ -604,6 +615,9 @@ impl TreeBuilder {
             declarative_shadow_roots: true,
             shadow_contents: HashMap::new(),
             dropped: Vec::new(),
+            construct: false,
+            provided: None,
+            provided_attributes: false,
         }
     }
 
@@ -669,6 +683,87 @@ impl TreeBuilder {
         self.quirks
     }
 
+    /// Whether the elements a custom element definition is known for are
+    /// constructed by it as they are made (D70): a document's parser,
+    /// its caller running the constructors, asks; a fragment's never
+    /// constructs, its elements upgraded once made.
+    pub fn set_custom_elements(&mut self, construct: bool) {
+        self.construct = construct && self.context.is_none();
+    }
+
+    /// The custom element the start tag `token` makes, which its
+    /// definition is to construct before the tag is processed (HTML
+    /// section 13.2.6.1, "create an element for a token", steps 3 to
+    /// 7): its local name and `is` value, when the parser constructs
+    /// custom elements, the tag makes an HTML element, outside a
+    /// template's contents, and the document's registry defines it.
+    pub fn custom_element_for(
+        &self,
+        document: &Document,
+        token: &Token,
+    ) -> Option<(String, Option<String>)> {
+        if !self.construct || self.in_template_contents() {
+            return None;
+        }
+        let Token::StartTag { name, attrs, .. } = token else {
+            return None;
+        };
+        if self.foreign_rules_apply(token) || self.mode == Mode::InFrameset {
+            return None;
+        }
+        let is = attrs
+            .iter()
+            .find(|(attr, _)| attr == "is")
+            .map(|(_, value)| value.clone());
+        if attrs
+            .iter()
+            .any(|(attr, _)| attr == "customelementregistry")
+        {
+            return None;
+        }
+        // The intended parent's registry (step 2): the document's, or a
+        // declarative shadow root's.
+        let parent = self.place(document, None).parent();
+        let registry = document.custom_element_registry(parent);
+        document.look_up_custom_element(registry, &Namespace::Html, name, is.as_deref())?;
+        Some((name.clone(), is))
+    }
+
+    /// Whether the builder constructs custom elements as it makes them.
+    pub fn constructs(&self) -> bool {
+        self.construct
+    }
+
+    /// Gives the builder the element a definition constructed for the
+    /// start tag in hand ([`TreeBuilder::custom_element_for`]): it takes
+    /// it in place of the one it would make, appending the tag's
+    /// attributes to it. One not taken is freed with the token.
+    pub fn provide_element(&mut self, element: NodeId) {
+        self.provided = Some(element);
+        self.provided_attributes = false;
+    }
+
+    /// Appends the attributes of the start tag `token` to the element
+    /// provided for it ("create an element for a token" step 9), before
+    /// the tag is processed, so that the reactions they queue run before
+    /// the element is inserted: whether it had one to take them.
+    pub fn give_attributes(&mut self, document: &mut Document, token: &Token) -> bool {
+        let Token::StartTag { name, attrs, .. } = token else {
+            return false;
+        };
+        let Some(id) = self
+            .provided
+            .filter(|&id| document.local_name(id) == Some(name.as_str()))
+        else {
+            return false;
+        };
+        for (name, value) in attrs {
+            let _ = document.set_attribute(id, name, value);
+        }
+        self.provided_attributes = true;
+        true
+    }
+
     /// The `script` element the last token closed, by its end tag, and
     /// the line its text began on; taken once.
     pub fn take_script(&mut self) -> Option<(NodeId, u32)> {
@@ -713,6 +808,14 @@ impl TreeBuilder {
         };
         self.clone_popped_options(document);
         self.free_dropped(document);
+        // An element constructed for a tag that made none (one ignored)
+        // goes with it.
+        self.provided_attributes = false;
+        if let Some(unused) = self.provided.take()
+            && document.parent(unused).is_none()
+        {
+            let _ = document.free(unused);
+        }
         state
     }
 
@@ -2416,16 +2519,24 @@ impl TreeBuilder {
             return;
         };
         let reference = tag.attr("shadowrootreferencetarget").map(str::to_owned);
+        // `shadowrootcustomelementregistry`: its tree keeps no registry
+        // until one is given it (D70).
+        let unregistered = tag.attr("shadowrootcustomelementregistry").is_some();
         let Ok(template) = document.create_element_with(&tag.name, tag.attrs) else {
             return;
         };
+        // A host whose definition disables shadow trees takes none (D70).
         let attached = match document.shadow_root(host) {
             Some(_) => None,
+            None if document.shadow_disabled(host) => None,
             None => document.attach_shadow(host, init, true).ok(),
         };
         match attached {
             Some(root) => {
                 let _ = document.set_reference_target(root, reference.as_deref());
+                if unregistered {
+                    document.keep_custom_element_registry_null(root);
+                }
                 self.shadow_contents.insert(template, root);
             }
             None if !put(document, place, template) => return,
@@ -2446,10 +2557,39 @@ impl TreeBuilder {
     fn insert_element(&mut self, document: &mut Document, tag: Tag, push: bool) -> Option<NodeId> {
         let (place, depth) = self.place_for_element(document)?;
         self.selectedcontent |= tag.name == "selectedcontent";
-        let id = document.create_element_with(&tag.name, tag.attrs).ok()?;
-        if !put(document, place, id) {
-            return None;
-        }
+        let is = tag.attr("is").map(str::to_owned);
+        let provided = self
+            .provided
+            .take_if(|&mut id| document.local_name(id) == Some(tag.name.as_str()));
+        let id = match provided {
+            // The constructed element takes the tag's attributes (step 9),
+            // its observed ones heard by its reactions. Its constructor may
+            // have moved the place into the element's own shadow tree: it
+            // goes in only where it may ("insert an element at the adjusted
+            // insertion location" step 3), and a script holds it if not.
+            Some(id) => {
+                if !std::mem::take(&mut self.provided_attributes) {
+                    for (name, value) in tag.attrs {
+                        let _ = document.set_attribute(id, &name, &value);
+                    }
+                }
+                let inserted = match place {
+                    Place::Last(parent) => document.append_child(parent, id),
+                    Place::Before(parent, child) => document.insert_before(parent, id, Some(child)),
+                };
+                inserted.ok()?;
+                id
+            }
+            None => {
+                let id = document.create_element_with(&tag.name, tag.attrs).ok()?;
+                self.made_element(document, id, is.as_deref());
+                if !put(document, place, id) {
+                    return None;
+                }
+                self.associate_with_form(document, id, &tag.name);
+                id
+            }
+        };
         if push {
             let mut open = Open::html(id, tag.name);
             open.depth = depth;
@@ -2457,6 +2597,45 @@ impl TreeBuilder {
             self.push_open(open);
         }
         Some(id)
+    }
+
+    /// HTML's "create an element for a token" step 12: a form-associated
+    /// element made while the form element pointer is set, outside a
+    /// template, is owned by the pointer's form when the two are in one
+    /// tree and it names no form of its own, though the form is no
+    /// ancestor of it (a form in a table).
+    fn associate_with_form(&self, document: &mut Document, id: NodeId, name: &str) {
+        let Some(form) = self.form else {
+            return;
+        };
+        let associated = matches!(
+            name,
+            "button" | "fieldset" | "input" | "object" | "output" | "select" | "textarea" | "img"
+        );
+        if !associated
+            || self.template_on_stack()
+            || (name != "img" && document.attr(id, "form").is_some())
+            || document.root_of(form) != document.root_of(id)
+            || document.ancestors(id).any(|ancestor| ancestor == form)
+        {
+            return;
+        }
+        document.set_parser_form_owner(id, form);
+    }
+
+    /// An HTML element the builder made with the `is` attribute `is`
+    /// (HTML section 13.2.6.1, "create an element for a token"): its
+    /// `is` value. A fragment's elements, which it constructs none of,
+    /// are upgraded once it is parsed ([`Document::fragment_parsed`]).
+    fn made_element(&self, document: &mut Document, id: NodeId, is: Option<&str>) {
+        if is.is_some() {
+            let _ = document.set_is_value(id, is);
+        }
+        // `customelementregistry`: it has no registry, nor what goes in
+        // it, until one is given it (D70).
+        if document.attr(id, "customelementregistry").is_some() {
+            document.keep_custom_element_registry_null(id);
+        }
     }
 
     /// Inserts a formatting element and pushes it onto the list of
@@ -2487,9 +2666,14 @@ impl TreeBuilder {
     /// head" next.
     fn insert_root(&mut self, document: &mut Document, attrs: Vec<(String, String)>) {
         self.mode = Mode::BeforeHead;
+        let is = attrs
+            .iter()
+            .find(|(name, _)| name == "is")
+            .map(|(_, value)| value.clone());
         let Ok(id) = document.create_element_with("html", attrs) else {
             return;
         };
+        self.made_element(document, id, is.as_deref());
         let root = document.root();
         if !put(document, Place::Last(root), id) {
             return;
@@ -2951,6 +3135,11 @@ impl TreeBuilder {
                 let Ok(clone) = document.create_element_with(&tag, attrs.clone()) else {
                     return true;
                 };
+                let is = attrs
+                    .iter()
+                    .find(|(name, _)| name == "is")
+                    .map(|(_, v)| v.as_str());
+                self.made_element(document, clone, is);
                 self.active[entry_at] = Entry::element(clone, tag.clone(), attrs);
                 self.replace_open(node_at, Open::html(clone, tag));
                 if last == furthest {
@@ -2967,6 +3156,12 @@ impl TreeBuilder {
             else {
                 return true;
             };
+            let is = formatting
+                .attrs
+                .iter()
+                .find(|(name, _)| name == "is")
+                .map(|(_, v)| v.as_str());
+            self.made_element(document, new, is);
             // The new element goes under the furthest block first, then
             // takes its other children: the same tree as the standard's
             // order, with the depth checked once for each.

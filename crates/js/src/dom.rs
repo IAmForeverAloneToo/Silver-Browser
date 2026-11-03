@@ -466,6 +466,12 @@ pub enum Call {
     Clone {
         node: Handle,
         deep: bool,
+        /// The document the copy is made for (`importNode`'s), else the
+        /// original's.
+        into: Option<Handle>,
+        /// The registry an element with none is given (`importNode`'s
+        /// fallback, D70).
+        fallback: Option<u32>,
     },
     /// The first element in tree order under `root` whose ID is this.
     ElementById(Handle, String),
@@ -1185,6 +1191,97 @@ pub enum Call {
         element: Handle,
         attribute: String,
         elements: Vec<Handle>,
+    },
+    /// What the custom element bindings ask of the document (D70): one
+    /// variant for them all.
+    Custom(Box<CustomCall>),
+}
+
+/// A custom element call (D70): the document keeps the elements'
+/// states, the definitions' names and the reactions its changes queue;
+/// the registries, constructors and callbacks are the bindings'.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CustomCall {
+    /// Records a definition of `registry`: its number.
+    Define {
+        registry: u32,
+        name: String,
+        local_name: String,
+        observed: Vec<String>,
+        /// Its lifecycle callbacks, as `dom::callbacks` flags.
+        callbacks: u8,
+        form_associated: bool,
+        disable_shadow: bool,
+    },
+    /// The elements definition `n` upgrades now it is defined, in
+    /// shadow-including tree order.
+    Candidates(u32),
+    /// An element's custom element state (0 undefined, 1 failed, 2
+    /// uncustomized, 3 precustomized, 4 custom) and definition (0 for
+    /// none), as two numbers.
+    State(Handle),
+    /// Sets an element's state and definition (0 for none).
+    SetState {
+        element: Handle,
+        state: u8,
+        definition: u32,
+    },
+    /// Sets an element's `is` value.
+    SetIs(Handle, Option<String>),
+    /// The reactions the document queued, in order, as JSON: each an
+    /// array of its kind and element, then its arguments.
+    TakeReactions,
+    /// The registry a node looks definitions up in, or none (`null`).
+    Registry(Handle),
+    /// Sets the registry a node looks definitions up in.
+    SetRegistry(Handle, Option<u32>),
+    /// Adds custom state `name` to an element, or takes it away: whether
+    /// that changed it.
+    SetCustomState {
+        element: Handle,
+        name: String,
+        on: bool,
+    },
+    /// The element a definition constructed for the start tag the parser
+    /// stopped at, which it takes as that tag's.
+    ParserElement(Handle),
+    /// An element's `is` value, or `null`.
+    Is(Handle),
+    /// The elements among a node's shadow-including inclusive
+    /// descendants whose registry is the one numbered and has a
+    /// definition for them (HTML's `upgrade()`), in shadow-including tree
+    /// order: each element's handle and its definition's number.
+    Upgradable(Handle, u32),
+    /// Sets a form-associated custom element's submission value: none
+    /// (kind 0), one string (1), one file (2), or entries (3), each a
+    /// name and a value in `strings`, `files` saying which values are
+    /// files.
+    SetFormValue {
+        element: Handle,
+        kind: u8,
+        strings: Vec<String>,
+        files: Vec<bool>,
+    },
+    /// HTML's `initialize()`: `root`'s registry, when it has none, and
+    /// that of each element of its inclusive descendants with none, set
+    /// to `registry`; the elements of those a definition of it is found
+    /// for, each with its definition's number.
+    Initialize { root: Handle, registry: u32 },
+    /// The roots among `roots`, each of a tree out of the document, whose
+    /// trees hold a node the host holds (a mutation record's, a live
+    /// range's or iterator's, one an event is to be fired at): the sweep
+    /// of the objects held out of the document lets go of none of
+    /// theirs.
+    Kept(Vec<Handle>),
+    /// Gives an element `createElementNS()` made a custom one of the
+    /// prefix its qualified name had, once constructed.
+    SetPrefix(Handle, String),
+    /// Sets a form-associated custom element's validity flags (as the
+    /// bits of `ValidityState`'s states in order) and message.
+    SetFormValidity {
+        element: Handle,
+        flags: u32,
+        message: String,
     },
 }
 

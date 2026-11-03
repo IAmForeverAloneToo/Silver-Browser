@@ -157,7 +157,22 @@ operation's result, and the bindings run them before returning to the
 script, as `[CEReactions]` says; the parser's elements are created as
 undefined and upgraded in tree order when their definition is known,
 synchronously for an element the parser makes after `define`, as HTML's
-"create an element for a token" says.
+"create an element for a token" says, the XML parser's as well.
+
+A `[CEReactions]` member the bindings carry out with several natives
+opens one element queue for them all, run as it returns; script it
+calls into (a constructor, a callback, a listener) opens its own. An
+algorithm no such member runs, a reset button's activation, queues on
+the backup element queue. A custom element's object, and the objects
+of the nodes of its tree out of the document, are held until a sweep
+after a task finds that no object of a node of the tree is alive and
+the host holds no node of it (a mutation record's, a live range's, an
+event's to fire): the sweep links each tree's objects to its held ones,
+lets the holds go, collects the garbage, and holds again what lived.
+That is the wrapper lifetime rule for any node out of the document, a
+node's object alive while the node can be reached; work giving every
+detached node's object that rule flags those objects as held, and the
+same sweep frees them.
 
 ### D71: nesting, `@scope` and `@custom-media` desugared when the sheet is built
 

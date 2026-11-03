@@ -101,6 +101,15 @@ fn write_shadow(
         escape(target, true, out);
         out.push('"');
     }
+    // A tree given a scoped registry, or none where its host's document
+    // has one (D70): what a parse of the markup gives it again, a tree
+    // with none to be given one.
+    let default = document.custom_element_registry(document.owner_document(host));
+    let registry = document.custom_element_registry(root);
+    let scoped = registry.is_some_and(|registry| registry != dom::WINDOW_REGISTRY);
+    if scoped || (registry.is_none() && default.is_some()) {
+        out.push_str(" shadowrootcustomelementregistry=\"\"");
+    }
     out.push('>');
     write_children(document, root, scripting, shadows, out);
     out.push_str("</template>");
@@ -112,7 +121,7 @@ pub fn serialize_node(document: &Document, node: NodeId, scripting: bool) -> Str
     let mut out = String::new();
     match document.data(node) {
         Some(NodeData::Element { tag, attrs, ns }) => {
-            start_tag(tag, attrs, &mut out);
+            start_tag(tag, attrs, document.is_value(node), &mut out);
             if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
                 write_children(document, node, scripting, ShadowRoots::default(), &mut out);
                 end_tag(tag, &mut out);
@@ -194,7 +203,7 @@ fn write_children(
                 }
             }
             Some(NodeData::Element { tag, attrs, ns }) => {
-                start_tag(tag, attrs, out);
+                start_tag(tag, attrs, document.is_value(at), out);
                 // Only HTML's void elements have no end tag: a foreign
                 // element empty or not has one (`<rect></rect>`).
                 if !(*ns == Namespace::Html && VOID.contains(&tag.as_str())) {
@@ -236,9 +245,19 @@ fn write_children(
     }
 }
 
-fn start_tag(tag: &str, attrs: &[(String, String)], out: &mut String) {
+/// A start tag: its name, its `is` value when it has no `is` attribute
+/// (HTML section 13.3, "serializing HTML fragments", step 4.2.3), then
+/// its attributes.
+fn start_tag(tag: &str, attrs: &[(String, String)], is: Option<&str>, out: &mut String) {
     out.push('<');
     out.push_str(tag);
+    if let Some(is) = is
+        && !attrs.iter().any(|(name, _)| name == "is")
+    {
+        out.push_str(" is=\"");
+        escape(is, true, out);
+        out.push('"');
+    }
     for (name, value) in attrs {
         out.push(' ');
         out.push_str(name);

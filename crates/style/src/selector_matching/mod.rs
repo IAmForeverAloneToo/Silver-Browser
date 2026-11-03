@@ -148,6 +148,11 @@ pub struct PseudoElementSelector {
     /// selectors-4 §3.6.3 allows. No pseudo-element is in a user-action
     /// state until M26.4, and they are matched so.
     pub states: Vec<PseudoClass>,
+    /// The pseudo-element of the element `::slotted()` or `::part()`
+    /// represents that the selector represents instead
+    /// (`::part(label)::before`, CSS Shadow Parts 1 section 4.2, CSS
+    /// Scoping 1 section 3.2.2): `::before`, `::after` or `::marker`.
+    pub then: Option<PseudoElement>,
 }
 
 /// The pseudo-elements a selector may end in (Pseudo-Elements 4).
@@ -561,6 +566,12 @@ pub enum PseudoClass {
     /// whose target has its interest, and that target.
     InterestSource,
     InterestTarget,
+    /// `:defined` (HTML section 4.16.3): an element whose custom element
+    /// state is "uncustomized" or "custom" (D70).
+    Defined,
+    /// `:state(ident)` (CSS Custom State): a custom element whose
+    /// `ElementInternals.states` has the identifier (D70).
+    State(String),
 }
 
 /// selectors-4 specificity: (ids, classes+attributes+pseudo-classes,

@@ -12,8 +12,8 @@ use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Va
 use super::modules::{self, Referrer};
 use super::{Entries, Slot, evaluate, report, thrown, with_host};
 use crate::{
-    Answer, Call, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError, ScriptingHost,
-    WORK_PER_STEP,
+    Answer, Call, CustomCall, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError,
+    ScriptingHost, WORK_PER_STEP,
 };
 
 /// The bindings, run in each new realm before any page's script.
@@ -223,6 +223,11 @@ impl<'js> Args<'_, 'js> {
 
 /// A native that makes `call` of the host from its arguments.
 type Decode = fn(&Args<'_, '_>) -> rquickjs::Result<Call>;
+
+/// A custom element call (D70) as the host is asked it.
+fn custom(call: CustomCall) -> Call {
+    Call::Custom(Box::new(call))
+}
 
 /// The natives whose calls may make scripts ready to run at once: those
 /// that insert nodes (a script made by a script runs when it is
@@ -623,6 +628,14 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Clone {
             node: a.handle(0)?,
             deep: a.bool(1),
+            into: match a.value(2).is_null() || a.value(2).is_undefined() {
+                true => None,
+                false => Some(a.handle(2)?),
+            },
+            fallback: match a.value(3).is_null() || a.value(3).is_undefined() {
+                true => None,
+                false => Some(a.integer(3) as u32),
+            },
         })
     }),
     ("elementReference", |a| {
@@ -1197,6 +1210,85 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("nonce", |a| Ok(Call::Nonce(a.handle(0)?))),
+    // Custom elements (D70).
+    ("ceDefine", |a| {
+        Ok(custom(CustomCall::Define {
+            registry: a.integer(0) as u32,
+            name: a.string(1)?,
+            local_name: a.string(2)?,
+            observed: a.strings(3)?,
+            callbacks: a.integer(4) as u8,
+            form_associated: a.bool(5),
+            disable_shadow: a.bool(6),
+        }))
+    }),
+    ("ceCandidates", |a| {
+        Ok(custom(CustomCall::Candidates(a.integer(0) as u32)))
+    }),
+    ("ceState", |a| Ok(custom(CustomCall::State(a.handle(0)?)))),
+    ("ceSetState", |a| {
+        Ok(custom(CustomCall::SetState {
+            element: a.handle(0)?,
+            state: a.integer(1) as u8,
+            definition: a.integer(2) as u32,
+        }))
+    }),
+    ("ceSetIs", |a| {
+        Ok(custom(CustomCall::SetIs(a.handle(0)?, a.maybe_string(1)?)))
+    }),
+    ("ceReactions", |_| Ok(custom(CustomCall::TakeReactions))),
+    ("ceRegistry", |a| {
+        Ok(custom(CustomCall::Registry(a.handle(0)?)))
+    }),
+    ("ceSetRegistry", |a| {
+        let registry = match a.value(1).is_null() {
+            true => None,
+            false => Some(a.integer(1) as u32),
+        };
+        Ok(custom(CustomCall::SetRegistry(a.handle(0)?, registry)))
+    }),
+    ("ceCustomState", |a| {
+        Ok(custom(CustomCall::SetCustomState {
+            element: a.handle(0)?,
+            name: a.string(1)?,
+            on: a.bool(2),
+        }))
+    }),
+    ("parserElement", |a| {
+        Ok(custom(CustomCall::ParserElement(a.handle(0)?)))
+    }),
+    ("ceIs", |a| Ok(custom(CustomCall::Is(a.handle(0)?)))),
+    ("ceUpgradable", |a| {
+        Ok(custom(CustomCall::Upgradable(
+            a.handle(0)?,
+            a.integer(1) as u32,
+        )))
+    }),
+    ("ceKept", |a| Ok(custom(CustomCall::Kept(a.handles(0)?)))),
+    ("ceSetPrefix", |a| {
+        Ok(custom(CustomCall::SetPrefix(a.handle(0)?, a.string(1)?)))
+    }),
+    ("ceFormValue", |a| {
+        Ok(custom(CustomCall::SetFormValue {
+            element: a.handle(0)?,
+            kind: a.integer(1) as u8,
+            strings: a.strings(2)?,
+            files: a.numbers(3)?.into_iter().map(|n| n != 0.0).collect(),
+        }))
+    }),
+    ("ceInitialize", |a| {
+        Ok(custom(CustomCall::Initialize {
+            root: a.handle(0)?,
+            registry: a.integer(1) as u32,
+        }))
+    }),
+    ("ceFormValidity", |a| {
+        Ok(custom(CustomCall::SetFormValidity {
+            element: a.handle(0)?,
+            flags: a.integer(1) as u32,
+            message: a.string(2)?,
+        }))
+    }),
     ("cssomStyled", |a| Ok(Call::CssomStyled(a.handle(0)?))),
     ("styleAllowed", |a| Ok(Call::StyleAllowed(a.handle(0)?))),
     ("setNonce", |a| {
@@ -1245,9 +1337,15 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     ctx: &ctx,
                     values: &args.0,
                 })?;
-                let (answer, work, mutated) = with_host(&ctx, &host, |host| {
+                let (answer, work, mutated, reacted) = with_host(&ctx, &host, |host| {
                     let answer = host.dom(call);
-                    (answer, host.take_work(), host.take_mutation_wake())
+                    let work = host.take_work();
+                    (
+                        answer,
+                        work,
+                        host.take_mutation_wake(),
+                        host.take_reaction_wake(),
+                    )
                 })?;
                 budget.charge(work);
                 sync_named(&ctx, &host, &entries)?;
@@ -1259,12 +1357,26 @@ pub(super) fn install<'js, H: ScriptingHost>(
                         .get::<_, Function<'_>>("mutationsQueued")?
                         .call::<_, ()>(())?;
                 }
+                // The custom element reactions the call queued are the
+                // element queue of its `[CEReactions]` (D70): taken now,
+                // run when it returns, after the scripts it made ready.
+                if reacted {
+                    reactions(&ctx, &entries, true)?;
+                }
                 let answer = match answer {
                     Ok(answer) => answer,
-                    Err(error) => return Err(throw(&ctx, &error)),
+                    Err(error) => {
+                        if reacted {
+                            reactions(&ctx, &entries, false)?;
+                        }
+                        return Err(throw(&ctx, &error));
+                    }
                 };
                 if runs_scripts {
                     run_nested(&ctx, &host, &budget, &entries, &state)?;
+                }
+                if reacted {
+                    reactions(&ctx, &entries, false)?;
                 }
                 value(&ctx, answer)
             },
@@ -1468,6 +1580,18 @@ pub(super) fn sync_named<'js, H: ScriptingHost>(
         .call::<_, ()>((reset, list))
 }
 
+/// The custom element reactions a call queued (D70): taken into an
+/// element queue of their own (`start`), or that queue run.
+fn reactions<'js>(ctx: &Ctx<'js>, entries: &Entries, start: bool) -> rquickjs::Result<()> {
+    if let Some(entries) = entries.borrow().clone() {
+        entries
+            .restore(ctx)?
+            .get::<_, Function<'_>>("reactionsQueued")?
+            .call::<_, ()>((start,))?;
+    }
+    Ok(())
+}
+
 fn run_nested<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     host: &Slot<H>,
@@ -1475,7 +1599,30 @@ fn run_nested<'js, H: ScriptingHost>(
     entries: &Entries,
     state: &modules::State,
 ) -> rquickjs::Result<()> {
-    while let Some(script) = with_host(ctx, host, |host| host.take_script())? {
+    loop {
+        let Some(script) = with_host(ctx, host, |host| host.take_script())? else {
+            // What a write put in may stop for a custom element its
+            // definition constructs, or for the reactions its insertion
+            // queued (D70), before it parses on.
+            let (construct, reacted) = with_host(ctx, host, |host| {
+                (host.take_construct(), host.take_reaction_wake())
+            })?;
+            if let Some((name, is)) = construct {
+                if let Some(entries) = entries.borrow().clone() {
+                    entries
+                        .restore(ctx)?
+                        .get::<_, Function<'_>>("constructNested")?
+                        .call::<_, ()>((name, is))?;
+                }
+                continue;
+            }
+            if reacted {
+                reactions(ctx, entries, true)?;
+                reactions(ctx, entries, false)?;
+                continue;
+            }
+            return Ok(());
+        };
         // The script it runs in is the active one again after it, an
         // inline one's record with it.
         let outer = state.current();
@@ -1516,7 +1663,6 @@ fn run_nested<'js, H: ScriptingHost>(
             host.script_ran();
         })?;
     }
-    Ok(())
 }
 
 /// An answer as a script's value.

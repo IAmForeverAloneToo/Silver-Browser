@@ -14,7 +14,7 @@ pub fn can_be_disabled(document: &Document, element: NodeId) -> bool {
     matches!(
         document.tag(element),
         Some("button" | "input" | "select" | "textarea" | "optgroup" | "option" | "fieldset")
-    )
+    ) || document.is_form_associated_custom(element)
 }
 
 /// Whether the element is actually disabled (HTML section 4.16.3): a
@@ -29,6 +29,10 @@ pub fn actually_disabled(document: &Document, element: NodeId) -> bool {
         }
         Some("optgroup") => document.attr(element, "disabled").is_some(),
         Some("option") => option_disabled(document, element),
+        // A form-associated custom element as a control is (D70).
+        _ if document.is_form_associated_custom(element) => {
+            document.attr(element, "disabled").is_some() || disabled_by_fieldset(document, element)
+        }
         _ => false,
     }
 }
@@ -1036,7 +1040,7 @@ pub fn is_listed(document: &Document, element: NodeId) -> bool {
     match document.tag(element) {
         Some("input") => input_type(document, element) != "image",
         Some("button" | "fieldset" | "object" | "output" | "select" | "textarea") => true,
-        _ => false,
+        _ => document.is_form_associated_custom(element),
     }
 }
 
@@ -1045,7 +1049,7 @@ pub fn is_labelable(document: &Document, element: NodeId) -> bool {
     match document.tag(element) {
         Some("input") => input_type(document, element) != "hidden",
         Some("button" | "meter" | "output" | "progress" | "select" | "textarea") => true,
-        _ => false,
+        _ => document.is_form_associated_custom(element),
     }
 }
 
@@ -1109,7 +1113,7 @@ pub fn is_submittable(document: &Document, element: NodeId) -> bool {
     matches!(
         document.tag(element),
         Some("button" | "input" | "select" | "textarea" | "object")
-    )
+    ) || document.is_form_associated_custom(element)
 }
 
 /// A `button`'s type (HTML section 4.10.6): `submit`, `reset` or
@@ -1255,11 +1259,26 @@ pub fn entry_list(
         {
             continue;
         }
+        let name = document.attr(field, "name").unwrap_or("");
+        // A form-associated custom element's submission value (HTML
+        // section 4.10.21.4 step 5.13): a `FormData`'s entries, or one
+        // value under its name.
+        if document.is_form_associated_custom(field) {
+            match document.form_value(field) {
+                crate::FormValue::Entries(given) => {
+                    for (entry, value) in given {
+                        push(entry, value.clone());
+                    }
+                }
+                crate::FormValue::One(value) if !name.is_empty() => push(name, value.clone()),
+                _ => {}
+            }
+            continue;
+        }
         let kind = (document.tag(field) == Some("input")).then(|| input_type(document, field));
         if matches!(kind, Some("checkbox" | "radio")) && !checkedness(document, field) {
             continue;
         }
-        let name = document.attr(field, "name").unwrap_or("");
         if kind == Some("image") {
             let (x, y) = if name.is_empty() {
                 ("x".to_owned(), "y".to_owned())
@@ -1303,6 +1322,9 @@ pub fn entry_list(
 /// attributes' with the selectedness setting algorithm after. A custom
 /// validity stays (M26.9b); the user validity goes.
 pub fn reset_form(document: &mut Document, form: NodeId) {
+    let custom = owned_by(document, form, |node| {
+        document.is_form_associated_custom(node)
+    });
     let controls = owned_by(document, form, |node| {
         matches!(document.tag(node), Some("input" | "select" | "textarea"))
     });
@@ -1322,6 +1344,11 @@ pub fn reset_form(document: &mut Document, form: NodeId) {
             }
         }
     }
+    // Its form-associated custom elements hear `formResetCallback` after
+    // (D70).
+    for element in custom {
+        document.form_reset_custom(element);
+    }
 }
 
 /// Whether the element is form-associated (HTML section 4.10.2): it can
@@ -1330,7 +1357,7 @@ pub fn form_associated(document: &Document, element: NodeId) -> bool {
     matches!(
         document.tag(element),
         Some("button" | "fieldset" | "input" | "object" | "output" | "select" | "textarea" | "img")
-    )
+    ) || document.is_form_associated_custom(element)
 }
 
 /// The element's form owner (HTML section 4.10.18.3): for one with a
@@ -1350,6 +1377,13 @@ pub fn form_owner(document: &Document, element: NodeId) -> Option<NodeId> {
         let owner = document.element_by_id_in(tree, id)?;
         let owner = document.follow_reference_target(owner)?;
         return (document.tag(owner) == Some("form")).then_some(owner);
+    }
+    // The parser's form element pointer's, while both are in one tree.
+    if let Some(form) = document.parser_form_owner(element)
+        && document.attr(element, "form").is_none()
+        && document.root_of(form) == document.root_of(element)
+    {
+        return Some(form);
     }
     document
         .ancestors(element)

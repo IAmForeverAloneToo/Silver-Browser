@@ -6386,6 +6386,28 @@ impl Engine {
                     scripts.prepare(&mut lent, element, line);
                     asked = scripts.take_navigation();
                 }
+                // A custom element to construct, or the reactions of one
+                // inserted (D70).
+                if matches!(stop, html::Stop::Construct | html::Stop::Reactions) {
+                    let loader::Parsing {
+                        load,
+                        scripts,
+                        animations,
+                        ..
+                    } = &mut **parsing;
+                    let mut lent = scripts::Lent {
+                        document,
+                        images: None,
+                        animations: Some(animations),
+                        styled: None,
+                        page,
+                        parser: Some(load),
+                        network: &mut self.network,
+                        ready: scripts::ReadyState::Loading,
+                        window: window.clone(),
+                    };
+                    scripts.custom_elements(&mut lent, stop);
+                }
                 page.hide_nonces(document);
                 let changes = document.take_changes();
                 if changes
@@ -6427,7 +6449,13 @@ impl Engine {
                         activated,
                     );
                 }
-                if matches!(stop, html::Stop::Slice | html::Stop::Script { .. }) {
+                if matches!(
+                    stop,
+                    html::Stop::Slice
+                        | html::Stop::Script { .. }
+                        | html::Stop::Construct
+                        | html::Stop::Reactions
+                ) {
                     self.wake();
                 }
             }
@@ -6548,13 +6576,43 @@ impl Engine {
                     };
                     queue.prepare(&mut lent, element, line);
                 }
+                // A custom element to construct, or the reactions of one
+                // inserted (D70).
+                if matches!(stop, html::Stop::Construct | html::Stop::Reactions)
+                    && let Shown {
+                        document,
+                        page,
+                        parsing: Some(parsing),
+                        scripts: queue,
+                        images,
+                        animations,
+                        styled,
+                        ..
+                    } = &mut self.shown
+                {
+                    let mut lent = scripts::Lent {
+                        document,
+                        images: Some(images),
+                        animations: Some(animations.get_mut()),
+                        styled: Some(styled),
+                        page,
+                        parser: Some(&mut parsing.load),
+                        network: &mut self.network,
+                        ready: scripts::ReadyState::Loading,
+                        window: window.clone(),
+                    };
+                    queue.custom_elements(&mut lent, stop);
+                }
                 self.scripts_ran();
                 match stop {
                     html::Stop::Done => {
                         self.shown.parsing = None;
                         self.update_load_state();
                     }
-                    html::Stop::Slice | html::Stop::Script { .. } => self.wake(),
+                    html::Stop::Slice
+                    | html::Stop::Script { .. }
+                    | html::Stop::Construct
+                    | html::Stop::Reactions => self.wake(),
                     html::Stop::Input => {}
                 }
             }

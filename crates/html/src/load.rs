@@ -229,6 +229,9 @@ impl Load {
             parser: {
                 let mut parser = Parser::new(self.scripting);
                 parser.set_declarative_shadow_roots(self.declarative_shadow_roots);
+                // A document whose scripts run constructs its custom
+                // elements as it parses them (D70).
+                parser.set_custom_elements(self.scripting);
                 parser
             },
             scanner: self.scanning.then(|| Scanner::new(self.scripting)),
@@ -242,7 +245,11 @@ impl Load {
             if self.ended && xml.parser.is_none() {
                 let (text, encoding) = xml::decode_xml_with(&self.bytes, self.transport);
                 xml.encoding = encoding;
-                xml.parser = Some(XmlParser::new(&text));
+                let mut parser = XmlParser::new(&text);
+                // A document whose scripts run constructs its custom
+                // elements as it parses them (D70).
+                parser.set_custom_elements(self.scripting);
+                xml.parser = Some(parser);
                 self.bytes = Vec::new();
             }
             return;
@@ -274,6 +281,41 @@ impl Load {
         }
     }
 
+    /// The local name and `is` value of the custom element the parse
+    /// stopped at [`Stop::Construct`] for, the HTML parser's or the XML
+    /// parser's (D70).
+    pub fn custom_element(&self) -> Option<(&str, Option<&str>)> {
+        if let Some(xml) = &self.xml {
+            return xml.parser.as_ref().and_then(XmlParser::custom_element);
+        }
+        self.decoding
+            .as_ref()
+            .and_then(|decoding| decoding.parser.custom_element())
+    }
+
+    /// The prefix of the qualified name of the tag the parse stopped at
+    /// [`Stop::Construct`] for: an XML document's alone may have one.
+    pub fn custom_prefix(&self) -> Option<&str> {
+        self.xml
+            .as_ref()
+            .and_then(|xml| xml.parser.as_ref())
+            .and_then(XmlParser::custom_prefix)
+    }
+
+    /// Gives the parser that stopped at [`Stop::Construct`] the element
+    /// constructed for the tag it stopped at.
+    pub fn provide_element(&mut self, element: dom::NodeId) {
+        if let Some(xml) = &mut self.xml {
+            if let Some(parser) = &mut xml.parser {
+                parser.provide_element(element);
+            }
+            return;
+        }
+        if let Some(decoding) = &mut self.decoding {
+            decoding.parser.provide_element(element);
+        }
+    }
+
     /// The parser, once decoding has begun: `document.write` and the
     /// insertion point are its (M25). An encoding a write's `<meta>`
     /// declares is acted on at the next [`Load::parse`].
@@ -294,6 +336,8 @@ impl Load {
             return Progress::Parsed(match parser.parse(document, slice) {
                 Ok(XmlStop::Slice) => Stop::Slice,
                 Ok(XmlStop::Script { element, line }) => Stop::Script { element, line },
+                Ok(XmlStop::Construct) => Stop::Construct,
+                Ok(XmlStop::Reactions) => Stop::Reactions,
                 Ok(XmlStop::Done) => Stop::Done,
                 Err(error) => {
                     xml::insert_error_block(document, &error);

@@ -549,6 +549,14 @@ impl Page {
         self.nonces.insert(node, nonce);
     }
 
+    /// A copy `to` of element `from` has its nonce (HTML's nonce
+    /// attribute's cloning steps), hidden or not.
+    pub(crate) fn copy_nonce(&mut self, from: NodeId, to: NodeId) {
+        if let Some(nonce) = self.nonces.get(&from).cloned() {
+            self.nonces.insert(to, nonce);
+        }
+    }
+
     /// The nonce element `node` is checked by (CSP section 6.7.3.1, "is
     /// element nonceable"): none when the name or the value of one of its
     /// attributes holds `<script` or `<style`, as markup a dangling
@@ -562,11 +570,19 @@ impl Page {
     /// element's `nonce` attribute that is not empty is kept as its nonce
     /// and emptied, so that no selector reads it out.
     pub(crate) fn hide_nonces(&mut self, document: &mut Document) {
-        if !self.csp.has_header_policy() {
+        let root = document.root();
+        self.hide_nonces_under(document, root);
+    }
+
+    /// [`Page::hide_nonces`] of the elements of `root`'s subtree, which a
+    /// script connected or a write's parse inserted (HTML's nonce
+    /// attribute's steps for an element that becomes connected).
+    pub(crate) fn hide_nonces_under(&mut self, document: &mut Document, root: NodeId) {
+        if !self.csp.has_header_policy() || !document.is_connected(root) {
             return;
         }
         let shown: Vec<(NodeId, String)> = document
-            .subtree(document.root())
+            .subtree(root)
             .filter_map(|node| {
                 let nonce = document
                     .attr(node, "nonce")

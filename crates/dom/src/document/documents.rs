@@ -187,6 +187,12 @@ impl Document {
             self.rare.cdata.insert(made);
         }
         self.set_owner(made, document)?;
+        // A copy keeps its `is` value (DOM's "create an element", D70);
+        // its registry, and the upgrade it may be owed, are its caller's
+        // to give ([`Document::set_copied_registry`]).
+        if let Some(is) = self.is_value(node).map(str::to_owned) {
+            self.set_is_value(made, Some(&is))?;
+        }
         Ok(made)
     }
 
@@ -275,7 +281,7 @@ impl Document {
     /// The document `node`'s tree belongs to, and whether that tree is a
     /// template's contents (then in the inert template document of that
     /// document, which inert template documents are their own).
-    fn owner_and_contents(&self, node: NodeId) -> (NodeId, bool) {
+    pub(super) fn owner_and_contents(&self, node: NodeId) -> (NodeId, bool) {
         let mut at = node;
         let mut contents = false;
         // A template's contents' template may be in a template's contents
@@ -364,10 +370,16 @@ impl Document {
         if self.is_document(node) || self.is_shadow_root(node) {
             return Err(MutationError::HierarchyRequest);
         }
+        let old = self.owner_document(node);
         if let Some(parent) = self.parent(node) {
             self.remove_child(parent, node)?;
         }
-        self.set_owner(node, document)
+        let before = self.registries_before_adoption(node, old, document, false);
+        self.set_owner(node, document)?;
+        self.registries_adopted(before, document);
+        let nodes = self.shadow_including_subtree(node);
+        self.custom_adopted(&nodes, old);
+        Ok(())
     }
 
     /// A node inserted into a tree is its parent's document's: it is no

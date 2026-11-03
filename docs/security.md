@@ -602,6 +602,8 @@ earlier milestones say why each is what it is):
 | `dom` | `MAX_GENERATION` | `1 << 21` | The generations a slot may have: a slot is retired once this many nodes have had it, so that an id fits in the 53 bits a script's number holds exactly ([`NodeId::to_bits`]). |
 | `dom` | `MAX_RANGES` | `1 << 12` | The most live ranges a document keeps at once (gap batch D). |
 | `dom` | `MAX_ITERATORS` | `1 << 12` | The most node iterators a document keeps at once (gap batch D). |
+| `dom` | `MAX_DEFINITIONS` | `1 << 16` | The most custom element definitions a document keeps, every registry's together (gap batch H, D70): past it `define()` throws. Their names, an element's `is` value, its custom states and a form-associated custom element's submission value and validation message count to `MAX_DATA_BYTES`. |
+| `dom` | `MAX_CUSTOM_STATES` | `1 << 10` | The most custom states (`ElementInternals.states`) one element has (D70): past it `add()` throws. |
 | `engine` | `MAX_CONTROL` | `1 << 24` | The most bytes a text control holds, the document's own limit standing behind it. |
 | `engine` | `MAX_FRAMES` | `100` | The most frames a tab has, those of the documents its history keeps included: past them an `iframe` stays empty (the reference browser allows 1,000 a page; a frame here is a whole engine). |
 | `engine` | `MAX_FRAME_DEPTH` | `16` | How deep frames nest: a frame this deep makes none of its own. |

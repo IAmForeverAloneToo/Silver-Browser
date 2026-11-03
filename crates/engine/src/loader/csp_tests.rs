@@ -465,6 +465,33 @@ fn an_inline_script_runs_by_its_nonce_or_its_hash_and_its_nonce_is_hidden() {
 }
 
 #[test]
+fn a_nonce_is_hidden_as_a_script_connects_its_element_and_kept_by_a_copy() {
+    // A header's policy hides the nonce of an element a script inserts,
+    // a copy keeps the nonce its original had, and a `nonce` the script
+    // sets or takes away is the element's nonce at once.
+    static PAGES: Pages = &[(
+        "/page.html",
+        &[("Content-Security-Policy", "script-src 'nonce-n1'")],
+        "<script nonce=n1>\
+         const s = document.createElement('div');\
+         s.nonce = 'old';\
+         s.setAttribute('nonce', 'n2');\
+         const set = s.nonce;\
+         document.documentElement.append(s);\
+         const copy = s.cloneNode();\
+         const loose = document.createElement('p');\
+         loose.setAttribute('nonce', 'n3');\
+         loose.removeAttribute('nonce');\
+         console.log(set, s.nonce, JSON.stringify(s.getAttribute('nonce')), copy.nonce,\
+           JSON.stringify(loose.nonce), 'done');\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run_in_order(&server, at(&server, "a.localhost", "/page.html"), "done");
+    assert_eq!(lines, ["n2 n2 \"\" n2 \"\" done"]);
+}
+
+#[test]
 fn a_meta_policy_hides_no_nonce() {
     static PAGES: Pages = &[(
         "/page.html",

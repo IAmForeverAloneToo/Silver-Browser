@@ -34,6 +34,7 @@ use crate::storage;
 
 mod animations;
 pub(crate) use animations::notices_json;
+mod custom;
 mod shadow;
 mod top_layer;
 
@@ -319,6 +320,9 @@ pub(crate) struct DocumentHost {
     /// The nodes scripts hold that came into the document or left it,
     /// in order, for the bindings to hold their objects or let them go.
     pins: Vec<(NodeId, bool)>,
+    /// The custom element the parser stopped for in what a script wrote
+    /// (D70): its local name and `is` value, for the realm to construct.
+    construct: Option<(String, Option<String>)>,
     /// What the window reports, lent for a run.
     window: WindowEnv,
     /// The document's version as it was lent: a change since is the
@@ -505,6 +509,14 @@ impl ScriptingHost for DocumentHost {
             | self.document.has_details_toggles()
     }
 
+    fn take_reaction_wake(&mut self) -> bool {
+        self.document.has_reactions()
+    }
+
+    fn take_construct(&mut self) -> Option<(String, Option<String>)> {
+        self.construct.take()
+    }
+
     fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
         // The realm's first time, or more than were kept: all of them.
         let changes = match std::mem::take(&mut self.named_synced) {
@@ -548,14 +560,20 @@ impl ScriptingHost for DocumentHost {
             if self.blocked {
                 return None;
             }
-            // What a write put in before the insertion point, parsed.
+            // What a write put in before the insertion point, parsed: a
+            // custom element it makes is constructed, and the reactions
+            // its insertion queued run, before it parses on (D70).
             let parser = self.parser.as_mut().and_then(html::Load::parser)?;
-            let html::Stop::Script { element, line } =
-                parser.parse_written(&mut self.document, usize::MAX)
-            else {
-                return None;
-            };
-            self.prepare_written(element, line);
+            match parser.parse_written(&mut self.document, usize::MAX) {
+                html::Stop::Script { element, line } => self.prepare_written(element, line),
+                html::Stop::Construct => {
+                    self.construct = parser
+                        .custom_element()
+                        .map(|(name, is)| (name.to_owned(), is.map(str::to_owned)));
+                    return None;
+                }
+                _ => return None,
+            }
         }
     }
 
@@ -968,6 +986,13 @@ impl DocumentHost {
                     .set_attribute(node, &name, &value)
                     .map_err(refused)?;
                 self.canvas_attribute(node, &name);
+                // A `nonce` set is the element's nonce (HTML's nonce
+                // attribute's change steps).
+                if name.eq_ignore_ascii_case("nonce")
+                    && let Some(page) = self.page.as_mut()
+                {
+                    page.set_nonce(node, value.clone());
+                }
                 // Its policies look at a `style` set so (M33.1).
                 if name.eq_ignore_ascii_case("style")
                     && let Some(page) = self.page.as_mut()
@@ -985,6 +1010,12 @@ impl DocumentHost {
                         .remove_attribute(node, &name)
                         .map_err(refused)?;
                     self.canvas_attribute(node, &name);
+                    // A `nonce` taken away leaves the element none.
+                    if name.eq_ignore_ascii_case("nonce")
+                        && let Some(page) = self.page.as_mut()
+                    {
+                        page.set_nonce(node, String::new());
+                    }
                 }
                 Ok(Answer::Nothing)
             }
@@ -1249,6 +1280,11 @@ impl DocumentHost {
                         && let Some(page) = self.page.as_mut()
                     {
                         page.set_cssom_style(node, false);
+                    }
+                    if qualified == "nonce"
+                        && let Some(page) = self.page.as_mut()
+                    {
+                        page.set_nonce(node, value.clone());
                     }
                 }
                 Ok(Answer::Nothing)
@@ -1596,9 +1632,18 @@ impl DocumentHost {
                 self.replace_all(parent, node)?;
                 Ok(Answer::Nothing)
             }
-            Call::Clone { node, deep } => {
+            Call::Clone {
+                node,
+                deep,
+                into,
+                fallback,
+            } => {
                 let node = self.node(node)?;
-                let copy = self.clone_node(node, deep)?;
+                let into = match into {
+                    Some(document) => Some(self.node(document)?),
+                    None => None,
+                };
+                let copy = self.clone_node(node, deep, into, fallback)?;
                 // A copy of a script is a script's made, started if the
                 // original is (HTML's cloning steps); those under it too.
                 let pairs: Vec<(NodeId, NodeId)> = self
@@ -1610,6 +1655,17 @@ impl DocumentHost {
                 for (from, to) in pairs {
                     let started = self.started.contains(&from);
                     self.made_by_script(to, started);
+                }
+                // Each copy has its original's nonce.
+                if let Some(page) = self.page.as_mut() {
+                    let copies: Vec<(NodeId, NodeId)> = self
+                        .document
+                        .subtree(node)
+                        .zip(self.document.subtree(copy))
+                        .collect();
+                    for (from, to) in copies {
+                        page.copy_nonce(from, to);
+                    }
                 }
                 // A copy's `style` is its original's declarations, which
                 // its policies are not asked about again (M33.1), as the
@@ -3190,6 +3246,18 @@ impl DocumentHost {
             Call::FormControls(node) => {
                 let form = self.node(node)?;
                 let document = &self.document;
+                // A fieldset's are the listed elements under it (HTML
+                // section 4.10.15), a form-associated custom element among
+                // them once it is one.
+                if document.tag(form) == Some("fieldset") {
+                    let controls = document
+                        .subtree(form)
+                        .skip(1)
+                        .filter(|&node| forms::is_listed(document, node))
+                        .map(handle)
+                        .collect();
+                    return Ok(Answer::Nodes(controls));
+                }
                 let controls =
                     forms::owned_by(document, form, |node| forms::is_listed(document, node))
                         .into_iter()
@@ -3433,6 +3501,7 @@ impl DocumentHost {
                 attribute,
                 elements,
             } => self.element_reference(&op, element, &attribute, &elements),
+            Call::Custom(call) => self.custom_call(*call),
         }
     }
 
@@ -4429,7 +4498,9 @@ impl DocumentHost {
                         parser.pop_insertion_point();
                     }
                 }
-                html::Stop::Slice => {}
+                // It constructs no custom element: what it inserts is
+                // upgraded by the reactions its insertion queues (D70).
+                html::Stop::Slice | html::Stop::Construct | html::Stop::Reactions => {}
                 html::Stop::Input | html::Stop::Done => break,
             }
         }
@@ -5709,7 +5780,15 @@ impl DocumentHost {
         let (_, _, hits) = crate::geometry::hit(layout, viewport, &offsets, x, y);
         let document = &self.document;
         let mut found: Vec<NodeId> = Vec::new();
-        for node in hits.into_iter().rev() {
+        for (node, text) in hits.into_iter().rev() {
+            // Text a slot holds as assigned to it is its parent's, the
+            // host's, as the reference browser hits it.
+            let node = match document.assigned_nodes(node).first() {
+                Some(&assigned) if text && document.is_slot(node) => {
+                    document.parent(assigned).unwrap_or(node)
+                }
+                _ => node,
+            };
             let element = std::iter::once(node)
                 .chain(document.ancestors(node))
                 .find(|&n| document.is_element(n));
@@ -6257,6 +6336,8 @@ impl DocumentHost {
         let Some(page) = self.page.as_mut() else {
             return;
         };
+        // What the write's parse inserted is connected: its nonces hidden.
+        page.hide_nonces(&mut self.document);
         // `document.write`'s scripts are the parser's.
         let prepared = prepare_element(page, &self.document, element, line, true);
         let violations = page.take_violations();
@@ -6706,12 +6787,17 @@ impl DocumentHost {
         let before = self.document.len();
         let max_depth = (dom::MAX_DEPTH + 1).saturating_sub(depth);
         // An XML document's fragment is the XML parser's, in the context
-        // of the element it goes under (DOM Parsing section 2.4).
+        // of the element it goes under (DOM Parsing section 2.4): a shadow
+        // root's host's, whose namespaces are in scope in its tree.
         if xml {
+            let context_element = match self.document.is_shadow_root(under) {
+                true => self.document.shadow_host(under).unwrap_or(under),
+                false => under,
+            };
             let parsed = html::xml::parse_xml_fragment(
                 &mut self.document,
                 container,
-                under,
+                context_element,
                 markup,
                 max_depth,
             );
@@ -6734,6 +6820,14 @@ impl DocumentHost {
             );
         }
         self.work += self.document.len().saturating_sub(before) as u64;
+        // Its elements take the context's registry, and are upgraded by
+        // what it defines (D70); under a template they go in its
+        // contents, a fragment, whose registry is none.
+        let registry = match self.document.template_content(under) {
+            Some(_) => None,
+            None => self.document.custom_element_registry(under),
+        };
+        self.document.fragment_parsed(container, registry);
         // A fragment's scripts are already started: they never run.
         let scripts: Vec<NodeId> = self
             .document
@@ -7324,6 +7418,10 @@ impl DocumentHost {
     fn put_in(&mut self, node: NodeId) {
         let connected = self.connected(node);
         self.pin(node, connected);
+        // Its elements' nonces hidden, now they are connected.
+        if connected && let Some(page) = self.page.as_mut() {
+            page.hide_nonces_under(&mut self.document, node);
+        }
     }
 
     /// Notes that the nodes scripts hold in `root`'s subtree are, or are
@@ -7382,14 +7480,27 @@ impl DocumentHost {
     /// A detached copy of `node` (DOM section 4.5, "clone a node"): its
     /// tag and attributes or its data, and its descendants' if `deep`; a
     /// control's state too, by HTML's cloning steps (M26.7): its value,
-    /// checkedness and selectedness, with their dirty flags.
-    fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+    /// checkedness and selectedness, with their dirty flags. The copy is
+    /// document `into`'s, else its original's; an element of it with no
+    /// registry is given `fallback` (D70), but in a shadow tree or a
+    /// template's contents, which DOM and HTML copy with none.
+    fn clone_node(
+        &mut self,
+        node: NodeId,
+        deep: bool,
+        into: Option<NodeId>,
+        fallback: Option<u32>,
+    ) -> Result<NodeId, DomError> {
         // The copy is its original's document's (D67); a copy of the
         // page's document is a document of its facts.
-        let owner = self.document.owner_document(node);
+        let owner = into.unwrap_or_else(|| self.document.owner_document(node));
         let page = self.page_facts();
-        let copy = |document: &mut Document, from: NodeId| -> Result<NodeId, MutationError> {
+        let copy = |document: &mut Document,
+                    from: NodeId,
+                    fallback: Option<u32>|
+         -> Result<NodeId, MutationError> {
             let made = document.copy_node(from, owner, || page.clone())?;
+            document.set_copied_registry(made, from, fallback);
             if let Some(state) = document.control(from) {
                 let state = forms::ControlState {
                     selection: forms::Selection::default(),
@@ -7413,34 +7524,35 @@ impl DocumentHost {
                 "ShadowRoot nodes are not clonable.",
             ));
         }
-        let top = copy(&mut self.document, node).map_err(refused)?;
+        let top = copy(&mut self.document, node, fallback).map_err(refused)?;
         self.detached.push(top);
-        // Each entry: a node whose children are still to copy, and its
-        // copy; a template's contents are copied into its copy's, and a
-        // clonable shadow root's into the one attached to its host's
-        // copy (D68), whole whatever `deep` says.
+        // Each entry: a node whose children are still to copy, its copy,
+        // and the fallback registry they take; a template's contents are
+        // copied into its copy's, and a clonable shadow root's into the
+        // one attached to its host's copy (D68), whole whatever `deep`
+        // says, neither with a fallback.
         let mut pending = Vec::new();
         self.clone_shadow(node, top, &mut pending)?;
         if deep {
-            pending.push((node, top));
+            pending.push((node, top, fallback));
         }
-        while let Some((from, to)) = pending.pop() {
+        while let Some((from, to, fallback)) = pending.pop() {
             if let (Some(from), Some(to)) = (
                 self.document.template_content(from),
                 self.document.template_content(to),
             ) {
-                pending.push((from, to));
+                pending.push((from, to, None));
             }
             let children: Vec<NodeId> = self.document.children(from).collect();
             for child in children {
                 self.work += 1;
-                let made = copy(&mut self.document, child).map_err(refused)?;
+                let made = copy(&mut self.document, child, fallback).map_err(refused)?;
                 if let Err(error) = self.document.append_new(to, made) {
                     let _ = self.document.free(made);
                     return Err(refused(error));
                 }
                 self.clone_shadow(child, made, &mut pending)?;
-                pending.push((child, made));
+                pending.push((child, made, fallback));
             }
         }
         Ok(top)
@@ -7453,7 +7565,7 @@ impl DocumentHost {
         &mut self,
         from: NodeId,
         to: NodeId,
-        pending: &mut Vec<(NodeId, NodeId)>,
+        pending: &mut Vec<(NodeId, NodeId, Option<u32>)>,
     ) -> Result<(), DomError> {
         let Some(root) = self.document.shadow_root(from) else {
             return Ok(());
@@ -7470,7 +7582,10 @@ impl DocumentHost {
         self.document
             .set_reference_target(copy, target.as_deref())
             .map_err(refused)?;
-        pending.push((root, copy));
+        // The copy keeps the registry it was given, or its having none
+        // (D70).
+        self.document.set_copied_shadow_registry(copy, root);
+        pending.push((root, copy, None));
         Ok(())
     }
 
@@ -7584,9 +7699,11 @@ impl DocumentHost {
         self.canvases.retain(|node| document.contains(node));
     }
 
-    /// The realm is gone, and with it every object a script held.
+    /// The realm is gone, and with it every object a script held, and
+    /// the custom element definitions its registries had (D70).
     pub(crate) fn forget_objects(&mut self) {
         self.exposed.clear();
+        self.document.forget_custom_elements();
         // A new realm is given the window's names afresh.
         self.named_synced = false;
     }

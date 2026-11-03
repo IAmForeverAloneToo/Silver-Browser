@@ -313,6 +313,7 @@ pub fn parse_xml_fragment(
         scripts: VecDeque::new(),
         xhtml_entities: false,
         max_depth,
+        custom: CustomParse::default(),
     };
     let mut c = Cursor::new(&text);
     let result = parser
@@ -845,6 +846,14 @@ pub enum XmlStop {
     /// prepares it before the parse goes on, as XML's parser runs a
     /// script it inserts. `line` is the line its start tag ended on.
     Script { element: NodeId, line: u32 },
+    /// The next start tag makes a custom element a definition is known
+    /// for (D70): the caller constructs it and gives it to the parser
+    /// ([`XmlParser::provide_element`]) before the parse goes on, as
+    /// HTML's parser has it ([`crate::Stop::Construct`]).
+    Construct,
+    /// What the parser did queued custom element reactions, which the
+    /// caller runs before the parse goes on.
+    Reactions,
     /// The document is parsed to its end.
     Done,
 }
@@ -896,6 +905,7 @@ impl XmlParser {
                 scripts: VecDeque::new(),
                 xhtml_entities: false,
                 max_depth: MAX_XML_DEPTH,
+                custom: CustomParse::default(),
             },
         }
     }
@@ -903,6 +913,40 @@ impl XmlParser {
     /// Whether the parse is over, at the end or at an error.
     pub fn is_done(&self) -> bool {
         self.done
+    }
+
+    /// Whether the elements a custom element definition is known for are
+    /// constructed as they are made, stopping at [`XmlStop::Construct`]
+    /// and [`XmlStop::Reactions`] (D70): off until asked, as a parser
+    /// whose caller runs no script's has none.
+    pub fn set_custom_elements(&mut self, construct: bool) {
+        self.parser.custom.construct = construct;
+    }
+
+    /// The local name and `is` value of the custom element the parse
+    /// stopped at [`XmlStop::Construct`] for.
+    pub fn custom_element(&self) -> Option<(&str, Option<&str>)> {
+        self.parser
+            .custom
+            .held
+            .as_ref()
+            .map(|held| (held.local.as_str(), held.is.as_deref()))
+    }
+
+    /// The prefix of the qualified name of the tag the parse stopped at
+    /// [`XmlStop::Construct`] for, if it has one.
+    pub fn custom_prefix(&self) -> Option<&str> {
+        self.parser
+            .custom
+            .held
+            .as_ref()
+            .and_then(|held| held.prefix.as_deref())
+    }
+
+    /// Gives the parser the element a definition's constructor made for
+    /// the start tag it stopped at, which it takes as that tag's.
+    pub fn provide_element(&mut self, element: NodeId) {
+        self.parser.custom.provided = Some(element);
     }
 
     /// Parses at most `slice` items of content (a tag, a run of text, a
@@ -1014,6 +1058,39 @@ struct Parser {
     /// The most elements open at once: [`MAX_XML_DEPTH`], or fewer for a
     /// fragment going deep in its document.
     max_depth: usize,
+    /// The custom elements a document's parse constructs (D70).
+    custom: CustomParse,
+}
+
+/// What the XML parser keeps of the custom element it constructs (HTML
+/// section 13.2.6.1, "create an element for a token", which an XML
+/// document's parser follows with the synchronous custom elements flag
+/// set, D70).
+#[derive(Debug, Default)]
+struct CustomParse {
+    /// Whether it constructs them at all: a document's parse with scripts
+    /// to run them.
+    construct: bool,
+    /// The start tag it stopped at, read ahead.
+    held: Option<HeldTag>,
+    /// The element constructed for it.
+    provided: Option<NodeId>,
+    /// Whether the provided element has the tag's attributes already, the
+    /// reactions they queued run before it is inserted.
+    attributes: bool,
+}
+
+/// A start tag as read: its name, its attributes, and whether it is an
+/// empty-element tag.
+type StartTag = (String, Vec<(String, String)>, bool);
+
+/// A start tag read ahead for the custom element it makes.
+#[derive(Debug)]
+struct HeldTag {
+    local: String,
+    is: Option<String>,
+    prefix: Option<String>,
+    attrs: Vec<(String, String)>,
 }
 
 /// The public identifiers of the DTDs whose entities the reference
@@ -1042,6 +1119,7 @@ fn html_entity(name: &str) -> Option<&'static str> {
 }
 
 /// A place in a text: its byte offset, and its line and column.
+#[derive(Clone)]
 struct Cursor<'a> {
     text: &'a str,
     pos: usize,
@@ -1461,7 +1539,23 @@ impl Parser {
             if c.at_end() {
                 return Ok(None);
             }
-            self.item(c)?;
+            if self.custom.construct
+                && let Some(stop) = self.custom_stop(c)
+            {
+                return Ok(Some(stop));
+            }
+            let item = self.item(c);
+            if let Some(unused) = self.custom.provided.take()
+                && self.document.parent(unused).is_none()
+            {
+                let _ = self.document.free(unused);
+            }
+            self.custom.held = None;
+            self.custom.attributes = false;
+            item?;
+            if self.custom.construct && self.document.has_reactions() {
+                return Ok(Some(XmlStop::Reactions));
+            }
         }
         Ok(self
             .scripts
@@ -1649,17 +1743,89 @@ impl Parser {
         if self.root == Root::After && self.open.is_empty() {
             return Err(c.error(self, "Extra content at the end of the document".to_owned()));
         }
+        let (name, attrs, empty) = self.read_start_tag(c)?;
+        self.open_element(c, name, attrs)?;
+        if empty {
+            return self.close_element(c);
+        }
+        Ok(())
+    }
+
+    /// Before a start tag that makes a custom element a definition is
+    /// known for, the stop for its construction; once it is constructed,
+    /// the tag's attributes given it and the stop for the reactions they
+    /// queued, before it is inserted ("create an element for a token"
+    /// steps 3 to 10). None for any other item, or a tag the parse
+    /// errs at, which the item reports.
+    fn custom_stop(&mut self, c: &Cursor) -> Option<XmlStop> {
+        if let Some(held) = &self.custom.held {
+            let element = self.custom.provided?;
+            if self.custom.attributes {
+                return None;
+            }
+            self.custom.attributes = true;
+            for (name, value) in &held.attrs {
+                let _ = self.document.set_attribute(element, name, value);
+            }
+            return self.document.has_reactions().then_some(XmlStop::Reactions);
+        }
+        if !c.starts_with("<") || c.starts_with("</") || c.starts_with("<!") || c.starts_with("<?")
+        {
+            return None;
+        }
+        // The tag read ahead, the entity budget left as it was.
+        let mut ahead = c.clone();
+        let expanded = self.expanded;
+        let read = self.read_start_tag(&mut ahead);
+        self.expanded = expanded;
+        let (name, attrs, _) = read.ok()?;
+        let declared = |key: &str| {
+            attrs
+                .iter()
+                .find(|(attr, _)| attr == key)
+                .map(|(_, value)| value.clone())
+        };
+        let uri = match name.split_once(':') {
+            Some((prefix, _)) => {
+                declared(&format!("xmlns:{prefix}")).or_else(|| self.bound(Some(prefix)))
+            }
+            None => declared("xmlns")
+                .or_else(|| self.bound(None))
+                .filter(|uri| !uri.is_empty()),
+        };
+        if Namespace::from_uri(uri.as_deref()) != Namespace::Html
+            || declared("customelementregistry").is_some()
+        {
+            return None;
+        }
+        let local = local(&name).to_owned();
+        let prefix = name.split_once(':').map(|(prefix, _)| prefix.to_owned());
+        let is = declared("is");
+        let registry = self.document.custom_element_registry(self.parent());
+        self.document
+            .look_up_custom_element(registry, &Namespace::Html, &local, is.as_deref())?;
+        self.custom.held = Some(HeldTag {
+            local,
+            is,
+            prefix,
+            attrs,
+        });
+        Some(XmlStop::Construct)
+    }
+
+    /// A start tag read: its name, its attributes, and whether it is an
+    /// empty-element tag.
+    fn read_start_tag(&mut self, c: &mut Cursor) -> Result<StartTag, XmlError> {
         c.skip("<");
         let name = c.name(self, "StartTag")?.to_owned();
         let mut attrs: Vec<(String, String)> = Vec::new();
         loop {
             let spaced = c.space();
             if c.skip("/>") {
-                self.open_element(c, name, attrs)?;
-                return self.close_element(c);
+                return Ok((name, attrs, true));
             }
             if c.skip(">") {
-                return self.open_element(c, name, attrs);
+                return Ok((name, attrs, false));
             }
             if !spaced {
                 return Err(c.error(self, "attributes construct error".to_owned()));
@@ -1884,18 +2050,50 @@ impl Parser {
         }
         let namespaces: Vec<Option<String>> = expanded.into_iter().map(|(ns, _)| ns).collect();
         let parent = self.parent();
-        let node = self
-            .document
-            .create_element_ns(ns, &name, attrs)
-            .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
-        self.document.mark_prefixed(node);
+        // The element a definition constructed for the tag (D70) takes
+        // its attributes, then its prefix, and goes in only where it may.
+        let provided = self.custom.provided.take().filter(|&id| {
+            ns == Namespace::Html && self.document.local_name(id) == Some(local(&name))
+        });
+        let node = match provided {
+            Some(id) => {
+                if !self.custom.attributes {
+                    for (attr, value) in &attrs {
+                        let _ = self.document.set_attribute(id, attr, value);
+                    }
+                }
+                if let Some((prefix, _)) = name.split_once(':') {
+                    let _ = self.document.set_element_prefix(id, prefix);
+                }
+                id
+            }
+            None => {
+                let registry_null = ns == Namespace::Html
+                    && attrs
+                        .iter()
+                        .any(|(attr, _)| attr == "customelementregistry");
+                let node = self
+                    .document
+                    .create_element_ns(ns, &name, attrs)
+                    .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
+                self.document.mark_prefixed(node);
+                // `customelementregistry`: it has no registry, nor what goes
+                // in it, until one is given it (D70).
+                if registry_null {
+                    self.document.keep_custom_element_registry_null(node);
+                }
+                node
+            }
+        };
         // Each attribute in the namespace its prefix is bound to.
         self.document
             .set_attribute_namespaces(node, namespaces)
             .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
-        self.document
-            .append_new(parent, node)
-            .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
+        let inserted = match provided {
+            Some(_) => self.document.append_child(parent, node),
+            None => self.document.append_new(parent, node),
+        };
+        inserted.map_err(|_| c.error(self, "the document is too large".to_owned()))?;
         if self.open.is_empty() {
             self.root = Root::Inside;
         }

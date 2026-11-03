@@ -91,6 +91,12 @@ pub(super) struct Live {
     pub(super) references: HashMap<(NodeId, Box<str>), Vec<NodeId>>,
     /// The `details` elements' toggles owed (gap batch H).
     pub(super) details: super::details::DetailsState,
+    /// The custom elements' states, definitions and reactions (D70).
+    pub(super) custom: super::custom::Custom,
+    /// The form owners the parser's form element pointer gave controls it
+    /// inserted outside their forms (HTML section 13.2.6.1, "create an
+    /// element for a token" step 12), until their ancestors change.
+    pub(super) parser_forms: HashMap<NodeId, NodeId>,
 }
 
 impl Live {

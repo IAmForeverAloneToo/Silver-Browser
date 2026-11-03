@@ -114,6 +114,11 @@ pub fn will_validate(document: &Document, element: NodeId) -> bool {
         Some("button") => forms::button_type(document, element) == "submit",
         Some("select") => true,
         Some("textarea") => document.attr(element, "readonly").is_none(),
+        // A form-associated custom element with `readonly` is barred
+        // (D70).
+        _ if document.is_form_associated_custom(element) => {
+            document.attr(element, "readonly").is_none()
+        }
         _ => false,
     };
     candidate
@@ -205,6 +210,22 @@ fn step_base(document: &Document, element: NodeId) -> f64 {
 /// after the user's edit; a number below `min`, above `max` or off its
 /// step; a custom validity set.
 pub fn validity(document: &Document, element: NodeId) -> Validity {
+    // A form-associated custom element's are what `setValidity()` set.
+    if let Some((bits, _)) = document.form_validity(element) {
+        let bit = |i: u32| bits & (1 << i) != 0;
+        return Validity {
+            value_missing: bit(0),
+            type_mismatch: bit(1),
+            pattern_mismatch: bit(2),
+            too_long: bit(3),
+            too_short: bit(4),
+            range_underflow: bit(5),
+            range_overflow: bit(6),
+            step_mismatch: bit(7),
+            bad_input: bit(8),
+            custom_error: bit(9),
+        };
+    }
     let checks = CHECKS.get();
     let own = state(document, element);
     let mut v = Validity {
@@ -323,6 +344,9 @@ fn number(n: f64) -> String {
 pub fn validation_message(document: &Document, element: NodeId) -> String {
     if !will_validate(document, element) {
         return String::new();
+    }
+    if let Some((_, message)) = document.form_validity(element) {
+        return message.to_owned();
     }
     let v = validity(document, element);
     if v.custom_error {

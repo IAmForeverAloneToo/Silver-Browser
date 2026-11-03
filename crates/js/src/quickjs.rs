@@ -686,6 +686,16 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("mutations")?
                     .call::<_, Value<'_>>(())
             }),
+            Task::Construct { name, is, prefix } => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("construct")?
+                    .call::<_, Value<'_>>((name.as_str(), is.as_deref(), prefix.as_deref()))
+            }),
+            Task::Reactions => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("reactions")?
+                    .call::<_, Value<'_>>(())
+            }),
             Task::PopState(state) => self.stepped(&entries, |ctx, entries| {
                 let state = match state {
                     Some(text) => rquickjs::String::from_str(ctx.clone(), text)?.into_value(),
@@ -836,6 +846,36 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
 
     fn collect(&mut self) {
         self.runtime.run_gc();
+    }
+
+    fn sweep(&mut self, host: &mut H) {
+        if self.dead.is_some() {
+            return;
+        }
+        let Some(entries) = self.entries.borrow().clone() else {
+            return;
+        };
+        self.begin(host, false);
+        // The bootstrap's half of the sweep: whether it let go of any.
+        let half = |realm: &Self, name: &str| {
+            realm.context.with(|ctx| {
+                let called = entries
+                    .clone()
+                    .restore(&ctx)
+                    .and_then(|entries| entries.get::<_, Function<'_>>(name)?.call::<_, bool>(()));
+                called.catch(&ctx).unwrap_or(false)
+            })
+        };
+        if half(self, "sweepPrepare") {
+            // Out of the bootstrap's frames, what only the holds it let go
+            // of kept is collected.
+            self.runtime.run_gc();
+            half(self, "sweepFinish");
+            // The finalization callbacks release what was collected.
+            let errors = self.jobs();
+            self.deferred.extend(errors);
+        }
+        self.end(host);
     }
 
     fn dead(&self) -> Option<Death> {

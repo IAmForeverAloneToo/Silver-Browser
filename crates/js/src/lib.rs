@@ -41,7 +41,8 @@ mod wasm_tests;
 mod worker_tests;
 
 pub use dom::{
-    Answer, Call, CanvasCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript, WORK_PER_STEP,
+    Answer, Call, CanvasCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript,
+    WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
 pub use quickjs::{QuickJs, set_windows_time_zone, warm_bindings};
@@ -419,6 +420,17 @@ pub trait ScriptingHost: Default + 'static {
     }
     /// The script [`ScriptingHost::take_script`] gave has run.
     fn script_ran(&mut self) {}
+    /// Whether custom element reactions were queued since this was last
+    /// asked (D70): the realm runs them before the call returns.
+    fn take_reaction_wake(&mut self) -> bool {
+        false
+    }
+    /// The custom element the parser stopped for in what a script wrote
+    /// (D70): its local name and `is` value, which the realm constructs
+    /// and gives the parser before it parses on.
+    fn take_construct(&mut self) -> Option<(String, Option<String>)> {
+        None
+    }
     /// A script run nested failed: an error of the page's, which the
     /// script that made it run does not see.
     fn report(&mut self, error: ScriptError) {
@@ -538,6 +550,20 @@ pub enum Task {
     /// Records wait for mutation observers that no call of a script's
     /// queued (the parser's insertions): the realm tells them.
     Mutations,
+    /// The parser stopped for a custom element its definition constructs
+    /// (D70): the realm constructs the element of local name `name` and
+    /// `is` value `is`, and gives the host what it made
+    /// ([`CustomCall::ParserElement`]).
+    Construct {
+        name: String,
+        is: Option<String>,
+        /// The prefix the element's qualified name has, which an XML
+        /// document's tag may give it, set once it is constructed.
+        prefix: Option<String>,
+    },
+    /// Custom element reactions the parser's insertions queued (D70): the
+    /// realm runs them.
+    Reactions,
     /// The session history was traversed to another entry of the
     /// document's (HTML's "update document for history step
     /// application"): the entry's state, as serialized (`None` for
@@ -699,6 +725,12 @@ pub trait Realm<H: ScriptingHost> {
     fn heap(&self) -> usize;
     /// Collects the garbage now.
     fn collect(&mut self);
+    /// Sweeps the objects of nodes held out of the document (D70): those
+    /// nothing reaches any more are collected and released, which a
+    /// realm that holds none such has nothing to do for.
+    fn sweep(&mut self, host: &mut H) {
+        let _ = host;
+    }
     /// Why the realm can run nothing more, if it cannot.
     fn dead(&self) -> Option<Death>;
 }

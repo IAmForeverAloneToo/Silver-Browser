@@ -471,7 +471,8 @@
   // on it, its listeners and expandos, stays). When one out of the
   // document is collected and no newer one has been made since, the host
   // hears the handle is released, and may free the node once it is out
-  // of the tree.
+  // of the tree. An object `held` out of the document (a custom
+  // element's, D70) is held until a sweep finds nothing reaches it.
   const objects = new $Map();
   // The objects of nodes with event listeners out of the document, each
   // held by the object of the nearest node around it that has one
@@ -481,6 +482,9 @@
     const entry = MapGet(objects, handle);
     if (entry !== undefined && WeakRefDeref(entry.ref) !== undefined) {
       return;
+    }
+    if (entry !== undefined && entry.custom) {
+      customHeld--;
     }
     MapDelete(objects, handle);
     native.released(handle);
@@ -505,7 +509,15 @@
         continue;
       }
       const object = WeakRefDeref(entry.ref);
-      entry.strong = pins[i + 1] && object !== undefined ? object : null;
+      // Once custom elements' objects are held (D70), an object leaving
+      // the document is held as theirs are, until a sweep: it may be one
+      // of a custom element's tree, whose constructor set what it holds.
+      if (!pins[i + 1] && object !== undefined && customHeld > 0 && !entry.custom) {
+        entry.custom = true;
+        customHeld++;
+        heldSince++;
+      }
+      entry.strong = (pins[i + 1] || entry.custom) && object !== undefined ? object : null;
       // Out of the document, a node with listeners lives as long as the
       // tree it is in, which a node around it with an object stands for.
       if (!pins[i + 1] && object !== undefined && entry.listened) {
@@ -557,15 +569,191 @@
     }
     const answer = native.wrap(handle);
     const object = make(handle, answer[0], answer[2], +answer[3], answer[4]);
+    // Out of the document, in the tree of a custom element, it is held
+    // as that element is (D70): what its constructor set on its shadow
+    // tree's nodes before it was connected stays.
+    const held = answer[1] !== "" || (customHeld > 0 && heldByCustom(handle));
+    const custom = held && answer[1] === "";
     MapSet(objects, handle, {
       ref: new $WeakRef(object),
-      strong: answer[1] === "" ? null : object,
+      strong: held ? object : null,
+      custom,
     });
+    if (custom) {
+      customHeld++;
+      heldSince++;
+    }
     Register(registry, object, handle);
     for (let i = 5; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
     return object;
+  }
+
+  // How many objects are held out of the document as custom elements'
+  // and their trees' (D70): until one is, no detached node's object is
+  // looked at for it.
+  let customHeld = 0;
+  // How many such objects were held since the last sweep, how many were
+  // held after it, and how many chances to sweep went by since.
+  let heldSince = 0;
+  let heldAtSweep = 0;
+  let sweepsSkipped = 0;
+
+  // Makes `object`, which a custom element's constructor made (D70), the
+  // object of the node `handle` names, held while a script may reach the
+  // node: what the constructor set on it is the element's.
+  function adoptObject(handle, object) {
+    native.wrap(handle);
+    const entry = MapGet(objects, handle);
+    if (entry !== undefined && entry.custom) {
+      customHeld--;
+    }
+    MapSet(objects, handle, { ref: new $WeakRef(object), strong: object, custom: true });
+    Register(registry, object, handle);
+    customHeld++;
+    heldSince++;
+  }
+
+  // Holds the object of the node `handle` names while a script may reach
+  // the node: it is a custom element's now (D70).
+  function holdObject(handle) {
+    const entry = MapGet(objects, handle);
+    if (entry !== undefined) {
+      if (!entry.custom) {
+        customHeld++;
+      }
+      entry.custom = true;
+      entry.strong = WeakRefDeref(entry.ref) || null;
+      heldSince++;
+    }
+  }
+
+  // The sweep of the objects held out of the document (D70): an object
+  // so held is the node's own for as long as a script may reach the
+  // node, which is while any object of a node of its tree lives (a tree
+  // is reached through any of its nodes) or the host holds a node of it
+  // (a mutation record's, a live range's or iterator's, an event's to
+  // fire). The objects of each tree holding one are linked to the held
+  // ones of the tree (`setKeepOf`), the holds let go, the garbage
+  // collected (by the realm, between `sweepPrepare` and `sweepFinish`),
+  // and what lived is held again, its links cut; what did not is
+  // released, and its nodes freed. It runs once as many objects were
+  // held since the last as were held after it (and `SWEEP_AT` at
+  // least), so that its work is in proportion to what it may free, and
+  // else at every `SWEEP_EVERY`th chance, as what reaches a tree changes
+  // with no tree changing.
+  const SWEEP_AT = 64;
+  const SWEEP_EVERY = 16;
+  // The handles whose holds the sweep let go, and the objects it linked,
+  // weakly.
+  let sweptHandles = null;
+  let sweptLinks = null;
+
+  function sweepPrepare() {
+    if (customHeld === 0) {
+      return false;
+    }
+    const grown = heldSince > 0 && heldSince >= heldAtSweep && heldSince >= SWEEP_AT;
+    if (!grown && ++sweepsSkipped < SWEEP_EVERY) {
+      return false;
+    }
+    heldSince = 0;
+    sweepsSkipped = 0;
+    // The detached trees, by their shadow-including roots, and the held
+    // objects' handles in each.
+    const trees = new $Map();
+    MapForEach(objects, (entry, handle) => {
+      if (entry.custom && entry.strong !== null && !native.connected(handle)) {
+        const root = native.rootNode(handle, true);
+        const held = MapGet(trees, root);
+        if (held === undefined) {
+          MapSet(trees, root, [handle]);
+        } else {
+          ArrayPush(held, handle);
+        }
+      }
+    });
+    const roots = [];
+    MapForEach(trees, (_, root) => ArrayPush(roots, root));
+    if (roots.length === 0) {
+      return false;
+    }
+    // Those of a node the host holds stay as they are.
+    const kept = native.ceKept(roots);
+    for (let i = 0; i < kept.length; i++) {
+      MapDelete(trees, kept[i]);
+    }
+    // Each tree's held objects, which each object of the tree keeps.
+    const keeps = new $Map();
+    MapForEach(trees, (handles, root) => {
+      const held = [];
+      for (let i = 0; i < handles.length; i++) {
+        ArrayPush(held, MapGet(objects, handles[i]).strong);
+      }
+      MapSet(keeps, root, held);
+    });
+    sweptLinks = [];
+    MapForEach(objects, (entry, handle) => {
+      const object = WeakRefDeref(entry.ref);
+      // An object held for the document is of a node in it.
+      if (object === undefined || (entry.strong !== null && !entry.custom)) {
+        return;
+      }
+      const held = MapGet(keeps, native.rootNode(handle, true));
+      if (held !== undefined) {
+        setKeepOf(object, held);
+        ArrayPush(sweptLinks, new $WeakRef(object));
+      }
+    });
+    sweptHandles = [];
+    MapForEach(trees, (handles) => {
+      for (let i = 0; i < handles.length; i++) {
+        MapGet(objects, handles[i]).strong = null;
+        ArrayPush(sweptHandles, handles[i]);
+      }
+    });
+    return sweptHandles.length > 0;
+  }
+
+  function sweepFinish() {
+    const handles = sweptHandles;
+    const links = sweptLinks;
+    sweptHandles = null;
+    sweptLinks = null;
+    if (handles === null) {
+      return false;
+    }
+    let collected = 0;
+    for (let i = 0; i < handles.length; i++) {
+      const entry = MapGet(objects, handles[i]);
+      const object = entry === undefined ? undefined : WeakRefDeref(entry.ref);
+      if (object !== undefined) {
+        entry.strong = object;
+      } else {
+        collected++;
+      }
+    }
+    for (let i = 0; i < links.length; i++) {
+      const object = WeakRefDeref(links[i]);
+      if (object !== undefined) {
+        setKeepOf(object, null);
+      }
+    }
+    // The collected ones' entries go as the registry hears of them.
+    heldAtSweep = customHeld - collected;
+    return true;
+  }
+
+  // Whether the detached node `handle` names is in the tree, or the
+  // shadow tree, of a custom element whose object is held.
+  function heldByCustom(handle) {
+    const root = native.rootNode(handle, true);
+    if (root === handle) {
+      return false;
+    }
+    const entry = MapGet(objects, root);
+    return entry !== undefined && entry.custom === true;
   }
 
   // Whether a document beside the page's has had an object made (D67):
@@ -2711,7 +2899,7 @@
       return;
     }
     if (form !== null && isResetButton(handle)) {
-      yield* resetForm(form);
+      yield* resetForm(form, true);
       return;
     }
     // A button's command or its popover target's (HTML sections 4.10.6
@@ -2816,13 +3004,33 @@
 
   // HTML's reset (section 4.10.22): a cancelable `reset`, then the
   // controls back to their defaults.
-  function* resetForm(form) {
+  // A reset button's (`activated`) is no `[CEReactions]` member's: its
+  // custom elements' `formResetCallback`s run at a microtask, where
+  // `form.reset()`'s run as it returns.
+  function* resetForm(form, activated) {
     const event = new Event("reset", made(EVENT_INIT, ["bubbles", true, "cancelable", true]));
     eventState(event).trusted = true;
     if (yield* dispatching(wrap(form), event)) {
       return;
     }
+    if (activated) {
+      outsideCEReactions(() => resetControls(form));
+    } else {
+      resetControls(form);
+    }
+  }
+
+  // Each control of `form` reset, in tree order: the host's controls,
+  // then the outputs, whose values are the bindings' (the reactions the
+  // custom elements' resets queue run after all of them).
+  function resetControls(form) {
     native.resetForm(form);
+    const controls = native.formControls(form);
+    for (let i = 0; i < controls.length; i++) {
+      if (native.tag(controls[i]) === "output" && isHtmlElement(controls[i])) {
+        resetOutput(controls[i]);
+      }
+    }
   }
 
   // A trusted Event of `type` at `element`, bubbling, composed if asked.
@@ -2870,13 +3078,13 @@
     try {
       const callback = listener.callback;
       if (typeof callback === "function") {
-        ReflectApply(callback, s.currentTarget, [event]);
+        asScript(callback, s.currentTarget, [event]);
       } else {
         const handleEvent = callback.handleEvent;
         if (typeof handleEvent !== "function") {
           throw new $TypeError("The 'handleEvent' property of the event listener is not callable.");
         }
-        ReflectApply(handleEvent, callback, [event]);
+        asScript(handleEvent, callback, [event]);
       }
     } catch (error) {
       reportException(error);
@@ -7642,6 +7850,8 @@
   // and a node's kind and name. Set from inside Node's body, where its
   // private fields are seen.
   let handleOf;
+  let setKeepOf;
+  let setNameOf;
   let isNode;
   let kindOf;
   let nameOf;
@@ -7672,6 +7882,9 @@
     #tokens = null;
     #style = null;
     #dataset = null;
+    // The objects a sweep of those held out of the document (D70) found
+    // in its tree, which it keeps while the sweep's collection runs.
+    #keep = null;
 
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
@@ -7685,9 +7898,15 @@
 
     static {
       handleOf = (node) => node.#handle;
+      setKeepOf = (node, keep) => {
+        node.#keep = keep;
+      };
       isNode = (value) => typeof value === "object" && value !== null && #handle in value;
       kindOf = (node) => node.#kind;
       nameOf = (node) => node.#name;
+      setNameOf = (node, name) => {
+        node.#name = name;
+      };
       nsOf = (node) => node.#ns;
       setNsOf = (node, ns) => {
         node.#ns = ns;
@@ -8939,9 +9158,17 @@
   const clicking = new $Map();
 
   class HTMLElement extends Element {
+    // A script's `new` is HTML's [HTMLConstructor] (D70): a custom
+    // element's constructor making its element, or upgrading one.
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
-        throw illegalConstructor("HTMLElement");
+        const made = htmlConstructing(new.target, HTMLElement, "HTMLElement");
+        if (made.existing !== undefined) {
+          return made.existing;
+        }
+        super(KEY, made.handle, 1, made.name);
+        customConstructed(this, made);
+        return;
       }
       super(key, handle, kind, name);
     }
@@ -9203,19 +9430,23 @@
       return wrap(native.elementById(handle, str(elementId)));
     }
 
-    // Each node a document makes is its (D67).
-    createElement(localName) {
+    // Each node a document makes is its (D67). A custom element's
+    // definition constructs it, or upgrades a customized built-in one
+    // at once (D70); `options` names its `is` value.
+    createElement(localName, options) {
       const handle = self(this);
       need(arguments.length, 1, "createElement", "Document");
       const name = str(localName);
+      const given = creationOptions(options, "createElement");
+      const local = inHtmlDocument(this) ? ToLowerCase(name) : name;
       try {
-        return wrap(native.createElement(name, handle));
+        return createElementFor(handle, name, local, given, "createElement", false);
       } catch (error) {
         throw failed(error, "createElement", "Document");
       }
     }
 
-    createElementNS(namespace, qualifiedName) {
+    createElementNS(namespace, qualifiedName, options) {
       const handle = self(this);
       need(arguments.length, 2, "createElementNS", "Document");
       const [ns, qualified] = validateAndExtract(
@@ -9224,11 +9455,44 @@
         "createElementNS",
         "Document",
       );
+      const given = creationOptions(options, "createElementNS");
+      const is = given.is;
+      // An HTML element that may be custom is made as `createElement`
+      // makes one, a definition of its local name constructing it; its
+      // prefix is set once it is made (DOM's "create an element" step
+      // 5.1.4.11, D70).
+      if (ns === HTML_NS) {
+        const colon = StringIndexOf(qualified, ":");
+        const local = colon < 0 ? qualified : StringSlice(qualified, colon + 1);
+        if (is !== null || validCustomElementName(local)) {
+          let element;
+          try {
+            element = createElementFor(handle, local, local, given, "createElementNS", true);
+          } catch (error) {
+            throw failed(error, "createElementNS", "Document");
+          }
+          if (colon >= 0) {
+            const prefixed = StringSlice(qualified, 0, colon);
+            native.ceSetPrefix(handleOf(element), prefixed);
+            setNameOf(element, qualified);
+            setPrefixOf(element, prefixed);
+          }
+          return element;
+        }
+      }
+      let made;
       try {
-        return wrap(native.createElementNS(ns === null ? "" : ns, qualified, handle));
+        made = native.createElementNS(ns === null ? "" : ns, qualified, handle);
       } catch (error) {
         throw failed(error, "createElementNS", "Document");
       }
+      if (is !== null && ns === HTML_NS) {
+        native.ceSetIs(made, is);
+      }
+      if (given.given) {
+        native.ceSetRegistry(made, registryId(given.registry));
+      }
+      return wrap(made);
     }
 
     createTextNode(data) {
@@ -9271,8 +9535,34 @@
     }
 
     // `importNode` (DOM section 4.5): a copy of `node`, this document's.
-    importNode(node, deep) {
+    // Its options are `deep`, or an ImportNodeOptions whose `selfOnly`
+    // says the opposite (D70).
+    importNode(node, options) {
       const handle = self(this);
+      let deep = options;
+      // The registry an element with none is given (DOM's `importNode()`
+      // steps 5 and 6, D70): the one asked for, else this document's.
+      let fallback = null;
+      if (typeof options === "object" && options !== null) {
+        const given = options.customElementRegistry;
+        if (given !== undefined) {
+          if (!isRegistry(given)) {
+            throw new $TypeError(prefix("importNode", "Document") + "Failed to read the " +
+              "'customElementRegistry' property from 'ImportNodeOptions': Failed to convert " +
+              "value to 'CustomElementRegistry'.");
+          }
+          if (given === globalRegistry && registryOfDocument(handle) !== given) {
+            throw domError("NotSupportedError", "The registry provided is a global registry " +
+              "from another document", "importNode", "Document");
+          }
+          fallback = registryId(given);
+        }
+        deep = !options.selfOnly;
+      }
+      if (fallback === null) {
+        const own = registryOfDocument(handle);
+        fallback = own === null ? null : registryId(own);
+      }
       need(arguments.length, 1, "importNode", "Document");
       if (!isNode(node)) {
         throw new $TypeError(prefix("importNode", "Document") + "parameter 1 is not of type 'Node'.");
@@ -9290,7 +9580,7 @@
       }
       let copy;
       try {
-        copy = native.clone(handleOf(node), deep === undefined ? false : !!deep);
+        copy = native.clone(handleOf(node), deep === undefined ? false : !!deep, handle, fallback);
         native.adopt(copy, handle);
       } catch (error) {
         throw failed(error, "importNode", "Document");
@@ -9381,6 +9671,10 @@
   // `document.write`'s text, its arguments joined and `end` after them,
   // put in at the parser's insertion point (HTML section 8.4.3).
   function write(text, end, method) {
+    if (markupInsertionBlocked > 0) {
+      throw domError("InvalidStateError", "Custom Element constructor should not use " + method +
+        "().", method, "Document");
+    }
     let markup = "";
     for (let i = 0; i < text.length; i++) {
       markup += str(text[i]);
@@ -9594,16 +9888,19 @@
   }
 
   // The elements hit at a point, the topmost first, each retargeted
-  // against `root`, a document or a shadow root, those of its tree once
-  // each (D68): the first alone unless `all`.
+  // against `root`, a document or a shadow root, once each (D68): the
+  // first alone unless `all`. Those outside a shadow root's tree, its
+  // host and the host's ancestors, are among them, as the reference
+  // browser gives them.
   function pointElements(root, x, y, all) {
+    // A document beside the page's has no viewport: nothing is hit in it.
+    if (native.kind(root) === 9 && !isPage(root)) {
+      return [];
+    }
     const found = native.elementsFromPoint(x, y, true);
     const out = [];
     for (let i = 0; i < found.length; i++) {
       const element = native.retarget(found[i], root);
-      if (native.rootNode(element, false) !== root) {
-        continue;
-      }
       const object = wrap(element);
       if (!ArrayIncludes(out, object)) {
         ArrayPush(out, object);
@@ -9743,6 +10040,13 @@
           : "The provided value is not of type 'ShadowRootInit'."));
     }
     const clonable = !!init.clonable;
+    // A scoped registry, or null, for its tree (D70); `undefined` when
+    // none is given.
+    const registryValue = init.customElementRegistry;
+    if (registryValue !== undefined && registryValue !== null && !isRegistry(registryValue)) {
+      throw new $TypeError(where + "Failed to read the 'customElementRegistry' property from " +
+        "'ShadowRootInit': Failed to convert value to 'CustomElementRegistry'.");
+    }
     const delegatesFocus = !!init.delegatesFocus;
     const modeValue = init.mode;
     if (modeValue === undefined) {
@@ -9765,7 +10069,8 @@
         "Failed to read the 'slotAssignment' property from 'ShadowRootInit': The provided " +
         "value '" + slotAssignment + "' is not a valid enum value of type SlotAssignmentMode.");
     }
-    return [mode, delegatesFocus, slotAssignment, clonable, serializable, referenceTarget];
+    return [mode, delegatesFocus, slotAssignment, clonable, serializable, referenceTarget,
+      registryValue];
   }
 
   // The part names of an element, a token list of its `part` (CSS Shadow
@@ -9789,12 +10094,28 @@
         const handle = self(this);
         need(arguments.length, 1, "attachShadow", "Element");
         const parsed = shadowInit(init);
+        // A custom element whose definition disables shadow trees has
+        // none (DOM's "attach a shadow root" step 3, D70).
+        if (shadowDisabled(this, handle)) {
+          throw domError("NotSupportedError", "attachShadow() is disabled by disabledFeatures " +
+            "static field.", "attachShadow", "Element");
+        }
+        const before = native.shadowRoot(handle);
+        let root;
         try {
-          return holdRoot(this, wrap(native.attachShadow(handle, parsed[0], parsed[1],
-            parsed[2], parsed[3], parsed[4], parsed[5])));
+          root = native.attachShadow(handle, parsed[0], parsed[1], parsed[2], parsed[3],
+            parsed[4], parsed[5]);
         } catch (error) {
           throw failed(error, "attachShadow", "Element");
         }
+        const state = definedCount === 0 ? 2 : native.ceState(handle)[0];
+        if (state === 3 || state === 4 || (before !== null && before === root)) {
+          SetAddTo(internalsRoots, root);
+        }
+        if (parsed[6] !== undefined) {
+          native.ceSetRegistry(root, registryId(parsed[6]));
+        }
+        return holdRoot(this, wrap(root));
       },
 
       // The element's shadow root, when it is open.
@@ -9926,6 +10247,10 @@
           writeElsewhere(handle, "open");
           return this;
         }
+        if (markupInsertionBlocked > 0) {
+          throw domError("InvalidStateError", "Custom Element constructor should not use open().",
+            "open", "Document");
+        }
         let erased;
         try {
           erased = native.documentOpen();
@@ -9941,6 +10266,10 @@
         if (!isPage(handle)) {
           writeElsewhere(handle, "close");
           return;
+        }
+        if (markupInsertionBlocked > 0) {
+          throw domError("InvalidStateError", "Custom Element constructor should not use " +
+            "close().", "close", "Document");
         }
         try {
           native.documentClose();
@@ -14700,24 +15029,80 @@
 
   // `document.adoptedStyleSheets` (CSSOM 6.2): the constructed sheets
   // the document's styles take after its own, by document, and a shadow
-  // root's its tree's (D69); an array the page sets whole.
+  // root's its tree's (D69); an ObservableArray (Web IDL section 2.13.33),
+  // whose every change, `push()` among them, the styles take.
   const adoptedSheets = new $WeakMap();
+
+  // The sheet `value` is, checked as an adopted one: its serial number.
+  function adoptable(value, iface) {
+    const state = WeakMapGet(sheetStates, value);
+    if (state === undefined) {
+      throw new $TypeError(
+        "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Failed to " +
+          "convert value to 'CSSStyleSheet'.",
+      );
+    }
+    if (!state.constructed || state.elsewhere) {
+      throw new $DOMException(
+        "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Can't adopt " +
+          "non-constructed stylesheets.",
+        "NotAllowedError",
+      );
+    }
+    return state.serial;
+  }
+
+  // Tells the styles what `owner`'s adopted sheets are now.
+  function adoptSheets(owner, sheets) {
+    const serials = [];
+    for (let i = 0; i < sheets.length; i++) {
+      ArrayPush(serials, WeakMapGet(sheetStates, sheets[i]).serial);
+    }
+    if (owner === theDocument()) {
+      native.cssom("adopt", null, serials, "", 0);
+    } else if (kindOf(owner) === 11) {
+      native.cssom("adopt", handleOf(owner), serials, "", 0);
+    }
+  }
+
+  // `owner`'s adopted sheets: the backing list and the array a script
+  // sees of it, made once.
+  function adoptedOf(owner) {
+    let adopted = WeakMapGet(adoptedSheets, owner);
+    if (adopted === undefined) {
+      const sheets = [];
+      const iface = kindOf(owner) === 11 ? "ShadowRoot" : "Document";
+      const view = new $Proxy(sheets, {
+        set(target, key, value, receiver) {
+          if (typeof key === "string" && key !== "length" && arrayIndex(key) >= 0) {
+            adoptable(value, iface);
+          }
+          const done = ReflectSet(target, key, value, receiver === view ? target : receiver);
+          adoptSheets(owner, target);
+          return done;
+        },
+        deleteProperty(target, key) {
+          const done = ReflectDeleteProperty(target, key);
+          adoptSheets(owner, target);
+          return done;
+        },
+      });
+      adopted = { sheets, view };
+      WeakMapSet(adoptedSheets, owner, adopted);
+    }
+    return adopted;
+  }
+
   include(
     {
       get adoptedStyleSheets() {
         self(this);
-        let sheets = WeakMapGet(adoptedSheets, this);
-        if (sheets === undefined) {
-          sheets = [];
-          WeakMapSet(adoptedSheets, this, sheets);
-        }
-        return sheets;
+        return adoptedOf(this).view;
       },
       set adoptedStyleSheets(value) {
-        const handle = self(this);
+        self(this);
         const iface = kindOf(this) === 11 ? "ShadowRoot" : "Document";
-        const sheets = [];
-        const serials = [];
+        const given = [];
         if (value === null || (typeof value !== "object" && typeof value !== "function")) {
           throw new $TypeError(
             "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': The provided " +
@@ -14725,29 +15110,15 @@
           );
         }
         for (const sheet of value) {
-          const state = WeakMapGet(sheetStates, sheet);
-          if (state === undefined) {
-            throw new $TypeError(
-              "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Failed to " +
-                "convert value to 'CSSStyleSheet'.",
-            );
-          }
-          if (!state.constructed || state.elsewhere) {
-            throw new $DOMException(
-              "Failed to set the 'adoptedStyleSheets' property on '" + iface + "': Can't adopt " +
-                "non-constructed stylesheets.",
-              "NotAllowedError",
-            );
-          }
-          ArrayPush(sheets, sheet);
-          ArrayPush(serials, state.serial);
+          adoptable(sheet, iface);
+          ArrayPush(given, sheet);
         }
-        if (this === theDocument()) {
-          native.cssom("adopt", null, serials, "", 0);
-        } else if (iface === "ShadowRoot") {
-          native.cssom("adopt", handle, serials, "", 0);
+        const sheets = adoptedOf(this).sheets;
+        sheets.length = 0;
+        for (let i = 0; i < given.length; i++) {
+          ArrayPush(sheets, given[i]);
         }
-        WeakMapSet(adoptedSheets, this, sheets);
+        adoptSheets(this, sheets);
       },
     },
     [Document.prototype, ShadowRoot.prototype],
@@ -14885,8 +15256,33 @@
       return;
     }
     const flat = declarationsOf(state);
-    const at = findDeclaration(flat, name);
     const trimmed = trimSpace(value);
+    // A shorthand the block keeps as its longhands sets each in place, or
+    // last when the block has none of it (CSSOM's "set a CSS declaration"
+    // of each longhand, section 6.6.1).
+    if (!state.page && longhandsOf(name).length > 0) {
+      const set = native.parseDeclarations(name + ": " + trimmed +
+        (wanted === "" ? "" : " !important"));
+      if (set.length > 0) {
+        let changed = false;
+        for (let i = 0; i < set.length; i += 3) {
+          const found = findDeclaration(flat, set[i]);
+          if (found < 0) {
+            ArrayPush(flat, set[i], set[i + 1], set[i + 2]);
+            changed = true;
+          } else if (flat[found + 1] !== set[i + 1] || flat[found + 2] !== set[i + 2]) {
+            flat[found + 1] = set[i + 1];
+            flat[found + 2] = set[i + 2];
+            changed = true;
+          }
+        }
+        if (changed) {
+          writeDeclarations(state, flat, method);
+        }
+        return;
+      }
+    }
+    const at = findDeclaration(flat, name);
     if (at < 0) {
       ArrayPush(flat, name, trimmed, wanted);
     } else if (flat[at + 1] === trimmed && flat[at + 2] === wanted) {
@@ -15457,9 +15853,16 @@
     const parent = base || HTMLElement;
     const cls = {
       [name]: class extends parent {
+        // [HTMLConstructor]: a customized built-in element's (D70).
         constructor(key, handle, kind, tag) {
           if (key !== KEY) {
-            throw illegalConstructor(name);
+            const made = htmlConstructing(new.target, cls, name);
+            if (made.existing !== undefined) {
+              return made.existing;
+            }
+            super(KEY, made.handle, 1, made.name);
+            customConstructed(this, made);
+            return;
           }
           super(key, handle, kind, tag);
         }
@@ -15589,6 +15992,17 @@
           setAttribute(handle, "shadowrootreferencetarget", str(value),
             "shadowRootReferenceTarget");
         }
+      },
+
+      // `shadowrootcustomelementregistry` (D70), reflected as a string.
+      get shadowRootCustomElementRegistry() {
+        const value = native.attribute(self(this), "shadowrootcustomelementregistry");
+        return value === null ? "" : value;
+      },
+
+      set shadowRootCustomElementRegistry(value) {
+        setAttribute(self(this), "shadowrootcustomelementregistry", str(value),
+          "shadowRootCustomElementRegistry");
       },
     },
     [MapGet(interfaces, "template").prototype],
@@ -17338,6 +17752,58 @@
     return digits === 0 ? null : sign * value;
   }
 
+  // HTML's rules for parsing floating-point number values (section
+  // 2.3.4.3): leading white space, a sign, digits with a fraction and an
+  // exponent, what follows them ignored; null when there are none, or
+  // when the value is not finite.
+  function parseDouble(text) {
+    let i = 0;
+    while (i < text.length && isSpace(CharCodeAt(text, i))) {
+      i++;
+    }
+    const start = i;
+    if (i < text.length && (text[i] === "-" || text[i] === "+")) {
+      i++;
+    }
+    const digit = (at) => at < text.length && CharCodeAt(text, at) >= 48 && CharCodeAt(text, at) <= 57;
+    let digits = 0;
+    while (digit(i)) {
+      i++;
+      digits++;
+    }
+    if (text[i] === "." && digit(i + 1)) {
+      i++;
+      while (digit(i)) {
+        i++;
+        digits++;
+      }
+    }
+    if (digits === 0) {
+      return null;
+    }
+    if (text[i] === "e" || text[i] === "E") {
+      let j = i + 1;
+      if (text[j] === "-" || text[j] === "+") {
+        j++;
+      }
+      if (digit(j)) {
+        while (digit(j)) {
+          j++;
+        }
+        i = j;
+      }
+    }
+    let number = StringSlice(text, start, i);
+    if (number[0] === "+") {
+      number = StringSlice(number, 1);
+    }
+    const value = $Number(number);
+    if (value !== value || value === Infinity || value === -Infinity) {
+      return null;
+    }
+    return value === 0 ? 0 : value;
+  }
+
   // `value` parsed against the base URL of the document of the node
   // `handle`: the page's, or a document's beside it its own (D67), so
   // that a relative URL in one at `about:blank` does not parse; null
@@ -17358,7 +17824,7 @@
   // URL (against the document's own for a `<base>`'s, `fallback` of
   // "fallback base"), a boolean, an unsigned or signed number with
   // `fallback`, or the enumerated `dir`.
-  function reflect(prototype, property, attribute, kind, fallback) {
+  function reflect(prototype, property, attribute, kind, fallback, iface) {
     defineProperty(prototype, property, {
       get() {
         const value = native.attribute(self(this), attribute);
@@ -17401,6 +17867,21 @@
             const lower = value === null ? "" : ToLowerCase(value);
             return ArrayIncludes(REFERRER_POLICIES, lower) ? lower : "";
           }
+          // An enumerated attribute limited to only known values
+          // (section 2.6.1): `fallback` its keywords, then its invalid
+          // value default and its missing value default.
+          case "enum": {
+            if (value === null) {
+              return fallback[2];
+            }
+            const lower = ToLowerCase(value);
+            return ArrayIncludes(fallback[0], lower) ? lower : fallback[1];
+          }
+          // A double: its value parsed, else `fallback`.
+          case "double": {
+            const n = value === null ? null : parseDouble(value);
+            return n === null ? fallback : n;
+          }
           default:
             return value === null ? "" : value;
         }
@@ -17423,6 +17904,15 @@
           case "long":
             setAttribute(handle, attribute, $String(value | 0), property);
             return;
+          case "double": {
+            const n = $Number(value);
+            if (n !== n || n === Infinity || n === -Infinity) {
+              throw new $TypeError("Failed to set the '" + property + "' property on '" +
+                iface + "': The provided double value is non-finite.");
+            }
+            setAttribute(handle, attribute, $String(n), property);
+            return;
+          }
           case "cors":
             if (value === null) {
               native.removeAttribute(handle, attribute);
@@ -17438,6 +17928,14 @@
       configurable: true,
     });
   }
+
+  // A form's and a submit button's `enctype` and `method`, enumerated:
+  // the keywords, the invalid value default and the missing one.
+  const FORM_ENCTYPES = [
+    ["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"],
+    "application/x-www-form-urlencoded", "",
+  ];
+  const FORM_METHODS = [["get", "post", "dialog"], "get", ""];
 
   // What each interface reflects: [property, attribute, kind, fallback].
   const REFLECTED = [
@@ -17457,6 +17955,8 @@
       ["hreflang", "hreflang", "string"],
       ["type", "type", "string"],
       ["name", "name", "string"],
+      ["ping", "ping", "string"],
+      ["referrerPolicy", "referrerpolicy", "referrer"],
     ]],
     ["HTMLBaseElement", [
       ["href", "href", "url", "fallback base"],
@@ -17469,6 +17969,9 @@
       ["rel", "rel", "string"],
       ["coords", "coords", "string"],
       ["shape", "shape", "string"],
+      ["download", "download", "string"],
+      ["ping", "ping", "string"],
+      ["referrerPolicy", "referrerpolicy", "referrer"],
     ]],
     ["HTMLLinkElement", [
       ["href", "href", "url"],
@@ -17491,6 +17994,8 @@
       ["isMap", "ismap", "boolean"],
       ["width", "width", "unsigned", 0],
       ["height", "height", "unsigned", 0],
+      ["referrerPolicy", "referrerpolicy", "referrer"],
+      ["decoding", "decoding", "enum", [["sync", "async", "auto"], "auto", "auto"]],
     ]],
     ["HTMLScriptElement", [
       ["src", "src", "url"],
@@ -17521,6 +18026,23 @@
       ["src", "src", "url"],
       ["type", "type", "string"],
       ["media", "media", "string"],
+      ["srcset", "srcset", "string"],
+      ["sizes", "sizes", "string"],
+    ]],
+    ["HTMLEmbedElement", [
+      ["src", "src", "url"],
+      ["type", "type", "string"],
+      ["width", "width", "string"],
+      ["height", "height", "string"],
+    ]],
+    ["HTMLMapElement", [
+      ["name", "name", "string"],
+    ]],
+    ["HTMLParamElement", [
+      ["name", "name", "string"],
+      ["value", "value", "string"],
+      ["type", "type", "string"],
+      ["valueType", "valuetype", "string"],
     ]],
     ["HTMLVideoElement", [
       ["playsInline", "playsinline", "boolean"],
@@ -17558,12 +18080,21 @@
       ["accept", "accept", "string"],
       ["autocomplete", "autocomplete", "string"],
       ["formNoValidate", "formnovalidate", "boolean"],
+      ["formAction", "formaction", "url", "document"],
+      ["formEnctype", "formenctype", "enum", FORM_ENCTYPES],
+      ["formMethod", "formmethod", "enum", FORM_METHODS],
+      ["formTarget", "formtarget", "string"],
     ]],
     ["HTMLButtonElement", [
       ["name", "name", "string"],
       ["value", "value", "string"],
       ["disabled", "disabled", "boolean"],
       ["formNoValidate", "formnovalidate", "boolean"],
+      ["autofocus", "autofocus", "boolean"],
+      ["formAction", "formaction", "url", "document"],
+      ["formEnctype", "formenctype", "enum", FORM_ENCTYPES],
+      ["formMethod", "formmethod", "enum", FORM_METHODS],
+      ["formTarget", "formtarget", "string"],
     ]],
     ["HTMLSelectElement", [
       ["name", "name", "string"],
@@ -17622,6 +18153,9 @@
     ["HTMLTableCellElement", [
       ["colSpan", "colspan", "unsigned", 1],
       ["rowSpan", "rowspan", "unsigned", 1],
+      ["headers", "headers", "string"],
+      ["abbr", "abbr", "string"],
+      ["scope", "scope", "enum", [["row", "col", "rowgroup", "colgroup"], "", ""]],
     ]],
     ["HTMLTimeElement", [
       ["dateTime", "datetime", "string"],
@@ -17650,9 +18184,190 @@
     const members = REFLECTED[i][1];
     for (let j = 0; j < members.length; j++) {
       const m = members[j];
-      reflect(iface.prototype, m[0], m[1], m[2], m[3]);
+      reflect(iface.prototype, m[0], m[1], m[2], m[3], REFLECTED[i][0]);
     }
   }
+
+  // The reflected members whose getters HTML gives steps of their own.
+  const htmlPrototype = madeInterfaces.HTMLElement.prototype;
+  // An enumerated `true`/`false` attribute (`draggable`, `spellcheck`):
+  // its state, null for neither.
+  const trueFalse = (handle, attribute) => {
+    const value = native.attribute(handle, attribute);
+    if (value === null) {
+      return null;
+    }
+    const lower = ToLowerCase(value);
+    if (lower === "true" || (lower === "" && attribute === "spellcheck")) {
+      return true;
+    }
+    return lower === "false" ? false : null;
+  };
+  defineProperty(htmlPrototype, "translate", {
+    // The translation mode (section 3.2.6.9): `translate`'s yes or no,
+    // else the parent element's, translated at the root.
+    get() {
+      for (let at = self(this); at !== null; at = native.parent(at)) {
+        if (!isElementHandle(at)) {
+          break;
+        }
+        const value = native.attribute(at, "translate");
+        if (value !== null) {
+          const lower = ToLowerCase(value);
+          if (lower === "yes" || lower === "") return true;
+          if (lower === "no") return false;
+        }
+      }
+      return true;
+    },
+    set(value) {
+      setAttribute(self(this), "translate", value ? "yes" : "no", "translate");
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(htmlPrototype, "draggable", {
+    // `draggable`'s state, else an image's and a link's default of true
+    // (section 6.11.7).
+    get() {
+      const handle = self(this);
+      const state = trueFalse(handle, "draggable");
+      if (state !== null) {
+        return state;
+      }
+      const tag = native.tag(handle);
+      return tag === "img" || (tag === "a" && native.attribute(handle, "href") !== null);
+    },
+    set(value) {
+      setAttribute(self(this), "draggable", value ? "true" : "false", "draggable");
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(htmlPrototype, "spellcheck", {
+    // The nearest `spellcheck`'s state, true with none, as the reference
+    // browser checks by default (section 6.8.4).
+    get() {
+      for (let at = self(this); at !== null; at = native.parent(at)) {
+        if (!isElementHandle(at)) {
+          break;
+        }
+        const state = trueFalse(at, "spellcheck");
+        if (state !== null) {
+          return state;
+        }
+      }
+      return true;
+    },
+    set(value) {
+      setAttribute(self(this), "spellcheck", value ? "true" : "false", "spellcheck");
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(htmlPrototype, "contentEditable", {
+    // `contenteditable`'s state's keyword (section 6.8.1), `inherit` for
+    // none; the setter takes the four, `inherit` taking it away.
+    get() {
+      const value = native.attribute(self(this), "contenteditable");
+      if (value === null) {
+        return "inherit";
+      }
+      const lower = ToLowerCase(value);
+      if (lower === "" || lower === "true") return "true";
+      if (lower === "false" || lower === "plaintext-only") return lower;
+      return "inherit";
+    },
+    set(value) {
+      const handle = self(this);
+      const given = str(value);
+      const lower = ToLowerCase(given);
+      if (lower === "inherit") {
+        removeAttribute(handle, "contenteditable");
+      } else if (lower === "true" || lower === "false" || lower === "plaintext-only") {
+        setAttribute(handle, "contenteditable", lower, "contentEditable");
+      } else {
+        throw new $DOMException("Failed to set the 'contentEditable' property on " +
+          "'HTMLElement': The value provided ('" + given + "') is not one of 'true', " +
+          "'false', 'plaintext-only', or 'inherit'.", "SyntaxError");
+      }
+    },
+    enumerable: true,
+    configurable: true,
+  });
+
+  // A double reflected with steps of its own for the getter, whose
+  // setter writes the number (`meter`'s and `progress`'s, sections
+  // 4.10.13 and 4.10.14).
+  function reflectNumber(prototype, iface, property, get) {
+    defineProperty(prototype, property, {
+      get() {
+        return get(self(this));
+      },
+      set(value) {
+        const n = $Number(value);
+        if (n !== n || n === Infinity || n === -Infinity) {
+          throw new $TypeError("Failed to set the '" + property + "' property on '" + iface +
+            "': The provided double value is non-finite.");
+        }
+        // A progress bar's maximum is set only to a positive number.
+        if (property === "max" && iface === "HTMLProgressElement" && n <= 0) {
+          return;
+        }
+        setAttribute(self(this), property, $String(n), property);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  const numberOf = (handle, attribute, fallback) => {
+    const value = native.attribute(handle, attribute);
+    const n = value === null ? null : parseDouble(value);
+    return n === null ? fallback : n;
+  };
+  const clamp = (n, low, high) => (n < low ? low : n > high ? high : n);
+  const meterMin = (h) => numberOf(h, "min", 0);
+  const meterMax = (h) => {
+    const min = meterMin(h);
+    const max = numberOf(h, "max", 1);
+    return max < min ? min : max;
+  };
+  const meterLow = (h) => clamp(numberOf(h, "low", meterMin(h)), meterMin(h), meterMax(h));
+  const meter = madeInterfaces.HTMLMeterElement.prototype;
+  reflectNumber(meter, "HTMLMeterElement", "min", meterMin);
+  reflectNumber(meter, "HTMLMeterElement", "max", meterMax);
+  reflectNumber(meter, "HTMLMeterElement", "value",
+    (h) => clamp(numberOf(h, "value", 0), meterMin(h), meterMax(h)));
+  reflectNumber(meter, "HTMLMeterElement", "low", meterLow);
+  reflectNumber(meter, "HTMLMeterElement", "high",
+    (h) => clamp(numberOf(h, "high", meterMax(h)), meterLow(h), meterMax(h)));
+  reflectNumber(meter, "HTMLMeterElement", "optimum",
+    (h) => clamp(numberOf(h, "optimum", (meterMin(h) + meterMax(h)) / 2), meterMin(h), meterMax(h)));
+  const progress = madeInterfaces.HTMLProgressElement.prototype;
+  const progressMax = (h) => {
+    const max = numberOf(h, "max", 1);
+    return max > 0 ? max : 1;
+  };
+  reflectNumber(progress, "HTMLProgressElement", "max", progressMax);
+  reflectNumber(progress, "HTMLProgressElement", "value", (h) => {
+    const n = numberOf(h, "value", null);
+    return n === null || n < 0 ? 0 : clamp(n, 0, progressMax(h));
+  });
+
+  // A column's `span`, clamped to 1 to 1000 (section 4.9.4).
+  defineProperty(madeInterfaces.HTMLTableColElement.prototype, "span", {
+    get() {
+      const value = native.attribute(self(this), "span");
+      const n = value === null ? null : parseInteger(value, false);
+      return n === null || n === 0 ? 1 : n > 1000 ? 1000 : n;
+    },
+    set(value) {
+      const n = value >>> 0;
+      setAttribute(self(this), "span", $String(n === 0 ? 1 : n <= 2147483647 ? n : 1), "span");
+    },
+    enumerable: true,
+    configurable: true,
+  });
 
   // HTML's HTMLHyperlinkElementUtils (section 4.6.6, gap batch A): an
   // `a`'s and an `area`'s URL by its parts, parsed from its `href`
@@ -17950,9 +18665,1370 @@
     if (known !== undefined) {
       return known;
     }
-    return StringIncludes(tag, "-") ? HTMLElement : HTMLUnknownElement;
+    return validCustomElementName(tag) ? HTMLElement : HTMLUnknownElement;
   }
 
+  // ---- Custom elements (HTML section 4.13, D70) ------------------------
+
+  // A Set's methods, kept before any page runs: the bindings' own are
+  // kept further on.
+  const StateSet = Set;
+  const SetHas = uncurry(Set.prototype.has);
+  const SetAddTo = uncurry(Set.prototype.add);
+  const SetDelete = uncurry(Set.prototype.delete);
+  const SetClear = uncurry(Set.prototype.clear);
+  const SetSizeOf = uncurry(getOwnPropertyDescriptor(Set.prototype, "size").get);
+  const SetEach = uncurry(Set.prototype.forEach);
+  const SetValues = uncurry(Set.prototype.values);
+  const SetEntries = uncurry(Set.prototype.entries);
+
+  // The registries, definitions, construction stacks and reactions are
+  // the bindings'; the document keeps each element's custom element
+  // state, its definition's number, its `is` value, and the reactions
+  // its own operations queue, which a native's caller takes after it
+  // (`reactionsQueued`), as `[CEReactions]` says.
+
+  // An element's custom element state, as the host numbers it.
+  const CE_UNDEFINED = 0;
+  const CE_FAILED = 1;
+  const CE_PRECUSTOMIZED = 3;
+  const CE_CUSTOM = 4;
+
+  // The lifecycle callbacks a definition reads, in the order `define()`
+  // reads them, and the flag the host knows each by.
+  const LIFECYCLE_CALLBACKS = [
+    "connectedCallback", "disconnectedCallback", "connectedMoveCallback", "adoptedCallback",
+    "attributeChangedCallback",
+  ];
+  const FORM_CALLBACKS = [
+    "formAssociatedCallback", "formResetCallback", "formDisabledCallback",
+    "formStateRestoreCallback",
+  ];
+  const CALLBACK_FLAGS = {
+    __proto__: null,
+    connectedCallback: 1, disconnectedCallback: 2, adoptedCallback: 4,
+    attributeChangedCallback: 8, connectedMoveCallback: 16, formAssociatedCallback: 32,
+    formResetCallback: 64, formDisabledCallback: 128,
+  };
+
+  // The names no custom element may take (HTML section 4.13.2).
+  const RESERVED_NAMES = [
+    "annotation-xml", "color-profile", "font-face", "font-face-src", "font-face-uri",
+    "font-face-format", "font-face-name", "missing-glyph",
+  ];
+
+  // Whether `name` is a valid custom element name (HTML section 4.13.2,
+  // as the reference browser has it): an ASCII lower alpha first, a
+  // hyphen in it, no ASCII upper alpha, none of NULL, tab, line feed,
+  // form feed, carriage return, space, `/` and `>` (a valid element
+  // local name), and not a reserved name.
+  function validCustomElementName(name) {
+    const first = CharCodeAt(name, 0);
+    if (!(first >= 0x61 && first <= 0x7a) || StringIndexOf(name, "-") < 0) {
+      return false;
+    }
+    for (let i = 1; i < name.length; i++) {
+      const c = CharCodeAt(name, i);
+      if ((c >= 0x41 && c <= 0x5a) || c === 0 || c === 9 || c === 10 || c === 12 || c === 13 ||
+        c === 32 || c === 0x2f || c === 0x3e) {
+        return false;
+      }
+    }
+    return !ArrayIncludes(RESERVED_NAMES, name);
+  }
+
+  // Each definition by its number: its registry, name, local name,
+  // constructor, observed attributes, callbacks, form association, the
+  // features it disables, and its construction stack.
+  const definitions = new $Map();
+  // How many definitions there are: until one is, no element is custom.
+  let definedCount = 0;
+  // The marker a construction stack holds once its element is
+  // constructed (HTML's "already constructed marker").
+  const ALREADY_CONSTRUCTED = {};
+  // The registry each constructor's elements were last upgraded from
+  // (HTML's "active custom element constructor map").
+  const activeConstructors = new $Map();
+
+  let registryParts;
+  let isRegistry;
+  let lastRegistry = 0;
+  // Each registry by its number.
+  const registriesById = new $Map();
+
+  // The registry numbered `id`, or null.
+  function registryById(id) {
+    if (id === null) {
+      return null;
+    }
+    const found = MapGet(registriesById, id);
+    return found === undefined ? null : found;
+  }
+
+  // The number of `registry`, or null for none.
+  function registryId(registry) {
+    return registry === null ? null : registryParts(registry).id;
+  }
+
+  class CustomElementRegistry {
+    #id;
+    // Definitions by name and by constructor, the promises
+    // `whenDefined()` gave for names not yet defined, and whether a
+    // definition is being read.
+    #names = new $Map();
+    #constructors = new $Map();
+    #pending = new $Map();
+    #defining = false;
+
+    // `new CustomElementRegistry()` is a registry of its own (scoped
+    // custom element registries, which the reference browser ships).
+    constructor() {
+      this.#id = ++lastRegistry;
+      MapSet(registriesById, this.#id, this);
+    }
+
+    static {
+      registryParts = (value) => {
+        if (typeof value === "object" && value !== null && #id in value) {
+          return { id: value.#id, names: value.#names, constructors: value.#constructors };
+        }
+        throw illegalInvocation();
+      };
+      isRegistry = (value) => typeof value === "object" && value !== null && #id in value;
+    }
+
+    // `initialize()`: a document's or a shadow root's registry, when it
+    // has none, and that of each element of its inclusive descendants
+    // with none, which are tried for an upgrade.
+    initialize(root) {
+      const parts = registryParts(this);
+      need(arguments.length, 1, "initialize", "CustomElementRegistry");
+      const handle = nodeArgument(root, 1, "initialize", "CustomElementRegistry");
+      // A global registry initializes no document, nor a node of one it
+      // is not the registry of (step 1).
+      if (this === globalRegistry && (kindOf(root) === 9 ||
+        registryOfDocument(native.ownerDocument(handle)) !== this)) {
+        throw domError("NotSupportedError", "The registry provided is a global registry from " +
+          "another document", "initialize", "CustomElementRegistry");
+      }
+      ceScope(() => {
+        const found = native.ceInitialize(handle, parts.id);
+        for (let i = 0; i < found.length; i += 2) {
+          enqueueReaction(found[i], ["u", found[i], found[i + 1]]);
+        }
+      });
+    }
+
+    // HTML's `define()` (section 4.13.4).
+    define(name, constructor, options) {
+      const parts = registryParts(this);
+      need(arguments.length, 2, "define", "CustomElementRegistry");
+      const where = prefix("define", "CustomElementRegistry");
+      const elementName = str(name);
+      if (typeof constructor !== "function" || !isConstructor(constructor)) {
+        throw new $TypeError(where + "constructor argument is not a constructor");
+      }
+      let extendsName = null;
+      if (options !== undefined && options !== null) {
+        if (typeof options !== "object" && typeof options !== "function") {
+          throw new $TypeError(where + "The provided value is not of type 'ElementDefinitionOptions'.");
+        }
+        const given = options.extends;
+        if (given !== undefined) {
+          extendsName = str(given);
+        }
+      }
+      if (!validCustomElementName(elementName)) {
+        throw domError("SyntaxError", '"' + elementName + '" is not a valid custom element name',
+          "define", "CustomElementRegistry");
+      }
+      if (MapHas(parts.names, elementName)) {
+        throw domError("NotSupportedError", 'the name "' + elementName +
+          '" has already been used with this registry', "define", "CustomElementRegistry");
+      }
+      if (MapHas(parts.constructors, constructor)) {
+        throw domError("NotSupportedError",
+          "this constructor has already been used with this registry", "define",
+          "CustomElementRegistry");
+      }
+      let localName = elementName;
+      if (extendsName !== null) {
+        if (validCustomElementName(extendsName)) {
+          throw domError("NotSupportedError", '"' + extendsName +
+            '" is a valid custom element name', "define", "CustomElementRegistry");
+        }
+        if (elementInterface(extendsName, HTML_NS) === HTMLUnknownElement) {
+          throw domError("NotSupportedError", '"' + extendsName + '" is an HTMLUnknownElement',
+            "define", "CustomElementRegistry");
+        }
+        localName = extendsName;
+      }
+      if (this.#defining) {
+        throw domError("NotSupportedError", "this registry is already defining an element",
+          "define", "CustomElementRegistry");
+      }
+      this.#defining = true;
+      const callbacks = { __proto__: null };
+      let observed = [];
+      let disabled = [];
+      let formAssociated = false;
+      try {
+        const prototype = constructor.prototype;
+        if ((typeof prototype !== "object" || prototype === null) && typeof prototype !== "function") {
+          throw new $TypeError(where + "constructor prototype is not an object");
+        }
+        const read = (names) => {
+          for (let i = 0; i < names.length; i++) {
+            const value = prototype[names[i]];
+            if (value === undefined) {
+              continue;
+            }
+            if (typeof value !== "function") {
+              throw new $TypeError(where + '"' + names[i] + '" is not a function');
+            }
+            callbacks[names[i]] = value;
+          }
+        };
+        read(LIFECYCLE_CALLBACKS);
+        if (callbacks.attributeChangedCallback !== undefined) {
+          const given = constructor.observedAttributes;
+          if (given !== undefined) {
+            observed = sequence(given, "define", "CustomElementRegistry", str);
+          }
+        }
+        const features = constructor.disabledFeatures;
+        if (features !== undefined) {
+          disabled = sequence(features, "define", "CustomElementRegistry", str);
+        }
+        formAssociated = !!constructor.formAssociated;
+        if (formAssociated) {
+          read(FORM_CALLBACKS);
+        }
+      } finally {
+        this.#defining = false;
+      }
+      let flags = 0;
+      for (const key in CALLBACK_FLAGS) {
+        if (callbacks[key] !== undefined) {
+          flags |= CALLBACK_FLAGS[key];
+        }
+      }
+      const id = native.ceDefine(parts.id, elementName, localName, observed, flags, formAssociated,
+        ArrayIncludes(disabled, "shadow"));
+      const definition = {
+        id,
+        registry: this,
+        name: elementName,
+        localName,
+        constructor,
+        observed,
+        callbacks,
+        formAssociated,
+        disableInternals: ArrayIncludes(disabled, "internals"),
+        disableShadow: ArrayIncludes(disabled, "shadow"),
+        stack: [],
+      };
+      MapSet(definitions, id, definition);
+      definedCount++;
+      MapSet(parts.names, elementName, definition);
+      MapSet(parts.constructors, constructor, definition);
+      // The elements waiting for it are upgraded when `define()` returns,
+      // in shadow-including tree order.
+      ceScope(() => {
+        const candidates = native.ceCandidates(id);
+        for (let i = 0; i < candidates.length; i++) {
+          enqueueReaction(candidates[i], ["u", candidates[i], id]);
+        }
+      });
+      const pending = MapGet(this.#pending, elementName);
+      if (pending !== undefined) {
+        MapDelete(this.#pending, elementName);
+        pending.resolve(constructor);
+      }
+    }
+
+    get(name) {
+      const parts = registryParts(this);
+      need(arguments.length, 1, "get", "CustomElementRegistry");
+      const definition = MapGet(parts.names, str(name));
+      return definition === undefined ? undefined : definition.constructor;
+    }
+
+    getName(constructor) {
+      const parts = registryParts(this);
+      need(arguments.length, 1, "getName", "CustomElementRegistry");
+      if (typeof constructor !== "function") {
+        throw new $TypeError(prefix("getName", "CustomElementRegistry") +
+          "parameter 1 is not of type 'Function'.");
+      }
+      const definition = MapGet(parts.constructors, constructor);
+      return definition === undefined ? null : definition.name;
+    }
+
+    whenDefined(name) {
+      let parts;
+      try {
+        parts = registryParts(this);
+      } catch (error) {
+        return rejected(error);
+      }
+      if (arguments.length < 1) {
+        return rejected(new $TypeError(prefix("whenDefined", "CustomElementRegistry") +
+          "1 argument required, but only 0 present."));
+      }
+      let elementName;
+      try {
+        elementName = str(name);
+      } catch (error) {
+        return rejected(error);
+      }
+      if (!validCustomElementName(elementName)) {
+        return rejected(domError("SyntaxError", '"' + elementName +
+          '" is not a valid custom element name', "whenDefined", "CustomElementRegistry"));
+      }
+      const definition = MapGet(parts.names, elementName);
+      if (definition !== undefined) {
+        return resolved(definition.constructor);
+      }
+      let pending = MapGet(this.#pending, elementName);
+      if (pending === undefined) {
+        let resolve;
+        const promise = new $Promise((settle) => {
+          resolve = settle;
+        });
+        pending = { promise, resolve };
+        MapSet(this.#pending, elementName, pending);
+      }
+      return pending.promise;
+    }
+
+    // HTML's `upgrade()`: each element of `root`'s shadow-including
+    // inclusive descendants tried, in shadow-including tree order.
+    upgrade(root) {
+      const parts = registryParts(this);
+      need(arguments.length, 1, "upgrade", "CustomElementRegistry");
+      const handle = nodeArgument(root, 1, "upgrade", "CustomElementRegistry");
+      ceScope(() => {
+        const found = native.ceUpgradable(handle, parts.id);
+        for (let i = 0; i < found.length; i += 2) {
+          enqueueReaction(found[i], ["u", found[i], found[i + 1]]);
+        }
+      });
+    }
+  }
+  expose(CustomElementRegistry, "CustomElementRegistry");
+
+  // Whether `value` can be constructed (ECMAScript's IsConstructor): a
+  // proxy of it has [[Construct]] only if it has, which `new` of the
+  // proxy, its trap answering, finds without reading anything of it.
+  const constructTrap = { construct: () => constructTrap };
+  function isConstructor(value) {
+    try {
+      new (new $Proxy(value, constructTrap))();
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // The window's registry (`window.customElements`), the first made.
+  const globalRegistry = WORKER ? null : new CustomElementRegistry();
+  windowOnly("customElements", {
+    get() {
+      return globalRegistry;
+    },
+    set(value) {
+      defineProperty(global, "customElements", {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    },
+    enumerable: true,
+    configurable: true,
+  });
+
+  // HTML's "look up a custom element definition" in `registryObject` of
+  // an HTML element named `localName` with `is` value `is`.
+  function lookUpDefinition(registryObject, localName, is) {
+    if (registryObject === null) {
+      return undefined;
+    }
+    const names = registryParts(registryObject).names;
+    const autonomous = MapGet(names, localName);
+    if (autonomous !== undefined && autonomous.localName === localName) {
+      return autonomous;
+    }
+    if (is !== null) {
+      const customized = MapGet(names, is);
+      if (customized !== undefined && customized.localName === localName) {
+        return customized;
+      }
+    }
+    return undefined;
+  }
+
+  // The registry the document `handle` names looks definitions up in:
+  // the window's for the page's, none for another (D67) but the one
+  // `initialize()` gave it.
+  function registryOfDocument(handle) {
+    return isPage(handle) ? globalRegistry : registryById(native.ceRegistry(handle));
+  }
+
+  // The definition the element `handle` is custom by, or is being
+  // upgraded by.
+  function definitionOf(handle) {
+    const state = native.ceState(handle);
+    return state[1] === 0 ? undefined : MapGet(definitions, state[1]);
+  }
+
+  // HTML's [HTMLConstructor] steps (section 3.2.3) for `newTarget` run
+  // by the interface `active`, named `name`: an element made for the
+  // definition whose constructor it is, or the one being upgraded,
+  // taken from the construction stack.
+  function htmlConstructing(newTarget, active, name) {
+    if (newTarget === undefined || newTarget === active) {
+      throw illegalConstructor(name);
+    }
+    const scoped = MapGet(activeConstructors, newTarget);
+    const registryObject = scoped !== undefined ? scoped : globalRegistry;
+    let definition = registryObject === null
+      ? undefined
+      : MapGet(registryParts(registryObject).constructors, newTarget);
+    if (definition === undefined && registryObject !== globalRegistry && globalRegistry !== null) {
+      definition = MapGet(registryParts(globalRegistry).constructors, newTarget);
+    }
+    if (definition === undefined) {
+      throw illegalConstructor(name);
+    }
+    if (definition.localName === definition.name) {
+      if (active !== HTMLElement) {
+        throw illegalConstructor(name);
+      }
+    } else if (MapGet(interfaces, definition.localName) !== active) {
+      throw illegalConstructor(name);
+    }
+    const stack = definition.stack;
+    // A new element: its prototype is read once, by `super()`.
+    if (stack.length === 0) {
+      const handle = native.createElement(definition.localName, native.document());
+      // A customized built-in one keeps its name as its `is` value, which
+      // its copies are upgraded by.
+      if (definition.localName !== definition.name) {
+        native.ceSetIs(handle, definition.name);
+      }
+      if (definition.registry !== globalRegistry) {
+        native.ceSetRegistry(handle, registryId(definition.registry));
+      }
+      native.ceSetState(handle, CE_CUSTOM, definition.id);
+      return { handle, name: definition.localName, fallback: active.prototype, existing: undefined };
+    }
+    let prototype = newTarget.prototype;
+    if ((typeof prototype !== "object" || prototype === null) && typeof prototype !== "function") {
+      prototype = active.prototype;
+    }
+    const element = stack[stack.length - 1];
+    if (element === ALREADY_CONSTRUCTED) {
+      throw new $TypeError("Failed to construct '" + name + "': This instance is already constructed");
+    }
+    setPrototypeOf(element, prototype);
+    stack[stack.length - 1] = ALREADY_CONSTRUCTED;
+    return { existing: element };
+  }
+
+  // A new custom element's object, which [HTMLConstructor] made: of the
+  // prototype it asked for, the element's for as long as it lives.
+  function customConstructed(object, made) {
+    // NewTarget's `prototype` was no object: the interface's (step 6).
+    if (ReflectGetPrototypeOf(object) === ObjectPrototype) {
+      setPrototypeOf(object, made.fallback);
+    }
+    setNsOf(object, HTML_NS);
+    adoptObject(made.handle, object);
+  }
+
+  // ---- Custom element reactions (HTML section 4.13.6) ----
+
+  // Each element's custom element reaction queue, by its handle: arrays
+  // of a kind, the element, and the reaction's arguments, as the host
+  // gives them (`u` an upgrade by a definition's number; `c`, `d` and
+  // `m` connected, disconnected and moved; `a` adopted from a document
+  // into another; `t` an attribute's local name, old value, value and
+  // namespace; `f` a form associated; `r` reset; `x` disabled).
+  const reactionQueues = new $Map();
+  // The custom element reactions stack: element queues, arrays of
+  // handles; and the backup element queue, with whether its microtask
+  // is queued.
+  const reactionStack = [];
+  let backupQueue = [];
+  let backupQueued = false;
+  // Whether a `[CEReactions]` member of the bindings' runs, its element
+  // queue on the stack (HTML section 4.13.6): what the natives it calls
+  // queue goes in that queue, run when the member returns, not in one
+  // of each native's own. Script it calls into runs with none.
+  let ceDepth = 0;
+  // Whether what runs is no `[CEReactions]` member's but an algorithm a
+  // user's action or `click()` started (a reset button's activation): the
+  // reactions its natives queue go in the backup element queue, run at
+  // a microtask.
+  let ceOutside = 0;
+
+  // HTML's "enqueue an element on the appropriate element queue" with
+  // the reaction for it; with `backup` on the backup element queue.
+  function enqueueReaction(handle, reaction, backup) {
+    let queue = MapGet(reactionQueues, handle);
+    if (queue === undefined) {
+      queue = [];
+      MapSet(reactionQueues, handle, queue);
+    }
+    ArrayPush(queue, reaction);
+    if (reactionStack.length > 0 && !backup) {
+      ArrayPush(reactionStack[reactionStack.length - 1], handle);
+      return;
+    }
+    ArrayPush(backupQueue, handle);
+    if (!backupQueued) {
+      backupQueued = true;
+      PromiseThen(resolved(undefined), () => {
+        backupQueued = false;
+        const queue = backupQueue;
+        backupQueue = [];
+        drain(invokeReactions(queue));
+      });
+    }
+  }
+
+  // The reactions the document queued since they were last taken, each
+  // enqueued for its element: on the current element queue, or with
+  // `backup` on the backup element queue.
+  function pullReactions(backup) {
+    const given = JSONParse(native.ceReactions());
+    for (let i = 0; i < given.length; i++) {
+      enqueueReaction(given[i][1], given[i], backup);
+    }
+  }
+
+  // Runs `f` as a `[CEReactions]` method of the bindings' own: the
+  // reactions it enqueues run when it returns, as it throws or not. One
+  // inside another's steps is part of them.
+  function ceScope(f) {
+    if (ceDepth > 0) {
+      return f();
+    }
+    const queue = [];
+    ArrayPush(reactionStack, queue);
+    ceDepth = 1;
+    try {
+      return f();
+    } finally {
+      ceDepth = 0;
+      reactionStack.length -= 1;
+      drain(invokeReactions(queue));
+    }
+  }
+
+  // Calls `f` of a page's script from the bindings' steps (a constructor,
+  // a callback, a listener): its own `[CEReactions]` members open their
+  // own element queues.
+  function asScript(f, target, args) {
+    const depth = ceDepth;
+    const outside = ceOutside;
+    ceDepth = 0;
+    ceOutside = 0;
+    try {
+      return ReflectApply(f, target, args);
+    } finally {
+      ceDepth = depth;
+      ceOutside = outside;
+    }
+  }
+
+  // Runs `f` as no `[CEReactions]` member does: what it queues goes in
+  // the backup element queue.
+  function outsideCEReactions(f) {
+    const depth = ceDepth;
+    ceDepth = 0;
+    ceOutside++;
+    try {
+      return f();
+    } finally {
+      ceOutside--;
+      ceDepth = depth;
+    }
+  }
+
+  // Makes the members `names` of `prototype` `[CEReactions]` ones: each
+  // method and setter runs in an element queue of its own, its name and
+  // length kept.
+  function ceReactions(prototype, names) {
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const d = getOwnPropertyDescriptor(prototype, name);
+      if (d === undefined) {
+        continue;
+      }
+      if (typeof d.value === "function") {
+        const f = d.value;
+        const wrapped = {
+          [name](...args) {
+            if (ceDepth > 0) {
+              return ReflectApply(f, this, args);
+            }
+            return ceScope(() => ReflectApply(f, this, args));
+          },
+        }[name];
+        defineProperty(wrapped, "length", { value: f.length, configurable: true });
+        d.value = wrapped;
+      } else if (typeof d.set === "function") {
+        const f = d.set;
+        d.set = getOwnPropertyDescriptor({
+          set [name](value) {
+            if (ceDepth > 0) {
+              ReflectApply(f, this, [value]);
+              return;
+            }
+            ceScope(() => ReflectApply(f, this, [value]));
+          },
+        }, name).set;
+      } else {
+        continue;
+      }
+      defineProperty(prototype, name, d);
+    }
+  }
+
+  // HTML's "invoke custom element reactions" of `queue`: each element's
+  // reactions in order, an exception reported; a step after each, at
+  // which the parser's task performs a microtask checkpoint.
+  function* invokeReactions(queue) {
+    for (let i = 0; i < queue.length; i++) {
+      const handle = queue[i];
+      const reactions = MapGet(reactionQueues, handle);
+      if (reactions === undefined) {
+        continue;
+      }
+      while (reactions.length > 0) {
+        const reaction = ArrayShift(reactions);
+        try {
+          runReaction(handle, reaction);
+        } catch (error) {
+          reportException(error);
+        }
+        yield;
+      }
+      if (MapGet(reactionQueues, handle) === reactions) {
+        MapDelete(reactionQueues, handle);
+      }
+    }
+  }
+
+  // Calls `callback` of an element's definition with `args`, the element
+  // `this`.
+  function callBack(callback, element, args) {
+    if (callback !== undefined) {
+      asScript(callback, element, args);
+    }
+  }
+
+  // Runs one reaction of the element `handle` names.
+  function runReaction(handle, reaction) {
+    const kind = reaction[0];
+    if (kind === "u") {
+      const definition = MapGet(definitions, reaction[2]);
+      if (definition !== undefined) {
+        upgradeElement(handle, definition);
+      }
+      return;
+    }
+    const definition = definitionOf(handle);
+    if (definition === undefined) {
+      return;
+    }
+    const callbacks = definition.callbacks;
+    const element = wrap(handle);
+    switch (kind) {
+      case "c":
+        callBack(callbacks.connectedCallback, element, []);
+        break;
+      case "d":
+        callBack(callbacks.disconnectedCallback, element, []);
+        break;
+      // Moved: its `connectedMoveCallback`, or with none its disconnected
+      // and connected ones (DOM's "move", HTML's "enqueue a custom
+      // element callback reaction" step 3).
+      case "m":
+        if (callbacks.connectedMoveCallback !== undefined) {
+          callBack(callbacks.connectedMoveCallback, element, []);
+        } else {
+          callBack(callbacks.disconnectedCallback, element, []);
+          callBack(callbacks.connectedCallback, element, []);
+        }
+        break;
+      case "a":
+        callBack(callbacks.adoptedCallback, element, [wrap(reaction[2]), wrap(reaction[3])]);
+        break;
+      case "t":
+        callBack(callbacks.attributeChangedCallback, element,
+          [reaction[2], reaction[3], reaction[4], reaction[5]]);
+        break;
+      case "f":
+        callBack(callbacks.formAssociatedCallback, element, [wrap(reaction[2])]);
+        break;
+      case "r":
+        callBack(callbacks.formResetCallback, element, []);
+        break;
+      case "x":
+        callBack(callbacks.formDisabledCallback, element, [reaction[2]]);
+        break;
+    }
+  }
+
+  // HTML's "upgrade an element" (section 4.13.5): the element `handle`
+  // names constructed by `definition`, its observed attributes and its
+  // connection heard after.
+  function upgradeElement(handle, definition) {
+    const state = native.ceState(handle)[0];
+    if (state !== CE_UNDEFINED && state !== 2) {
+      return;
+    }
+    const element = wrap(handle);
+    native.ceSetState(handle, CE_FAILED, definition.id);
+    holdObject(handle);
+    if (definition.callbacks.attributeChangedCallback !== undefined) {
+      const names = native.attributeNames(handle);
+      const namespaces = native.attributeNamespaces(handle);
+      for (let i = 0; i < names.length; i++) {
+        const ns = namespaces[i] === "" ? null : namespaces[i];
+        const local = ns === null ? names[i] : localPart(names[i]);
+        if (ArrayIncludes(definition.observed, local)) {
+          const value = ns === null
+            ? native.attribute(handle, names[i])
+            : native.attributeNS(handle, ns, local);
+          enqueueReaction(handle, ["t", handle, local, null, value, ns]);
+        }
+      }
+    }
+    if (native.connected(handle) && definition.callbacks.connectedCallback !== undefined) {
+      enqueueReaction(handle, ["c", handle]);
+    }
+    ArrayPush(definition.stack, element);
+    try {
+      if (definition.disableShadow && native.shadowRoot(handle) !== null) {
+        throw domError("NotSupportedError", "attachShadow() is disabled by disabledFeatures " +
+          "static field.", "define", "CustomElementRegistry");
+      }
+      native.ceSetState(handle, CE_PRECUSTOMIZED, definition.id);
+      const result = constructBy(definition);
+      if (result !== element) {
+        throw new $TypeError("custom element constructors must call super() first and must " +
+          "not return a different object");
+      }
+    } catch (error) {
+      definition.stack.length -= 1;
+      native.ceSetState(handle, CE_FAILED, 0);
+      const queue = MapGet(reactionQueues, handle);
+      if (queue !== undefined) {
+        queue.length = 0;
+      }
+      throw error;
+    }
+    definition.stack.length -= 1;
+    // Custom, a form-associated one is told its form owner and that it
+    // is disabled, when it is (step 12): the document tells it.
+    native.ceSetState(handle, CE_CUSTOM, definition.id);
+  }
+
+  // DOM's "create an element" (section 4.9) of an HTML element named
+  // `name`, its local name `localName` (lowercased in an HTML document),
+  // `is` value `is`, in the document `doc`, with the synchronous custom
+  // elements flag set, as `createElement()` makes one: an autonomous
+  // custom element constructed, a customized built-in one upgraded at
+  // once; `method` names the caller in errors.
+  function createElementFor(doc, name, localName, options, method, html) {
+    const is = options.is;
+    const registryObject = options.given ? options.registry : registryOfDocument(doc);
+    const placed = (handle) => {
+      if (options.given) {
+        native.ceSetRegistry(handle, registryId(registryObject));
+      }
+      return handle;
+    };
+    // `createElementNS()`'s element is HTML's; `createElement()`'s is in
+    // an HTML document or an XHTML one, and else of no namespace, which
+    // no definition is looked up for (DOM section 4.5).
+    const make = (local) => html
+      ? native.createElementNS(HTML_NS, local, doc)
+      : native.createElement(local, doc);
+    const htmlElement = html || isPage(doc) || inHtmlDocument(wrap(doc)) ||
+      documentInfo(doc)[2] === "application/xhtml+xml";
+    const definition = htmlElement ? lookUpDefinition(registryObject, localName, is) : undefined;
+    if (definition === undefined) {
+      const handle = placed(make(name));
+      if (is !== null) {
+        native.ceSetIs(handle, is);
+      }
+      return wrap(handle);
+    }
+    if (definition.localName !== definition.name) {
+      const handle = placed(make(localName));
+      native.ceSetIs(handle, is);
+      const element = wrap(handle);
+      try {
+        upgradeElement(handle, definition);
+      } catch (error) {
+        reportException(error);
+      }
+      return element;
+    }
+    try {
+      const result = constructBy(definition);
+      checkConstructed(result, doc, localName, method, "Document");
+      return result;
+    } catch (error) {
+      reportException(error);
+      return wrap(placed(failedElement(localName, doc)));
+    }
+  }
+
+  // `definition`'s constructor constructed, its registry the one its
+  // [HTMLConstructor] looks the constructor up in while it runs (HTML's
+  // "active custom element constructor map").
+  function constructBy(definition) {
+    // The registry a construction of the same constructor nested in this
+    // one replaces is put back after it (DOM's "create an element" steps
+    // 5.1.2, 5.1.5 and 5.1.6).
+    const previous = MapGet(activeConstructors, definition.constructor);
+    MapSet(activeConstructors, definition.constructor, definition.registry);
+    const depth = ceDepth;
+    const outside = ceOutside;
+    ceDepth = 0;
+    ceOutside = 0;
+    try {
+      return ReflectConstruct(definition.constructor, []);
+    } finally {
+      ceDepth = depth;
+      ceOutside = outside;
+      if (previous === undefined) {
+        MapDelete(activeConstructors, definition.constructor);
+      } else {
+        MapSet(activeConstructors, definition.constructor, previous);
+      }
+    }
+  }
+
+  // The checks "create an element" makes of what a custom element's
+  // constructor gave (DOM section 4.9, step 6.1.3), in the reference
+  // browser's words.
+  function checkConstructed(result, doc, localName, method, iface) {
+    if (!(result instanceof HTMLElement) || !isNode(result)) {
+      throw new $TypeError(prefix(method, iface) + "The result must implement HTMLElement interface");
+    }
+    const handle = handleOf(result);
+    const refuse = (message) => domError("NotSupportedError", message, method, iface);
+    if (native.attributeNames(handle).length > 0) {
+      throw refuse("The result must not have attributes");
+    }
+    if (native.firstChild(handle) !== null) {
+      throw refuse("The result must not have children");
+    }
+    if (native.parent(handle) !== null) {
+      throw refuse("The result must not have a parent");
+    }
+    if (native.ownerDocument(handle) !== doc) {
+      throw refuse("The result must be in the same document");
+    }
+    if (native.tag(handle) !== localName) {
+      throw refuse("The result must have the same localName");
+    }
+  }
+
+  // The element made in place of a custom element whose construction
+  // failed: an HTMLUnknownElement whose state is "failed".
+  function failedElement(localName, doc) {
+    const handle = native.createElementNS(HTML_NS, localName, doc);
+    native.ceSetState(handle, CE_FAILED, 0);
+    const object = new HTMLUnknownElement(KEY, handle, 1, localName);
+    setNsOf(object, HTML_NS);
+    adoptObject(handle, object);
+    return handle;
+  }
+
+  // While a custom element the parser makes is constructed, and its
+  // reactions run, `document.write()` and its kin throw (HTML's
+  // throw-on-dynamic-markup-insertion counter).
+  let markupInsertionBlocked = 0;
+
+  // The parser's `construct` task (HTML section 13.2.6.1, "create an
+  // element for a token" steps 6 to 9): a microtask checkpoint, the
+  // element named `localName` with `is` value `is` made by its
+  // definition, a checkpoint after its constructor, and what was made
+  // given to the parser; the element made in its place when that
+  // failed. Nested in a script (`document.write`), no checkpoint.
+  function* constructTask(localName, is, nested, prefix) {
+    if (!nested) {
+      yield;
+    }
+    const doc = native.document();
+    const definition = lookUpDefinition(registryOfDocument(doc), localName, is);
+    markupInsertionBlocked++;
+    let handle;
+    try {
+      if (definition === undefined) {
+        handle = native.createElementNS(HTML_NS, localName, doc);
+      } else if (definition.localName !== definition.name) {
+        handle = native.createElementNS(HTML_NS, localName, doc);
+        native.ceSetIs(handle, is);
+        wrap(handle);
+        try {
+          upgradeElement(handle, definition);
+        } catch (error) {
+          reportException(error);
+        }
+      } else {
+        let result;
+        let failure;
+        let threw = false;
+        try {
+          result = constructBy(definition);
+        } catch (error) {
+          threw = true;
+          failure = error;
+        }
+        if (!nested) {
+          yield;
+        }
+        if (!threw) {
+          try {
+            checkConstructed(result, doc, localName, "createElement", "Document");
+          } catch (error) {
+            threw = true;
+            failure = error;
+          }
+        }
+        if (threw) {
+          reportException(failure);
+          handle = failedElement(localName, doc);
+        } else {
+          handle = handleOf(result);
+        }
+      }
+    } finally {
+      markupInsertionBlocked--;
+    }
+    // An XML document's tag's prefix, once the element is made (DOM's
+    // "create an element" step 5.1.4.11).
+    if (prefix !== null && prefix !== undefined) {
+      native.ceSetPrefix(handle, prefix);
+      const element = wrap(handle);
+      setNameOf(element, prefix + ":" + localName);
+      setPrefixOf(element, prefix);
+    }
+    native.parserElement(handle);
+    return false;
+  }
+
+  // The parser's `reactions` task: the reactions its insertion queued,
+  // a microtask checkpoint after each.
+  function* reactionsTask() {
+    const queue = [];
+    ArrayPush(reactionStack, queue);
+    pullReactions();
+    reactionStack.length -= 1;
+    yield* invokeReactions(queue);
+    return false;
+  }
+
+  // A native's reactions (the realm calls this after the call, D70):
+  // taken into the element queue of the `[CEReactions]` member that
+  // called it, into the backup element queue for an algorithm no such
+  // member runs, or else into an element queue of their own, which runs
+  // as the native returns.
+  function reactionsQueued(start) {
+    if (ceDepth > 0 || ceOutside > 0) {
+      if (start) {
+        pullReactions(ceDepth === 0);
+      }
+      return;
+    }
+    if (start) {
+      ArrayPush(reactionStack, []);
+      pullReactions();
+      return;
+    }
+    const queue = reactionStack[reactionStack.length - 1];
+    reactionStack.length -= 1;
+    drain(invokeReactions(queue));
+  }
+
+  // ---- ElementInternals (HTML section 4.13.7) ----
+
+  let internalsParts;
+  // Each element's internals once attached, by its handle.
+  const attachedInternals = new $Map();
+  // The shadow roots `ElementInternals.shadowRoot` may give: those
+  // attached to a custom element or one being upgraded, and declarative
+  // ones (HTML's "available to element internals").
+  const internalsRoots = new StateSet();
+
+  let internalsTarget;
+  let internalsAria;
+  let internalsStates;
+  let setInternalsSubmission;
+  let setInternalsValidity;
+
+  class ElementInternals {
+    #target;
+    #states = null;
+    #aria = { __proto__: null };
+    // A form-associated element's submission value and state, its
+    // validity flags, message and anchor.
+    #value = null;
+    #state = null;
+    #flags = null;
+    #message = "";
+    #anchor = null;
+
+    constructor(key, target) {
+      if (key !== KEY) {
+        throw illegalConstructor("ElementInternals");
+      }
+      this.#target = target;
+    }
+
+    static {
+      internalsParts = (value) => {
+        if (typeof value === "object" && value !== null && #target in value) {
+          return value;
+        }
+        throw illegalInvocation();
+      };
+      internalsTarget = (internals) => internals.#target;
+      internalsAria = (internals) => internals.#aria;
+      internalsStates = (internals) => {
+        if (internals.#states === null) {
+          internals.#states = new CustomStateSet(KEY, internals.#target);
+        }
+        return internals.#states;
+      };
+      setInternalsSubmission = (internals, value, state) => {
+        internals.#value = value;
+        internals.#state = state;
+      };
+      setInternalsValidity = (internals, flags, message, anchor) => {
+        internals.#flags = flags;
+        internals.#message = message;
+        internals.#anchor = anchor;
+      };
+    }
+
+    get shadowRoot() {
+      const handle = handleOf(internalsTarget(internalsParts(this)));
+      const root = native.shadowRoot(handle);
+      // A declarative shadow root the parser made is available too.
+      return root !== null && (SetHas(internalsRoots, root) || native.shadowInfo(root)[5] === "true")
+        ? wrap(root)
+        : null;
+    }
+
+    get states() {
+      return internalsStates(internalsParts(this));
+    }
+  }
+
+
+  // HTMLElement's `attachInternals()`.
+  defineProperty(HTMLElement.prototype, "attachInternals", {
+    value: {
+      attachInternals() {
+        const handle = self(this);
+        const refuse = (message) =>
+          domError("NotSupportedError", message, "attachInternals", "HTMLElement");
+        const state = native.ceState(handle);
+        if (native.ceIs(handle) !== null) {
+          throw refuse("Unable to attach ElementInternals to a customized built-in element.");
+        }
+        const definition = state[1] === 0 ? undefined : MapGet(definitions, state[1]);
+        const looked = nsOf(this) === HTML_NS
+          ? lookUpDefinition(registryOfElement(handle), nameOf(this), null)
+          : undefined;
+        if (looked === undefined && definition === undefined) {
+          throw refuse("Unable to attach ElementInternals to non-custom elements.");
+        }
+        if ((definition || looked).disableInternals) {
+          throw refuse("ElementInternals is disabled by disabledFeature static field.");
+        }
+        if (MapHas(attachedInternals, handle)) {
+          throw refuse("ElementInternals for the specified element was already attached.");
+        }
+        if (state[0] !== CE_PRECUSTOMIZED && state[0] !== CE_CUSTOM) {
+          throw refuse("Unable to attach ElementInternals to non-custom elements.");
+        }
+        const internals = new ElementInternals(KEY, this);
+        MapSet(attachedInternals, handle, internals);
+        return internals;
+      },
+    }.attachInternals,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+
+  // The registry an element, a shadow root or a document looks
+  // definitions up in.
+  function registryOfElement(handle) {
+    return registryById(native.ceRegistry(handle));
+  }
+
+  // `customElementRegistry` of an element, a document and a shadow root:
+  // the registry it looks definitions up in.
+  const registryGetter = {
+    get customElementRegistry() {
+      return registryOfElement(self(this));
+    },
+  };
+  if (!WORKER) {
+    include(registryGetter, [Element.prototype, Document.prototype, ShadowRoot.prototype]);
+  }
+
+  // What `createElement()`'s options give (DOM section 4.5): an
+  // ElementCreationOptions' registry, whether it gave one, and its `is`;
+  // nothing for a string.
+  function creationOptions(options, method) {
+    if (options === undefined || options === null ||
+      (typeof options !== "object" && typeof options !== "function")) {
+      return { registry: null, given: false, is: null };
+    }
+    const registry = options.customElementRegistry;
+    if (registry !== undefined && registry !== null && !isRegistry(registry)) {
+      throw new $TypeError(prefix(method, "Document") + "Failed to read the " +
+        "'customElementRegistry' property from 'ElementCreationOptions': Failed to convert " +
+        "value to 'CustomElementRegistry'.");
+    }
+    const isValue = options.is;
+    const is = isValue === undefined ? null : str(isValue);
+    if (registry !== undefined && is !== null) {
+      throw domError("NotSupportedError", "The custom element registry and \"is\" option " +
+        "can't be set at the same time.", method, "Document");
+    }
+    return { registry: registry === undefined ? null : registry, given: registry !== undefined, is };
+  }
+
+  // Whether the element `handle` names, `element`, may have no shadow
+  // root: the definition its name has disables shadow trees (DOM's
+  // "attach a shadow root" step 3).
+  function shadowDisabled(element, handle) {
+    if (definedCount === 0 || nsOf(element) !== HTML_NS) {
+      return false;
+    }
+    const is = native.ceIs(handle);
+    if (is === null && !validCustomElementName(nameOf(element))) {
+      return false;
+    }
+    const definition = lookUpDefinition(registryOfElement(handle), nameOf(element), is);
+    return definition !== undefined && definition.disableShadow;
+  }
+
+  // ---- CustomStateSet (CSS Custom State, D70) ----
+
+  let stateSetOf;
+  let stateSetEntries;
+  let stateSetTarget;
+
+  class CustomStateSet {
+    #target;
+    #set = new StateSet();
+
+    constructor(key, target) {
+      if (key !== KEY) {
+        throw illegalConstructor("CustomStateSet");
+      }
+      this.#target = target;
+    }
+
+    static {
+      stateSetOf = (value) => {
+        if (typeof value === "object" && value !== null && #set in value) {
+          return value;
+        }
+        throw illegalInvocation();
+      };
+      stateSetEntries = (states) => states.#set;
+      stateSetTarget = (states) => states.#target;
+    }
+
+    get size() {
+      return SetSizeOf(stateSetEntries(stateSetOf(this)));
+    }
+
+    has(value) {
+      const states = stateSetOf(this);
+      need(arguments.length, 1, "has", "CustomStateSet");
+      return SetHas(stateSetEntries(states), str(value));
+    }
+
+    add(value) {
+      const states = stateSetOf(this);
+      need(arguments.length, 1, "add", "CustomStateSet");
+      const name = str(value);
+      SetAddTo(stateSetEntries(states), name);
+      native.ceCustomState(handleOf(stateSetTarget(states)), name, true);
+      return this;
+    }
+
+    delete(value) {
+      const states = stateSetOf(this);
+      need(arguments.length, 1, "delete", "CustomStateSet");
+      const name = str(value);
+      const had = SetDelete(stateSetEntries(states), name);
+      if (had) {
+        native.ceCustomState(handleOf(stateSetTarget(states)), name, false);
+      }
+      return had;
+    }
+
+    clear() {
+      const states = stateSetOf(this);
+      const entries = stateSetEntries(states);
+      const handle = handleOf(stateSetTarget(states));
+      SetEach(entries, (name) => native.ceCustomState(handle, name, false));
+      SetClear(entries);
+    }
+
+    forEach(callback, thisArg) {
+      const states = stateSetOf(this);
+      need(arguments.length, 1, "forEach", "CustomStateSet");
+      if (typeof callback !== "function") {
+        throw new $TypeError(prefix("forEach", "CustomStateSet") +
+          "The callback provided as parameter 1 is not a function.");
+      }
+      const entries = stateSetEntries(states);
+      SetEach(entries, (name) => ReflectApply(callback, thisArg, [name, name, this]));
+    }
+
+    entries() {
+      return SetEntries(stateSetEntries(stateSetOf(this)));
+    }
+
+    values() {
+      return SetValues(stateSetEntries(stateSetOf(this)));
+    }
+  }
+  defineProperty(CustomStateSet.prototype, "keys", {
+    value: CustomStateSet.prototype.values,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  defineProperty(CustomStateSet.prototype, iteratorSymbol, {
+    value: CustomStateSet.prototype.values,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+  expose(CustomStateSet, "CustomStateSet");
+
+  // ElementInternals' role and ARIA properties (ARIA 1.3's ARIAMixin):
+  // values the element's accessibility semantics default to, kept with
+  // the internals, which no attribute reflects.
+  const ARIA_STRING_PROPERTIES = [
+    "role", "ariaAtomic", "ariaAutoComplete", "ariaBusy", "ariaBrailleLabel",
+    "ariaBrailleRoleDescription", "ariaChecked", "ariaColCount", "ariaColIndex", "ariaColSpan",
+    "ariaCurrent", "ariaDescription", "ariaDisabled", "ariaExpanded", "ariaHasPopup",
+    "ariaHidden", "ariaInvalid", "ariaKeyShortcuts", "ariaLabel", "ariaLevel", "ariaLive",
+    "ariaModal", "ariaMultiLine", "ariaMultiSelectable", "ariaOrientation", "ariaPlaceholder",
+    "ariaPosInSet", "ariaPressed", "ariaReadOnly", "ariaRelevant", "ariaRequired",
+    "ariaRoleDescription", "ariaRowCount", "ariaRowIndex", "ariaRowSpan", "ariaSelected",
+    "ariaSetSize", "ariaSort", "ariaValueMax", "ariaValueMin", "ariaValueNow", "ariaValueText",
+    "ariaColIndexText", "ariaRowIndexText",
+  ];
+  const ARIA_ELEMENT_PROPERTIES = ["ariaActiveDescendantElement"];
+  const ARIA_ELEMENTS_PROPERTIES = [
+    "ariaActionsElements", "ariaControlsElements", "ariaDescribedByElements", "ariaDetailsElements",
+    "ariaErrorMessageElements", "ariaFlowToElements", "ariaLabelledByElements",
+  ];
+  for (let i = 0; i < ARIA_STRING_PROPERTIES.length; i++) {
+    const name = ARIA_STRING_PROPERTIES[i];
+    defineProperty(ElementInternals.prototype, name, {
+      get() {
+        const value = internalsAria(internalsParts(this))[name];
+        return value === undefined ? null : value;
+      },
+      set(value) {
+        internalsAria(internalsParts(this))[name] = value === null ? null : str(value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  for (let i = 0; i < ARIA_ELEMENT_PROPERTIES.length; i++) {
+    const name = ARIA_ELEMENT_PROPERTIES[i];
+    defineProperty(ElementInternals.prototype, name, {
+      get() {
+        const value = internalsAria(internalsParts(this))[name];
+        return value === undefined ? null : value;
+      },
+      set(value) {
+        if (value !== null && !(isNode(value) && kindOf(value) === 1)) {
+          throw new $TypeError("Failed to set the '" + name + "' property on 'ElementInternals': " +
+            "The provided value is not of type 'Element'.");
+        }
+        internalsAria(internalsParts(this))[name] = value;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  for (let i = 0; i < ARIA_ELEMENTS_PROPERTIES.length; i++) {
+    const name = ARIA_ELEMENTS_PROPERTIES[i];
+    defineProperty(ElementInternals.prototype, name, {
+      get() {
+        const value = internalsAria(internalsParts(this))[name];
+        return value === undefined ? null : value;
+      },
+      set(value) {
+        const aria = internalsAria(internalsParts(this));
+        if (value === null || value === undefined) {
+          aria[name] = null;
+          return;
+        }
+        const list = sequence(value, "", "ElementInternals", (item) => {
+          if (!(isNode(item) && kindOf(item) === 1)) {
+            throw new $TypeError("Failed to set the '" + name + "' property on " +
+              "'ElementInternals': Failed to convert value to 'Element'.");
+          }
+          return item;
+        });
+        aria[name] = ObjectFreeze(list);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // Element's ARIA reflection (ARIA 1.3's ARIAMixin): `role` and each
+  // `ariaX` reflect `role` and `aria-x` as nullable strings. Its element
+  // references are the element-reflecting attributes' further on.
+  const ariaAttribute = (name) => name === "role" ? "role" : "aria-" + ToLowerCase(StringSlice(name, 4));
+  for (let i = 0; i < ARIA_STRING_PROPERTIES.length; i++) {
+    const name = ARIA_STRING_PROPERTIES[i];
+    const attribute = ariaAttribute(name);
+    defineProperty(Element.prototype, name, {
+      get() {
+        return native.attribute(self(this), attribute);
+      },
+      set(value) {
+        const handle = self(this);
+        if (value === null) {
+          removeAttribute(handle, attribute);
+        } else {
+          setAttribute(handle, attribute, str(value), name);
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
   // ---- Location (HTML section 7.2.4) ---------------------------------
 
   // A URL to navigate to, after the run; or the SyntaxError for one that
@@ -20824,6 +22900,65 @@
       madeInterfaces.HTMLObjectElement.prototype,
     ],
   );
+  // An output's value (HTML section 4.10.12): its descendant text, and
+  // its default value, that text until a script sets the value, then
+  // the text it had (its default value override), which a reset puts
+  // back.
+  const outputOverrides = new $WeakMap();
+  function outputDefault(element) {
+    const override = WeakMapGet(outputOverrides, element);
+    return override === undefined ? native.textContent(self(element)) : override;
+  }
+  include(
+    {
+      get value() {
+        return native.textContent(self(this));
+      },
+      set value(value) {
+        const text = str(value);
+        WeakMapSet(outputOverrides, this, outputDefault(this));
+        native.setTextContent(self(this), text);
+      },
+      get defaultValue() {
+        return outputDefault(this);
+      },
+      set defaultValue(value) {
+        const text = str(value);
+        if (WeakMapGet(outputOverrides, this) === undefined) {
+          native.setTextContent(self(this), text);
+        } else {
+          WeakMapSet(outputOverrides, this, text);
+        }
+      },
+      get type() {
+        self(this);
+        return "output";
+      },
+    },
+    [madeInterfaces.HTMLOutputElement.prototype],
+  );
+  // An output's reset algorithm: its text its default value, its
+  // override none.
+  function resetOutput(handle) {
+    const element = wrap(handle);
+    const text = outputDefault(element);
+    WeakMapDelete(outputOverrides, element);
+    native.setTextContent(handle, text);
+  }
+
+  // A fieldset's `elements` (HTML section 4.10.15): its listed
+  // descendants, live.
+  include(
+    {
+      get elements() {
+        const element = this;
+        const handle = self(this);
+        return controlList(element, "elements", () =>
+          collection(HTMLCollection, element, () => native.formControls(handle), true));
+      },
+    },
+    [madeInterfaces.HTMLFieldSetElement.prototype],
+  );
   // The input types the `list` attribute does not apply to.
   const LIST_IGNORED = [
     "hidden", "checkbox", "radio", "file", "submit", "image", "reset", "button", "password",
@@ -21291,6 +23426,190 @@
     },
     [madeInterfaces.HTMLFormElement.prototype],
   );
+
+  // ---- ElementInternals' form members (HTML section 4.13.7.3) ----
+
+  // The target of `internals`, a form-associated custom element, as its
+  // handle; or the NotSupportedError a member read or called (`what`)
+  // throws for any other.
+  function faceTarget(internals, member, reading) {
+    const target = internalsTarget(internalsParts(internals));
+    const handle = handleOf(target);
+    const definition = definitionOf(handle);
+    if (definition === undefined || !definition.formAssociated ||
+      native.ceState(handle)[0] !== CE_CUSTOM) {
+      const words = "The target element is not a form-associated custom element.";
+      if (reading) {
+        throw new $DOMException("Failed to read the '" + member +
+          "' property from 'ElementInternals': " + words, "NotSupportedError");
+      }
+      throw domError("NotSupportedError", words, member, "ElementInternals");
+    }
+    return handle;
+  }
+
+  // `text` with each CR LF pair and each lone CR a LF (Infra's "normalize
+  // newlines").
+  function normalizeNewlines(text) {
+    let out = "";
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === "\r") {
+        out += "\n";
+        if (text[i + 1] === "\n") {
+          i++;
+        }
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+
+  // The validity states `setValidity()` takes, in ValidityState's order.
+  const VALIDITY_FLAGS = VALIDITY_STATES;
+  // ValidityStateFlags' members in Web IDL's order (lexicographic), each
+  // with its state's bit.
+  const VALIDITY_MEMBERS = [
+    "badInput", "customError", "patternMismatch", "rangeOverflow", "rangeUnderflow",
+    "stepMismatch", "tooLong", "tooShort", "typeMismatch", "valueMissing",
+  ];
+
+  include(
+    {
+      // The submission value and state (`setFormValue()`): a string, a
+      // File (sent as the empty file, G61), a FormData's entries, or
+      // null.
+      setFormValue(value, state) {
+        const handle = faceTarget(this, "setFormValue", false);
+        need(arguments.length, 1, "setFormValue", "ElementInternals");
+        const internals = internalsParts(this);
+        const encode = (given) => {
+          if (given === null || given === undefined) {
+            return [0, [], []];
+          }
+          if (isFile(given)) {
+            return [2, [], []];
+          }
+          if (isFormData(given)) {
+            const strings = [];
+            const files = [];
+            const entries = entriesOf(given);
+            for (let i = 0; i < entries.length; i++) {
+              ArrayPush(strings, entries[i][0]);
+              const file = typeof entries[i][1] !== "string";
+              ArrayPush(strings, file ? "" : entries[i][1]);
+              ArrayPush(files, file ? 1 : 0);
+            }
+            return [3, strings, files];
+          }
+          return [1, [str(given)], []];
+        };
+        const encoded = encode(value);
+        const kept = state === undefined ? value : state;
+        native.ceFormValue(handle, encoded[0], encoded[1], encoded[2]);
+        setInternalsSubmission(internals, value, kept);
+      },
+
+      get form() {
+        return wrap(native.formOwner(faceTarget(this, "form", true)));
+      },
+
+      // HTML's `setValidity()`: the flags set, a message wanted when one
+      // is, an anchor inside the element.
+      setValidity(flags, message, anchor) {
+        const handle = faceTarget(this, "setValidity", false);
+        const internals = internalsParts(this);
+        const given = flags === undefined || flags === null ? {} : flags;
+        if (typeof given !== "object" && typeof given !== "function") {
+          throw new $TypeError(prefix("setValidity", "ElementInternals") +
+            "The provided value is not of type 'ValidityStateFlags'.");
+        }
+        let bits = 0;
+        for (let i = 0; i < VALIDITY_MEMBERS.length; i++) {
+          if (given[VALIDITY_MEMBERS[i]]) {
+            bits |= 1 << ArrayIndexOf(VALIDITY_FLAGS, VALIDITY_MEMBERS[i]);
+          }
+        }
+        // Its newlines normalized, as a validation message's are.
+        const text = message === undefined ? "" : normalizeNewlines(str(message));
+        if (bits !== 0 && text === "") {
+          throw new $TypeError(prefix("setValidity", "ElementInternals") +
+            "The second argument should not be empty if one or more flags in the first " +
+            "argument are true.");
+        }
+        let anchorElement = null;
+        if (anchor !== undefined) {
+          if (!isNode(anchor) || kindOf(anchor) !== 1 || nsOf(anchor) !== HTML_NS) {
+            throw new $TypeError(prefix("setValidity", "ElementInternals") +
+              "parameter 3 is not of type 'HTMLElement'.");
+          }
+          const target = handleOf(anchor);
+          let at = target;
+          while (at !== null && at !== handle) {
+            const parent = native.parent(at);
+            at = parent !== null ? parent : native.shadowHost(at);
+          }
+          if (at === null) {
+            throw domError("NotFoundError", "The Element argument should be a " +
+              "shadow-including inclusive descendant of the target element.", "setValidity",
+              "ElementInternals");
+          }
+          anchorElement = anchor;
+        }
+        native.ceFormValidity(handle, bits, bits === 0 ? "" : text);
+        setInternalsValidity(internals, bits, bits === 0 ? "" : text, anchorElement);
+      },
+
+      get willValidate() {
+        return native.willValidate(faceTarget(this, "willValidate", true));
+      },
+
+      get validity() {
+        const handle = faceTarget(this, "validity", true);
+        const target = internalsTarget(internalsParts(this));
+        return controlList(target, "validity", () => {
+          const state = new ValidityState(KEY);
+          WeakMapSet(validityHandles, state, handle);
+          return state;
+        });
+      },
+
+      get validationMessage() {
+        return native.validationMessage(faceTarget(this, "validationMessage", true));
+      },
+
+      checkValidity() {
+        const handle = faceTarget(this, "checkValidity", false);
+        if (!native.willValidate(handle) || native.validity(handle) === 0) {
+          return true;
+        }
+        drain(fireInvalid(handle));
+        return false;
+      },
+
+      reportValidity() {
+        const handle = faceTarget(this, "reportValidity", false);
+        if (!native.willValidate(handle) || native.validity(handle) === 0) {
+          return true;
+        }
+        if (!drain(fireInvalid(handle)) && native.connected(handle)) {
+          focusElement(handle, false);
+          native.reportInvalid(handle);
+        }
+        return false;
+      },
+
+      get labels() {
+        const handle = faceTarget(this, "labels", true);
+        const target = internalsTarget(internalsParts(this));
+        return controlList(target, "labels", () =>
+          collection(NodeList, target, () => native.labels(handle), true));
+      },
+    },
+    [ElementInternals.prototype],
+  );
+  expose(ElementInternals, "ElementInternals");
 
   // A form's indexed and named properties (HTML section 4.10.3): its
   // controls by index (`form[0]`) and by name or ID (`form.user`),
@@ -22722,6 +25041,7 @@
   // attribute and none a script set.
   const ARIA_ELEMENT = [["ariaActiveDescendantElement", "aria-activedescendant"]];
   const ARIA_ELEMENTS = [
+    ["ariaActionsElements", "aria-actions"],
     ["ariaControlsElements", "aria-controls"],
     ["ariaDescribedByElements", "aria-describedby"],
     ["ariaDetailsElements", "aria-details"],
@@ -22729,6 +25049,8 @@
     ["ariaFlowToElements", "aria-flowto"],
     ["ariaLabelledByElements", "aria-labelledby"],
   ];
+  // The arrays the list getters last gave, by element and property.
+  const givenReferences = new $WeakMap();
   // Whether the attribute is there, or a script set elements for it.
   function referenceSet(handle, attribute) {
     return native.attribute(handle, attribute) !== null;
@@ -22751,13 +25073,28 @@
   for (let i = 0; i < ARIA_ELEMENTS.length; i++) {
     const [property, attribute] = ARIA_ELEMENTS[i];
     defineProperty(Element.prototype, property, {
+      // A frozen array, the same one while the elements are the same
+      // (Web IDL's FrozenArray attribute, as the reference browser keeps
+      // it).
       get() {
         const handle = self(this);
         if (!referenceSet(handle, attribute)) return null;
         const found = associatedElements(handle, attribute);
+        let given = WeakMapGet(givenReferences, this);
+        if (given === undefined) {
+          given = { __proto__: null };
+          WeakMapSet(givenReferences, this, given);
+        }
+        const last = given[property];
+        if (last !== undefined && last.length === found.length) {
+          let same = true;
+          for (let j = 0; j < found.length && same; j++) same = handleOf(last[j]) === found[j];
+          if (same) return last;
+        }
         const out = [];
         for (let j = 0; j < found.length; j++) ArrayPush(out, wrap(found[j]));
-        return out;
+        given[property] = ObjectFreeze(out);
+        return given[property];
       },
       set(value) {
         setAttrElements(self(this), attribute, value, property);
@@ -29163,8 +31500,57 @@
   // `style.setProperty()` sets it, by the setter kept before any page ran:
   // what `commitStyles()` writes (D75).
   const StyleSetProperty = CSSStyleDeclaration.prototype.setProperty;
-  function setStyleProperty(element, name, value) {
-    ReflectApply(StyleSetProperty, styleOf(element), [name, value]);
+
+  // Sets each of `values`' properties of `element`'s inline style at
+  // once (Web Animations' `commitStyles()`): its `style` attribute
+  // written one time, one change of it (D70's reactions hear one).
+  function setStyleProperties(element, values) {
+    const handle = handleOf(element);
+    const scratch = wrap(native.createElement("div", native.ownerDocument(handle)));
+    const current = native.attribute(handle, "style");
+    if (current !== null) {
+      native.setAttribute(handleOf(scratch), "style", current);
+    }
+    for (let i = 0; i < values.length; i++) {
+      ReflectApply(StyleSetProperty, styleOf(scratch), [values[i][0], values[i][1]]);
+    }
+    const written = native.attribute(handleOf(scratch), "style");
+    if (written !== null && written !== current) {
+      setAttribute(handle, "style", written, "commitStyles");
+    }
+  }
+
+  // The `[CEReactions]` members (HTML section 4.13.6) whose steps call
+  // more than one native, or call into script between them: the
+  // reactions they queue run when they return, as one element queue.
+  // What one native does alone runs its own queue as it returns
+  // (`reactionsQueued`), which is the same.
+  const PARENT_NODE_CE = ["prepend", "append", "replaceChildren"];
+  const CHILD_NODE_CE = ["before", "after", "replaceWith"];
+  const CE_REACTIONS = [
+    [Element.prototype, [
+      ...PARENT_NODE_CE, ...CHILD_NODE_CE, "insertAdjacentElement", "insertAdjacentText",
+      "setAttributeNode", "setAttributeNodeNS", "removeAttributeNode", "toggleAttribute",
+    ]],
+    [Document.prototype, PARENT_NODE_CE],
+    [DocumentFragment.prototype, PARENT_NODE_CE],
+    [CharacterData.prototype, CHILD_NODE_CE],
+    [DocumentType.prototype, CHILD_NODE_CE],
+    [Range.prototype, [
+      "deleteContents", "extractContents", "cloneContents", "insertNode", "surroundContents",
+    ]],
+    [Selection.prototype, ["deleteFromDocument"]],
+    [MapGet(interfaces, "form").prototype, ["reset"]],
+    [MapGet(interfaces, "select").prototype, ["add", "remove", "length"]],
+    [MapGet(interfaces, "table").prototype, [
+      "caption", "tHead", "tFoot", "createCaption", "deleteCaption", "createTHead",
+      "deleteTHead", "createTFoot", "deleteTFoot", "createTBody", "insertRow", "deleteRow",
+    ]],
+    [MapGet(interfaces, "tbody").prototype, ["insertRow", "deleteRow"]],
+    [MapGet(interfaces, "tr").prototype, ["insertCell", "deleteCell"]],
+  ];
+  for (let i = 0; i < CE_REACTIONS.length; i++) {
+    ceReactions(CE_REACTIONS[i][0], CE_REACTIONS[i][1]);
   }
 
   // Each chunk's names of the bootstrap's (D64), as `chunkInstall` gives
@@ -29178,8 +31564,8 @@
       PromiseResolve, PromiseThen, ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys,
       Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
       defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
-      illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperty,
-      str, wrap,
+      illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need,
+      setStyleProperties, str, wrap,
     }),
     gpu: () => ({
       $ArrayBuffer, $DOMException, $DataView, $Map, $MapForEach, $Number, $NumberIsFinite, $Promise,
@@ -29323,6 +31709,20 @@
     broadcast: broadcastTask,
     namedSync,
     mutationsQueued: queueMutationObserverMicrotask,
+    // Custom elements (D70): the parser's element to construct, as a
+    // task or nested in a script's `document.write`; the reactions its
+    // insertion queued; and a native's reactions.
+    construct: (name, is, prefix) =>
+      constructTask(name, is === undefined ? null : is, false, prefix === undefined ? null : prefix),
+    constructNested(name, is) {
+      drain(constructTask(name, is === undefined ? null : is, true));
+    },
+    reactions: reactionsTask,
+    reactionsQueued,
+    // The sweep of the objects held out of the document (D70), the
+    // realm collecting the garbage between its two halves.
+    sweepPrepare,
+    sweepFinish,
     evaluate: evaluateExpression,
     fetched,
     // A message's arrival (M31): at the global (`kind` 0), at worker

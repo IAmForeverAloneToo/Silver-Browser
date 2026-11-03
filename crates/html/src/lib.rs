@@ -44,6 +44,17 @@ pub enum Stop {
     /// parser-blocking one before it parses at all. `line` is the line
     /// the script's text began on.
     Script { element: NodeId, line: u32 },
+    /// A start tag makes a custom element its definition constructs
+    /// (D70, HTML section 13.2.6.1's "create an element for a token"):
+    /// the caller runs the constructor for [`Parser::custom_element`]
+    /// and gives the parser what it made ([`Parser::provide_element`])
+    /// before it parses on.
+    Construct,
+    /// The tree builder's insertion queued custom element reactions
+    /// (HTML section 13.2.6.1, "insert an element at the adjusted
+    /// insertion location", steps 4 and 6): the caller runs them before
+    /// it parses on.
+    Reactions,
     /// The input is parsed to its end and the tree finished.
     Done,
 }
@@ -55,6 +66,12 @@ pub struct Parser {
     tokenizer: Tokenizer,
     builder: TreeBuilder,
     done: bool,
+    /// A start tag held while its custom element is constructed, and
+    /// that element's local name and `is` value.
+    held: Option<(Token, String, Option<String>)>,
+    /// Whether the held tag's attributes went to the element constructed
+    /// for it, the reactions they queued run before it is inserted.
+    held_attributes: bool,
 }
 
 impl Parser {
@@ -65,6 +82,8 @@ impl Parser {
             tokenizer: Tokenizer::streaming(),
             builder: TreeBuilder::new(scripting),
             done: false,
+            held: None,
+            held_attributes: false,
         }
     }
 
@@ -99,6 +118,8 @@ impl Parser {
             tokenizer,
             builder,
             done: false,
+            held: None,
+            held_attributes: false,
         }
     }
 
@@ -106,6 +127,29 @@ impl Parser {
     /// root (D68, [`TreeBuilder::set_declarative_shadow_roots`]).
     pub fn set_declarative_shadow_roots(&mut self, allow: bool) {
         self.builder.set_declarative_shadow_roots(allow);
+    }
+
+    /// Whether the elements a custom element definition is known for are
+    /// constructed as they are made, stopping at [`Stop::Construct`] and
+    /// [`Stop::Reactions`] (D70); off until asked, as a parser whose
+    /// caller runs no script's has none.
+    pub fn set_custom_elements(&mut self, construct: bool) {
+        self.builder.set_custom_elements(construct);
+    }
+
+    /// The local name and `is` value of the custom element the parse
+    /// stopped at [`Stop::Construct`] for.
+    pub fn custom_element(&self) -> Option<(&str, Option<&str>)> {
+        self.held
+            .as_ref()
+            .map(|(_, name, is)| (name.as_str(), is.as_deref()))
+    }
+
+    /// Gives the parser the element the definition's constructor made
+    /// for the start tag it stopped at (or the element made in its place
+    /// when that failed), which the tree builder takes as that tag's.
+    pub fn provide_element(&mut self, element: NodeId) {
+        self.builder.provide_element(element);
     }
 
     /// Appends `text` to the input.
@@ -179,14 +223,42 @@ impl Parser {
         if self.done {
             return Stop::Done;
         }
+        // A script closed before the reactions it waited behind ran.
+        if let Some((element, line)) = self.builder.take_script() {
+            return Stop::Script { element, line };
+        }
         for _ in 0..slice {
-            let Some(token) = self.tokenizer.next_token() else {
-                if !self.tokenizer.is_finished() {
-                    return Stop::Input;
+            let token = match self.held.take() {
+                // Its element constructed, the tag's attributes go to it,
+                // and the reactions they queue run before it is inserted
+                // ("create an element for a token" steps 9 and 10); then
+                // the held tag goes on.
+                Some((token, name, is)) => {
+                    if !std::mem::take(&mut self.held_attributes)
+                        && self.builder.give_attributes(document, &token)
+                        && document.has_reactions()
+                    {
+                        self.held = Some((token, name, is));
+                        self.held_attributes = true;
+                        return Stop::Reactions;
+                    }
+                    token
                 }
-                self.builder.finish(document);
-                self.done = true;
-                return Stop::Done;
+                None => {
+                    let Some(token) = self.tokenizer.next_token() else {
+                        if !self.tokenizer.is_finished() {
+                            return Stop::Input;
+                        }
+                        self.builder.finish(document);
+                        self.done = true;
+                        return Stop::Done;
+                    };
+                    if let Some((name, is)) = self.builder.custom_element_for(document, &token) {
+                        self.held = Some((token, name, is));
+                        return Stop::Construct;
+                    }
+                    token
+                }
             };
             let line = self.tokenizer.line();
             if let Some(state) = self.builder.process(document, token, line) {
@@ -195,6 +267,9 @@ impl Parser {
             // CDATA sections are read in foreign content alone.
             self.tokenizer
                 .set_cdata_allowed(self.builder.cdata_allowed());
+            if self.builder.constructs() && document.has_reactions() {
+                return Stop::Reactions;
+            }
             if let Some((element, line)) = self.builder.take_script() {
                 return Stop::Script { element, line };
             }

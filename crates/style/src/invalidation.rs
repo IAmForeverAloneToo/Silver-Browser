@@ -424,6 +424,10 @@ impl SelectorFeatures {
                 self.read_state(ElementState::OPEN, at);
                 self.read(&["open"]);
             }
+            // A custom element's state, and its custom states (D70), flip
+            // a flag of the element's at each change.
+            PseudoClass::Defined => self.read_state(ElementState::DEFINED_CHANGED, at),
+            PseudoClass::State(_) => self.read_state(ElementState::STATES_CHANGED, at),
             // `:root` (and `:scope`, which is `:root` in a style rule)
             // depends on the parent, which an insertion restyles whole;
             // `:visited` never matches.
@@ -769,8 +773,13 @@ pub(crate) fn invalidate(
             // (D68): what inherits from the node in the flat tree is
             // other, and so may be what matches there.
             Change::FlatTree { node } => out.mark(document, *node, Reach::Subtree),
+            // The flags journaling a change of `:defined` or `:state()`
+            // (D70), which no element has, are kept from every record.
             Change::StateChanged { element, old } => {
-                states.entry(*element).or_insert(*old);
+                states
+                    .entry(*element)
+                    .and_modify(|first| first.0 |= old.0 & ElementState::CUSTOM_CHANGES.0)
+                    .or_insert(*old);
             }
             Change::ControlChanged { element } => {
                 controls.push(*element);

@@ -1056,6 +1056,36 @@ impl Scripts {
         self.picker.take()
     }
 
+    /// The parser stopped for a custom element (D70, HTML section
+    /// 13.2.6.1): at [`html::Stop::Construct`] the realm constructs the
+    /// element the start tag makes and gives it to the parser, at
+    /// [`html::Stop::Reactions`] it runs the reactions the insertion
+    /// queued. With no realm to run them the parser makes the element
+    /// itself and the reactions are dropped.
+    pub(crate) fn custom_elements(&mut self, lent: &mut Lent<'_>, stop: html::Stop) {
+        let runs = !self.aborted && !self.stopped && self.realm.is_some();
+        match stop {
+            html::Stop::Construct if runs => {
+                let wanted = lent.parser.as_ref().and_then(|load| {
+                    load.custom_element().map(|(name, is)| {
+                        let prefix = load.custom_prefix().map(str::to_owned);
+                        (name.to_owned(), is.map(str::to_owned), prefix)
+                    })
+                });
+                if let Some((name, is, prefix)) = wanted {
+                    self.enter(lent, &js::Task::Construct { name, is, prefix }, 0);
+                }
+            }
+            html::Stop::Reactions if runs => {
+                self.enter(lent, &js::Task::Reactions, 0);
+            }
+            html::Stop::Reactions => {
+                lent.document.take_reactions();
+            }
+            _ => {}
+        }
+    }
+
     /// Prepares the `script` element the parser has just closed (HTML
     /// section 4.12.1.1, "prepare the script element"), its text starting
     /// on the document's `line`. An inline classic script runs at once,
@@ -2067,6 +2097,7 @@ impl Scripts {
         let result = run(realm.as_mut(), host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
+        realm.sweep(host);
         host.sweep();
         let outputs = host.give_back(lent);
         if insertion_point
@@ -2205,6 +2236,7 @@ impl Scripts {
         let result = realm.enter(task, host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
+        realm.sweep(host);
         host.sweep();
         let outputs = host.give_back(lent);
         for entry in outputs.console {

@@ -35,6 +35,7 @@ use crate::forms::ControlState;
 use crate::{Element, Namespace, Node, Text, local_part};
 
 mod attributes;
+mod custom;
 mod details;
 mod documents;
 mod live;
@@ -42,6 +43,10 @@ mod references;
 mod shadow;
 mod top_layer;
 pub use attributes::{attribute_local_name, implied_attribute_namespace};
+pub use custom::{
+    CustomElementState, Definition, FormValue, MAX_CUSTOM_STATES, MAX_DEFINITIONS, Reaction,
+    WINDOW_REGISTRY, callbacks,
+};
 pub use details::MAX_DETAILS_TOGGLES;
 pub use documents::{CompatMode, DocumentFacts, DocumentInterface};
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
@@ -389,6 +394,15 @@ impl ElementState {
     /// the engine finds at each rendering update. An element with
     /// `content-visibility: auto` skips its contents while it is not.
     pub const RELEVANT: ElementState = ElementState(4096);
+    /// A change of whether the element is `:defined` (D70) is journaled
+    /// as a change of its state flags from flags with this one set,
+    /// which no element's flags have: what that pseudo-class's restyle
+    /// reads.
+    pub const DEFINED_CHANGED: ElementState = ElementState(8192);
+    /// The same for a change of its custom states (`:state()`, D70).
+    pub const STATES_CHANGED: ElementState = ElementState(16384);
+    /// The two flags no element has, which journal those changes.
+    pub const CUSTOM_CHANGES: ElementState = ElementState(8192 | 16384);
 
     /// Whether every flag of `flags` is set.
     pub fn contains(self, flags: ElementState) -> bool {
@@ -767,6 +781,46 @@ impl Document {
         let made = self.create_text(data)?;
         self.rare.cdata.insert(made);
         Ok(made)
+    }
+
+    /// Gives an element made with no prefix the prefix `prefix`: DOM's
+    /// "create an element" sets a custom element's after its constructor
+    /// ran (step 5.1.4.11, D70), `createElementNS()` having asked for one.
+    pub fn set_element_prefix(
+        &mut self,
+        element: NodeId,
+        prefix: &str,
+    ) -> Result<(), MutationError> {
+        let local = self
+            .local_name(element)
+            .ok_or(MutationError::WrongKind)?
+            .to_owned();
+        if self.rare.prefixed.contains(&element) || prefix.is_empty() {
+            return Err(MutationError::NotSupported);
+        }
+        self.check_data(prefix.len() + 1)?;
+        let record = self.record_mut(element).ok_or(MutationError::NoSuchNode)?;
+        if let NodeData::Element { tag, .. } = &mut record.data {
+            *tag = format!("{prefix}:{local}");
+        }
+        self.data_bytes += prefix.len() + 1;
+        self.rare.prefixed.insert(element);
+        Ok(())
+    }
+
+    /// Makes `form` the form owner of the control `element` the parser
+    /// just inserted with its form element pointer set (HTML section
+    /// 13.2.6.1, "create an element for a token" step 12): an owner it
+    /// keeps, though no ancestor of it, until its ancestors change.
+    pub fn set_parser_form_owner(&mut self, element: NodeId, form: NodeId) {
+        if self.contains(element) && self.contains(form) {
+            self.rare.parser_forms.insert(element, form);
+        }
+    }
+
+    /// The form owner the parser gave `element`, while it has it.
+    pub fn parser_form_owner(&self, element: NodeId) -> Option<NodeId> {
+        self.rare.parser_forms.get(&element).copied()
     }
 
     /// Notes that `element`'s qualified name has a prefix: one with a
@@ -1277,12 +1331,18 @@ impl Document {
             // A fragment's children go in its place, in order.
             let moved: Vec<NodeId> = self.children(child).collect();
             for node in moved {
+                let old_owner = self.owner_document(node);
+                let crossed = self.crosses_contents(node, parent);
                 self.detach(node);
+                let new_owner = self.owner_document(parent);
+                let adopted = self.registries_before_adoption(node, old_owner, new_owner, crossed);
                 match reference {
                     Some(r) => self.link_before(parent.index, node.index, r.index),
                     None => self.link_last(parent.index, node.index),
                 }
                 self.owned_by_tree(node);
+                let owner = self.owner_document(node);
+                self.registries_adopted(adopted, owner);
                 self.live_inserted(parent, node);
                 self.record_change(Change::Inserted {
                     parent,
@@ -1293,6 +1353,7 @@ impl Document {
                 if self.connected(parent) && self.has_names(node) {
                     self.index_names(node, true);
                 }
+                self.custom_inserted(node, Some(old_owner));
             }
             return Ok(());
         }
@@ -1300,13 +1361,19 @@ impl Document {
             Some(r) if r == child => self.next_sibling(child),
             other => other,
         };
+        let old_owner = self.owner_document(child);
+        let crossed = self.crosses_contents(child, parent);
         self.detach(child);
+        let new_owner = self.owner_document(parent);
+        let adopted = self.registries_before_adoption(child, old_owner, new_owner, crossed);
         match reference {
             Some(r) => self.link_before(parent.index, child.index, r.index),
             None => self.link_last(parent.index, child.index),
         }
         // Inserted, it is its parent's document's (DOM's "adopt").
         self.owned_by_tree(child);
+        let owner = self.owner_document(child);
+        self.registries_adopted(adopted, owner);
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.shadow_inserted(parent, child);
@@ -1314,6 +1381,7 @@ impl Document {
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
         }
+        self.custom_inserted(child, Some(old_owner));
         Ok(())
     }
 
@@ -1376,6 +1444,7 @@ impl Document {
             parent,
             child: node,
         });
+        self.custom_moved(node);
         Ok(())
     }
 
@@ -1409,6 +1478,7 @@ impl Document {
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
         }
+        self.custom_inserted(child, None);
         Ok(())
     }
 
@@ -1494,6 +1564,17 @@ impl Document {
                         old,
                     });
                 }
+                if self.is_custom(element) {
+                    let namespace = at.and_then(|at| self.attribute_namespace(element, at));
+                    let namespace = namespace.map(str::to_owned);
+                    self.custom_attribute_changed(
+                        element,
+                        &name,
+                        namespace.as_deref(),
+                        Some(value),
+                        Some(value),
+                    );
+                }
                 return Ok(());
             }
             Some((_, v)) => Some(v.len()),
@@ -1526,6 +1607,16 @@ impl Document {
                 namespace,
                 old: old.clone(),
             });
+        }
+        if self.is_custom(element) {
+            let namespace = self.attribute_namespace(element, at).map(str::to_owned);
+            self.custom_attribute_changed(
+                element,
+                &name,
+                namespace.as_deref(),
+                old.as_deref(),
+                Some(value),
+            );
         }
         self.record_change(Change::AttributeChanged { element, name, old });
         if let Some(name) = slotting {
@@ -1608,6 +1699,11 @@ impl Document {
         if at >= attrs.len() {
             return Ok(());
         }
+        let custom_namespace = match self.is_custom(element) {
+            true => Some(self.attribute_namespace(element, at).map(str::to_owned)),
+            false => None,
+        };
+        let attrs = self.attrs_mut(element)?;
         let (name, old) = attrs.remove(at);
         self.data_bytes -= name.len() + old.len();
         self.remove_attribute_namespace(element, at);
@@ -1619,6 +1715,9 @@ impl Document {
             namespace,
             old: Some(old.clone()),
         });
+        if let Some(namespace) = custom_namespace {
+            self.custom_attribute_changed(element, &name, namespace.as_deref(), Some(&old), None);
+        }
         self.record_change(Change::AttributeChanged {
             element,
             name,
@@ -1727,6 +1826,15 @@ impl Document {
         }
         self.forget_documents(&doomed);
         self.forget_shadows(&doomed);
+        self.forget_custom(&doomed);
+        if !self.rare.parser_forms.is_empty() {
+            for node in &doomed {
+                self.rare.parser_forms.remove(node);
+            }
+            self.rare
+                .parser_forms
+                .retain(|_, form| !doomed.contains(form));
+        }
         self.data_bytes -= self.forget_attribute_namespaces(&doomed);
         if !self.rare.prefixed.is_empty() || !self.rare.cdata.is_empty() {
             for node in &doomed {
@@ -2032,7 +2140,8 @@ impl Document {
                 .values()
                 .map(|kept| attributes::namespaces_size(kept))
                 .sum::<usize>()
-            + self.shadow_data_bytes();
+            + self.shadow_data_bytes()
+            + self.custom_data_bytes();
         if data != self.data_bytes {
             return Err(format!(
                 "{data} bytes of data counted as {}",
@@ -2052,6 +2161,7 @@ impl Document {
             return Err("a template's contents are not mirrored".into());
         }
         self.validate_shadows()?;
+        self.validate_custom()?;
         let documents = &self.rare.documents;
         if documents.facts.values().filter(|facts| facts.xml).count() != documents.xml {
             return Err("the XML documents are miscounted".into());
@@ -2379,6 +2489,16 @@ impl Document {
         if self.connected(child) && self.has_names(child) {
             self.index_names(child, false);
         }
+        // Its controls' form owners are their ancestors' again (HTML's
+        // "reset the form owner").
+        if !self.rare.parser_forms.is_empty() {
+            for node in self.subtree(child).collect::<Vec<_>>() {
+                self.rare.parser_forms.remove(&node);
+            }
+        }
+        // Disconnected, its custom elements hear it after (D70); a move
+        // tells them it moved instead.
+        let disconnects = !self.rare.moving && self.is_connected(child);
         // Taken out of another document's tree, it stays that document's.
         let mut owner = None;
         if let Some(parent) = self.link(Some(parent)) {
@@ -2438,6 +2558,9 @@ impl Document {
         if let Some(parent) = self.link(Some(parent)) {
             self.shadow_removed(parent, child);
         }
+        if disconnects {
+            self.custom_removed(child);
+        }
     }
 
     /// Links the detached `child` as `parent`'s last child.
@@ -2481,6 +2604,7 @@ impl Document {
         self.references_changed(&change);
         self.details_changed(&change);
         self.version += 1;
+        self.custom_changed();
         if self.journal.last() == Some(&Change::Everything) {
             return;
         }

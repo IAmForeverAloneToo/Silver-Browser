@@ -15,7 +15,7 @@
     PromiseResolve, PromiseThen, ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys,
     Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
     defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
-    illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperty,
+    illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperties,
     str, wrap,
   } = env;
 
@@ -1526,10 +1526,7 @@
     commitStyles() {
       const id = animationId(this);
       const made = ask(op(["op", "animation.commit", "id", id]), "commitStyles", "Animation");
-      const element = wrap(made.target);
-      for (let i = 0; i < made.values.length; i++) {
-        setStyleProperty(element, made.values[i][0], made.values[i][1]);
-      }
+      setStyleProperties(wrap(made.target), made.values);
     }
   }
   defineHandlers(Animation.prototype, ["finish", "cancel", "remove"], false);

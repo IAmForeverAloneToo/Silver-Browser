@@ -100,22 +100,19 @@ const RESERVED_NAMES: [&str; 8] = [
     "missing-glyph",
 ];
 
-/// Whether `name` is a valid custom element name (HTML section 4.13.2):
-/// an ASCII lower alpha, then `PCENChar`s with a hyphen among them, not
-/// one of the reserved names.
+/// Whether `name` is a valid custom element name (HTML section 4.13.2,
+/// as the reference browser has it): an ASCII lower alpha first, a
+/// hyphen in it, no ASCII upper alpha, none of NULL, tab, line feed,
+/// form feed, carriage return, space, `/` and `>` (a valid element local
+/// name), and not one of the reserved names.
 pub fn is_valid_custom_element_name(name: &str) -> bool {
-    let pcen = |c: char| {
-        matches!(c, '-' | '.' | '_' | '0'..='9' | 'a'..='z' | '\u{B7}')
-            || matches!(c, '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{37D}')
-            || matches!(c, '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}')
-            || matches!(c, '\u{203F}'..='\u{2040}' | '\u{2070}'..='\u{218F}')
-            || matches!(c, '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}')
-            || matches!(c, '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}')
-            || matches!(c, '\u{10000}'..='\u{EFFFF}')
+    let allowed = |c: char| {
+        !c.is_ascii_uppercase()
+            && !matches!(c, '\0' | '\t' | '\n' | '\x0C' | '\r' | ' ' | '/' | '>')
     };
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
-        && chars.all(pcen)
+        && chars.all(allowed)
         && name.contains('-')
         && !RESERVED_NAMES.contains(&name)
 }
@@ -1249,6 +1246,13 @@ mod tests {
         assert!(!is_valid_custom_element_name("-x"));
         assert!(!is_valid_custom_element_name("font-face"));
         assert!(!is_valid_custom_element_name("a-B"));
+        // What a valid element local name takes, the reference browser
+        // takes in a custom element's name.
+        assert!(is_valid_custom_element_name("a-!"));
+        assert!(is_valid_custom_element_name("a-\u{1F171}"));
+        assert!(!is_valid_custom_element_name("a- b"));
+        assert!(!is_valid_custom_element_name("a-/"));
+        assert!(!is_valid_custom_element_name("a->"));
     }
 
     use super::super::ElementState;

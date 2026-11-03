@@ -10,10 +10,11 @@ use super::{Change, Document, NodeId};
 
 /// The attributes whose elements a script may set, which an explicit
 /// element of stands in for while the attribute is not set again.
-pub const ELEMENT_REFERENCES: [&str; 10] = [
+pub const ELEMENT_REFERENCES: [&str; 11] = [
     "popovertarget",
     "commandfor",
     "interestfor",
+    "aria-actions",
     "aria-activedescendant",
     "aria-controls",
     "aria-describedby",

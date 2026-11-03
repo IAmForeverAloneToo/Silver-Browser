@@ -372,3 +372,104 @@ fn a_trees_scope_rules_reach_up_to_its_featureless_host() {
     assert_eq!(color(&styles, host), BLUE);
     assert_eq!(color(&styles, a), GREEN);
 }
+
+#[test]
+fn a_part_and_a_slotted_element_have_their_pseudo_elements_styled() {
+    // CSS Shadow Parts 1 section 4.2, CSS Scoping 1 section 3.2.2:
+    // `::part()` and `::slotted()` may be followed by `::before` and
+    // `::after`, which style that element's pseudo-elements, not it.
+    let (document, root) = page_with_shadow(
+        "<div id=host><span id=light>l</span></div>",
+        "<p id=label part=label>x</p><slot></slot>",
+    );
+    let label = by_id(&document, root, "label");
+    let light = by_id(&document, document.root(), "light");
+    let page = "#host::part(label)::before { content: 'p'; color: green } \
+                #host::part(label) { color: blue }";
+    let tree = "::slotted(span)::after { content: 's'; color: green }";
+    let styles = cascade(&document, page, &[(root, tree)]);
+    assert_eq!(
+        color(&styles, label),
+        BLUE,
+        "the part itself by its own rule"
+    );
+    use crate::selector_matching::PseudoElement;
+    let pseudo = |node, which| styles.pseudo(node, which).expect("styled").color;
+    assert_eq!(pseudo(label, PseudoElement::Before), GREEN);
+    assert_eq!(pseudo(light, PseudoElement::After), GREEN);
+    assert_ne!(color(&styles, light), GREEN, "not the slotted element");
+}
+
+#[test]
+fn a_hosts_pseudo_element_queries_the_host_as_its_style_container() {
+    // `@container style()` of `:host::before` from the shadow tree's
+    // rules: the host, the originating element, is the query container,
+    // its style computed before its pseudo-elements' are (D72).
+    let (document, root) = page_with_shadow("<div id=host></div>", "<p>i</p>");
+    let host = by_id(&document, document.root(), "host");
+    let tree = "@container style(--on: 1) { :host::before { content: 'x'; color: green } }";
+    let styles = cascade(&document, "#host { --on: 1 }", &[(root, tree)]);
+    let before = styles
+        .pseudo(host, crate::selector_matching::PseudoElement::Before)
+        .expect("styled");
+    assert_eq!(before.color, GREEN);
+    let styles = cascade(&document, "#host { --on: 2 }", &[(root, tree)]);
+    assert!(
+        styles
+            .pseudo(host, crate::selector_matching::PseudoElement::Before)
+            .is_none(),
+        "the query does not hold"
+    );
+}
+
+#[test]
+fn host_part_matches_the_trees_own_parts() {
+    // `:host::part(x)` in a shadow tree reaches that tree's own elements
+    // with the part, through its host.
+    let (document, root) = page_with_shadow(
+        "<div id=host class=on></div>",
+        "<p id=label part=label>x</p><p id=other>y</p>",
+    );
+    let label = by_id(&document, root, "label");
+    let other = by_id(&document, root, "other");
+    let tree = ":host(.on)::part(label) { color: green } :host(.off)::part(label) { color: red }";
+    let styles = cascade(&document, "", &[(root, tree)]);
+    assert_eq!(color(&styles, label), GREEN);
+    assert_ne!(color(&styles, other), GREEN);
+}
+
+#[test]
+fn defined_and_state_match_what_the_document_keeps() {
+    // `:defined` and `:state()` (D70) read the custom element state and
+    // the custom states the document keeps.
+    let (mut document, root) = page_with_shadow(
+        "<div id=host></div><x-a id=waiting></x-a><x-b id=custom></x-b>",
+        "<p>i</p>",
+    );
+    let _ = root;
+    let waiting = by_id(&document, document.root(), "waiting");
+    let custom = by_id(&document, document.root(), "custom");
+    document
+        .set_custom_element_state(custom, dom::CustomElementState::Custom, None)
+        .unwrap();
+    document.set_custom_state(custom, "on", true).unwrap();
+    let page = ":defined { color: green } :not(:defined) { color: red } \
+                :state(on) { color: blue } :state(ON) { color: red }";
+    let set = sheets(page, &[]);
+    let context = CascadeContext::default();
+    let mut styles = set.cascade(&document, &context);
+    assert_eq!(color(&styles, waiting), RED);
+    assert_eq!(color(&styles, custom), BLUE, "case-sensitive");
+    // Two changes of its states between restyles, and its being defined,
+    // restyle them.
+    document.take_changes();
+    document.set_custom_state(custom, "on", false).unwrap();
+    document.set_custom_state(custom, "other", true).unwrap();
+    document
+        .set_custom_element_state(waiting, dom::CustomElementState::Custom, None)
+        .unwrap();
+    let changes = document.take_changes();
+    set.restyle(&document, &context, &mut styles, &changes);
+    assert_eq!(color(&styles, custom), GREEN);
+    assert_eq!(color(&styles, waiting), GREEN);
+}

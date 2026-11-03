@@ -23,6 +23,8 @@ mod cookie_tests;
 #[cfg(test)]
 mod csp_tests;
 #[cfg(test)]
+mod custom_element_tests;
+#[cfg(test)]
 mod document_open_tests;
 #[cfg(test)]
 mod dom_tests;

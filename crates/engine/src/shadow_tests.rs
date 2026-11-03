@@ -203,3 +203,80 @@ fn a_shadow_roots_markup_is_set_safely_or_not_in_its_hosts_context() {
         ]
     );
 }
+
+#[test]
+fn a_sheet_pushed_onto_adopted_style_sheets_is_adopted() {
+    // `adoptedStyleSheets` is an ObservableArray: what `push()` and an
+    // index's assignment change, the styles take.
+    let lines = said(
+        "<div id=h></div>",
+        "const root = h.attachShadow({mode: 'open'}); \
+         root.innerHTML = '<p>t</p>'; \
+         const sheet = new CSSStyleSheet(); \
+         sheet.replaceSync('p { color: rgb(0, 128, 0) }'); \
+         root.adoptedStyleSheets.push(sheet); \
+         const p = root.querySelector('p'); \
+         const first = getComputedStyle(p).color; \
+         root.adoptedStyleSheets.length = 0; \
+         try { root.adoptedStyleSheets[0] = 1; } catch (e) { console.log(e.name); } \
+         console.log(first, getComputedStyle(p).color, root.adoptedStyleSheets.length);",
+    );
+    assert_eq!(lines, ["TypeError", "rgb(0, 128, 0) rgb(0, 0, 0) 0"]);
+}
+
+#[test]
+fn text_in_a_shadow_root_is_hit_as_its_host() {
+    // A text node right in a shadow root has no element parent of its
+    // own: what hit testing finds of it is the host, though the host, of
+    // `display: contents`, has no box to be hit itself.
+    let lines = said(
+        "<style>body { margin: 0; font-size: 40px } div { display: contents }</style>\
+         <div id=h></div>",
+        "h.attachShadow({mode: 'closed'}).innerHTML = 'hello'; \
+         console.log(document.elementFromPoint(10, 20) === h);",
+    );
+    assert_eq!(lines, ["true"]);
+}
+
+#[test]
+fn a_shadow_roots_elements_from_point_keep_the_hosts_ancestors() {
+    // Text assigned to a slot is hit as its parent's, the host's; and a
+    // shadow root's `elementsFromPoint()` gives what is outside its tree
+    // too, retargeted, as the reference browser does.
+    let lines = said(
+        "<style>body { margin: 0; font-size: 40px }</style><div id=c><span id=h>text</span></div>",
+        "const root = h.attachShadow({mode: 'open'}); root.innerHTML = '<slot></slot>'; \
+         const all = root.elementsFromPoint(10, 20).map(e => e.id || e.localName).join(); \
+         console.log(document.elementFromPoint(10, 20) === h, all);",
+    );
+    assert_eq!(lines, ["true h,c,body,html"]);
+}
+
+#[test]
+fn an_element_in_a_shadow_tree_has_its_hosts_language() {
+    // With no `lang` of its own tree's, a part's language is its host's,
+    // which `::part():lang()` reads.
+    let lines = said(
+        "<style>#h::part(p):lang(fr) { color: rgb(0, 128, 0) }</style><div id=h lang=fr></div>",
+        "const root = h.attachShadow({mode: 'open'}); root.innerHTML = '<span part=p>x</span>'; \
+         const span = root.firstChild; \
+         console.log(getComputedStyle(span).color, span.matches(':lang(fr)'));",
+    );
+    assert_eq!(lines, ["rgb(0, 128, 0) true"]);
+}
+
+#[test]
+fn a_part_rules_attr_reads_its_hosts_attributes() {
+    // `attr()` in a `::part()` rule reads the host the element is a part
+    // of, not the part, and a change of the host's attribute restyles it.
+    let lines = said(
+        "<style>#h::part(p) { color: attr(data-c type(<color>)) }</style>\
+         <div id=h data-c='rgb(0, 128, 0)'></div>",
+        "const root = h.attachShadow({mode: 'open'}); \
+         root.innerHTML = '<span part=p data-c=\"rgb(255, 0, 0)\">x</span>'; \
+         console.log(getComputedStyle(root.firstChild).color); \
+         h.setAttribute('data-c', 'rgb(0, 0, 255)'); \
+         console.log(getComputedStyle(root.firstChild).color);",
+    );
+    assert_eq!(lines, ["rgb(0, 128, 0)", "rgb(0, 0, 255)"]);
+}

@@ -147,3 +147,45 @@ fn an_xhtml_error_is_shown_above_what_came_before_it() {
     assert!(shown.contains("Opening and ending tag mismatch: p and b"));
     assert!(shown.contains("before"));
 }
+
+#[test]
+fn the_xml_parser_constructs_a_defined_custom_element_as_it_meets_it() {
+    // Constructed with the parse stopped at its start tag, its writes
+    // throwing, before its attributes and its insertion; the reactions
+    // its attributes queue before it is inserted, its connection's after;
+    // a prefixed one taking its prefix; and one with
+    // `customelementregistry` made with no registry, so not constructed.
+    let (_, console) = loaded(
+        XHTML,
+        "<html xmlns='http://www.w3.org/1999/xhtml' xmlns:h='http://www.w3.org/1999/xhtml'>\
+         <body><script><![CDATA[\
+           const log = [];\
+           class X extends HTMLElement {\
+             static observedAttributes = ['a'];\
+             constructor() {\
+               super();\
+               let threw = 'none';\
+               try { document.open(); } catch (e) { threw = e.name; }\
+               log.push('ctor ' + this.attributes.length + ' ' + (this.parentNode === null) + ' ' +\
+                 threw + ' ' + document.querySelectorAll('x-x').length);\
+             }\
+             attributeChangedCallback(n, o, v) { log.push('attr ' + v + ' ' + this.isConnected); }\
+             connectedCallback() { log.push('connected ' + this.prefix); }\
+           }\
+           customElements.define('x-x', X);\
+         ]]></script><x-x a='1'/><h:x-x a='2'/><x-x customelementregistry=''/>\
+         <script><![CDATA[\
+           const all = document.querySelectorAll('x-x');\
+           console.log(log.join(', '));\
+           console.log(all.length, all[2] instanceof X, all[2].customElementRegistry);\
+         ]]></script></body></html>",
+    );
+    assert_eq!(
+        console,
+        [
+            "ctor 0 true InvalidStateError 0, attr 1 false, connected null, \
+             ctor 0 true InvalidStateError 1, attr 2 false, connected h",
+            "3 false null",
+        ]
+    );
+}

@@ -471,7 +471,8 @@ fn parse_complex(c: &mut Cursor, depth: usize, scope: Scope) -> Result<Selector,
 /// there, nothing else.
 fn parse_state_selector(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
     let mut specificity = Specificity::default();
-    let states = parse_states(c, depth, &mut specificity).ok_or(ParseError::InvalidSelector)?;
+    let states = parse_states(c, depth, &mut specificity, (false, false))
+        .ok_or(ParseError::InvalidSelector)?;
     if states.is_empty() {
         return Err(ParseError::InvalidSelector);
     }
@@ -694,12 +695,18 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         if highlight && matches!(c.peek(), Some(Token::Colon)) {
                             return None;
                         }
-                        let states = parse_states(c, depth, &mut spec)?;
+                        let nests = matches!(element, PseudoElement::Slotted | PseudoElement::Part);
+                        let part = element == PseudoElement::Part;
+                        let states = parse_states(c, depth, &mut spec, (nests, part))?;
                         // A highlight is in no user-action state (CSS
                         // Pseudo 4 section 3.1).
                         if element == PseudoElement::Highlight && !states.is_empty() {
                             return None;
                         }
+                        let then = match nests {
+                            true => parse_then(c, &mut spec),
+                            false => None,
+                        };
                         if simple.is_empty() {
                             simple.push(SimpleSelector::Universal);
                         }
@@ -711,6 +718,7 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                                 element,
                                 argument,
                                 states,
+                                then,
                             }),
                         });
                     }
@@ -732,14 +740,51 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
     })
 }
 
+/// The pseudo-element after `::slotted()` or `::part()`, when one the
+/// element they represent has follows (`::before`, `::after`,
+/// `::marker`, CSS Scoping 1 section 3.2.2, CSS Shadow Parts 1 section
+/// 4.2), taken with its specificity.
+fn parse_then(c: &mut Cursor, spec: &mut Specificity) -> Option<PseudoElement> {
+    if !matches!(c.peek(), Some(Token::Colon)) || !matches!(c.peek_ahead(1), Some(Token::Colon)) {
+        return None;
+    }
+    let Some(Token::Ident(name)) = c.peek_ahead(2) else {
+        return None;
+    };
+    let element = match name.to_ascii_lowercase().as_str() {
+        "before" => PseudoElement::Before,
+        "after" => PseudoElement::After,
+        "marker" => PseudoElement::Marker,
+        _ => return None,
+    };
+    c.advance();
+    c.advance();
+    c.advance();
+    *spec += Specificity(0, 0, 1);
+    Some(element)
+}
+
 /// Parses the pseudo-classes after a pseudo-element, or in a list
 /// inside one of them: the user-action ones, and `:is()`, `:where()` and
 /// `:not()` of them (selectors-4 §3.6.3). `None` when another
 /// pseudo-class or a pseudo-element is there; anything else after them
 /// is left for the list, which takes it for an error.
-fn parse_states(c: &mut Cursor, depth: usize, spec: &mut Specificity) -> Option<Vec<PseudoClass>> {
+/// After `::slotted()` or `::part()` (`nests`), they end where the
+/// pseudo-element of the element it represents begins ([`parse_then`]);
+/// after `::part()` (`part`), a real element's, the pseudo-classes of its
+/// state that are not structural follow too (CSS Shadow Parts 1 section
+/// 4.2): `:dir()`, `:lang()` and `:defined`.
+fn parse_states(
+    c: &mut Cursor,
+    depth: usize,
+    spec: &mut Specificity,
+    (nests, part): (bool, bool),
+) -> Option<Vec<PseudoClass>> {
     let mut states = Vec::new();
     while matches!(c.peek(), Some(Token::Colon)) {
+        if nests && matches!(c.peek_ahead(1), Some(Token::Colon)) {
+            break;
+        }
         match parse_pseudo(c, spec, depth, Scope::State)? {
             Pseudo::Class(
                 pc @ (PseudoClass::Hover
@@ -747,10 +792,14 @@ fn parse_states(c: &mut Cursor, depth: usize, spec: &mut Specificity) -> Option<
                 | PseudoClass::FocusVisible
                 | PseudoClass::FocusWithin
                 | PseudoClass::Active
+                | PseudoClass::State(_)
                 | PseudoClass::Not(_)
                 | PseudoClass::Is(_)
                 | PseudoClass::Where(_)),
             ) => states.push(pc),
+            Pseudo::Class(
+                pc @ (PseudoClass::Dir(_) | PseudoClass::Lang(_) | PseudoClass::Defined),
+            ) if part => states.push(pc),
             _ => return None,
         }
     }
@@ -1037,6 +1086,7 @@ fn parse_pseudo(
                 "popover-open" => PseudoClass::PopoverOpen,
                 "interest-source" => PseudoClass::InterestSource,
                 "interest-target" => PseudoClass::InterestTarget,
+                "defined" => PseudoClass::Defined,
                 _ => return None,
             };
             c.advance();
@@ -1084,6 +1134,19 @@ fn parse_pseudo(
                     c.skip_ws();
                     *spec += Specificity(0, 1, 0);
                     PseudoClass::Dir(value)
+                }
+                // `:state(ident)`, its identifier as written (CSS Custom
+                // State, D70).
+                "state" => {
+                    c.skip_ws();
+                    let Some(Token::Ident(value)) = c.peek() else {
+                        return None;
+                    };
+                    let value = value.clone();
+                    c.advance();
+                    c.skip_ws();
+                    *spec += Specificity(0, 1, 0);
+                    PseudoClass::State(value)
                 }
                 "nth-child" => {
                     let (a, b, of) = parse_nth(c, true, depth)?;

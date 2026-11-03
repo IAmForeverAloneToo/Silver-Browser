@@ -894,8 +894,17 @@ impl DocumentHost {
                 let Some(computed) = self.computed.as_ref() else {
                     return Ok(Vec::new());
                 };
-                let Some(frames) = computed.sheets.keyframes_named(&name, &self.window.media)
-                else {
+                // The name is the tree's whose rule gave it (D69).
+                let tree = base
+                    .as_ref()
+                    .and_then(|base| base.motion.as_deref())
+                    .and_then(|motion| motion.animation_names_tree);
+                let Some(frames) = computed.sheets.keyframes_named(
+                    &self.document,
+                    tree,
+                    &name,
+                    &self.window.media,
+                ) else {
                     return Ok(Vec::new());
                 };
                 let base = base.unwrap_or_default();
