@@ -314,10 +314,12 @@ pub(crate) fn hit(
         match step {
             // An inert box, and what is inside it, is passed over
             // (M22.1); a hidden box, but not what is visible in it
-            // (D56).
+            // (D56); and one of `pointer-events: none`, but not what in
+            // it says otherwise (gap batch H): a popover's backdrop.
             Step::Box { fragment, .. } | Step::Text { fragment, .. }
                 if fragment.style.inert
-                    || fragment.style.visibility != style::computed::Visibility::Visible => {}
+                    || fragment.style.visibility != style::computed::Visibility::Visible
+                    || fragment.style.pointer_events == style::computed::PointerEvents::None => {}
             Step::Box { fragment, rect, .. } => {
                 // A rounded box is hit inside its corners' curves.
                 let (px, py) = points[points.len() - 1];

@@ -436,15 +436,9 @@ pub fn user_validity(document: &Document, element: NodeId) -> bool {
 
 /// The candidates `form` owns, in tree order.
 fn candidates(document: &Document, form: NodeId) -> Vec<NodeId> {
-    let root = document.ancestors(form).last().unwrap_or(form);
-    document
-        .subtree(root)
-        .filter(|&node| {
-            forms::is_submittable(document, node)
-                && forms::form_owner(document, node) == Some(form)
-                && will_validate(document, node)
-        })
-        .collect()
+    forms::owned_by(document, form, |node| {
+        forms::is_submittable(document, node) && will_validate(document, node)
+    })
 }
 
 /// The controls of `form` that fail their constraints, in tree order

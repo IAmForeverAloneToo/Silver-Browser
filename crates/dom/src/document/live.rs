@@ -83,6 +83,14 @@ pub(super) struct Live {
     pub(super) cdata: std::collections::HashSet<NodeId>,
     /// The shadow roots and their slots' assignments (D68).
     pub(super) shadows: super::shadow::Shadows,
+    /// The top layer, the showing popovers, the open dialogs and the
+    /// close watchers (gap batch H).
+    pub(super) top_layer: super::top_layer::TopLayer,
+    /// The elements scripts set for element-reflecting attributes, by
+    /// element and attribute (gap batch H).
+    pub(super) references: HashMap<(NodeId, Box<str>), Vec<NodeId>>,
+    /// The `details` elements' toggles owed (gap batch H).
+    pub(super) details: super::details::DetailsState,
 }
 
 impl Live {

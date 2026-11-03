@@ -86,6 +86,7 @@ pub(super) fn value(
         "place-content" => pair("align-content", "justify-content"),
         "place-items" => pair("align-items", "justify-items"),
         "place-self" => pair("align-self", "justify-self"),
+        "interest-delay" => pair("interest-delay-start", "interest-delay-end"),
         "overflow" => pair("overflow-x", "overflow-y"),
         // The name, and the type after a `/` but for `normal` (D72).
         "container" => {

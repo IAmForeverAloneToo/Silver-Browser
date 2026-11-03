@@ -153,6 +153,7 @@ mod tables_tests;
 #[cfg(test)]
 mod testing;
 mod timelines;
+mod top_layer;
 mod view;
 mod web_fonts;
 mod webaudio;
@@ -702,6 +703,9 @@ struct Shown {
     /// began in while a button is held (M33.2).
     pointer_frame: Option<NodeId>,
     pressed_frame: Option<NodeId>,
+    /// What the user's light dismiss, close requests and interest
+    /// invokers keep (gap batch H).
+    overlays: top_layer::Overlays,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -783,6 +787,7 @@ impl Shown {
             frames: HashMap::new(),
             pointer_frame: None,
             pressed_frame: None,
+            overlays: top_layer::Overlays::default(),
         }
     }
 
@@ -828,6 +833,30 @@ impl Shown {
             window,
         };
         self.scripts.dispatch(&mut lent, target, event)
+    }
+
+    /// Runs one of the top layer's tasks in this document (gap batch H),
+    /// with what the run needs lent: its answer, `None` when no realm
+    /// runs it.
+    fn run_top_layer_task(
+        &mut self,
+        network: &mut loader::Network,
+        window: scripts::WindowEnv,
+        ready: scripts::ReadyState,
+        task: js::Task,
+    ) -> Option<bool> {
+        let mut lent = scripts::Lent {
+            document: &mut self.document,
+            images: None,
+            animations: Some(self.animations.get_mut()),
+            styled: Some(&mut self.styled),
+            page: &mut self.page,
+            parser: self.parsing.as_mut().map(|parsing| &mut parsing.load),
+            network,
+            ready,
+            window,
+        };
+        self.scripts.run_top_layer_task(&mut lent, &task)
     }
 
     /// Tells the animations this document's scripts hold what a frame's
@@ -2546,10 +2575,12 @@ impl Engine {
         }
         self.keyboard = false;
         // The user's activation, which lets a script open a tab (M37)
-        // and start its sound (M40).
+        // and start its sound (M40), and a dialog keep itself open
+        // against an Escape (gap batch H).
         let now = self.now();
         frames::lock(&self.frame.tree).activate(now);
         self.shown.scripts.audio_activated();
+        self.note_activation();
         // An open list takes the press (M26.8).
         if self.popup_press(x, y) {
             self.buttons |= button.bit();
@@ -2577,9 +2608,13 @@ impl Engine {
             self.set_flag(ElementState::ACTIVE, chain);
         }
         let Some(target) = target else {
-            // Past the root's box: the viewport takes the focus.
+            // Past the root's box: the viewport takes the focus, and the
+            // press light dismisses as one on the root would.
             if matches!(button, Button::Primary | Button::Secondary) {
                 self.focus(None, false, false);
+            }
+            if let Some(root) = self.shown.document.document_element() {
+                self.light_dismiss(root, false, x, y);
             }
             return;
         };
@@ -2593,6 +2628,10 @@ impl Engine {
         );
         if self.fire(js::Target::Node(scripts::handle(target)), event) == Some(true) {
             self.shown.no_mouse = true;
+        }
+        // The press's light dismiss, canceled or not (gap batch H).
+        if self.shown.document.contains(target) {
+            self.light_dismiss(target, false, x, y);
         }
         let mut canceled = None;
         if !self.shown.no_mouse && self.shown.document.contains(target) {
@@ -2722,6 +2761,7 @@ impl Engine {
         {
             child.set_window_focus(focused);
         }
+        self.interest_changed();
     }
 
     /// Scrolls an element given the focus into view (M26.6), unless the
@@ -2885,6 +2925,9 @@ impl Engine {
     /// no text control has the focus.
     pub fn key_down(&mut self, key: &Key) -> KeyOutcome {
         self.keyboard = true;
+        if key.key != "Escape" {
+            self.note_activation();
+        }
         let now = self.now();
         frames::lock(&self.frame.tree).activate(now);
         self.shown.scripts.audio_activated();
@@ -2982,6 +3025,11 @@ impl Engine {
                 self.changed = true;
                 return KeyOutcome::Taken;
             }
+        }
+        // An Escape is the user's close request (HTML section 6.13.2, gap
+        // batch H): the topmost dialog or popover closes.
+        if key.key == "Escape" && plain && self.close_request() {
+            return KeyOutcome::Taken;
         }
         let scrolls = self.viewport_takes_user_scrolls();
         let focused = self.shown.document.focused();
@@ -3197,6 +3245,11 @@ impl Engine {
             return;
         }
         let Some(target) = target else {
+            if button == Button::Primary
+                && let Some(root) = self.shown.document.document_element()
+            {
+                self.light_dismiss(root, true, x, y);
+            }
             return;
         };
         let event = self.mouse_event(
@@ -3208,6 +3261,9 @@ impl Engine {
             None,
         );
         self.fire(js::Target::Node(scripts::handle(target)), event);
+        if button == Button::Primary && self.shown.document.contains(target) {
+            self.light_dismiss(target, true, x, y);
+        }
         if !no_mouse && self.shown.document.contains(target) {
             let event = self.mouse_event(
                 "MouseEvent",
@@ -3525,7 +3581,7 @@ impl Engine {
                         && !dom::forms::actually_disabled(document, n)
                 }
                 Some("label") => dom::forms::labeled_control(document, n).is_some(),
-                _ => false,
+                _ => top_layer::is_invoker(document, n),
             });
         let Some(activator) = activator else {
             return;
@@ -3541,6 +3597,11 @@ impl Engine {
             }
             return;
         }
+        // A button's command or popover target (gap batch H).
+        if self.invoke(activator) {
+            return;
+        }
+        let document = &self.shown.document;
         match document.tag(activator) {
             Some("input") => {
                 let checked = dom::forms::checkedness(document, activator);
@@ -3607,6 +3668,7 @@ impl Engine {
         if !changes.is_empty() {
             self.document_changed(changes);
         }
+        self.interest_changed();
     }
 
     /// `:target` (M26.4): the element the document's URL's fragment
@@ -4044,6 +4106,11 @@ impl Engine {
                 self.content_loaded();
                 continue;
             }
+            // An interest invoker's delay passed (gap batch H).
+            if self.interest_due().is_some_and(|due| due <= now) {
+                self.run_interest();
+                continue;
+            }
             let shown = self.shown_task_at().filter(|due| *due <= now);
             let incoming = self
                 .incoming_scripts()
@@ -4128,7 +4195,7 @@ impl Engine {
         let frames = self
             .frames_next_task_at()
             .or_else(|| self.frame_tasks_waiting().then_some(Duration::ZERO));
-        [shown, incoming, flush, events, frames]
+        [shown, incoming, flush, events, frames, self.interest_due()]
             .into_iter()
             .flatten()
             .min()
@@ -6473,6 +6540,8 @@ impl Engine {
         if let Some(node) = self.shown.scripts.take_scroll() {
             self.scroll_focus_into_view(node);
         }
+        // A script's focus reaches interest invokers as the user's does.
+        self.interest_changed();
         // A sheet a script changed through the CSSOM (D66).
         if self.shown.page.take_cssom_edited() {
             self.sheets_changed();
@@ -6523,6 +6592,12 @@ impl Engine {
         }
         if let Some(notice) = self.shown.scripts.take_notice() {
             self.notice = Some(notice);
+        }
+        // A drop-down's `showPicker()` (gap batch H): its list shown.
+        if let Some(select) = self.shown.scripts.take_picker()
+            && self.shown.document.contains(select)
+        {
+            self.open_popup(select, false);
         }
         // `document.open()` stops a navigation under way (HTML section
         // 8.4.2.1); one its scripts ask for after it goes on.
@@ -9285,6 +9360,8 @@ fn key_clicks(document: &Document, element: NodeId, space: bool) -> bool {
             "checkbox" | "radio" => space,
             _ => false,
         },
+        // The summary of its `details`, as a button (gap batch H).
+        Some("summary") => document.summary_details(element).is_some(),
         _ => false,
     }
 }

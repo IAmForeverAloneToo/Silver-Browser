@@ -271,6 +271,7 @@ impl Tree {
                 Answer::Numbers(numbers)
             }
             Call::TakeSlotChanges => Answer::Nodes(Vec::new()),
+            Call::TakeDetailsToggles => Answer::Pins(Vec::new()),
             // A link, the tests' only element with an activation
             // behaviour (M26).
             Call::Activator(h) => {

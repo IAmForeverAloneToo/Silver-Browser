@@ -3036,12 +3036,12 @@ Deferred from the milestones above, each with what it waits on:
        M26.
 - [ ] G64 A validation message beside its control, as the reference
        browser draws it; the status bubble says it now. Found at M26.
-- [ ] G65 Observers and idle callbacks: `IntersectionObserver`,
+- [x] G65 Observers and idle callbacks: `IntersectionObserver`,
        `ResizeObserver`, `requestIdleCallback` (`MutationObserver` is
        G49's); a `dialog` form's method. Found at M26.
        `requestIdleCallback`, `ResizeObserver` and
        `IntersectionObserver` done in gap batch A (D45); the `dialog`
-       form's method remains.
+       form's method done in gap batch H, with the top layer.
 - [x] G66 DOM's `moveBefore`, a move that keeps a node's state. Found at
        M26, by a crashtest that threw on it. Done in gap batch D (D59).
 - [ ] G67 Streams: `ReadableStream` and the rest of the Streams Standard,

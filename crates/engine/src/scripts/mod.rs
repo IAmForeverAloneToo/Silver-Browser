@@ -854,6 +854,8 @@ pub(crate) struct Scripts {
     scrolls: Vec<ScriptScroll>,
     /// What a script's validation reported, for the notice (M26.9b).
     notice: Option<String>,
+    /// The drop-down whose list a script asked to show (gap batch H).
+    picker: Option<NodeId>,
     /// The events to fire at elements when its scripts next run (M26):
     /// a script element's `error` for a `src` that cannot be fetched.
     events: VecDeque<(NodeId, &'static str)>,
@@ -929,6 +931,7 @@ impl Scripts {
             scroll_to: None,
             scrolls: Vec::new(),
             notice: None,
+            picker: None,
             aborted: false,
             navigation: None,
             history: Vec::new(),
@@ -1022,6 +1025,11 @@ impl Scripts {
     /// validation said since this was last asked (M26.9b).
     pub(crate) fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
+    }
+
+    /// The drop-down whose list a script asked to show, if one did.
+    pub(crate) fn take_picker(&mut self) -> Option<NodeId> {
+        self.picker.take()
     }
 
     /// Prepares the `script` element the parser has just closed (HTML
@@ -1861,6 +1869,23 @@ impl Scripts {
         Some(self.enter(lent, &js::Task::Dispatch { target, event }, 0))
     }
 
+    /// Runs one of the top layer's tasks (gap batch H): a realm made for
+    /// it, as for a dispatch, when the document's handlers need one; its
+    /// answer, `None` when no realm runs it.
+    pub(crate) fn run_top_layer_task(
+        &mut self,
+        lent: &mut Lent<'_>,
+        task: &js::Task,
+    ) -> Option<bool> {
+        if self.realm.is_none()
+            && (!has_handlers(lent.document, &mut self.handlers)
+                || !self.ensure_realm(lent.page.is_secure_context()))
+        {
+            return None;
+        }
+        Some(self.enter(lent, task, 0))
+    }
+
     /// Whether an animation frame callback waits for the next frame.
     pub(crate) fn wants_frame(&self) -> bool {
         self.host.frame_wanted && !self.stopped
@@ -2066,6 +2091,9 @@ impl Scripts {
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
+        if outputs.picker.is_some() {
+            self.picker = outputs.picker;
+        }
         self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
         if outputs.navigation.is_some() {
             self.navigation = outputs.navigation;
@@ -2189,6 +2217,9 @@ impl Scripts {
         self.scrolls.extend(outputs.scrolls);
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
+        }
+        if outputs.picker.is_some() {
+            self.picker = outputs.picker;
         }
         self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
         if outputs.navigation.is_some() {
@@ -2892,6 +2923,7 @@ const ELEMENT_HANDLERS: &[&str] = &[
     "change",
     "click",
     "close",
+    "command",
     "contextlost",
     "contextmenu",
     "contextrestored",

@@ -203,6 +203,11 @@ impl crate::Engine {
         if !document.is_inclusive_ancestor(document.root(), form) {
             return;
         }
+        // The `dialog` method closes the form's dialog (gap batch H).
+        if self.submit_to_dialog(form, submitter) {
+            return;
+        }
+        let document = &self.shown.document;
         let seed = document.version() ^ (self.clock)().as_nanos() as u64;
         let Some(submission) = plan(document, &self.shown.page, form, submitter, seed) else {
             return;

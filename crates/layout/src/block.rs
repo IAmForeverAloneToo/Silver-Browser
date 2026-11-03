@@ -3207,8 +3207,13 @@ fn layout_children<'a>(
                 // Out of flow, waiting for its containing block: its
                 // static position is the flow position it is met at,
                 // after the margins resolved so far (as a self-collapsing
-                // box's top edge is), at the content box's left.
-                let flow_y = if still_leading {
+                // box's top edge is), at the content box's left. A box
+                // of the top layer, at the top level, is at the initial
+                // containing block's top (CSS Position 4 section 4.1), as
+                // the reference browser has it.
+                let flow_y = if child.style.top_layer {
+                    0.0
+                } else if still_leading {
                     if top_resolved { leading.resolve() } else { 0.0 }
                 } else {
                     y + pending.resolve()
@@ -3386,6 +3391,84 @@ mod tests {
         assert_eq!(sizes.get(node("p")).map(|(w, _)| w), Some(170.0));
         assert_eq!(sizes.get(node("o")), None, "not a container");
         assert!(establishes_bfc(&frame("p").style));
+    }
+
+    #[test]
+    fn the_top_layer_lays_out_against_the_viewport_out_of_its_place() {
+        // <html><body><p>a</p><section><dialog>dlg</dialog>
+        // <div popover>pop</div></section></body></html>, the section
+        // relative and 100px to the right: the dialog shown modal and
+        // the popover shown are in the top layer, laid out against the
+        // viewport whatever holds them, each after its backdrop; the
+        // popover with no insets at the top left (the reference
+        // browser's static position there).
+        let mut document = dom::Document::from_node(&dom::Node::document(vec![
+            Element::new("html")
+                .push(
+                    Element::new("body").push(Element::new("p").text("a")).push(
+                        Element::new("section")
+                            .push(Element::new("dialog").attr("open", "").text("dlg"))
+                            .push(Element::new("div").attr("popover", "").text("pop")),
+                    ),
+                )
+                .into(),
+        ]));
+        let find = |document: &dom::Document, tag: &str| {
+            document
+                .subtree(document.root())
+                .find(|&n| document.tag(n) == Some(tag))
+                .unwrap()
+        };
+        let dialog = find(&document, "dialog");
+        let popover = find(&document, "div");
+        document.open_dialog_state(
+            dialog,
+            dom::Dialog {
+                modal: true,
+                previously_focused: None,
+            },
+        );
+        document.show_popover_state(
+            popover,
+            dom::Popover {
+                mode: dom::PopoverMode::Manual,
+                list: dom::PopoverList::None,
+                invoker: None,
+                previously_focused: None,
+                anchor: None,
+            },
+        );
+        let sheet = css::parse_stylesheet(
+            "section { position: relative; left: 100px } \
+             dialog { width: 200px; height: 100px; border: 0; padding: 0 } \
+             div { inset: auto; margin: 0 }",
+        )
+        .unwrap();
+        let sheets = style::Stylesheets::new(vec![sheet]);
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = crate::build_box_tree(&document, &styles, &recascade);
+        // The section holds nothing: both are boxes at the top level.
+        assert_eq!(boxes.len(), 5, "{boxes:#?}");
+        let laid = layout_document_in(&boxes, VIEWPORT, Some(600.0), &test_fonts());
+        let roots: Vec<(NodeId, bool, [f32; 4])> = laid
+            .roots
+            .iter()
+            .skip(1)
+            .map(|f| (f.node, f.generated.is_some(), [f.x, f.y, f.w, f.h]))
+            .collect();
+        assert_eq!(
+            roots,
+            [
+                (dialog, true, [0.0, 0.0, 800.0, 600.0]),
+                (dialog, false, [300.0, 250.0, 200.0, 100.0]),
+                (popover, true, [0.0, 0.0, 800.0, 600.0]),
+                (popover, false, [0.0, 0.0, roots[3].2[2], roots[3].2[3]]),
+            ]
+        );
+        // A fixed box out of the viewport adds nothing to the page.
+        assert!(laid.height < 600.0);
     }
 
     #[test]

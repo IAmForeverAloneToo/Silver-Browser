@@ -171,6 +171,7 @@ mod text;
 pub mod timelines;
 
 pub use motion::animation_part_texts as motion_animation_parts;
+mod top_layer;
 
 use animated::Animated;
 pub(crate) use images::{is_frame_hint, is_img_hint};
@@ -461,6 +462,8 @@ pub struct PseudoStyles {
     /// `::marker` (M21.6): a list item's alone, whether or not a rule
     /// styles it, none the user agent's.
     pub marker: Option<Arc<ComputedStyle>>,
+    /// `::backdrop` (gap batch H): an element's in the top layer alone.
+    pub backdrop: Option<Arc<ComputedStyle>>,
 }
 
 impl PseudoStyles {
@@ -477,6 +480,7 @@ impl PseudoStyles {
             PseudoElement::FirstLetter => self.first_letter.as_ref(),
             PseudoElement::FirstLine => self.first_line.as_ref(),
             PseudoElement::Marker => self.marker.as_ref(),
+            PseudoElement::Backdrop => self.backdrop.as_ref(),
             PseudoElement::Placeholder
             | PseudoElement::Selection
             | PseudoElement::DetailsContent
@@ -502,17 +506,19 @@ enum Target {
     FirstLetter,
     FirstLine,
     Marker,
+    Backdrop,
 }
 
 impl Target {
     /// The targets in the order [`Matched`] keeps them.
-    const ALL: [Target; 6] = [
+    const ALL: [Target; 7] = [
         Target::Element,
         Target::Before,
         Target::After,
         Target::FirstLetter,
         Target::FirstLine,
         Target::Marker,
+        Target::Backdrop,
     ];
 
     /// Whether `content`'s `normal` computes to `none`: on `::before`
@@ -522,13 +528,14 @@ impl Target {
     }
 
     /// The pseudo-element it is, when its animations run (M22.2): the
-    /// reference browser animates `::before`, `::after` and `::marker`,
-    /// and not `::first-letter` or `::first-line`.
+    /// reference browser animates `::before`, `::after`, `::marker` and
+    /// `::backdrop`, and not `::first-letter` or `::first-line`.
     fn animated(self) -> Option<PseudoElement> {
         match self {
             Target::Before => Some(PseudoElement::Before),
             Target::After => Some(PseudoElement::After),
             Target::Marker => Some(PseudoElement::Marker),
+            Target::Backdrop => Some(PseudoElement::Backdrop),
             Target::Element | Target::FirstLetter | Target::FirstLine => None,
         }
     }
@@ -542,6 +549,7 @@ impl Target {
             PseudoElement::FirstLetter => Some(Target::FirstLetter),
             PseudoElement::FirstLine => Some(Target::FirstLine),
             PseudoElement::Marker => Some(Target::Marker),
+            PseudoElement::Backdrop => Some(Target::Backdrop),
             PseudoElement::Placeholder
             | PseudoElement::Selection
             | PseudoElement::DetailsContent
@@ -654,7 +662,7 @@ impl Target {
             // replaces its content, which the box tree honours, and the
             // rest it ignores.
             Target::Element => true,
-            Target::Before | Target::After => true,
+            Target::Before | Target::After | Target::Backdrop => true,
         }
     }
 }
@@ -2024,6 +2032,7 @@ fn element_style(
     if let Some(lang) = document.attr(element, "lang") {
         set_language(&mut style, lang);
     }
+    top_layer::adjust(document, element, &mut style);
     style
 }
 
@@ -2270,6 +2279,7 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
                 first_letter,
                 first_line,
                 marker,
+                backdrop,
             } = a;
             for (pseudo, a, b) in [
                 (PseudoElement::Before, before, &b.before),
@@ -2277,6 +2287,7 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
                 (PseudoElement::FirstLetter, first_letter, &b.first_letter),
                 (PseudoElement::FirstLine, first_line, &b.first_line),
                 (PseudoElement::Marker, marker, &b.marker),
+                (PseudoElement::Backdrop, backdrop, &b.backdrop),
             ] {
                 match (a, b) {
                     (None, None) => {}
@@ -2791,10 +2802,19 @@ impl<'a> Cascader<'a> {
         // run them, and those of the others cancelled.
         let pseudo = |target: Target| {
             let applied = matched.of(target);
-            let styled = if target == Target::Marker {
-                style.display.is_list_item()
-            } else {
-                !applied.is_empty()
+            let styled = match target {
+                Target::Marker => style.display.is_list_item(),
+                // A `::backdrop` is an element's in the top layer alone
+                // (CSS Position 4 section 4.1), which makes its box; one a
+                // page styles is computed out of it too, for
+                // `getComputedStyle`, as the reference browser computes it.
+                Target::Backdrop => {
+                    (!unrendered && self.document.in_top_layer(element))
+                        || applied
+                            .iter()
+                            .any(|a| a.tier != tier(TierBase::UserAgent, false))
+                }
+                _ => !applied.is_empty(),
             };
             let pseudo = target.animated();
             if !styled {
@@ -2807,7 +2827,10 @@ impl<'a> Cascader<'a> {
                 }
                 return None;
             }
-            let base = compute_style(applied, &style, target, &pseudo_resolution, None, None);
+            let mut base = compute_style(applied, &style, target, &pseudo_resolution, None, None);
+            if target == Target::Backdrop {
+                top_layer::adjust_backdrop(&mut base);
+            }
             let Some(pseudo) = pseudo else {
                 return Some(base);
             };
@@ -2858,6 +2881,7 @@ impl<'a> Cascader<'a> {
             first_letter: pseudo(Target::FirstLetter).map(Arc::new),
             first_line: pseudo(Target::FirstLine).map(Arc::new),
             marker: pseudo(Target::Marker).map(Arc::new),
+            backdrop: pseudo(Target::Backdrop).map(Arc::new),
         };
         let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
         // The kept base style itself when nothing changed it, so that the
@@ -2892,6 +2916,16 @@ impl<'a> Cascader<'a> {
         // A MathML element's style is its name's and its place's as well
         // (D77): none is made of its declarations alone.
         if self.document.namespace(element) == Some(&dom::Namespace::MathMl) {
+            return None;
+        }
+        // Nor is the style of an element in the top layer, of one with an
+        // `inert` attribute or of the root while a modal dialog blocks the
+        // document: their place makes it (gap batch H).
+        if self.document.in_top_layer(element)
+            || self.document.attr(element, "inert").is_some()
+            || (self.document.document_element() == Some(element)
+                && self.document.topmost_modal().is_some())
+        {
             return None;
         }
         let mut declarations = Vec::new();
@@ -3361,7 +3395,7 @@ pub(crate) struct ParsedRule<'s> {
 /// pseudo-elements, unsorted, by [`Target`].
 #[derive(Default)]
 struct Matched<'a> {
-    targets: [Vec<Applied<'a>>; 6],
+    targets: [Vec<Applied<'a>>; 7],
 }
 
 impl<'a> Matched<'a> {
@@ -3838,7 +3872,7 @@ fn collect_from_sheet<'a>(
         // for the element and for each of its pseudo-elements, and of
         // those the nearest scoping root (Cascade 6 section 6.5).
         let list: &'a SelectorList = rule.list;
-        let mut best: [Option<(Specificity, Reverse<u32>)>; 6] = [None; 6];
+        let mut best: [Option<(Specificity, Reverse<u32>)>; 7] = [None; 7];
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
             let target = match &selector.pseudo_element {
@@ -6109,6 +6143,30 @@ fn apply_declaration(
             };
             set_effects(style, smooth, |e, v| e.scroll_behavior_smooth = v)
         }
+        // CSS UI 4 section 7.1 and HTML section 6.14 (gap batch H).
+        "interactivity" => set(
+            &mut style.interactivity_inert,
+            top_layer::parse_interactivity(value),
+        ),
+        "pointer-events" => set(
+            &mut style.pointer_events,
+            top_layer::parse_pointer_events(value),
+        ),
+        "interest-delay-start" => set_effects(
+            style,
+            top_layer::parse_interest_delay(value, bases),
+            |e, v| e.interest_delay[0] = v,
+        ),
+        "interest-delay-end" => set_effects(
+            style,
+            top_layer::parse_interest_delay(value, bases),
+            |e, v| e.interest_delay[1] = v,
+        ),
+        "interest-delay" => set_effects(
+            style,
+            top_layer::parse_interest_delay_shorthand(value, bases),
+            |e, v| e.interest_delay = v,
+        ),
         // Scroll Snap 1 section 6: lengths, and `auto` or lengths and
         // percentages not below zero.
         "scroll-margin" => {
@@ -6855,6 +6913,8 @@ fn is_inherited(name: &str) -> bool {
             | "overflow-wrap"
             | "word-break"
             | "visibility"
+            | "interactivity"
+            | "pointer-events"
             | "text-shadow"
             | "letter-spacing"
             | "word-spacing"
@@ -7281,6 +7341,15 @@ fn apply_css_wide(
         "scroll-behavior" => copy_effects(style, src, |e, s| {
             e.scroll_behavior_smooth = s.scroll_behavior_smooth
         }),
+        "interactivity" => style.interactivity_inert = src.interactivity_inert,
+        "pointer-events" => style.pointer_events = src.pointer_events,
+        "interest-delay-start" => {
+            copy_effects(style, src, |e, s| e.interest_delay[0] = s.interest_delay[0])
+        }
+        "interest-delay-end" => {
+            copy_effects(style, src, |e, s| e.interest_delay[1] = s.interest_delay[1])
+        }
+        "interest-delay" => copy_effects(style, src, |e, s| e.interest_delay = s.interest_delay),
         "scroll-margin" => copy_effects(style, src, |e, s| e.scroll_margin = s.scroll_margin),
         "scroll-padding" => copy_effects(style, src, |e, s| {
             e.scroll_padding = s.scroll_padding.clone()

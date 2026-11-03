@@ -37,6 +37,9 @@ pub(crate) fn natively_focusable(document: &Document, element: NodeId) -> bool {
         // A media element with controls, whose keys play, pause and skip
         // (M40), as the reference's.
         Some("video" | "audio") => document.attr(element, "controls").is_some(),
+        // The summary of its `details`, which it opens and closes (gap
+        // batch H).
+        Some("summary") => document.summary_details(element).is_some(),
         _ => false,
     }
 }
@@ -44,15 +47,38 @@ pub(crate) fn natively_focusable(document: &Document, element: NodeId) -> bool {
 /// Whether the element is a focusable area (HTML section 6.6.2): one
 /// that can take the focus as it is, or has a `tabindex`, and is being
 /// rendered, by `styles`, which say it is when they are not given; a
-/// disabled control does not take it whatever its `tabindex`.
+/// disabled control does not take it whatever its `tabindex`, nor does
+/// an inert element (gap batch H). An open `dialog` takes it too, as the
+/// reference browser's does, though neither Tab nor a click gives it
+/// ([`open_dialog_alone`]).
 pub(crate) fn focusable(document: &Document, styles: Option<&Styles>, element: NodeId) -> bool {
     if !document.is_element(element) || !rendered(document, styles, element) {
+        return false;
+    }
+    if styles
+        .and_then(|styles| styles.get(element))
+        .is_some_and(|style| style.inert)
+    {
         return false;
     }
     if forms::can_be_disabled(document, element) && forms::actually_disabled(document, element) {
         return false;
     }
-    natively_focusable(document, element) || tab_index(document, element).is_some()
+    natively_focusable(document, element)
+        || tab_index(document, element).is_some()
+        || is_open_dialog(document, element)
+}
+
+/// Whether the element is a `dialog` with an `open` attribute.
+fn is_open_dialog(document: &Document, element: NodeId) -> bool {
+    document.tag(element) == Some("dialog") && document.attr(element, "open").is_some()
+}
+
+/// Whether the element is focusable only as an open dialog, with no
+/// `tabindex`: what the dialog focusing steps and `focus()` focus, and
+/// Tab and a click pass over.
+fn open_dialog_alone(document: &Document, element: NodeId) -> bool {
+    is_open_dialog(document, element) && tab_index(document, element).is_none()
 }
 
 /// Whether the element is a focusable area that takes the focus itself:
@@ -100,37 +126,78 @@ fn rendered(document: &Document, styles: Option<&Styles>, element: NodeId) -> bo
         })
 }
 
-/// HTML's "focus delegate" of `host` (section 6.6.3): none unless it is
-/// a shadow host that delegates focus; else the first element of its
-/// shadow tree with `autofocus` that is a focusable area or delegates to
-/// one, failing which the first that is or does, in tree order.
+/// HTML's "focus delegate" of `target` (section 6.6.3), for a shadow host
+/// that delegates focus (D68) and for a dialog (section 4.11.4, gap batch
+/// H); none for another element, or a host that does not delegate. Where
+/// it looks is the host's shadow tree, or the dialog's own subtree: the
+/// first element there with `autofocus` that is a focusable area or
+/// delegates to one, failing which the first that is or does, in tree
+/// order, as the reference browser finds them (a dialog's focusable
+/// areas whatever their `tabindex`).
 pub(crate) fn focus_delegate(
     document: &Document,
     styles: Option<&Styles>,
-    host: NodeId,
+    target: NodeId,
 ) -> Option<NodeId> {
-    if !delegates_focus(document, host) {
-        return None;
-    }
-    let root = document.shadow_root(host)?;
-    let elements: Vec<NodeId> = document
+    let root = match document.shadow_root(target) {
+        Some(root) if delegates_focus(document, target) => root,
+        Some(_) => return None,
+        None if document.tag(target) == Some("dialog") => target,
+        None => return None,
+    };
+    let elements = elements_under(document, root);
+    autofocus_among(document, styles, &elements).or_else(|| {
+        elements
+            .iter()
+            .find_map(|&element| candidate(document, styles, element))
+    })
+}
+
+/// HTML's "autofocus delegate" of `target`: the first element in its
+/// subtree (its shadow tree, for a host) with `autofocus` that is a
+/// focusable area or delegates focus to one: what a popover shown
+/// focuses (section 6.12, gap batch H).
+pub(crate) fn autofocus_delegate(
+    document: &Document,
+    styles: Option<&Styles>,
+    target: NodeId,
+) -> Option<NodeId> {
+    let root = document.shadow_root(target).unwrap_or(target);
+    autofocus_among(document, styles, &elements_under(document, root))
+}
+
+/// The elements under `root`, `root` aside, in tree order.
+fn elements_under(document: &Document, root: NodeId) -> Vec<NodeId> {
+    document
         .subtree(root)
         .skip(1)
         .filter(|&node| document.is_element(node))
-        .collect();
-    // A nested host's delegate is searched for in its own tree, which the
-    // DOM's depth cap bounds.
-    let candidate = |element: NodeId| -> Option<NodeId> {
-        if focus_area(document, styles, element) {
-            return Some(element);
-        }
-        focus_delegate(document, styles, element)
-    };
+        .collect()
+}
+
+/// The first of `elements` with `autofocus` that is a [`candidate`].
+fn autofocus_among(
+    document: &Document,
+    styles: Option<&Styles>,
+    elements: &[NodeId],
+) -> Option<NodeId> {
     elements
         .iter()
         .filter(|&&element| document.attr(element, "autofocus").is_some())
-        .find_map(|&element| candidate(element))
-        .or_else(|| elements.iter().find_map(|&element| candidate(element)))
+        .find_map(|&element| candidate(document, styles, element))
+}
+
+/// `element` when it is a focusable area that takes the focus itself,
+/// else its own focus delegate: a nested host's is searched for in its
+/// own tree, which the DOM's depth cap bounds.
+fn candidate(document: &Document, styles: Option<&Styles>, element: NodeId) -> Option<NodeId> {
+    if focus_area(document, styles, element) && !open_dialog_alone(document, element) {
+        return Some(element);
+    }
+    if document.shadow_root(element).is_some() {
+        return focus_delegate(document, styles, element);
+    }
+    None
 }
 
 /// The focus navigation scope owner an element belongs to (HTML section
@@ -243,7 +310,9 @@ fn scopes(document: &Document, styles: Option<&Styles>) -> HashMap<NodeId, Vec<N
         }
         let owner_kind = document.shadow_root(node).is_some()
             || (document.is_slot(node) && document.is_shadow_root(document.root_of(node)));
-        if !owner_kind && !focusable(document, styles, node) {
+        // An open dialog is focusable, but not by Tab (gap batch H).
+        if !owner_kind && (!focusable(document, styles, node) || open_dialog_alone(document, node))
+        {
             continue;
         }
         if tab_index(document, node).is_some_and(|n| n < 0) {
@@ -308,7 +377,10 @@ pub(crate) fn click_focus_target(
 ) -> Option<NodeId> {
     let found = std::iter::once(node)
         .chain(document.flat_ancestors(node))
-        .find(|&node| delegates_focus(document, node) || focusable(document, styles, node))?;
+        .find(|&node| {
+            delegates_focus(document, node)
+                || (focusable(document, styles, node) && !open_dialog_alone(document, node))
+        })?;
     if !delegates_focus(document, found) {
         return Some(found);
     }

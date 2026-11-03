@@ -298,7 +298,7 @@ const BORDER_BLOCK: [&str; 6] = [
 
 /// The shorthands a declaration block keeps as their longhands (G50),
 /// each with its longhands in their canonical order.
-const SHORTHANDS: [(&str, &[&str]); 48] = [
+const SHORTHANDS: [(&str, &[&str]); 49] = [
     ("font", &FONT_LONGHANDS),
     ("font-variant", &style::VARIANT_LONGHANDS),
     ("margin", &MARGIN),
@@ -374,6 +374,10 @@ const SHORTHANDS: [(&str, &[&str]); 48] = [
             "timeline-trigger-active-range-start",
             "timeline-trigger-active-range-end",
         ],
+    ),
+    (
+        "interest-delay",
+        &["interest-delay-start", "interest-delay-end"],
     ),
 ];
 
@@ -654,7 +658,7 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
             }
             return pair(given);
         }
-        "gap" => {
+        "gap" | "interest-delay" => {
             let v = components(value);
             return match v.as_slice() {
                 [a] => pair(vec![a.clone(), a.clone()]),
@@ -872,7 +876,7 @@ pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
         }
         "outline" => initials_left_out(&values, &["currentcolor", "none", "medium"], "none"),
         "list-style" => initials_left_out(&values, &["outside", "none", "disc"], "outside"),
-        "gap" | "overflow" => {
+        "gap" | "overflow" | "interest-delay" => {
             if values[0] == values[1] {
                 values[0].to_owned()
             } else {

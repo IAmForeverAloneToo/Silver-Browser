@@ -402,8 +402,8 @@ const MAX_IMPORT_DEPTH: usize = 16;
 /// Elements that make no box here, or not the box the tests mean.
 const NO_BOX: &[&str] = &[
     "canvas", "iframe", "frame", "frameset", "object", "embed", "video", "audio", "picture",
-    "math", "fieldset", "legend", "meter", "progress", "output", "details", "summary", "dialog",
-    "marquee", "hr",
+    "math", "fieldset", "legend", "meter", "progress", "output", "details", "summary", "marquee",
+    "hr",
 ];
 
 /// SVG's elements past v1 (M32, G87), by their local names: a test using

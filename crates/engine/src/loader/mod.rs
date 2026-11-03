@@ -98,6 +98,8 @@ mod task_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod top_layer_tests;
+#[cfg(test)]
 mod validity_tests;
 #[cfg(test)]
 mod web_audio_tests;

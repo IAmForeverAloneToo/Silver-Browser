@@ -823,12 +823,12 @@ impl<'a> Matcher<'a> {
             PseudoClass::Dir(direction) => {
                 direction.is_some_and(|direction| self.direction(element) == direction)
             }
-            // A `details` or `dialog` with `open`; no picker of a `select`
-            // or an `input` is shown as a popup in this engine.
-            PseudoClass::Open => {
-                matches!(document.tag(element), Some("details" | "dialog"))
-                    && document.attr(element, "open").is_some()
-            }
+            // A `details` or `dialog` with `open`; a `select` whose list
+            // is shown, which the engine says by its state (gap batch H).
+            PseudoClass::Open => match document.tag(element) {
+                Some("dialog" | "details") => document.attr(element, "open").is_some(),
+                _ => document.state(element).contains(ElementState::OPEN),
+            },
             PseudoClass::Autofill => false,
             // The user-action pseudo-classes and `:target` read the
             // element's state (M26.4); `:visited` never matches, there
@@ -838,7 +838,11 @@ impl<'a> Matcher<'a> {
             | PseudoClass::FocusVisible
             | PseudoClass::FocusWithin
             | PseudoClass::Active
-            | PseudoClass::Target => state_matches(pc, document.state(element)),
+            | PseudoClass::Target
+            | PseudoClass::Modal
+            | PseudoClass::PopoverOpen
+            | PseudoClass::InterestSource
+            | PseudoClass::InterestTarget => state_matches(pc, document.state(element)),
             PseudoClass::Visited => false,
             // HTML §4.16.3: `a` and `area` elements with an `href`.
             // An SVG `a` with an `href`, or its `xlink:href`, is one too.
@@ -1067,6 +1071,9 @@ impl<'a> Matcher<'a> {
             && crate::invalidation::attached(document, element)
         {
             let owner = self.element_with_id(id)?;
+            // A host stands for its shadow root's reference target (gap
+            // batch H).
+            let owner = document.follow_reference_target(owner)?;
             return (document.tag(owner) == Some("form")).then_some(owner);
         }
         document
@@ -1419,7 +1426,9 @@ fn required(document: &Document, element: NodeId) -> Option<bool> {
 
 /// Whether a state pseudo-class holds for an element in state `flags`
 /// (M26.4): `:hover`, `:active`, `:focus`, `:focus-visible`,
-/// `:focus-within` and `:target` read them. After a pseudo-element, its
+/// `:focus-within` and `:target` read them, and the top layer's `:modal`
+/// and `:popover-open` and the invokers' `:interest-source` and
+/// `:interest-target` (gap batch H). After a pseudo-element, its
 /// user-action states are its originating element's, and `:is()`,
 /// `:where()` and `:not()` of them follow from that.
 fn state_matches(state: &PseudoClass, flags: ElementState) -> bool {
@@ -1440,6 +1449,10 @@ fn state_matches(state: &PseudoClass, flags: ElementState) -> bool {
         PseudoClass::FocusVisible => flags.contains(ElementState::FOCUS_VISIBLE),
         PseudoClass::FocusWithin => flags.contains(ElementState::FOCUS_WITHIN),
         PseudoClass::Target => flags.contains(ElementState::TARGET),
+        PseudoClass::Modal => flags.contains(ElementState::MODAL),
+        PseudoClass::PopoverOpen => flags.contains(ElementState::POPOVER_OPEN),
+        PseudoClass::InterestSource => flags.contains(ElementState::INTEREST_SOURCE),
+        PseudoClass::InterestTarget => flags.contains(ElementState::INTEREST_TARGET),
         PseudoClass::Not(list) => !any(list),
         PseudoClass::Is(list) | PseudoClass::Where(list) => any(list),
         _ => false,

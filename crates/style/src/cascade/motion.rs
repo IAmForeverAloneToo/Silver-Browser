@@ -97,7 +97,7 @@ fn time(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Time> {
 
 /// A `<time [0s,∞]>`: a written negative time is none, and a math
 /// function's is clamped to zero.
-fn duration(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f64> {
+pub(super) fn duration(tokens: &[Token], bases: &LengthBases<'_>) -> Option<f64> {
     let time = time(tokens, bases)?;
     (time.math || time.seconds >= 0.0).then_some(time.seconds.max(0.0))
 }

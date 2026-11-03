@@ -153,6 +153,62 @@ legend { padding-inline: 2px; }
 /* `hidden` (HTML section 15.3.1), and `<center>` and the table's
  * defaults the presentational hints build on (D60). */
 [hidden]:not([hidden=until-found i]) { display: none; }
+
+/* Dialogs and popovers (HTML sections 15.3.4 and 15.3.17, gap batch
+ * H), as the reference browser's sheet has them: a dialog shown is
+ * centred across its containing block, a modal one in the viewport; a
+ * popover shown is centred in the viewport; `::backdrop` covers the
+ * viewport beneath an element in the top layer, which the cascade puts
+ * there. `[inert]` is `interactivity: inert` whatever a page says,
+ * which the cascade sees to. */
+dialog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  border: solid;
+  padding: 1em;
+  background-color: Canvas;
+  color: CanvasText;
+}
+dialog:not([open]) { display: none; }
+dialog:modal {
+  position: fixed;
+  overflow: auto;
+  top: 0;
+  bottom: 0;
+  max-width: calc(100% - 6px - 2em);
+  max-height: calc(100% - 6px - 2em);
+  visibility: visible;
+}
+dialog::backdrop { background-color: rgba(0, 0, 0, 0.1); }
+[popover]:not(:popover-open):not(dialog[open]) { display: none; }
+dialog:popover-open { display: block; }
+[popover] {
+  position: fixed;
+  inset: 0;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  border: solid;
+  padding: 0.25em;
+  overflow: auto;
+  color: CanvasText;
+  background-color: Canvas;
+}
+:popover-open::backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none !important;
+  background-color: transparent;
+}
+::backdrop {
+  display: block;
+  position: fixed;
+  inset: 0;
+}
 center { text-align: -webkit-center; }
 
 /* A slot makes no box (HTML section 15.3.1, gap batch H): its

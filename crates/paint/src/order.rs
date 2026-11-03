@@ -341,9 +341,30 @@ fn order_within<'a>(
         // context; the roots after it — the boxes the initial
         // containing block positions and the fixed ones (M11) — are
         // positioned descendants of the root element that layout moved
-        // out of its subtree, and belong to its stacking context.
+        // out of its subtree, and belong to its stacking context. The
+        // boxes of the top layer among them (CSS Position 4 section 4,
+        // gap batch H) are painted after it, whatever its `z-index`es,
+        // each a stacking context of its own, in the top layer's order,
+        // which is theirs among the roots.
         Some((root, rest)) if matches!(root.kind, FragmentKind::Box) => {
-            walk.stacking(root, initial, rest, Space::FLAT);
+            let (top, rest): (Vec<&Fragment>, Vec<&Fragment>) =
+                rest.iter().partition(|f| f.style.top_layer);
+            walk.stacking(root, initial, &rest, Space::FLAT);
+            for f in top {
+                walk.positioned(Positioned {
+                    f,
+                    containing: initial,
+                    chain: Vec::new(),
+                    ox: 0.0,
+                    oy: 0.0,
+                    ts: 0,
+                    dx: 0.0,
+                    dy: 0.0,
+                    contained: 0,
+                    item: false,
+                    space: Space::FLAT,
+                });
+            }
         }
         // Not a box tree at all: whatever is there, in flow.
         Some(_) => {
@@ -1196,7 +1217,13 @@ impl<'a> Walk<'a, '_> {
     /// `space` is the box's place under its parent's perspective and
     /// in a 3D rendering context (M19.5): a box that establishes one
     /// paints the context's members around its own plane, by depth.
-    fn stacking(&mut self, f: &'a Fragment, containing: Rect, extra: &'a [Fragment], space: Space) {
+    fn stacking(
+        &mut self,
+        f: &'a Fragment,
+        containing: Rect,
+        extra: &[&'a Fragment],
+        space: Space,
+    ) {
         self.shifted(f, containing, |w| {
             // The group the context is (M19): its full matrix in the
             // coordinates of the group around, about the box where the
@@ -1276,7 +1303,16 @@ impl<'a> Walk<'a, '_> {
                     inside,
                 );
             });
-            w.collect(extra, containing, key, &mut positioned, false, Space::FLAT);
+            for f in extra {
+                w.collect(
+                    std::slice::from_ref(*f),
+                    containing,
+                    key,
+                    &mut positioned,
+                    false,
+                    Space::FLAT,
+                );
+            }
             // The boxes under other contexts' subtrees that belong to
             // this one (M19).
             positioned.extend(w.adopted.remove(&key).unwrap_or_default());
@@ -3742,6 +3778,96 @@ mod tests {
         assert_eq!(names[names.len() - 1], "endgroup", "{names:?}");
         assert!(names.contains(&"group 3 1".to_string()), "{names:?}");
         assert_eq!(names.iter().filter(|n| n.starts_with("group")).count(), 2);
+    }
+
+    /// `root` laid out at 800px under `css` after `top` names the
+    /// elements, by their numbers, that go into the top layer, in order.
+    fn top_layer_of(root: Element, css: &str, top: &[usize]) -> Laid {
+        let mut document = dom::Document::from_node(&dom::Node::document(vec![root.into()]));
+        let numbered: Vec<NodeId> = document
+            .subtree(document.root())
+            .filter(|&id| id == document.root() || document.is_element(id))
+            .collect();
+        for &n in top {
+            document.add_to_top_layer(numbered[n]);
+        }
+        let sheets = style::Stylesheets::new(vec![css::parse_stylesheet(css).unwrap()]);
+        let context = style::CascadeContext::default();
+        let styles = sheets.cascade(&document, &context);
+        let recascade = sheets.recascader(&document, &styles, &context);
+        let boxes = layout::build_box_tree(&document, &styles, &recascade);
+        let layout = layout::layout_document_in(&boxes, 800.0, Some(600.0), &test_fonts());
+        Laid { document, layout }
+    }
+
+    #[test]
+    fn the_top_layer_paints_after_every_z_index_each_after_its_backdrop() {
+        // <div><p class=z>a</p><div>b<div class=f>f</div></div><div>c</div></div>:
+        // nodes div 1, p 2, div 3, div.f 4, div 5. The p's `z-index` is
+        // the highest; 5 then 3 go into the top layer. Each paints after
+        // the root's stacking context, after its backdrop, in the top
+        // layer's order; the fixed box in 3 with it, not with the root.
+        let layout = top_layer_of(
+            Element::new("div")
+                .push(Element::new("p").attr("class", "z").text("a"))
+                .push(
+                    Element::new("div")
+                        .text("b")
+                        .push(Element::new("div").attr("class", "f").text("f")),
+                )
+                .push(Element::new("div").text("c")),
+            "* { margin: 0 } .z { position: relative; z-index: 2147483647 } \
+             .f { position: fixed; top: 0; z-index: -1 }",
+            &[5, 3],
+        );
+        let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &());
+        let boxes: Vec<String> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Box { fragment, .. } => Some(format!(
+                    "{}{}",
+                    layout.number(fragment.node),
+                    if fragment.generated.is_some() {
+                        " backdrop"
+                    } else {
+                        ""
+                    }
+                )),
+                Step::Text { fragment, .. } => match &fragment.kind {
+                    FragmentKind::Text(t) => Some(format!("text {t}")),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            boxes,
+            [
+                "1",
+                "2",
+                "text a",
+                "5 backdrop",
+                "5",
+                "text c",
+                "3 backdrop",
+                "3",
+                "4",
+                "text f",
+                "text b"
+            ]
+        );
+        // The top layer's boxes are positioned against the initial
+        // containing block, out of their place in the flow: the root
+        // holds the p alone.
+        let root = &layout.roots[0];
+        assert_eq!(root.children.len(), 1);
+        let five = layout
+            .roots
+            .iter()
+            .find(|f| layout.number(f.node) == 5 && f.generated.is_none())
+            .expect("a root");
+        assert!(five.style.top_layer);
+        assert_eq!((five.x, five.y), (0.0, 0.0));
     }
 
     #[test]

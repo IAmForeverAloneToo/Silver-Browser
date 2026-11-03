@@ -19,12 +19,13 @@ mod microsyntax;
 pub mod validity;
 
 pub use document::{
-    Boundary, Change, Children, CompatMode, Document, DocumentFacts, DocumentInterface,
-    ElementState, FlatChildren, IteratorState, LiveRange, MAX_DATA_BYTES, MAX_DEPTH,
-    MAX_GENERATION, MAX_ITERATORS, MAX_JOURNAL, MAX_NAMED_CHANGES, MAX_NODES, MAX_OBSERVED,
-    MAX_RANGES, Mutated, Mutation, MutationError, NodeData, NodeId, ShadowRootInit, ShadowRootMode,
-    SlotAssignmentMode, Subtree, attribute_local_name, implied_attribute_namespace,
-    is_valid_custom_element_name,
+    Boundary, Change, Children, CompatMode, Dialog, Document, DocumentFacts, DocumentInterface,
+    ELEMENT_REFERENCES, ElementState, FlatChildren, IteratorState, LiveRange, MAX_DATA_BYTES,
+    MAX_DEPTH, MAX_DETAILS_TOGGLES, MAX_EXPLICIT_ELEMENTS, MAX_GENERATION, MAX_ITERATORS,
+    MAX_JOURNAL, MAX_NAMED_CHANGES, MAX_NODES, MAX_OBSERVED, MAX_RANGES, MAX_TOP_LAYER, Mutated,
+    Mutation, MutationError, NodeData, NodeId, Popover, PopoverList, PopoverMode, ShadowRootInit,
+    ShadowRootMode, SlotAssignmentMode, Subtree, Watcher, attribute_local_name,
+    implied_attribute_namespace, is_valid_custom_element_name,
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 

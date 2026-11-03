@@ -25,7 +25,7 @@
 //! * one pseudo-element at the end of a selector (M16,
 //!   docs/design/selectors-pseudo.md): `::before`, `::after`,
 //!   `::first-letter` and `::first-line`, also with one colon;
-//!   `::marker`, `::placeholder` and `::selection`; and any
+//!   `::marker`, `::placeholder`, `::selection` and `::backdrop`; and any
 //!   `::-webkit-` name that is not a function, which never matches
 //!   (selectors-4 Appendix B). Only the user-action pseudo-classes may
 //!   follow it.
@@ -182,6 +182,10 @@ pub enum PseudoElement {
     /// A pseudo-element of a pseudo-element (`::details-content::before`):
     /// valid where the reference browser takes it, matching nothing.
     Nested,
+    /// `::backdrop` (CSS Position 4 section 4.1, gap batch H): the box
+    /// beneath an element in the top layer, as big as the viewport,
+    /// inheriting from its element.
+    Backdrop,
     /// A `::-webkit-` name that is not a function: valid, so that the
     /// list it is in keeps its other selectors, and matching nothing
     /// (selectors-4 Appendix B).
@@ -480,6 +484,14 @@ pub enum PseudoClass {
     /// tree's rules, when it or a shadow-including ancestor matches the
     /// compound.
     HostContext(Box<CompoundSelector>),
+    /// `:modal` (gap batch H): a dialog shown by `showModal()`.
+    Modal,
+    /// `:popover-open`: a popover in the showing state.
+    PopoverOpen,
+    /// `:interest-source` and `:interest-target`: an interest invoker
+    /// whose target has its interest, and that target.
+    InterestSource,
+    InterestTarget,
 }
 
 /// selectors-4 specificity: (ids, classes+attributes+pseudo-classes,

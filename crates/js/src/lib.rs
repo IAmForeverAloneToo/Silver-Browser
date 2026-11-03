@@ -547,6 +547,30 @@ pub enum Task {
     /// The `matchMedia()` lists whose answer changed in a frame's update
     /// (gap batch A), by their numbers: a `change` at each.
     MediaChanged(Vec<u32>),
+    /// The user's close request, an Escape no listener canceled (HTML
+    /// section 6.13.2, gap batch H): the topmost close watcher asked to
+    /// close, its `cancel` cancelable when `can_prevent` (the page has
+    /// the user's activation). The task's answer is whether the closing
+    /// was canceled.
+    CloseRequest { can_prevent: bool },
+    /// The light dismiss of popovers and dialogs (HTML sections 6.12
+    /// and 4.11.4) after a trusted `pointerdown` (`up` false) or
+    /// `pointerup` at `target`, at `(x, y)` in the viewport.
+    LightDismiss {
+        target: Handle,
+        up: bool,
+        x: f64,
+        y: f64,
+    },
+    /// Interest in `target` gained (`gained`) or lost by the interest
+    /// invoker `source` once its delay passed (HTML section 6.14):
+    /// `interest` or `loseinterest` at the target, then its popover
+    /// shown or hidden. The task's answer is whether it was canceled.
+    Interest {
+        source: Handle,
+        target: Handle,
+        gained: bool,
+    },
     /// `import()` `id`'s graph came (D61, HTML's "fetch an import()
     /// module script graph"): its modules the realm was not given, and
     /// the promise settled as the module at `url` evaluates; or rejected

@@ -1682,7 +1682,9 @@ fn computed_style_reads_the_cascade_as_it_stands() {
             "rgb(10, 20, 30) 24px 50% 0.25 Arial, sans-serif 16px block rgba(0, 0, 0, 0) none 0px \
              static auto auto \"1px 2px\" \"\" true align-content align-items string \
              rgb(10, 20, 30)",
-            "inline rgb(255, 0, 0) rgb(255, 0, 0) \"\" \"\"",
+            // A name with no colon is no pseudo-element: the element's
+            // own style (CSSOM section 9), as the reference browser has it.
+            "inline rgb(255, 0, 0) rgb(255, 0, 0) \"rgb(10, 20, 30)\" \"\"",
             "block \"\"",
             "rgb(255, 0, 0) rgb(0, 0, 255) false",
             "NoModificationAllowedError: Failed to set the 'color' property on \

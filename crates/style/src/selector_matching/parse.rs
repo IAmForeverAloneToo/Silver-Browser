@@ -997,6 +997,12 @@ fn parse_pseudo(
                 "open" => PseudoClass::Open,
                 "autofill" | "-webkit-autofill" => PseudoClass::Autofill,
                 "host" => PseudoClass::Host(None),
+                // The top layer's and the invokers' (HTML sections 4.11.4,
+                // 6.12 and 6.14, gap batch H).
+                "modal" => PseudoClass::Modal,
+                "popover-open" => PseudoClass::PopoverOpen,
+                "interest-source" => PseudoClass::InterestSource,
+                "interest-target" => PseudoClass::InterestTarget,
                 _ => return None,
             };
             c.advance();
@@ -1119,6 +1125,7 @@ fn pseudo_element(name: &str) -> Option<PseudoElement> {
         "file-selector-button" => Some(PseudoElement::FileSelectorButton),
         "picker-icon" => Some(PseudoElement::PickerIcon),
         "checkmark" => Some(PseudoElement::Checkmark),
+        "backdrop" => Some(PseudoElement::Backdrop),
         // selectors-4 Appendix B: valid, and matching nothing.
         _ if name.starts_with("-webkit-") => Some(PseudoElement::WebkitPrefixed),
         _ => None,
@@ -1802,6 +1809,7 @@ mod tests {
             ("::marker", PseudoElement::Marker),
             ("::placeholder", PseudoElement::Placeholder),
             ("::selection", PseudoElement::Selection),
+            ("::backdrop", PseudoElement::Backdrop),
             // CSS 2's one-colon forms of the four.
             (":before", PseudoElement::Before),
             (":after", PseudoElement::After),
@@ -1858,6 +1866,7 @@ mod tests {
         err(":marker");
         err(":placeholder");
         err(":selection");
+        err(":backdrop");
         err(":-webkit-scrollbar");
     }
 
@@ -1882,7 +1891,6 @@ mod tests {
         err("::-webkit-x()");
         err("::-moz-selection");
         err("::-webkitx");
-        err("::backdrop");
         err("::nope");
         err(":: before");
         err("::");

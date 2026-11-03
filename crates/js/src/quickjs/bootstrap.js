@@ -1055,6 +1055,11 @@
           return value;
         }
         throw new $TypeError(where + "Failed to convert value to 'HTMLElement'.");
+      case "Element?":
+        if (value === null || (isNode(value) && kindOf(value) === 1)) {
+          return value;
+        }
+        throw new $TypeError(where + "Failed to convert value to 'Element'.");
       case "Storage?":
         if (value === null || WeakMapGet(areaKinds, value) !== undefined) {
           return value;
@@ -1964,6 +1969,72 @@
     }
   }
 
+  // The events of the top layer and the invokers (HTML sections 4.11.4,
+  // 6.12 and 6.14, gap batch H): a dialog's and a popover's
+  // `beforetoggle` and `toggle`, a command button's `command` at its
+  // target, and an interest invoker's `interest` and `loseinterest`.
+  const TOGGLE = 1 << 27;
+  const COMMAND = 1 << 28;
+  const INTEREST = 1 << 29;
+  const TOGGLE_INIT = members(EVENT_INIT, [
+    ["newState", "DOMString", ""],
+    ["oldState", "DOMString", ""],
+    ["source", "Element?", null],
+  ], "ToggleEventInit");
+  const COMMAND_INIT = members(EVENT_INIT, [
+    ["command", "DOMString", ""],
+    ["source", "Element?", null],
+  ], "CommandEventInit");
+  const INTEREST_INIT = members(EVENT_INIT, [["source", "Element?", null]], "InterestEventInit");
+
+  class ToggleEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, TOGGLE_INIT, "ToggleEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= TOGGLE;
+    }
+
+    get oldState() {
+      return fieldsOf(this, TOGGLE).oldState;
+    }
+
+    get newState() {
+      return fieldsOf(this, TOGGLE).newState;
+    }
+
+    get source() {
+      return sourceSeen(this, TOGGLE);
+    }
+  }
+
+  class CommandEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, COMMAND_INIT, "CommandEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= COMMAND;
+    }
+
+    get command() {
+      return fieldsOf(this, COMMAND).command;
+    }
+
+    get source() {
+      return sourceSeen(this, COMMAND);
+    }
+  }
+
+  class InterestEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, INTEREST_INIT, "InterestEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= INTEREST;
+    }
+
+    get source() {
+      return sourceSeen(this, INTEREST);
+    }
+  }
+
   // SecurityPolicyViolationEvent (CSP section 5.1, M33.1).
   const SECURITY = 131072;
   const SECURITY_INIT = members(EVENT_INIT, [
@@ -2168,6 +2239,9 @@
     ["KeyboardEvent", KeyboardEvent, KEYBOARD_INIT],
     ["InputEvent", InputEvent, INPUT_INIT],
     ["SubmitEvent", SubmitEvent, SUBMIT_INIT],
+    ["ToggleEvent", ToggleEvent, TOGGLE_INIT],
+    ["CommandEvent", CommandEvent, COMMAND_INIT],
+    ["InterestEvent", InterestEvent, INTEREST_INIT],
     ["ErrorEvent", ErrorEvent, ERROR_INIT],
     ["PageTransitionEvent", PageTransitionEvent, PAGE_TRANSITION_INIT],
     ["PopStateEvent", PopStateEvent, POP_STATE_INIT],
@@ -2237,6 +2311,36 @@
     }
   }
 
+  // The source of a toggle, command or interest event dispatched, or the
+  // submitter of a submit event, which the reference browser takes as
+  // one: a node, or null.
+  function sourceOf(s) {
+    let source = null;
+    if ((s.kinds & (TOGGLE | COMMAND | INTEREST)) !== 0) {
+      source = s.fields.source;
+    } else if ((s.kinds & SUBMIT) !== 0) {
+      source = s.fields.submitter;
+    }
+    return source !== null && source !== undefined && isNode(source) ? source : null;
+  }
+
+  // An event's `source` as its listener sees it: retargeted against the
+  // object the event is at, or its target once dispatched (DOM's
+  // retargeting, gap batch H), so that a source in a shadow tree is its
+  // host outside it.
+  function sourceSeen(event, bit) {
+    const s = eventOf(event, bit);
+    const source = s.fields.source;
+    if (source === null || source === undefined || !isNode(source)) {
+      return source === undefined ? null : source;
+    }
+    // Once dispatched, against its document, as the reference browser
+    // keeps it: a source in a shadow tree is the outermost host.
+    const at = s.currentTarget !== null && isNode(s.currentTarget) ? handleOf(s.currentTarget) :
+      s.dispatchedOnce === true ? native.ownerDocument(handleOf(source)) : null;
+    return at === null ? source : wrap(native.retarget(handleOf(source), at));
+  }
+
   // The event's related target, for the events that have one: a
   // FocusEvent's or a MouseEvent's.
   function relatedOf(s) {
@@ -2301,7 +2405,22 @@
     if (override !== undefined) {
       path[0].target = override;
     }
-    if (kindOf(path[count - 1].item) === 9 && s.type !== "load") {
+    // An event of a source (a toggle's, a command's, an interest's) goes
+    // no further than the tree of the source: its path ends at the first
+    // root that is a shadow-including ancestor of the source, as the
+    // reference browser has it with reference targets (gap batch H).
+    const source = sourceOf(s);
+    if (source !== null) {
+      const from = handleOf(source);
+      for (let i = 0; i < path.length; i++) {
+        const kind = kindOf(path[i].item);
+        if ((kind === 9 || kind === 11) && shadowIncludes(handleOf(path[i].item), from)) {
+          path.length = i + 1;
+          break;
+        }
+      }
+    }
+    if (kindOf(path[path.length - 1].item) === 9 && s.type !== "load") {
       windowBody();
       const related = relatedNode === null ? relatedOf(s) : node(answer[count * 6 + 1]);
       ArrayPush(path, pathStruct(global, null, related, false, false, false));
@@ -2399,6 +2518,8 @@
       s.dispatching = false;
       s.stop = false;
       s.stopImmediate = false;
+      // What a source is retargeted against from now on (gap batch H).
+      s.dispatchedOnce = true;
       // A target in a shadow tree is not told outside it (step 10).
       if (made[1]) {
         s.target = null;
@@ -2499,14 +2620,36 @@
       yield* resetForm(form);
       return;
     }
+    // A button's command or its popover target's (HTML sections 4.10.6
+    // and 6.12.3, gap batch H).
+    if (invokerActivation(handle, target)) {
+      return;
+    }
+    // The summary of its `details`: the `details` opened or closed (HTML
+    // section 4.11.2, gap batch H).
+    if (tag === "summary") {
+      const details = summaryDetails(handle);
+      if (details !== null) {
+        if (hasOpen(details)) {
+          removeAttribute(details, "open");
+        } else {
+          setAttribute(details, "open", "", "click");
+        }
+      }
+      return;
+    }
     native.activate(handle);
   }
 
   // A `button`'s type, `submit` by default (HTML section 4.10.6).
+  // A button's type: with none or an invalid one, `button` for one with
+  // a `command` or `commandfor` attribute, else `submit` (gap batch H).
   function buttonType(handle) {
     const value = native.attribute(handle, "type");
     const lower = value === null ? "" : ToLowerCase(value);
-    return lower === "reset" || lower === "button" ? lower : "submit";
+    if (lower === "reset" || lower === "button" || lower === "submit") return lower;
+    return native.attribute(handle, "command") !== null ||
+      native.attribute(handle, "commandfor") !== null ? "button" : "submit";
   }
 
   function isSubmitButton(handle) {
@@ -2526,6 +2669,14 @@
     return tag === "input" && native.inputType(handle) === "reset";
   }
 
+  // A form-associated element's `form` IDL attribute: the form owner
+  // of `of`, which a reference target may have put in a shadow tree,
+  // retargeted against `against`, so the host there (gap batch H).
+  function formSeen(of, against) {
+    const owner = native.formOwner(of);
+    return owner === null ? null : wrap(native.retarget(owner, against));
+  }
+
   // HTML's form submission from the bindings (section 4.10.21.3,
   // M26.9): unless `submit()` asked, a cancelable `submit` naming the
   // submitter; then the host's navigation, after the run.
@@ -2543,15 +2694,28 @@
       }
     }
     if (!fromMethod) {
+      // One with a submitter is composed, its path no further than the
+      // submitter's tree, as the reference browser has it (gap batch H).
       const event = new SubmitEvent("submit", made(SUBMIT_INIT, [
         "bubbles", true,
         "cancelable", true,
+        "composed", submitter !== null,
         "submitter", submitter === null ? null : wrap(submitter),
       ]));
       eventState(event).trusted = true;
       if (yield* dispatching(wrap(form), event)) {
         return;
       }
+    }
+    // The dialog method closes the form's dialog, its result the
+    // submitter's value (HTML section 4.10.21.3, gap batch H).
+    if (formMethod(form, submitter) === "dialog") {
+      const dialog = dialogAround(form);
+      if (dialog !== null) {
+        const value = submitter === null ? null : native.attribute(submitter, "value");
+        closeDialog(dialog, value, null);
+      }
+      return;
     }
     native.submitForm(form, submitter);
   }
@@ -4393,12 +4557,45 @@
   }
   expose(MutationObserver, "MutationObserver");
 
+  // The slots signaled (DOM's signal slots), their objects held until
+  // their `slotchange`: the list holds them, so a slot of a tree out of
+  // the document, which only its own listeners hold, is not let go of
+  // before the event. Taken from the host as soon as it signals them.
+  let signaledSlots = [];
+
+  // Whether the slots and toggles are being taken: each native call
+  // made then tells of what is still waiting, which the taking under way
+  // takes.
+  let takingSignals = false;
+
+  function holdSignaledSlots() {
+    if (takingSignals) {
+      return;
+    }
+    takingSignals = true;
+    try {
+      // The `details` toggled, taken as promptly (gap batch H).
+      takeDetailsToggles();
+      const slots = native.takeSlotChanges();
+      for (let i = 0; i < slots.length; i++) {
+        const slot = wrap(slots[i]);
+        if (!ArrayIncludes(signaledSlots, slot)) {
+          ArrayPush(signaledSlots, slot);
+        }
+      }
+    } finally {
+      takingSignals = false;
+    }
+  }
+
   // DOM's "notify mutation observers": each observer with records, in
   // the order they were made, its callback given them; then a
   // `slotchange` at each slot signaled (D68).
   function notifyMutationObservers() {
     mutationsQueued = false;
-    const slots = native.takeSlotChanges();
+    holdSignaledSlots();
+    const slots = signaledSlots;
+    signaledSlots = [];
     const ids = native.mutationNotify();
     for (let i = 0; i < ids.length; i++) {
       const observer = MapGet(mutationObservers, ids[i]);
@@ -4415,13 +4612,14 @@
     for (let i = 0; i < slots.length; i++) {
       const event = new Event("slotchange", made(EVENT_INIT, ["bubbles", true]));
       eventState(event).trusted = true;
-      drain(dispatching(wrap(slots[i]), event));
+      drain(dispatching(slots[i], event));
     }
   }
 
-  // The engine queued a record: the microtask that tells the observers,
-  // unless one is queued already.
+  // The engine queued a record or signaled a slot: the microtask that
+  // tells the observers, unless one is queued already.
   function queueMutationObserverMicrotask() {
+    holdSignaledSlots();
     if (!mutationsQueued) {
       mutationsQueued = true;
       PromiseThen(resolved(undefined), notifyMutationObservers);
@@ -18184,11 +18382,19 @@
     }
     const name = StringIndexOf(text, "::") === 0 ? StringSlice(text, 2) :
       StringIndexOf(text, ":") === 0 ? StringSlice(text, 1) : null;
-    // `::part()` and `::slotted()` name elements of other trees, not a
-    // pseudo-element of this one: an empty declaration, as the
-    // reference browser gives (D69).
+    // What does not start with a colon names no pseudo-element: the
+    // element's own style (CSSOM section 9).
+    if (name === null) {
+      return "";
+    }
+    // One colon is CSS 2's four pseudo-elements' alone (Selectors 4
+    // section 3.6.1); `::part()` and `::slotted()` name elements of
+    // other trees, not a pseudo-element of this one: an empty
+    // declaration, as the reference browser gives (D69).
+    const legacy = name === "before" || name === "after" || name === "first-letter" ||
+      name === "first-line";
     if (
-      name === null ||
+      (StringIndexOf(text, "::") !== 0 && !legacy) ||
       StringIndexOf(name, "part(") === 0 ||
       StringIndexOf(name, "slotted(") === 0
     ) {
@@ -19794,7 +20000,7 @@
   const GLOBAL_HANDLERS = [
     "abort", "animationcancel", "animationend", "animationiteration", "animationstart",
     "auxclick", "beforeinput", "beforematch", "beforetoggle", "blur", "cancel", "canplay",
-    "canplaythrough", "change", "click", "close", "contextlost", "contextmenu",
+    "canplaythrough", "change", "click", "close", "command", "contextlost", "contextmenu",
     "contextrestored", "cuechange", "dblclick", "drag", "dragend", "dragenter", "dragleave",
     "dragover", "dragstart", "drop", "durationchange", "emptied", "ended", "error", "focus",
     "formdata", "gotpointercapture", "input", "invalid", "keydown", "keypress", "keyup", "load",
@@ -20001,6 +20207,10 @@
   // document's policies then (HTML's attribute change steps), at the
   // place of the script that set it (`scripted`), else at none.
   function attributeHandler(element, name, present, scripted) {
+    if (name === "popover") {
+      popoverAttributeChanged(handleOf(element));
+      return;
+    }
     if (CharCodeAt(name, 0) !== 111 || CharCodeAt(name, 1) !== 110) {
       return;
     }
@@ -20349,7 +20559,7 @@
     },
 
     get form() {
-      return wrap(native.formOwner(self(this)));
+      return formSeen(self(this), self(this));
     },
 
     get selectionStart() {
@@ -20432,7 +20642,7 @@
   include(
     {
       get form() {
-        return wrap(native.formOwner(self(this)));
+        return formSeen(self(this), self(this));
       },
     },
     [
@@ -20573,7 +20783,7 @@
       },
 
       get form() {
-        return wrap(native.formOwner(self(this)));
+        return formSeen(self(this), self(this));
       },
 
       get labels() {
@@ -20668,7 +20878,7 @@
 
       get form() {
         const select = native.ownerSelect(self(this));
-        return select === null ? null : wrap(native.formOwner(select));
+        return select === null ? null : formSeen(select, self(this));
       },
     },
     [madeInterfaces.HTMLOptionElement.prototype],
@@ -20727,13 +20937,17 @@
 
   include(
     {
+      // Its control, retargeted against it: a host whose reference
+      // target the control is, rather than the control (gap batch H).
       get control() {
-        return wrap(native.labeledControl(self(this)));
+        const handle = self(this);
+        const control = native.labeledControl(handle);
+        return control === null ? null : wrap(native.retarget(control, handle));
       },
 
       get form() {
         const control = native.labeledControl(self(this));
-        return control === null ? null : wrap(native.formOwner(control));
+        return control === null ? null : formSeen(control, self(this));
       },
     },
     [madeInterfaces.HTMLLabelElement.prototype],
@@ -20750,7 +20964,7 @@
       },
 
       get form() {
-        return wrap(native.formOwner(self(this)));
+        return formSeen(self(this), self(this));
       },
 
       get labels() {
@@ -21089,6 +21303,1305 @@
     },
     [HTMLElement.prototype, SVGElement.prototype, MathMLElement.prototype],
   );
+
+  // ---- The top layer, dialogs, popovers and invokers (gap batch H) ---------
+
+  // HTML sections 4.11.4 (dialogs), 6.12 (popovers), 6.13 (close
+  // watchers) and 6.14 (interest invokers), and the invokers' activation
+  // (section 4.10.6). The engine keeps the top layer, the popover lists,
+  // the open dialogs and the close watchers (`dom::Document`'s), which
+  // the cascade, layout and hit testing read, and runs these algorithms
+  // itself for a page whose scripts are off; with scripts on they are
+  // these, with their events, reaching that state through
+  // `native.topLayer`.
+  function topLayer(op, a = null, b = null, c = null, d = null, word = "") {
+    return native.topLayer(op, a, b, c, d, word);
+  }
+
+  // "hide all popovers until" the document: every popover.
+  const ALL_POPOVERS = -1;
+  // The most rounds a loop hiding popovers takes, in case listeners
+  // show one again each time.
+  const HIDING_ROUNDS = 4096;
+
+  // The elements whose popover is being shown or hidden (HTML's
+  // "popover showing or hiding"), and the `toggle` tasks queued, each's
+  // id and the old state it carries ("toggle task tracker"), by handle.
+  const popoverBusy = new $Map();
+  const toggleTasks = new $Map();
+  // A dialog's `returnValue`, by its object.
+  const returnValues = new $WeakMap();
+
+  function isHtmlElement(handle) {
+    return native.kind(handle) === 1 && nsOf(wrap(handle)) === HTML_NS;
+  }
+
+  function isDialog(handle) {
+    return isHtmlElement(handle) && native.tag(handle) === "dialog";
+  }
+
+  // The state of an element's `popover` attribute: `auto`, `hint`,
+  // `manual` (an invalid value's too), or null for none.
+  function popoverAttribute(handle) {
+    if (!isHtmlElement(handle)) return null;
+    const value = native.attribute(handle, "popover");
+    if (value === null) return null;
+    const lower = ToLowerCase(value);
+    if (lower === "" || lower === "auto") return "auto";
+    return lower === "hint" ? "hint" : "manual";
+  }
+
+  // A showing popover's mode and list (`auto`, `hint` or `none`), or
+  // null for a hidden one.
+  function popoverShown(handle) {
+    const state = topLayer("popover", handle);
+    return state.length === 0 ? null : state;
+  }
+
+  function popoverList(list) {
+    return topLayer("list", null, null, null, null, list);
+  }
+
+  // An open dialog's state, `modal` or `open`; null for a closed one.
+  function dialogShown(handle) {
+    const state = topLayer("dialog", handle);
+    return state.length === 0 ? null : state[0];
+  }
+
+  function hasOpen(handle) {
+    return native.attribute(handle, "open") !== null;
+  }
+
+  // HTML's "check popover validity": whether `handle` is a popover in
+  // the state `showing` says, in the page's document and not a modal
+  // dialog, else false or, when `throws`, the reference browser's
+  // exception.
+  function popoverValid(handle, showing, throws, method) {
+    // One shown is hidden whatever its attribute says now: the type it
+    // was shown as is what counts, as the reference browser keeps it.
+    if (popoverAttribute(handle) === null && !(showing && popoverShown(handle) !== null)) {
+      if (throws) {
+        throw domError(
+          "NotSupportedError",
+          "Not supported on elements that do not have a valid value for the 'popover' attribute.",
+          method,
+          "HTMLElement",
+        );
+      }
+      return false;
+    }
+    if ((popoverShown(handle) !== null) !== showing) return false;
+    const unfit = !native.connected(handle) ||
+      !isPage(native.ownerDocument(handle)) ||
+      (isDialog(handle) && (dialogShown(handle) === "modal" || (!showing && hasOpen(handle))));
+    if (unfit) {
+      if (throws) {
+        throw domError("InvalidStateError", "Invalid on disconnected popover elements.", method,
+          "HTMLElement");
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // Fires `beforetoggle` at `handle`: whether it was not canceled. One
+  // with a source is composed, as the reference browser's is.
+  function fireBeforeToggle(handle, oldState, newState, source, cancelable) {
+    const event = new ToggleEvent("beforetoggle", made(TOGGLE_INIT, [
+      "cancelable", cancelable,
+      "composed", source !== null,
+      "newState", newState,
+      "oldState", oldState,
+      "source", source === null ? null : wrap(source),
+    ]));
+    eventState(event).trusted = true;
+    return !drain(dispatching(wrap(handle), event));
+  }
+
+  // HTML's "queue a popover toggle event task" and "queue a dialog toggle
+  // event task": a `toggle` queued, one queued already taken back and
+  // its old state kept, so that a run of changes makes one event.
+  function queueToggle(handle, oldState, newState, source) {
+    const queued = MapGet(toggleTasks, handle);
+    if (queued !== undefined) {
+      oldState = queued.oldState;
+      cancelTask(queued.id);
+    }
+    const element = wrap(handle);
+    const from = source === null ? null : wrap(source);
+    const id = queueTask(function* () {
+      MapDelete(toggleTasks, handle);
+      const event = new ToggleEvent("toggle", made(TOGGLE_INIT, [
+        "composed", from !== null,
+        "newState", newState,
+        "oldState", oldState,
+        "source", from,
+      ]));
+      eventState(event).trusted = true;
+      yield* dispatching(element, event);
+    }, 0, true);
+    MapSet(toggleTasks, handle, { id, oldState });
+  }
+
+  // The `toggle` tasks of `details` elements, by element: HTML's details
+  // toggle task tracker, its task and its old state.
+  const detailsToggleTasks = new $Map();
+
+  // The toggles the document's `details` owe, each queued as HTML's
+  // "queue a details toggle event task" queues one: a task still waiting
+  // gives way to the new one, which keeps its old state.
+  function takeDetailsToggles() {
+    const toggles = native.takeDetailsToggles();
+    for (let i = 0; i < toggles.length; i += 2) {
+      const handle = toggles[i];
+      let oldState = toggles[i + 1] ? "open" : "closed";
+      const newState = native.attribute(handle, "open") !== null ? "open" : "closed";
+      const queued = MapGet(detailsToggleTasks, handle);
+      if (queued !== undefined) {
+        oldState = queued.oldState;
+        cancelTask(queued.id);
+      }
+      const element = wrap(handle);
+      const id = queueTask(function* () {
+        MapDelete(detailsToggleTasks, handle);
+        const event = new ToggleEvent("toggle", made(TOGGLE_INIT, [
+          "newState", newState,
+          "oldState", oldState,
+        ]));
+        eventState(event).trusted = true;
+        yield* dispatching(element, event);
+      }, 0, true);
+      MapSet(detailsToggleTasks, handle, { id, oldState });
+    }
+  }
+
+  // The `details` the `summary` is the summary for: its parent, when it
+  // is that parent's first `summary` child; or null.
+  function summaryDetails(handle) {
+    const parent = native.parent(handle);
+    if (parent === null || native.kind(parent) !== 1 || native.tag(parent) !== "details" ||
+        !isHtmlElement(parent) || !isHtmlElement(handle)) {
+      return null;
+    }
+    for (let n = native.firstChild(parent); n !== null; n = native.nextSibling(n)) {
+      if (native.kind(n) === 1 && native.tag(n) === "summary" && isHtmlElement(n)) {
+        return n === handle ? parent : null;
+      }
+    }
+    return null;
+  }
+
+  // HTML's "nearest inclusive open popover": the nearest inclusive
+  // ancestor that is an auto or hint popover showing.
+  function nearestOpenPopover(handle) {
+    for (let n = handle; n !== null; n = flatParent(n)) {
+      if (native.kind(n) !== 1) continue;
+      const shown = popoverShown(n);
+      if (shown !== null && (shown[0] === "auto" || shown[0] === "hint")) return n;
+    }
+    return null;
+  }
+
+  // HTML's "topmost popover ancestor" of `handle` among `list`, by its
+  // parent and its `source`: the one highest in the list, or null.
+  // `handle` counts as above them when it is a popover about to show.
+  function topmostPopoverAncestor(handle, list, source, isPopover) {
+    const positions = new $Map();
+    for (let i = 0; i < list.length; i++) MapSet(positions, list[i], i);
+    if (isPopover) MapSet(positions, handle, list.length);
+    let topmost = null;
+    const check = (candidate) => {
+      if (candidate === null) return;
+      const ancestor = nearestOpenPopover(candidate);
+      const at = ancestor === null ? undefined : MapGet(positions, ancestor);
+      if (at !== undefined && (topmost === null || MapGet(positions, topmost) < at)) {
+        topmost = ancestor;
+      }
+    };
+    check(flatParent(handle));
+    check(source);
+    return topmost;
+  }
+
+  // HTML's "close entire popover list": each hidden, the topmost first.
+  function closeEntireList(list, focusPrevious, fireEvents) {
+    for (let round = 0; round < HIDING_ROUNDS; round++) {
+      const popovers = popoverList(list);
+      if (popovers.length === 0) return;
+      hidePopover(popovers[popovers.length - 1], focusPrevious, fireEvents, false, null, "");
+    }
+  }
+
+  // HTML's "hide popover stack until": the popovers of `list` above
+  // `endpoint` hidden, the topmost first; the whole list when it does
+  // not hold it.
+  function hideStackUntil(endpoint, list, focusPrevious, fireEvents) {
+    for (let round = 0; round < HIDING_ROUNDS; round++) {
+      let lastToHide = null;
+      let found = false;
+      const popovers = popoverList(list);
+      for (let i = 0; i < popovers.length; i++) {
+        if (popovers[i] === endpoint) {
+          found = true;
+        } else if (found) {
+          lastToHide = popovers[i];
+          break;
+        }
+      }
+      if (!found) {
+        closeEntireList(list, focusPrevious, fireEvents);
+        return;
+      }
+      for (let i = 0; i < HIDING_ROUNDS && lastToHide !== null && popoverShown(lastToHide) !== null;
+        i++) {
+        const now = popoverList(list);
+        if (now.length === 0) break;
+        hidePopover(now[now.length - 1], focusPrevious, fireEvents, false, null, "");
+      }
+      const after = popoverList(list);
+      const repeating = ArrayIncludes(after, endpoint) && after[after.length - 1] !== endpoint;
+      if (!repeating) return;
+      fireEvents = false;
+    }
+  }
+
+  // HTML's "hide all popovers until": those above `endpoint` in its list,
+  // or every one for ALL_POPOVERS, the hint list first.
+  function hideAllPopoversUntil(endpoint, focusPrevious, fireEvents) {
+    if (endpoint === ALL_POPOVERS) {
+      closeEntireList("hint", focusPrevious, fireEvents);
+      closeEntireList("auto", focusPrevious, fireEvents);
+      return;
+    }
+    const shown = popoverShown(endpoint);
+    if (shown === null || shown[1] === "none") return;
+    hideStackUntil(endpoint, shown[1], focusPrevious, fireEvents);
+  }
+
+  // HTML's "show popover", as the reference browser stacks a hint: an
+  // auto popover closes the hint list and the auto popovers it is not
+  // in; a hint closes the other hints, and hangs from the auto popover
+  // it is in, if any; either, shown in a hint, joins the hint list,
+  // closing what is above that hint and the auto popovers the hint list
+  // does not hang from.
+  function showPopover(handle, throws, source, method) {
+    if (!popoverValid(handle, false, throws, method)) return;
+    const nested = MapHas(popoverBusy, handle);
+    const fireEvents = !nested;
+    MapSet(popoverBusy, handle, true);
+    try {
+      if (!fireBeforeToggle(handle, "closed", "open", source, true)) return;
+      if (!popoverValid(handle, false, throws, method)) return;
+      const original = popoverAttribute(handle);
+      let list = "none";
+      let anchor = null;
+      if (original === "auto" || original === "hint") {
+        const hints = popoverList("hint");
+        const hintAncestor = topmostPopoverAncestor(handle, hints, source, true);
+        if (hintAncestor !== null) {
+          // The auto popovers above the one the hint list hangs from go,
+          // all of them when it hangs from none.
+          const from = topLayer("anchor", hints[0]);
+          if (from === null) {
+            closeEntireList("auto", false, fireEvents);
+          } else {
+            hideAllPopoversUntil(from, false, fireEvents);
+          }
+          hideAllPopoversUntil(hintAncestor, false, fireEvents);
+          list = "hint";
+        } else {
+          closeEntireList("hint", false, fireEvents);
+          const autoAncestor = topmostPopoverAncestor(handle, popoverList("auto"), source, true);
+          if (original === "auto") {
+            hideAllPopoversUntil(autoAncestor === null ? ALL_POPOVERS : autoAncestor, false,
+              fireEvents);
+            list = "auto";
+          } else {
+            anchor = autoAncestor;
+            list = "hint";
+          }
+        }
+        // A type changed while the others hid is an error (HTML's "show
+        // popover", its original type).
+        if (popoverAttribute(handle) !== original) {
+          if (throws) {
+            throw domError("InvalidStateError", "The popover's type changed while others hid.",
+              method, "HTMLElement");
+          }
+          return;
+        }
+        if (!popoverValid(handle, false, throws, method)) return;
+      }
+      // The focus is given back on hiding for the first auto or hint
+      // popover alone, a manual one keeping none (HTML's
+      // shouldRestoreFocus).
+      const first = (original === "auto" || original === "hint") &&
+        popoverList("auto").length === 0 && popoverList("hint").length === 0;
+      const focused = native.focused();
+      topLayer("show", handle, source, null, anchor, original + " " + list);
+      popoverFocusing(handle);
+      if (first && popoverAttribute(handle) !== null) {
+        topLayer("setFocus", handle, focused);
+      }
+      queueToggle(handle, "closed", "open", source);
+    } finally {
+      if (!nested) MapDelete(popoverBusy, handle);
+    }
+  }
+
+  // HTML's "hide popover algorithm": those above it hidden first, then
+  // it, its `beforetoggle` and `toggle` when `fireEvents`, and the focus
+  // given back to what had it before when what is in it has it.
+  function hidePopover(handle, focusPrevious, fireEvents, throws, source, method) {
+    if (!popoverValid(handle, true, throws, method)) return;
+    const nested = MapHas(popoverBusy, handle);
+    MapSet(popoverBusy, handle, true);
+    if (nested) fireEvents = false;
+    try {
+      const shown = popoverShown(handle);
+      if (shown[0] === "auto" || shown[0] === "hint") {
+        hideAllPopoversUntil(handle, focusPrevious, fireEvents);
+        if (!popoverValid(handle, true, throws, method)) return;
+      }
+      // The hint list hanging from it goes with it.
+      if (shown[1] === "auto") {
+        const hints = popoverList("hint");
+        if (hints.length > 0 && topLayer("anchor", hints[0]) === handle) {
+          closeEntireList("hint", focusPrevious, fireEvents);
+          if (!popoverValid(handle, true, throws, method)) return;
+        }
+      }
+      const autos = popoverList("auto");
+      const wasTop = autos.length > 0 && autos[autos.length - 1] === handle;
+      if (fireEvents) {
+        fireBeforeToggle(handle, "open", "closed", source, false);
+        const now = popoverList("auto");
+        if (wasTop && (now.length === 0 || now[now.length - 1] !== handle)) {
+          hideAllPopoversUntil(handle, focusPrevious, false);
+        }
+        if (!popoverValid(handle, true, throws, method)) return;
+      }
+      const previous = topLayer("hide", handle);
+      if (fireEvents) queueToggle(handle, "open", "closed", source);
+      if (previous !== null && focusPrevious) {
+        const focused = native.focused();
+        if (focused !== null && shadowIncludes(handle, focused)) focusElement(previous, true);
+      }
+      focusFixup(handle);
+    } finally {
+      if (!nested) MapDelete(popoverBusy, handle);
+    }
+  }
+
+  // HTML's "toggle popover": whether it is showing after.
+  function togglePopover(handle, force, throws, source, method) {
+    if (popoverShown(handle) !== null && force !== true) {
+      hidePopover(handle, true, true, throws, source, method);
+    } else if (force !== false) {
+      showPopover(handle, throws, source, method);
+    } else {
+      popoverValid(handle, popoverShown(handle) !== null, throws, method);
+    }
+    return popoverShown(handle) !== null;
+  }
+
+  // HTML's "popover focusing steps": a dialog's own; else the popover
+  // itself with `autofocus`, or the first focusable descendant with it.
+  function popoverFocusing(handle) {
+    if (isDialog(handle)) {
+      dialogFocusing(handle);
+      return;
+    }
+    const control = topLayer("delegate", handle, null, null, null, "popover");
+    if (control !== null) focusElement(control, false);
+  }
+
+  // HTML's "dialog focusing steps", as the reference browser has them:
+  // its focus delegate, else the dialog.
+  function dialogFocusing(handle) {
+    const control = topLayer("delegate", handle, null, null, null, "dialog");
+    focusElement(control === null ? handle : control, false);
+  }
+
+  // The popover attribute changed (HTML's popover attribute change
+  // steps): a popover shown in another state hidden.
+  function popoverAttributeChanged(handle) {
+    const shown = popoverShown(handle);
+    if (shown !== null && shown[0] !== popoverAttribute(handle)) {
+      hidePopover(handle, true, true, false, null, "");
+    }
+  }
+
+  // Where showing a dialog hides popovers until: the topmost hint, else
+  // auto, popover it is in, else every popover.
+  function dialogHideUntil(handle) {
+    let until = topmostPopoverAncestor(handle, popoverList("hint"), null, false);
+    if (until === null) until = topmostPopoverAncestor(handle, popoverList("auto"), null, false);
+    return until === null ? ALL_POPOVERS : until;
+  }
+
+  // `show()`.
+  function showDialog(handle) {
+    if (hasOpen(handle) && dialogShown(handle) !== "modal") return;
+    if (hasOpen(handle)) {
+      throw domError(
+        "InvalidStateError",
+        "The dialog is already open as a modal dialog, and therefore cannot be opened as a non-modal dialog.",
+        "show",
+        "HTMLDialogElement",
+      );
+    }
+    if (!fireBeforeToggle(handle, "closed", "open", null, true) || hasOpen(handle)) return;
+    queueToggle(handle, "closed", "open", null);
+    setAttribute(handle, "open", "", "show");
+    topLayer("openDialog", handle, native.focused(), null, null, "open");
+    hideAllPopoversUntil(dialogHideUntil(handle), false, true);
+    dialogFocusing(handle);
+  }
+
+  // HTML's "show a modal dialog".
+  function showModal(handle, source) {
+    const open = hasOpen(handle);
+    if (open && dialogShown(handle) === "modal") return;
+    const refuse = (message) =>
+      domError("InvalidStateError", message, "showModal", "HTMLDialogElement");
+    if (open) {
+      throw refuse(
+        "The dialog is already open as a non-modal dialog, and therefore cannot be opened as a modal dialog.",
+      );
+    }
+    if (!native.connected(handle) || !isPage(native.ownerDocument(handle))) {
+      throw refuse("The element is not in a Document.");
+    }
+    if (popoverShown(handle) !== null) {
+      throw refuse(
+        "The dialog is already open as a Popover, and therefore cannot be opened as a modal dialog.",
+      );
+    }
+    if (!fireBeforeToggle(handle, "closed", "open", source, true)) return;
+    if (hasOpen(handle) || !native.connected(handle) || popoverShown(handle) !== null) return;
+    queueToggle(handle, "closed", "open", source);
+    setAttribute(handle, "open", "", "showModal");
+    topLayer("openDialog", handle, native.focused(), null, null, "modal");
+    hideAllPopoversUntil(dialogHideUntil(handle), false, true);
+    dialogFocusing(handle);
+  }
+
+  // HTML's "close the dialog": `result`, unless null, its return value;
+  // the focus back where it was when what is in it has it or it was
+  // modal; `close` queued.
+  function closeDialog(handle, result, source) {
+    if (!hasOpen(handle)) return;
+    fireBeforeToggle(handle, "open", "closed", source, false);
+    if (!hasOpen(handle)) return;
+    queueToggle(handle, "open", "closed", source);
+    removeAttribute(handle, "open");
+    const wasModal = dialogShown(handle) === "modal";
+    const previous = topLayer("closeDialog", handle);
+    const element = wrap(handle);
+    if (result !== null) WeakMapSet(returnValues, element, result);
+    if (previous !== null) {
+      const focused = native.focused();
+      if (wasModal || (focused !== null && shadowIncludes(handle, focused))) {
+        focusElement(previous, true);
+      }
+    }
+    focusFixup(handle);
+    // `close` comes with the next frame's rendering, before its
+    // animation frame callbacks, as the reference browser fires it.
+    ArrayPush(frameEvents, element);
+    native.wantFrame();
+  }
+
+  // The dialogs a `close` waits for the next frame for, in order.
+  const frameEvents = [];
+
+  // Fires the `close` events the frame owes (its rendering steps).
+  function* fireFrameEvents() {
+    const due = ArraySplice(frameEvents, 0, frameEvents.length);
+    for (let i = 0; i < due.length; i++) {
+      const event = new Event("close", made(EVENT_INIT, []));
+      eventState(event).trusted = true;
+      yield* dispatching(due[i], event);
+    }
+  }
+
+  // HTML's focus fixup for what was hidden: the focus left in it, no
+  // longer rendered, goes to the viewport, with no event, as the
+  // reference browser has it.
+  function focusFixup(handle) {
+    const focused = native.focused();
+    if (focused !== null && shadowIncludes(handle, focused)) native.setFocus(null, true);
+  }
+
+  // A dialog's computed closed-by state: its `closedby`, or by default
+  // `closerequest` for a modal dialog and `none` for another.
+  function closedByState(handle) {
+    const value = native.attribute(handle, "closedby");
+    const lower = value === null ? "" : ToLowerCase(value);
+    if (lower === "any" || lower === "closerequest" || lower === "none") return lower;
+    return dialogShown(handle) === "modal" ? "closerequest" : "none";
+  }
+
+  // Fires `cancel` at a dialog: whether it was not canceled.
+  function fireCancel(handle, cancelable) {
+    const event = new Event("cancel", made(EVENT_INIT, ["cancelable", cancelable]));
+    eventState(event).trusted = true;
+    return !drain(dispatching(wrap(handle), event));
+  }
+
+  // HTML's "request close the dialog": its close watcher asked to close,
+  // `cancel` first; a dialog the parser opened, which has none, closed.
+  function requestCloseDialog(handle, result, source) {
+    if (!hasOpen(handle) || !native.connected(handle)) return;
+    // A request while its `cancel` runs does nothing (the close
+    // watcher's "is running cancel action").
+    if (MapHas(cancelling, handle)) return;
+    // One its `open` attribute opened has its `cancel` too, as the
+    // reference browser gives it.
+    MapSet(cancelling, handle, true);
+    let go;
+    try {
+      go = fireCancel(handle, true);
+    } finally {
+      MapDelete(cancelling, handle);
+    }
+    if (go) closeDialog(handle, result, source);
+  }
+
+  // The dialogs whose `cancel` a request to close is running.
+  const cancelling = new $Map();
+
+  // Whether `handle` is a button, or an input that is one, which a
+  // `popovertarget` applies to.
+  function isButtonLike(handle) {
+    const tag = native.tag(handle);
+    if (tag === "button") return isHtmlElement(handle);
+    if (tag !== "input") return false;
+    const kind = native.inputType(handle);
+    return kind === "button" || kind === "submit" || kind === "reset" || kind === "image";
+  }
+
+  // The element an element-reflecting attribute refers to, as what acts
+  // on it takes it: one a script set, while in a tree around the
+  // element, else the first of the attribute's ID in the element's tree,
+  // shadow roots' reference targets followed (the engine's, which its
+  // own algorithms read too).
+  function reflectedElement(handle, attribute) {
+    return native.elementReference("referenced", handle, attribute);
+  }
+
+  // The elements an element-reflecting attribute names, as its IDL
+  // attribute gives them: a host, not what its reference target names.
+  function associatedElements(handle, attribute) {
+    return native.elementReference("associated", handle, attribute);
+  }
+
+  // Sets an element-reflecting attribute to `value`, an Element or null:
+  // the content attribute the empty string, or none.
+  function setAttrElement(handle, attribute, value, property, iface) {
+    if (value !== null && !(isNode(value) && kindOf(value) === 1)) {
+      throw new $TypeError("Failed to set the '" + property + "' property on '" + iface +
+        "': Failed to convert value to 'Element'.");
+    }
+    if (value === null) {
+      removeAttribute(handle, attribute);
+      native.elementReference("unset", handle, attribute);
+      return;
+    }
+    setAttribute(handle, attribute, "", property);
+    native.elementReference("set", handle, attribute, [handleOf(value)]);
+  }
+
+  // The same of a list of elements (`ariaLabelledByElements`, ...).
+  function setAttrElements(handle, attribute, value, property) {
+    if (value === null || value === undefined) {
+      removeAttribute(handle, attribute);
+      native.elementReference("unset", handle, attribute);
+      return;
+    }
+    const list = [];
+    const length = value.length >>> 0;
+    for (let i = 0; i < length; i++) {
+      const item = value[i];
+      if (!isNode(item) || kindOf(item) !== 1) {
+        throw new $TypeError("Failed to set the '" + property +
+          "' property on 'Element': Failed to convert value to 'Element'.");
+      }
+      ArrayPush(list, handleOf(item));
+    }
+    setAttribute(handle, attribute, "", property);
+    native.elementReference("set", handle, attribute, list);
+  }
+
+  // HTML's "popover target element" of a button.
+  function popoverTargetOf(handle) {
+    if (!isButtonLike(handle) || native.disabled(handle)) return null;
+    if (native.formOwner(handle) !== null && isSubmitButton(handle)) return null;
+    const popover = reflectedElement(handle, "popovertarget");
+    return popover !== null && popoverAttribute(popover) !== null ? popover : null;
+  }
+
+  function popoverTargetAction(handle) {
+    const value = native.attribute(handle, "popovertargetaction");
+    const lower = value === null ? "" : ToLowerCase(value);
+    return lower === "show" || lower === "hide" ? lower : "toggle";
+  }
+
+  // The commands a `command` attribute takes, past a custom `--` one.
+  const COMMANDS = [
+    "toggle-popover", "show-popover", "hide-popover", "close", "request-close", "show-modal",
+  ];
+
+  // A button's `command`: a built-in command in lowercase, a custom one
+  // as written, or the empty string for none.
+  function commandOf(handle) {
+    const value = native.attribute(handle, "command");
+    if (value === null) return "";
+    if (StringSlice(value, 0, 2) === "--") return value;
+    const lower = ToLowerCase(value);
+    return ArrayIncludes(COMMANDS, lower) ? lower : "";
+  }
+
+  // An element's optional value: its `value` attribute, or null.
+  function optionalValue(handle) {
+    return native.attribute(handle, "value");
+  }
+
+  // A button's activation past its form's (HTML section 4.10.6): its
+  // command at its `commandfor` element, else its popover target's
+  // (section 6.12.3), `target` the click's. Whether it had either.
+  function invokerActivation(handle, target) {
+    if (native.disabled(handle)) return false;
+    if (native.tag(handle) === "button" && isHtmlElement(handle)) {
+      const commanded = reflectedElement(handle, "commandfor");
+      if (commanded !== null) {
+        // One of a form whose type is its auto state neither submits nor
+        // commands, as the reference browser has it.
+        const type = native.attribute(handle, "type");
+        const lower = type === null ? "" : ToLowerCase(type);
+        const auto = lower !== "reset" && lower !== "button" && lower !== "submit";
+        if (!(auto && native.formOwner(handle) !== null)) runCommand(handle, commanded);
+        return true;
+      }
+    }
+    const popover = popoverTargetOf(handle);
+    if (popover === null) return false;
+    // A press in the popover the button holds does nothing; a button that
+    // is its own popover holds none (a shadow-including descendant, not
+    // an inclusive one).
+    if (isNode(target) && shadowIncludes(popover, handleOf(target)) && popover !== handle &&
+      shadowIncludes(handle, popover)) {
+      return true;
+    }
+    const action = popoverTargetAction(handle);
+    const shown = popoverShown(popover) !== null;
+    if ((action === "show" && shown) || (action === "hide" && !shown)) return true;
+    if (shown) {
+      hidePopover(popover, true, true, false, handle, "");
+    } else if (popoverValid(popover, false, false, "")) {
+      showPopover(popover, false, handle, "");
+    }
+    return true;
+  }
+
+  // A button's command at `target` (HTML section 4.10.6's steps): a
+  // cancelable `command` first, then a popover's or a dialog's own.
+  function runCommand(button, target) {
+    const command = commandOf(button);
+    if (command === "") return;
+    const custom = StringSlice(command, 0, 2) === "--";
+    const popover = popoverAttribute(target) !== null;
+    const dialogCommand = command === "show-modal" || command === "close" ||
+      command === "request-close";
+    // The popover commands are any HTML element's, which acts on them
+    // when it is a popover; the dialog commands a dialog's alone.
+    const popoverCommand = command === "show-popover" || command === "hide-popover" ||
+      command === "toggle-popover";
+    if (!custom && !(popoverCommand && isHtmlElement(target)) &&
+      !(isDialog(target) && dialogCommand)) {
+      return;
+    }
+    const event = new CommandEvent("command", made(COMMAND_INIT, [
+      "cancelable", true,
+      "command", command,
+      "composed", true,
+      "source", wrap(button),
+    ]));
+    eventState(event).trusted = true;
+    if (drain(dispatching(wrap(target), event))) return;
+    if (!native.connected(target) || custom) return;
+    if (popover && command === "hide-popover") {
+      if (popoverValid(target, true, false, "")) hidePopover(target, true, true, false, button, "");
+    } else if (popover && command === "toggle-popover") {
+      togglePopover(target, null, false, button, "");
+    } else if (popover && command === "show-popover") {
+      if (popoverValid(target, false, false, "")) showPopover(target, false, button, "");
+    } else if (isDialog(target) && command === "show-modal") {
+      if (!hasOpen(target) && popoverShown(target) === null) showModal(target, button);
+    } else if (isDialog(target) && command === "close") {
+      closeDialog(target, optionalValue(button), button);
+    } else if (isDialog(target) && command === "request-close") {
+      requestCloseDialog(target, optionalValue(button), button);
+    }
+  }
+
+  // A form's method as its submission takes it: its submitter's
+  // `formmethod`, else its own `method`, lowercased.
+  function formMethod(form, submitter) {
+    let value = submitter === null ? null : native.attribute(submitter, "formmethod");
+    if (value === null) value = native.attribute(form, "method");
+    return value === null ? "" : ToLowerCase(value);
+  }
+
+  // The nearest dialog around `handle`, if any.
+  function dialogAround(handle) {
+    for (let n = native.parent(handle); n !== null; n = native.parent(n)) {
+      if (isDialog(n)) return n;
+    }
+    return null;
+  }
+
+  // ---- Close requests and light dismiss --------------------------------
+
+  // The engine's close request (HTML section 6.13.2, the user's Escape):
+  // the topmost close watcher asked to close, its `cancel` cancelable
+  // when `canPrevent`; a dialog whose closed-by state is `none` takes
+  // none. Whether its closing was canceled.
+  function* closeRequestTask(canPrevent) {
+    // HTML's "process close watchers": the last group's, the newest
+    // first, each enabled one asked to close until one is kept open.
+    const watchers = topLayer("watchers");
+    for (let i = watchers.length - 2; i >= 0; i -= 2) {
+      if (!requestCloseOf(watchers[i], watchers[i + 1], canPrevent)) return true;
+    }
+    return false;
+  }
+
+  // HTML's "request to close" the close watcher of `kind` (1 an
+  // element's, 2 a script's) and `which`, with history-action activation
+  // required: whether it closed, or was not enabled; false when its
+  // `cancel` was canceled.
+  function requestCloseOf(kind, which, canPrevent) {
+    if (kind === 2) {
+      const watcher = MapGet(scriptWatchers, which);
+      return watcher === undefined || watcherRequestClose(watcher, canPrevent);
+    }
+    if (isDialog(which) && dialogShown(which) !== null) {
+      if (closedByState(which) === "none") return true;
+      if (!fireCancel(which, canPrevent)) return false;
+      closeDialog(which, null, null);
+      return true;
+    }
+    if (popoverShown(which) !== null) hidePopover(which, true, true, false, null, "");
+    return true;
+  }
+
+  // The popover and the dialog a press began on, as light dismiss
+  // knows them (HTML's "popover pointerdown target" and "dialog
+  // pointerdown target").
+  let popoverPressed = null;
+  let dialogPressed = null;
+
+  // The engine's light dismiss (HTML sections 6.12 and 4.11.4), the
+  // trusted `pointerdown` (`up` false) or `pointerup` at `target`, at
+  // `(x, y)` in the viewport.
+  function* lightDismissTask(target, up, x, y) {
+    lightDismissPopovers(target, up);
+    lightDismissDialogs(target, up, x, y);
+    return false;
+  }
+
+  function lightDismissPopovers(target, up) {
+    if (popoverList("hint").length === 0 && popoverList("auto").length === 0) return;
+    if (!up) {
+      popoverPressed = topmostClickedPopover(target);
+      return;
+    }
+    const ancestor = topmostClickedPopover(target);
+    const same = ancestor === popoverPressed;
+    popoverPressed = null;
+    if (same) hideAllPopoversUntil(ancestor === null ? ALL_POPOVERS : ancestor, false, true);
+  }
+
+  // HTML's "topmost clicked popover".
+  function topmostClickedPopover(node) {
+    const clicked = nearestOpenPopover(node);
+    const targeted = nearestTargetPopover(node);
+    return stackPosition(clicked) > stackPosition(targeted) ? clicked : targeted;
+  }
+
+  // HTML's "popover stack position": past the auto list in the hint
+  // list, from 1; 0 for none.
+  function stackPosition(popover) {
+    if (popover === null) return 0;
+    const autos = popoverList("auto");
+    const hints = popoverList("hint");
+    for (let i = 0; i < hints.length; i++) {
+      if (hints[i] === popover) return autos.length + i + 1;
+    }
+    for (let i = 0; i < autos.length; i++) {
+      if (autos[i] === popover) return i + 1;
+    }
+    return 0;
+  }
+
+  // HTML's "nearest inclusive target popover for invoker": the auto or
+  // hint popover showing that the nearest invoker around `node` targets.
+  function nearestTargetPopover(node) {
+    for (let n = node; n !== null; n = flatParent(n)) {
+      if (native.kind(n) !== 1) continue;
+      let popover = popoverTargetOf(n);
+      // A command button counts when it would run a popover command: not
+      // a submit or reset button of a form, nor one of a form of no type.
+      if (popover === null && native.tag(n) === "button" && isHtmlElement(n)) {
+        const command = commandOf(n);
+        const popoverCommand = command === "show-popover" || command === "hide-popover" ||
+          command === "toggle-popover";
+        const type = native.attribute(n, "type");
+        const explicit = type !== null && ToLowerCase(type) === "button";
+        if (popoverCommand && !native.disabled(n) && (explicit || native.formOwner(n) === null)) {
+          popover = reflectedElement(n, "commandfor");
+        }
+      }
+      const shown = popover === null ? null : popoverShown(popover);
+      if (shown !== null && (shown[0] === "auto" || shown[0] === "hint")) return popover;
+    }
+    return null;
+  }
+
+  function lightDismissDialogs(target, up, x, y) {
+    const dialogs = topLayer("dialogs");
+    if (dialogs.length === 0) return;
+    const ancestor = nearestClickedDialog(target, x, y);
+    if (!up) {
+      dialogPressed = ancestor;
+      return;
+    }
+    const same = ancestor === dialogPressed;
+    dialogPressed = null;
+    const topmost = dialogs[dialogs.length - 1];
+    if (!same || ancestor === topmost || closedByState(topmost) !== "any") return;
+    if (fireCancel(topmost, true)) closeDialog(topmost, null, null);
+  }
+
+  // HTML's "nearest clicked dialog": none for a press on a modal
+  // dialog's backdrop, outside its box; else the nearest open dialog
+  // around the target.
+  function nearestClickedDialog(target, x, y) {
+    if (isDialog(target) && hasOpen(target) && dialogShown(target) === "modal") {
+      const box = native.geometry(target, true);
+      if (box.length >= 4 && (x < box[0] || y < box[1] || x >= box[0] + box[2] ||
+        y >= box[1] + box[3])) {
+        return null;
+      }
+    }
+    for (let n = target; n !== null; n = flatParent(n)) {
+      if (isDialog(n) && hasOpen(n)) return n;
+    }
+    return null;
+  }
+
+  // The engine's change of interest (HTML section 6.14): `interest` or
+  // `loseinterest` at `target`, cancelable, its source `source`; then
+  // its state, and a popover target shown or hidden. Whether it was
+  // canceled.
+  function* interestTask(source, target, gained) {
+    const event = new InterestEvent(gained ? "interest" : "loseinterest", made(INTEREST_INIT, [
+      "cancelable", true,
+      "composed", true,
+      "source", wrap(source),
+    ]));
+    eventState(event).trusted = true;
+    if (yield* dispatching(wrap(target), event)) return true;
+    topLayer("interest", source, target, null, null, gained ? "gain" : "lose");
+    if (popoverAttribute(target) !== null) {
+      if (gained && popoverShown(target) === null) {
+        showPopover(target, false, source, "");
+      } else if (!gained && popoverShown(target) !== null &&
+        topLayer("invoker", target) === source) {
+        hidePopover(target, true, true, false, source, "");
+      }
+    }
+    return false;
+  }
+
+  // ---- Script close watchers (HTML section 6.13.1) ---------------------
+
+  // Each `CloseWatcher`'s state, by object, and the objects by number.
+  const watcherStates = new $WeakMap();
+  const scriptWatchers = new $Map();
+  let lastWatcher = 0;
+
+  function watcherOf(object) {
+    const state = WeakMapGet(watcherStates, object);
+    if (state === undefined) throw illegalInvocation();
+    return state;
+  }
+
+  // Destroys a close watcher: no longer active, and the engine's
+  // forgotten.
+  function watcherDestroy(object) {
+    const state = watcherOf(object);
+    if (!state.active) return;
+    state.active = false;
+    MapDelete(scriptWatchers, state.id);
+    topLayer("removeWatcher", null, null, null, null, $String(state.id));
+  }
+
+  // HTML's "close" a close watcher: destroyed, then `close` at it.
+  function watcherClose(object) {
+    const state = watcherOf(object);
+    if (!state.active) return;
+    watcherDestroy(object);
+    const event = new Event("close", made(EVENT_INIT, []));
+    eventState(event).trusted = true;
+    drain(dispatching(object, event));
+  }
+
+  // HTML's "request to close": `cancel`, cancelable when `canPrevent`,
+  // then its closing. Whether it closed (or was not active).
+  function watcherRequestClose(object, canPrevent) {
+    const state = watcherOf(object);
+    if (!state.active || state.running) return true;
+    state.running = true;
+    let go;
+    try {
+      const event = new Event("cancel", made(EVENT_INIT, ["cancelable", canPrevent]));
+      eventState(event).trusted = true;
+      go = !drain(dispatching(object, event));
+    } finally {
+      state.running = false;
+    }
+    if (!go) return false;
+    watcherClose(object);
+    return true;
+  }
+
+  class CloseWatcher extends EventTarget {
+    constructor(options = undefined) {
+      super();
+      const dict = options === undefined || options === null ? {} : options;
+      const signal = dict.signal;
+      const id = ++lastWatcher;
+      WeakMapSet(watcherStates, this, { id, active: true, running: false });
+      if (signal !== undefined && signal !== null) {
+        const s = signalOf(signal);
+        if (s.aborted) {
+          WeakMapGet(watcherStates, this).active = false;
+          return;
+        }
+        ArrayPush(s.algorithms, () => watcherDestroy(this));
+      }
+      MapSet(scriptWatchers, id, this);
+      topLayer("addWatcher", null, null, null, null, $String(id));
+    }
+
+    requestClose() {
+      watcherRequestClose(this, true);
+    }
+
+    close() {
+      watcherClose(this);
+    }
+
+    destroy() {
+      watcherDestroy(this);
+    }
+  }
+  defineHandlers(CloseWatcher.prototype, ["cancel", "close"], false);
+  expose(CloseWatcher, "CloseWatcher");
+
+  // ---- The members (HTML sections 4.11.4, 6.12.1, 4.10.6, 6.14) ----------
+
+  include(
+    {
+      get open() {
+        return hasOpen(self(this));
+      },
+
+      set open(value) {
+        const handle = self(this);
+        if (value) {
+          setAttribute(handle, "open", "", "open");
+        } else {
+          removeAttribute(handle, "open");
+        }
+      },
+
+      get returnValue() {
+        self(this);
+        const value = WeakMapGet(returnValues, this);
+        return value === undefined ? "" : value;
+      },
+
+      set returnValue(value) {
+        self(this);
+        WeakMapSet(returnValues, this, str(value));
+      },
+
+      get closedBy() {
+        return closedByState(self(this));
+      },
+
+      set closedBy(value) {
+        setAttribute(self(this), "closedby", str(value), "closedBy");
+      },
+
+      close(result = undefined) {
+        closeDialog(self(this), result === undefined ? null : str(result), null);
+      },
+
+      requestClose(result = undefined) {
+        requestCloseDialog(self(this), result === undefined ? null : str(result), null);
+      },
+
+      show() {
+        showDialog(self(this));
+      },
+
+      showModal() {
+        showModal(self(this), null);
+      },
+    },
+    [madeInterfaces.HTMLDialogElement.prototype],
+  );
+
+  // HTMLDetailsElement (HTML section 4.11.1, gap batch H): `open` and
+  // `name` reflected.
+  include(
+    {
+      get open() {
+        return native.attribute(self(this), "open") !== null;
+      },
+
+      set open(value) {
+        const handle = self(this);
+        if (value) {
+          setAttribute(handle, "open", "", "open");
+        } else {
+          removeAttribute(handle, "open");
+        }
+      },
+
+      get name() {
+        const value = native.attribute(self(this), "name");
+        return value === null ? "" : value;
+      },
+
+      set name(value) {
+        setAttribute(self(this), "name", str(value), "name");
+      },
+    },
+    [madeInterfaces.HTMLDetailsElement.prototype],
+  );
+
+  // HTMLSelectElement's `showPicker()` (HTML section 4.10.7, gap batch
+  // H): a drop-down not disabled, with the user's activation, has its
+  // list shown once the script is done.
+  include(
+    {
+      showPicker() {
+        const handle = self(this);
+        const error = topLayer("showPicker", handle);
+        if (error === "InvalidStateError") {
+          throw domError("InvalidStateError", "Select cannot be used if it is disabled.",
+            "showPicker", "HTMLSelectElement");
+        }
+        if (error === "NotAllowedError") {
+          throw domError("NotAllowedError", "HTMLSelectElement::showPicker() requires a user gesture.",
+            "showPicker", "HTMLSelectElement");
+        }
+      },
+    },
+    [madeInterfaces.HTMLSelectElement.prototype],
+  );
+
+  // A `showPopover()` or `togglePopover()` option's `source`, as an
+  // element's handle, or null.
+  function sourceOption(options, method) {
+    if (options === undefined || options === null || typeof options !== "object") return null;
+    const source = options.source;
+    if (source === undefined) return null;
+    // Not nullable: null is no HTMLElement (WebIDL section 3.2.10).
+    if (source === null || !isNode(source) || kindOf(source) !== 1) {
+      throw new $TypeError(prefix(method, "HTMLElement") +
+        "Failed to read the 'source' property from '" +
+        (method === "showPopover" ? "ShowPopoverOptions" : "TogglePopoverOptions") +
+        "': Failed to convert value to 'HTMLElement'.");
+    }
+    return handleOf(source);
+  }
+
+  include(
+    {
+      get popover() {
+        return popoverAttribute(self(this));
+      },
+
+      set popover(value) {
+        const handle = self(this);
+        // A nullable DOMString: undefined is null (WebIDL section 3.2.24).
+        if (value === null || value === undefined) {
+          removeAttribute(handle, "popover");
+        } else {
+          setAttribute(handle, "popover", str(value), "popover");
+        }
+      },
+
+      showPopover(options = undefined) {
+        const handle = self(this);
+        showPopover(handle, true, sourceOption(options, "showPopover"), "showPopover");
+      },
+
+      hidePopover() {
+        hidePopover(self(this), true, true, true, null, "hidePopover");
+      },
+
+      togglePopover(options = undefined) {
+        const handle = self(this);
+        let force = null;
+        if (typeof options === "boolean") {
+          force = options;
+        } else if (options !== undefined && options !== null && typeof options === "object" &&
+          options.force !== undefined) {
+          force = !!options.force;
+        }
+        const source = typeof options === "boolean" ? null : sourceOption(options, "togglePopover");
+        return togglePopover(handle, force, true, source, "togglePopover");
+      },
+    },
+    [HTMLElement.prototype],
+  );
+
+  // `popoverTargetElement` and `popoverTargetAction` (HTML section
+  // 6.12.3), of a button and an input.
+  include(
+    {
+      get popoverTargetElement() {
+        const found = associatedElements(self(this), "popovertarget");
+        return found.length === 0 ? null : wrap(found[0]);
+      },
+
+      set popoverTargetElement(value) {
+        setAttrElement(self(this), "popovertarget", value, "popoverTargetElement",
+          nameOfInterface(this));
+      },
+
+      get popoverTargetAction() {
+        return popoverTargetAction(self(this));
+      },
+
+      set popoverTargetAction(value) {
+        setAttribute(self(this), "popovertargetaction", str(value), "popoverTargetAction");
+      },
+    },
+    [madeInterfaces.HTMLButtonElement.prototype, madeInterfaces.HTMLInputElement.prototype],
+  );
+
+  // `commandForElement` and `command` (HTML section 4.10.6), a button's.
+  include(
+    {
+      get commandForElement() {
+        const found = associatedElements(self(this), "commandfor");
+        return found.length === 0 ? null : wrap(found[0]);
+      },
+
+      set commandForElement(value) {
+        setAttrElement(self(this), "commandfor", value, "commandForElement",
+          "HTMLButtonElement");
+      },
+
+      get command() {
+        return commandOf(self(this));
+      },
+
+      set command(value) {
+        setAttribute(self(this), "command", str(value), "command");
+      },
+    },
+    [madeInterfaces.HTMLButtonElement.prototype],
+  );
+
+  // `interestForElement` (HTML section 6.14), an interest invoker's.
+  include(
+    {
+      get interestForElement() {
+        const found = associatedElements(self(this), "interestfor");
+        return found.length === 0 ? null : wrap(found[0]);
+      },
+
+      set interestForElement(value) {
+        setAttrElement(self(this), "interestfor", value, "interestForElement",
+          nameOfInterface(this));
+      },
+    },
+    [
+      madeInterfaces.HTMLButtonElement.prototype,
+      madeInterfaces.HTMLAnchorElement.prototype,
+      madeInterfaces.HTMLAreaElement.prototype,
+      madeInterfaces.SVGAElement.prototype,
+    ],
+  );
+
+  // ARIA's element references (ARIA 1.3 section 6.1, as the reference
+  // browser reflects them): one element, or a list, each `null` with no
+  // attribute and none a script set.
+  const ARIA_ELEMENT = [["ariaActiveDescendantElement", "aria-activedescendant"]];
+  const ARIA_ELEMENTS = [
+    ["ariaControlsElements", "aria-controls"],
+    ["ariaDescribedByElements", "aria-describedby"],
+    ["ariaDetailsElements", "aria-details"],
+    ["ariaErrorMessageElements", "aria-errormessage"],
+    ["ariaFlowToElements", "aria-flowto"],
+    ["ariaLabelledByElements", "aria-labelledby"],
+  ];
+  // Whether the attribute is there, or a script set elements for it.
+  function referenceSet(handle, attribute) {
+    return native.attribute(handle, attribute) !== null;
+  }
+  for (let i = 0; i < ARIA_ELEMENT.length; i++) {
+    const [property, attribute] = ARIA_ELEMENT[i];
+    defineProperty(Element.prototype, property, {
+      get() {
+        const found = associatedElements(self(this), attribute);
+        return found.length === 0 ? null : wrap(found[0]);
+      },
+      set(value) {
+        setAttrElement(self(this), attribute, value === undefined ? null : value, property,
+          "Element");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  for (let i = 0; i < ARIA_ELEMENTS.length; i++) {
+    const [property, attribute] = ARIA_ELEMENTS[i];
+    defineProperty(Element.prototype, property, {
+      get() {
+        const handle = self(this);
+        if (!referenceSet(handle, attribute)) return null;
+        const found = associatedElements(handle, attribute);
+        const out = [];
+        for (let j = 0; j < found.length; j++) ArrayPush(out, wrap(found[j]));
+        return out;
+      },
+      set(value) {
+        setAttrElements(self(this), attribute, value, property);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // An element's interface's name, as an exception's words give it.
+  function nameOfInterface(object) {
+    const tag = native.tag(self(object));
+    if (tag === "input") return "HTMLInputElement";
+    if (tag === "a") return isHtmlElement(self(object)) ? "HTMLAnchorElement" : "SVGAElement";
+    if (tag === "area") return "HTMLAreaElement";
+    return "HTMLButtonElement";
+  }
 
   // ---- Geometry (Geometry Interfaces Module Level 1, M30) ------------------
 
@@ -25896,6 +27409,7 @@
   // wait for the next frame. A generator, as a dispatch is, that yields
   // after each callback for the realm's microtask checkpoint.
   function* runFrames(now) {
+    yield* fireFrameEvents();
     const handles = [];
     MapForEach(frameCallbacks, (callback, handle) => {
       ArrayPush(handles, handle);
@@ -26709,6 +28223,11 @@
       return part === undefined ? nothing() : part.animationsTask(text);
     },
     mediaChanged,
+    // The top layer's (gap batch H): the user's close request, a press's
+    // light dismiss, and a change of interest.
+    closeRequest: closeRequestTask,
+    lightDismiss: lightDismissTask,
+    interest: interestTask,
     mutations: mutationsTask,
     observations: observationsTask,
     popState: popStateTask,

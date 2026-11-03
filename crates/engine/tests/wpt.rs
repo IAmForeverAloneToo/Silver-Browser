@@ -561,13 +561,16 @@ add_completion_callback(function (tests, status) {
 /// `test_driver.send_keys` made by the runner's presses of the keys it
 /// asks for on the console (see [`send_keys`]), the element focused
 /// first when it can take the focus, as WebDriver's Element Send Keys
-/// does; it settles once the last key's `keyup` reaches the window. And
+/// does; it settles in the task after the last key's `keyup` reaches the
+/// window, its default action done. And
 /// `test_driver.click` made by a press and release at the point it asks
 /// for, as `bless`'s are; it settles in the task after the release. And
-/// `test_driver.action_sequence` for sequences of key actions and pauses
-/// (see [`key_actions`]), tick by tick; it settles once the window has
-/// seen the event of each key's press and release. Pointer and wheel
-/// actions it refuses.
+/// `test_driver.action_sequence` for sequences of key, pointer and wheel
+/// actions and pauses (see [`key_actions`]), tick by tick, a pointer's
+/// points worked out as WebDriver works them out from their origins; it
+/// settles once the window has seen the event of each key's press and
+/// release, each pointer move, press and release and each wheel turn, or
+/// a second of the page's time after.
 const VENDOR: &str = r#"(function () {
   if (!window.test_driver) {
     return;
@@ -614,7 +617,8 @@ const VENDOR: &str = r#"(function () {
       window.addEventListener("keyup", function seen(event) {
         if (event.key === name) {
           window.removeEventListener("keyup", seen, true);
-          resolve();
+          // After the release's own default action, a click by Space.
+          setTimeout(resolve, 0);
         }
       }, true);
     });
@@ -632,46 +636,101 @@ const VENDOR: &str = r#"(function () {
     return done;
   };
   var modifiers = [0xE008, 0xE009, 0xE00A, 0xE03D, 0xE050, 0xE051, 0xE052, 0xE053];
+  // Where the pointer is, as WebDriver keeps it from one sequence to the
+  // next.
+  var pointer = {x: 0, y: 0};
+  // A point of a pointer move or a wheel scroll: from the viewport's top
+  // left, the pointer's place, or the middle of the element's first box
+  // as much of it as is in the viewport, as WebDriver's "get coordinates
+  // relative to an origin" has it.
+  function point(origin, x, y) {
+    x = x || 0;
+    y = y || 0;
+    if (origin === "pointer") {
+      return {x: pointer.x + x, y: pointer.y + y};
+    }
+    if (origin && typeof origin === "object" && typeof origin.getClientRects === "function") {
+      var rects = origin.getClientRects();
+      var r = rects.length ? rects[0] : origin.getBoundingClientRect();
+      var left = Math.max(0, Math.min(r.left, r.right));
+      var right = Math.min(innerWidth, Math.max(r.left, r.right));
+      var top = Math.max(0, Math.min(r.top, r.bottom));
+      var bottom = Math.min(innerHeight, Math.max(r.top, r.bottom));
+      return {x: Math.floor((left + right) / 2) + x, y: Math.floor((top + bottom) / 2) + y};
+    }
+    return {x: x, y: y};
+  }
   window.test_driver_internal.action_sequence = function (actions) {
     var ticks = 0;
     for (var i = 0; i < actions.length; i++) {
-      if (actions[i].type !== "key" && actions[i].type !== "none") {
-        return Promise.reject(new Error(
-          "pointer and wheel actions are not implemented by testdriver-vendor.js"));
-      }
       ticks = Math.max(ticks, actions[i].actions.length);
     }
     var steps = [];
-    var events = 0;
+    // The events each step makes the window hear, by type.
+    var expected = {};
+    function expect(type) {
+      expected[type] = (expected[type] || 0) + 1;
+    }
     for (var tick = 0; tick < ticks; tick++) {
       for (var j = 0; j < actions.length; j++) {
         var action = actions[j].actions[tick];
-        if (!action || (action.type !== "keyDown" && action.type !== "keyUp")) {
+        if (!action) {
           continue;
         }
-        var code = action.value.codePointAt(0);
-        steps.push((action.type === "keyDown" ? "d" : "u") + code);
-        if (modifiers.indexOf(code) < 0) {
-          events += 1;
+        if (action.type === "keyDown" || action.type === "keyUp") {
+          var code = action.value.codePointAt(0);
+          steps.push((action.type === "keyDown" ? "d" : "u") + code);
+          if (modifiers.indexOf(code) < 0) {
+            expect(action.type === "keyDown" ? "keydown" : "keyup");
+          }
+        } else if (action.type === "pointerMove") {
+          var to = point(action.origin, action.x, action.y);
+          pointer = to;
+          steps.push("m" + to.x + "," + to.y);
+          expect("pointermove");
+        } else if (action.type === "pointerDown" || action.type === "pointerUp") {
+          var down = action.type === "pointerDown";
+          steps.push((down ? "p" : "r") + (action.button || 0) + "," + pointer.x + "," + pointer.y);
+          expect(down ? "pointerdown" : "pointerup");
+        } else if (action.type === "scroll") {
+          var at = point(action.origin, action.x, action.y);
+          var dx = action.deltaX || 0;
+          var dy = action.deltaY || 0;
+          steps.push("w" + at.x + "," + at.y + "," + dx + "," + dy);
+          if (dy !== 0) expect("wheel");
+          if (dx !== 0) expect("wheel");
         }
       }
     }
+    var types = Object.keys(expected);
     var done = new Promise(function (resolve) {
-      if (events === 0) {
+      if (types.length === 0) {
         setTimeout(resolve, 0);
         return;
       }
-      var seen = 0;
-      function count() {
-        seen += 1;
-        if (seen === events) {
-          window.removeEventListener("keydown", count, true);
-          window.removeEventListener("keyup", count, true);
-          setTimeout(resolve, 0);
+      var finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        for (var k = 0; k < types.length; k++) {
+          window.removeEventListener(types[k], count, true);
         }
+        setTimeout(resolve, 0);
       }
-      window.addEventListener("keydown", count, true);
-      window.addEventListener("keyup", count, true);
+      function count(event) {
+        expected[event.type] -= 1;
+        for (var k = 0; k < types.length; k++) {
+          if (expected[types[k]] > 0) return;
+        }
+        finish();
+      }
+      for (var k = 0; k < types.length; k++) {
+        window.addEventListener(types[k], count, true);
+      }
+      // A point out of the page, or a target that hears nothing, makes
+      // fewer events than counted: the sequence settles all the same
+      // once the page's time has moved on.
+      setTimeout(finish, 1000);
     });
     console.log("wpt-actions\t" + steps.join("\t"));
     return done;
@@ -1875,7 +1934,7 @@ fn bless(engine: &mut Engine, now: Duration, said: &mut Vec<String>) {
         }
         if let Some(actions) = entry.text.strip_prefix("wpt-actions\t") {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
-            key_actions(engine, actions);
+            key_actions(engine, actions, now);
             continue;
         }
         let point = entry.text.strip_prefix("wpt-bless\t").and_then(|point| {
@@ -1911,14 +1970,72 @@ fn send_keys(engine: &mut Engine, keys: &str) {
     engine.set_modifiers(engine::Modifiers::default());
 }
 
-/// Performs the key actions of a `test_driver.action_sequence` the
-/// vendor flattened tick by tick (see [`VENDOR`]): each a `d` for a
-/// press or a `u` for a release, then the key's code point, WebDriver's,
-/// in decimal. A modifier key is held from its press to its release, and
-/// none past the sequence's end.
-fn key_actions(engine: &mut Engine, actions: &str) {
+/// Performs the actions of a `test_driver.action_sequence` the vendor
+/// flattened tick by tick (see [`VENDOR`]), at the page's time `now`:
+/// each a `d` for a key's press or a `u` for its release, then the key's
+/// code point, WebDriver's, in decimal; an `m` for a pointer move, then
+/// the point; a `p` for a pointer button's press or an `r` for its
+/// release, then WebDriver's button number and the point; a `w` for a
+/// wheel's turn, then the point and the amounts across and down. A
+/// modifier key is held from its press to its release, and none past the
+/// sequence's end; a press where the last release of the same button
+/// was is the next of a run of quick ones, as a double click's second.
+fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
     let mut modifiers = engine::Modifiers::default();
+    let mut released: Option<(u32, f32, f32)> = None;
+    let mut count = 1;
     for action in actions.split('\t') {
+        let numbers = |rest: &str| -> Vec<f32> {
+            rest.split(',')
+                .filter_map(|n| n.parse::<f32>().ok())
+                .collect()
+        };
+        match action.split_at_checked(1) {
+            Some(("m", rest)) => {
+                if let [x, y] = numbers(rest)[..] {
+                    engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    engine.pointer_move(x, y);
+                }
+                continue;
+            }
+            Some((kind @ ("p" | "r"), rest)) => {
+                if let [button, x, y] = numbers(rest)[..] {
+                    let number = button as u32;
+                    let button = match number {
+                        1 => engine::Button::Auxiliary,
+                        2 => engine::Button::Secondary,
+                        3 => engine::Button::Back,
+                        4 => engine::Button::Forward,
+                        _ => engine::Button::Primary,
+                    };
+                    engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    if kind == "p" {
+                        count = match released {
+                            Some((b, rx, ry)) if b == number && rx == x && ry == y => count + 1,
+                            _ => 1,
+                        };
+                        engine.pointer_down(x, y, button, count);
+                    } else {
+                        engine.pointer_up(x, y, button, count);
+                        released = Some((number, x, y));
+                    }
+                }
+                continue;
+            }
+            Some(("w", rest)) => {
+                if let [x, y, dx, dy] = numbers(rest)[..] {
+                    engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    if dy != 0.0 {
+                        engine.wheel(x, y, dy);
+                    }
+                    if dx != 0.0 {
+                        engine.wheel_across(x, y, dx);
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
         let (down, code) = match action.split_at_checked(1) {
             Some(("d", code)) => (true, code),
             Some(("u", code)) => (false, code),

@@ -739,6 +739,7 @@ fn build(
         kept,
     };
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
+    boxes.extend(top_layer_boxes(&styled));
     propagate_overflow(document, &mut boxes);
     place_markers(&mut boxes);
     first_line::apply(&styled, &mut boxes);
@@ -773,6 +774,39 @@ fn math_auto(style: Arc<ComputedStyle>, text: &str) -> Arc<ComputedStyle> {
         }
         _ => style,
     }
+}
+
+/// The boxes of the elements in the top layer (CSS Position 4 section
+/// 4, gap batch H), in its order, each after its `::backdrop`'s: built
+/// at the top level after the root's, as the absolutely positioned
+/// boxes the cascade made them, out of their place in the tree, which
+/// [`Styled::boxed_children`] leaves them out of. One the cascade gave
+/// no style, under an element of `display: none`, has none.
+fn top_layer_boxes(styled: &Styled<'_>) -> Vec<LayoutBox> {
+    let mut out = Vec::new();
+    for &element in styled.document.top_layer() {
+        let item = Item::Node(element);
+        let Some(style) = styled
+            .style(item)
+            .filter(|style| style.top_layer && style.display != Display::None)
+        else {
+            continue;
+        };
+        let backdrop = Item::Generated(element, Side::Backdrop);
+        if let Some(backdrop_style) = styled
+            .style(backdrop)
+            .filter(|style| style.display != Display::None)
+        {
+            out.push(styled.own_box(backdrop, backdrop_style, BoxKind::Absolute, Vec::new));
+        }
+        match styled.replaced_of(item, style) {
+            Some(replaced) => out.push(replaced),
+            None => out.push(styled.own_box(item, style, BoxKind::Absolute, || {
+                build_inside(styled, item, style)
+            })),
+        }
+    }
+    out
 }
 
 /// Gives the viewport the root's `overflow` (css-overflow-3 section 3.3,
@@ -949,12 +983,14 @@ enum Item {
 }
 
 /// Which of an element's generated boxes an [`Item`] is: a list item's
-/// marker (M21.6), or its `::before` or `::after`.
+/// marker (M21.6), or its `::before` or `::after`; or the `::backdrop`
+/// of an element in the top layer (gap batch H), which holds nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Side {
     Marker,
     Before,
     After,
+    Backdrop,
 }
 
 impl Side {
@@ -963,6 +999,7 @@ impl Side {
             Side::Marker => PseudoElement::Marker,
             Side::Before => PseudoElement::Before,
             Side::After => PseudoElement::After,
+            Side::Backdrop => PseudoElement::Backdrop,
         }
     }
 }
@@ -1114,6 +1151,7 @@ impl<'a> Styled<'a> {
                     .chain(generated(Side::After))
                     .collect()
             }
+            Item::Generated(_, Side::Backdrop) => Vec::new(),
             Item::Generated(element, side) => vec![Item::GeneratedText(element, side)],
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => Vec::new(),
         }
@@ -1122,13 +1160,15 @@ impl<'a> Styled<'a> {
     /// The children of `node` that may make boxes: its elements and
     /// text, not its comments or processing instructions (D58), in the
     /// flat tree (D68): a host's shadow tree's, a slot's assigned nodes
-    /// or its fallback content. Every walk of the tree the boxes are built
-    /// from goes through here, so that it is the one place that says what
-    /// a node's children are.
+    /// or its fallback content; nor the elements in the top layer, which
+    /// make theirs at the top level ([`top_layer_boxes`]). Every walk of
+    /// the tree the boxes are built from goes through here, so that it is
+    /// the one place that says what a node's children are.
     fn boxed_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        self.document
-            .flat_children(node)
-            .filter(|&child| self.document.is_element(child) || self.document.is_text(child))
+        self.document.flat_children(node).filter(|&child| {
+            self.document.is_text(child)
+                || (self.document.is_element(child) && !self.document.in_top_layer(child))
+        })
     }
 
     /// [`Styled::children`], each element of `display: contents` among

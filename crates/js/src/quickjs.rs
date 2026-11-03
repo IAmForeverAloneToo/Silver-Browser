@@ -700,6 +700,25 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("mediaChanged")?
                     .call::<_, Value<'_>>((ids.clone(),))
             }),
+            Task::CloseRequest { can_prevent } => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("closeRequest")?
+                    .call::<_, Value<'_>>((*can_prevent,))
+            }),
+            Task::LightDismiss { target, up, x, y } => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("lightDismiss")?
+                    .call::<_, Value<'_>>((target.0 as f64, *up, *x, *y))
+            }),
+            Task::Interest {
+                source,
+                target,
+                gained,
+            } => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("interest")?
+                    .call::<_, Value<'_>>((source.0 as f64, target.0 as f64, *gained))
+            }),
             Task::Gpu(message, bytes) => self.stepped(&entries, |ctx, entries| {
                 let bytes = if bytes.is_empty() {
                     Value::new_null(ctx.clone())

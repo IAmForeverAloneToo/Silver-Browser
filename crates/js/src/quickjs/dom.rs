@@ -359,6 +359,7 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::AssignSlot(a.handle(0)?, a.handles(1)?))
     }),
     ("takeSlotChanges", |_| Ok(Call::TakeSlotChanges)),
+    ("takeDetailsToggles", |_| Ok(Call::TakeDetailsToggles)),
     ("eventPath", |a| {
         Ok(Call::EventPath {
             target: a.handle(0)?,
@@ -593,6 +594,30 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::Clone {
             node: a.handle(0)?,
             deep: a.bool(1),
+        })
+    }),
+    ("elementReference", |a| {
+        Ok(Call::ElementReference {
+            op: a.string(0)?,
+            element: a.handle(1)?,
+            attribute: a.string(2)?,
+            elements: if a.value(3).is_undefined() {
+                Vec::new()
+            } else {
+                a.handles(3)?
+            },
+        })
+    }),
+    ("topLayer", |a| {
+        Ok(Call::TopLayer {
+            op: a.string(0)?,
+            nodes: [
+                a.maybe_handle(1)?,
+                a.maybe_handle(2)?,
+                a.maybe_handle(3)?,
+                a.maybe_handle(4)?,
+            ],
+            word: a.maybe_string(5)?.unwrap_or_default(),
         })
     }),
     ("elementById", |a| {

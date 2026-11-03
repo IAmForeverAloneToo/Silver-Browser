@@ -219,6 +219,10 @@ pub enum Call {
     /// The slots whose assigned nodes changed since this was last asked,
     /// at which the bindings fire `slotchange`.
     TakeSlotChanges,
+    /// The `details` elements whose `open` changed since this was last
+    /// asked, each with whether it was open before (gap batch H): the
+    /// `toggle` events the bindings owe.
+    TakeDetailsToggles,
     /// The event path of an event at `target` (DOM section 2.9): six
     /// numbers a struct, its invocation target, its shadow-adjusted
     /// target, its related target (each -1 for none), whether it is the
@@ -1108,6 +1112,49 @@ pub enum Call {
     },
     /// A canvas's operation (M30): one variant for them all.
     Canvas(Box<CanvasCall>),
+    /// The top layer's state (gap batch H, `dom::Document`'s), which the
+    /// bindings' algorithms for dialogs, popovers, close watchers and
+    /// interest invokers read and change: `op` names what is asked,
+    /// `nodes` the four nodes it may take, `word` a word it may take.
+    ///
+    /// - `popover` (node): a showing popover's mode and list as strings,
+    ///   none for a hidden one; `invoker` and `anchor` (node): its
+    ///   invoker, and the auto popover a hint hangs from, or `null`;
+    ///   `list` (word `auto` or `hint`): that list, bottom first.
+    /// - `show` (popover, invoker, unused, anchor; word its mode and
+    ///   list): it shown, at the top of its list and the top layer;
+    ///   `hide` (node): it hidden, its previously focused element
+    ///   answered; `setFocus` (popover, element): that element its
+    ///   previously focused one.
+    /// - `dialog` (node): an open dialog's state, `modal` or `open`,
+    ///   none for a closed one; `dialogs`: the open dialogs;
+    ///   `openDialog` (dialog, focused; word `modal` or `open`) and
+    ///   `closeDialog` (dialog), which answers the element focused
+    ///   before it opened.
+    /// - `watchers`: the close watchers of the close watcher manager's
+    ///   last group, oldest first, two numbers each: 1 and an element's
+    ///   handle, or 2 and a script's watcher's number; `addWatcher` and
+    ///   `removeWatcher` (word its number).
+    /// - `delegate` (node; word `dialog` or `popover`): what its
+    ///   focusing focuses, or `null`.
+    /// - `interest` (invoker, target; word `gain` or `lose`): their
+    ///   interest states set.
+    TopLayer {
+        op: String,
+        nodes: [Option<Handle>; 4],
+        word: String,
+    },
+    /// An element-reflecting attribute's elements (HTML section 2.6.1,
+    /// gap batch H): `op` `associated` answers the elements `attribute`
+    /// of `element` names, unresolved, as its IDL attribute gives them;
+    /// `referenced` the one it refers to, reference targets followed;
+    /// `set` makes `elements` stand for it, `unset` takes them away.
+    ElementReference {
+        op: String,
+        element: Handle,
+        attribute: String,
+        elements: Vec<Handle>,
+    },
 }
 
 /// What the host answers a [`Call`] with.

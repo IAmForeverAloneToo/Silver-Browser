@@ -35,15 +35,21 @@ use crate::forms::ControlState;
 use crate::{Element, Namespace, Node, Text, local_part};
 
 mod attributes;
+mod details;
 mod documents;
 mod live;
+mod references;
 mod shadow;
+mod top_layer;
 pub use attributes::{attribute_local_name, implied_attribute_namespace};
+pub use details::MAX_DETAILS_TOGGLES;
 pub use documents::{CompatMode, DocumentFacts, DocumentInterface};
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
+pub use references::{ELEMENT_REFERENCES, MAX_EXPLICIT_ELEMENTS};
 pub use shadow::{
     FlatChildren, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, is_valid_custom_element_name,
 };
+pub use top_layer::{Dialog, MAX_TOP_LAYER, Popover, PopoverList, PopoverMode, Watcher};
 
 /// The deepest elements may nest: 512, the HTML parser's cap on its
 /// stack of open elements (`html::MAX_DEPTH` is this constant), which
@@ -343,10 +349,10 @@ impl fmt::Display for MutationError {
 impl std::error::Error for MutationError {}
 
 /// The flags the user's actions set on an element (M26,
-/// `docs/design/events.md`): what the dynamic pseudo-classes match. A
-/// set of [`ElementState`]'s constants.
+/// `docs/design/events.md`), and the top layer's (gap batch H): what the
+/// dynamic pseudo-classes match. A set of [`ElementState`]'s constants.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ElementState(pub u8);
+pub struct ElementState(pub u16);
 
 impl ElementState {
     pub const NONE: ElementState = ElementState(0);
@@ -363,6 +369,21 @@ impl ElementState {
     pub const FOCUS_WITHIN: ElementState = ElementState(16);
     /// The element the document's URL's fragment indicates: `:target`.
     pub const TARGET: ElementState = ElementState(32);
+    /// A dialog shown by `showModal()` (HTML section 4.11.4): `:modal`.
+    pub const MODAL: ElementState = ElementState(64);
+    /// A popover in the showing state (HTML section 6.12): `:popover-open`.
+    pub const POPOVER_OPEN: ElementState = ElementState(128);
+    /// In the document's top layer (CSS Position 4 section 4): no
+    /// selector reads it; the cascade does.
+    pub const TOP_LAYER: ElementState = ElementState(256);
+    /// An interest invoker whose target has its interest (HTML's
+    /// `interestfor`): `:interest-source`.
+    pub const INTEREST_SOURCE: ElementState = ElementState(512);
+    /// The target of such an invoker: `:interest-target`.
+    pub const INTEREST_TARGET: ElementState = ElementState(1024);
+    /// A control whose picker is shown, a drop-down's list: `:open`,
+    /// which a `dialog` and a `details` match by their `open` attribute.
+    pub const OPEN: ElementState = ElementState(2048);
 
     /// Whether every flag of `flags` is set.
     pub fn contains(self, flags: ElementState) -> bool {
@@ -1128,11 +1149,13 @@ impl Document {
     ) -> Result<NodeId, MutationError> {
         self.check_room()?;
         self.check_data(tag.len() + attrs.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>())?;
-        Ok(self.allocate(NodeData::Element {
+        let element = self.allocate(NodeData::Element {
             tag: tag.to_ascii_lowercase(),
             attrs,
             ns: Namespace::Html,
-        }))
+        });
+        self.details_made(element);
+        Ok(element)
     }
 
     /// A new, detached element of the namespace `ns`, named `qualified`
@@ -1154,7 +1177,9 @@ impl Document {
         } else {
             qualified.to_owned()
         };
-        Ok(self.allocate(NodeData::Element { tag, attrs, ns }))
+        let element = self.allocate(NodeData::Element { tag, attrs, ns });
+        self.details_made(element);
+        Ok(element)
     }
 
     /// A new, detached text node.
@@ -1447,6 +1472,13 @@ impl Document {
             // The same value changes nothing but is still a change to
             // mutation observers, as the DOM's "change an attribute" is.
             Some((_, v)) if v == value => {
+                // A script's element for it goes all the same (gap batch
+                // H).
+                self.references_changed(&Change::AttributeChanged {
+                    element,
+                    name: name.clone(),
+                    old: None,
+                });
                 if self.observing.is_some() {
                     let old = Some(value.to_owned());
                     let (local, namespace) = self.observed_name(element, at, &name);
@@ -2367,6 +2399,9 @@ impl Document {
         record.parent = None;
         record.prev_sibling = None;
         record.next_sibling = None;
+        if !self.rare.moving {
+            self.top_layer_removing(child);
+        }
         let change = Change::Removed {
             parent: self.link(Some(parent)).expect("a parent is live"),
             child,
@@ -2438,6 +2473,8 @@ impl Document {
     }
 
     fn record_change(&mut self, change: Change) {
+        self.references_changed(&change);
+        self.details_changed(&change);
         self.version += 1;
         if self.journal.last() == Some(&Change::Everything) {
             return;

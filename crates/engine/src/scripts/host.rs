@@ -35,6 +35,7 @@ use crate::storage;
 mod animations;
 pub(crate) use animations::notices_json;
 mod shadow;
+mod top_layer;
 
 /// A script running, innermost last.
 struct Frame {
@@ -79,6 +80,9 @@ pub(crate) struct Outputs {
     pub(crate) scrolls: Vec<ScriptScroll>,
     /// A validation message reported, for the notice (M26.9b).
     pub(crate) notice: Option<String>,
+    /// The drop-down whose list `showPicker()` asked to show (gap batch
+    /// H).
+    pub(crate) picker: Option<NodeId>,
     /// The fetches scripts asked for (M27.1), by their numbers.
     pub(crate) fetches: Vec<(u32, net::Request)>,
     /// The fetches their signals aborted.
@@ -476,8 +480,11 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn take_mutation_wake(&mut self) -> bool {
-        // A slot signaled waits for the same microtask (D68).
-        self.mutations.take_wake() | self.document.has_slot_changes()
+        // A slot signaled waits for the same microtask (D68), and a
+        // `details` toggled is taken then (gap batch H).
+        self.mutations.take_wake()
+            | self.document.has_slot_changes()
+            | self.document.has_details_toggles()
     }
 
     fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
@@ -791,6 +798,16 @@ impl DocumentHost {
                         .map(|(name, _)| name.clone()),
                 );
                 Ok(Answer::Strings(answer))
+            }
+            Call::TakeDetailsToggles => {
+                let toggles = self.document.take_details_toggles();
+                Ok(Answer::Pins(
+                    toggles
+                        .into_iter()
+                        .filter(|&(node, _)| self.document.contains(node))
+                        .map(|(node, was)| (handle(node), was))
+                        .collect(),
+                ))
             }
             Call::TakePins => {
                 let pins = std::mem::take(&mut self.pins);
@@ -2619,6 +2636,7 @@ impl DocumentHost {
                     "first-letter" => Some(PseudoElement::FirstLetter),
                     "first-line" => Some(PseudoElement::FirstLine),
                     "marker" => Some(PseudoElement::Marker),
+                    "backdrop" => Some(PseudoElement::Backdrop),
                     _ => return Ok(Answer::MaybeString(None)),
                 };
                 // The properties CSSOM names resolve to their used values
@@ -3024,13 +3042,11 @@ impl DocumentHost {
             Call::FormControls(node) => {
                 let form = self.node(node)?;
                 let document = &self.document;
-                let root = document.ancestors(form).last().unwrap_or(form);
-                let controls = document
-                    .subtree(root)
-                    .filter(|&node| forms::is_listed(document, node))
-                    .filter(|&node| forms::form_owner(document, node) == Some(form))
-                    .map(handle)
-                    .collect();
+                let controls =
+                    forms::owned_by(document, form, |node| forms::is_listed(document, node))
+                        .into_iter()
+                        .map(handle)
+                        .collect();
                 Ok(Answer::Nodes(controls))
             }
             Call::LabeledControl(node) => {
@@ -3262,6 +3278,13 @@ impl DocumentHost {
                 Ok(Answer::MaybeString(answer))
             }
             Call::Canvas(call) => self.canvas(*call),
+            Call::TopLayer { op, nodes, word } => self.top_layer_call(&op, &nodes, &word),
+            Call::ElementReference {
+                op,
+                element,
+                attribute,
+                elements,
+            } => self.element_reference(&op, element, &attribute, &elements),
         }
     }
 
@@ -3990,7 +4013,9 @@ impl DocumentHost {
     /// Whether changes wait for mutation observers that no script's call
     /// took (the parser's).
     pub(crate) fn mutations_waiting(&self, document: &dom::Document) -> bool {
-        (self.mutations.observing() && document.has_observed()) || document.has_slot_changes()
+        (self.mutations.observing() && document.has_observed())
+            || document.has_slot_changes()
+            || document.has_details_toggles()
     }
 
     /// The origin the document's `blob:` URLs are of.
@@ -7140,6 +7165,10 @@ fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
     {
         return true;
     }
+    // A button with a command or a popover target (gap batch H).
+    if crate::top_layer::is_invoker(document, node) {
+        return true;
+    }
     match document.tag(node) {
         Some("a" | "area") => true,
         // A checkbox or a radio button not disabled (M26.8), and a label
@@ -7149,6 +7178,8 @@ fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
                 && !forms::actually_disabled(document, node)
         }
         Some("label") => forms::labeled_control(document, node).is_some(),
+        // The summary of its `details` (gap batch H).
+        Some("summary") => document.summary_details(node).is_some(),
         _ => false,
     }
 }

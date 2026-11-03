@@ -309,6 +309,19 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             BackfaceVisibility::Hidden => "hidden",
         }
         .to_owned(),
+        "pointer-events" => style.pointer_events.keyword().to_owned(),
+        "interactivity" => if style.interactivity_inert {
+            "inert"
+        } else {
+            "auto"
+        }
+        .to_owned(),
+        "interest-delay-start" | "interest-delay-end" => {
+            match style.effects().interest_delay[usize::from(name == "interest-delay-end")] {
+                Some(s) => super::shorthands::seconds(s),
+                None => "normal".to_owned(),
+            }
+        }
         "scroll-behavior" => if style.effects().scroll_behavior_smooth {
             "smooth"
         } else {

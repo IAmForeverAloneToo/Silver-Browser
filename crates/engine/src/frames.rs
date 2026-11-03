@@ -216,6 +216,14 @@ impl FrameTree {
         active
     }
 
+    /// Whether the user activated a document of the tab within
+    /// [`ACTIVATION_SPAN`] of `now` (HTML's transient activation), not
+    /// consuming it.
+    pub(crate) fn transiently_active(&self, now: Duration) -> bool {
+        self.activation
+            .is_some_and(|at| now.saturating_sub(at) <= ACTIVATION_SPAN)
+    }
+
     /// Asks the browser to open `tab`.
     pub(crate) fn open(&mut self, tab: OpenTab) {
         self.opened.push(tab);

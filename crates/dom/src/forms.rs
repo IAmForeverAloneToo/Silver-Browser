@@ -1057,11 +1057,11 @@ pub fn labeled_control(document: &Document, label: NodeId) -> Option<NodeId> {
         return None;
     }
     match document.attr(label, "for") {
+        // The element of that ID in its tree, a shadow root's reference
+        // target followed into it (gap batch H).
         Some(id) => {
-            let root = document.ancestors(label).last().unwrap_or(label);
-            let target = document
-                .subtree(root)
-                .find(|&node| !id.is_empty() && document.attr(node, "id") == Some(id))?;
+            let found = document.element_by_id_in(document.root_of(label), id)?;
+            let target = document.follow_reference_target(found)?;
             is_labelable(document, target).then_some(target)
         }
         // The label itself is not labelable.
@@ -1072,18 +1072,25 @@ pub fn labeled_control(document: &Document, label: NodeId) -> Option<NodeId> {
 }
 
 /// The labels of a labelable element, in tree order: the `label`s in its
-/// tree that label it.
+/// tree that label it, then those of the trees around it whose `for`
+/// reaches it through reference targets (gap batch H), each tree's in
+/// its order.
 pub fn labels(document: &Document, element: NodeId) -> Vec<NodeId> {
     if !is_labelable(document, element) {
         return Vec::new();
     }
-    let root = document.ancestors(element).last().unwrap_or(element);
-    document
-        .subtree(root)
-        .filter(|&node| {
+    let mut out = Vec::new();
+    let mut root = document.root_of(element);
+    // Each turn moves out a tree, which the DOM's depth cap bounds.
+    loop {
+        out.extend(document.subtree(root).filter(|&node| {
             document.tag(node) == Some("label") && labeled_control(document, node) == Some(element)
-        })
-        .collect()
+        }));
+        match document.shadow_host(root) {
+            Some(host) => root = document.root_of(host),
+            None => return out,
+        }
+    }
 }
 
 // ---- Form submission (M26.9) ------------------------------------------------
@@ -1105,14 +1112,32 @@ pub fn is_submittable(document: &Document, element: NodeId) -> bool {
     )
 }
 
-/// A `button`'s type (HTML section 4.10.6): `submit`, its default, or
-/// `reset` or `button`.
+/// A `button`'s type (HTML section 4.10.6): `submit`, `reset` or
+/// `button`; with none or an invalid one, its auto state, `button` for
+/// one with a `command` or `commandfor` attribute and `submit` for
+/// another (gap batch H, as the reference browser has it).
 pub fn button_type(document: &Document, button: NodeId) -> &'static str {
     match document.attr(button, "type") {
         Some(kind) if kind.eq_ignore_ascii_case("reset") => "reset",
         Some(kind) if kind.eq_ignore_ascii_case("button") => "button",
+        Some(kind) if kind.eq_ignore_ascii_case("submit") => "submit",
+        _ if document.attr(button, "command").is_some()
+            || document.attr(button, "commandfor").is_some() =>
+        {
+            "button"
+        }
         _ => "submit",
     }
+}
+
+/// Whether the `button`'s type is its auto state: no `type`, or an
+/// invalid one.
+pub fn button_type_auto(document: &Document, button: NodeId) -> bool {
+    !document.attr(button, "type").is_some_and(|kind| {
+        ["reset", "button", "submit"]
+            .iter()
+            .any(|known| kind.eq_ignore_ascii_case(known))
+    })
 }
 
 /// Whether the element is a submit button: a `button` of type `submit`,
@@ -1146,14 +1171,23 @@ fn is_button(document: &Document, element: NodeId) -> bool {
     }
 }
 
-/// The elements in the form's tree whose form owner it is, of the kind
-/// `keep` picks, in tree order.
-fn owned_by(document: &Document, form: NodeId, keep: impl Fn(NodeId) -> bool) -> Vec<NodeId> {
+/// The elements whose form owner the form is, of the kind `keep` picks,
+/// in tree order: those of its tree, and for a form in a shadow tree
+/// those of the trees around it too, whose `form` attribute may name a
+/// host whose reference target it is (gap batch H), in shadow-including
+/// tree order.
+pub fn owned_by(document: &Document, form: NodeId, keep: impl Fn(NodeId) -> bool) -> Vec<NodeId> {
     let root = document.ancestors(form).last().unwrap_or(form);
-    document
-        .subtree(root)
-        .filter(|&node| keep(node) && form_owner(document, node) == Some(form))
-        .collect()
+    let owned = |node: &NodeId| keep(*node) && form_owner(document, *node) == Some(form);
+    if document.is_shadow_root(root) && document.is_connected(root) {
+        let outermost = document.shadow_including_root(root);
+        return document
+            .shadow_including_subtree(outermost)
+            .into_iter()
+            .filter(owned)
+            .collect();
+    }
+    document.subtree(root).filter(owned).collect()
 }
 
 /// A form's default button (HTML section 4.10.21.2): its first submit
@@ -1306,14 +1340,15 @@ pub fn form_associated(document: &Document, element: NodeId) -> bool {
 /// IDs it keeps.
 pub fn form_owner(document: &Document, element: NodeId) -> Option<NodeId> {
     // The ID is looked for in the element's tree, a shadow tree's own
-    // (D68), once the element is connected.
+    // (D68), once the element is connected; a host it names stands for
+    // its shadow root's reference target, followed in, as the reference
+    // browser has it (gap batch H).
     if let Some(id) = document.attr(element, "form")
         && document.is_connected(element)
     {
         let tree = document.root_of(element);
-        let owner = document
-            .subtree(tree)
-            .find(|&node| !id.is_empty() && document.attr(node, "id") == Some(id))?;
+        let owner = document.element_by_id_in(tree, id)?;
+        let owner = document.follow_reference_target(owner)?;
         return (document.tag(owner) == Some("form")).then_some(owner);
     }
     document
@@ -1360,6 +1395,40 @@ mod tests {
         assert_eq!(owner("nowhere"), None);
         assert_eq!(owner("not-a-form"), None);
         assert_eq!(owner("loose"), None);
+    }
+
+    #[test]
+    fn a_buttons_auto_type_is_button_with_a_command_and_submit_without() {
+        let page: Node = e("form")
+            .push(e("button").attr("id", "plain"))
+            .push(e("button").attr("id", "for").attr("commandfor", "x"))
+            .push(e("button").attr("id", "command").attr("command", "--y"))
+            .push(
+                e("button")
+                    .attr("id", "bogus")
+                    .attr("type", "bogus")
+                    .attr("commandfor", "x"),
+            )
+            .push(
+                e("button")
+                    .attr("id", "submit")
+                    .attr("type", "SUBMIT")
+                    .attr("commandfor", "x"),
+            )
+            .push(e("button").attr("id", "reset").attr("type", "reset"))
+            .into();
+        let document = Document::from_node(&page);
+        let kind = |id| button_type(&document, by_id(&document, id));
+        assert_eq!(kind("plain"), "submit");
+        assert_eq!(kind("for"), "button");
+        assert_eq!(kind("command"), "button");
+        assert_eq!(kind("bogus"), "button");
+        assert_eq!(kind("submit"), "submit");
+        assert_eq!(kind("reset"), "reset");
+        assert!(is_submit_button(&document, by_id(&document, "plain")));
+        assert!(!is_submit_button(&document, by_id(&document, "for")));
+        assert!(button_type_auto(&document, by_id(&document, "bogus")));
+        assert!(!button_type_auto(&document, by_id(&document, "submit")));
     }
 
     #[test]

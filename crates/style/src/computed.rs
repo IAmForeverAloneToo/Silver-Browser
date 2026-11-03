@@ -807,6 +807,45 @@ pub enum Visibility {
     Collapse,
 }
 
+/// `pointer-events` (CSS UI 4 section 6.2, SVG 2 section 15.6; gap
+/// batch H): a box whose value is `none` is not hit, though what is in
+/// it may be; the SVG values say which parts of a shape are, and are
+/// any but `none` to a box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerEvents {
+    #[default]
+    Auto,
+    None,
+    VisiblePainted,
+    VisibleFill,
+    VisibleStroke,
+    Visible,
+    Painted,
+    Fill,
+    Stroke,
+    All,
+    BoundingBox,
+}
+
+impl PointerEvents {
+    /// The keyword, as the reference browser writes it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            PointerEvents::Auto => "auto",
+            PointerEvents::None => "none",
+            PointerEvents::VisiblePainted => "visiblePainted",
+            PointerEvents::VisibleFill => "visibleFill",
+            PointerEvents::VisibleStroke => "visibleStroke",
+            PointerEvents::Visible => "visible",
+            PointerEvents::Painted => "painted",
+            PointerEvents::Fill => "fill",
+            PointerEvents::Stroke => "stroke",
+            PointerEvents::All => "all",
+            PointerEvents::BoundingBox => "bounding-box",
+        }
+    }
+}
+
 /// `overflow` (M9.3 v1: the shorthand's four keywords, one value for
 /// both axes — `overflow-x`/`overflow-y` are a later refinement).
 /// Whether content is clipped is what this engine acts on today;
@@ -1917,6 +1956,11 @@ pub struct Effects {
     /// scrollport's sides a box is brought into view within; `auto` is
     /// none.
     pub scroll_padding: [LengthPercentageAuto; 4],
+    /// `interest-delay-start` and `interest-delay-end` (HTML section
+    /// 6.14, gap batch H), in seconds: how long an interest invoker is
+    /// pointed at or focused before its target gains interest, and left
+    /// before it loses it; `None` is `normal`.
+    pub interest_delay: [Option<f64>; 2],
     /// Not a property: what the element's animations current or in
     /// effect animate, which the engine acts as if `will-change` named
     /// (Web Animations §5.6, M22.2), so that an animated transform or
@@ -2014,6 +2058,7 @@ impl Default for Effects {
             scroll_behavior_smooth: false,
             scroll_margin: [0.0; 4],
             scroll_padding: std::array::from_fn(|_| LengthPercentageAuto::Auto),
+            interest_delay: [None; 2],
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
@@ -3914,7 +3959,21 @@ pub struct ComputedStyle {
     /// (Display 4 §2.9, M22.1) — shown by a transition of `display` alone
     /// while its style without it has `display: none` — so that hit
     /// testing passes over it and over what is inside it. Inherited.
+    /// Also an element inside one whose `interactivity` is `inert`, and
+    /// every element a modal dialog blocks (HTML's "blocked by a modal
+    /// dialog", gap batch H): one that does not take the focus either.
     pub inert: bool,
+    /// `interactivity: inert` (CSS UI 4 section 7.1, gap batch H), which
+    /// an `inert` attribute forces; `auto` is false. Inherited.
+    pub interactivity_inert: bool,
+    /// `pointer-events` (gap batch H). Inherited.
+    pub pointer_events: PointerEvents,
+    /// Not a property: the element is in the top layer, or this is the
+    /// `::backdrop` of one that is (CSS Position 4 section 4, gap batch
+    /// H): its box is laid out against the initial containing block and
+    /// painted above the rest of the document, a stacking context of its
+    /// own.
+    pub top_layer: bool,
     /// `display: flow-root` (gap batch E): a block box that establishes
     /// a block formatting context, `display` being `Block` (or
     /// `ListItem`, `flow-root list-item`).
@@ -4042,6 +4101,9 @@ impl Default for ComputedStyle {
             font: None,
             decoration: None,
             inert: false,
+            interactivity_inert: false,
+            pointer_events: PointerEvents::Auto,
+            top_layer: false,
             flow_root: false,
             root: false,
             fieldset: false,
@@ -4461,15 +4523,25 @@ impl ComputedStyle {
     /// transformable or not (css-transforms-1 §3): an inline box's
     /// transform properties do nothing, so make no context, while its
     /// `opacity` and `will-change` do. A `will-change` naming `z-index`
-    /// counts as a `z-index` would.
+    /// counts as a `z-index` would. A box in the top layer is one too
+    /// (CSS Position 4 section 4).
     pub fn is_stacking_context_of(&self, item: bool, transformable: bool) -> bool {
-        ((self.position.is_positioned() || item)
-            && (self.z_index.is_some()
-                || self
-                    .effects()
-                    .will_change_in_effect()
-                    .names(WillChange::Z_INDEX)))
+        self.top_layer
+            || ((self.position.is_positioned() || item)
+                && (self.z_index.is_some()
+                    || self
+                        .effects()
+                        .will_change_in_effect()
+                        .names(WillChange::Z_INDEX)))
             || self.effects().is_stacking_context_of(transformable)
+    }
+
+    /// `interest-delay-start` (`0`) or `interest-delay-end` (`1`) in
+    /// seconds, `normal` being the reference browser's half and quarter
+    /// second (HTML section 6.14, gap batch H).
+    pub fn interest_delay(&self, end: bool) -> f64 {
+        let normal = if end { 0.25 } else { 0.5 };
+        self.effects().interest_delay[usize::from(end)].unwrap_or(normal)
     }
 
     /// This style with its inherited properties taken from `from` and
@@ -4516,6 +4588,8 @@ impl ComputedStyle {
             text: inherited_text(from),
             custom: from.custom.clone(),
             inert: from.inert,
+            interactivity_inert: from.interactivity_inert,
+            pointer_events: from.pointer_events,
             ..self
         }
     }
@@ -4703,10 +4777,13 @@ mod tests {
         // ones (gap batch D's text gaps) a pointer: 816 before them.
         // `container-name` (D72) a pointer, and `container-type` and which
         // flow-relative values `float` and `clear` have (D74) in the
-        // padding: 824 before them.
+        // padding: 824 before them. The top layer's flag, `interactivity`
+        // and `pointer-events` (gap batch H), read at every hit test and
+        // every element's style, three bytes past the padding: 832
+        // before them.
         // Growing this is a decision, not an accident; say why where the
         // number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 832);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 840);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

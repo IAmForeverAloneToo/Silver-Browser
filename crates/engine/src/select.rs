@@ -195,13 +195,25 @@ impl Engine {
             size,
             held,
         });
+        self.set_open(select, true);
         self.changed = true;
     }
 
     /// Closes the list, choosing nothing.
     pub(crate) fn close_popup(&mut self) {
-        if self.shown.popup.take().is_some() {
+        if let Some(popup) = self.shown.popup.take() {
+            self.set_open(popup.select, false);
             self.changed = true;
+        }
+    }
+
+    /// A select's picker shown or not: `:open` (gap batch H).
+    fn set_open(&mut self, select: NodeId, open: bool) {
+        let document = &mut self.shown.document;
+        if document.contains(select) {
+            let state = document.state(select).with(dom::ElementState::OPEN, open);
+            let _ = document.set_state(select, state);
+            self.state_changed();
         }
     }
 

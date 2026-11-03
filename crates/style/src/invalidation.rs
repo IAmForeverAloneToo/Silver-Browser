@@ -109,9 +109,9 @@ pub struct SelectorFeatures {
     /// restyles the element for; in a compound a child or descendant
     /// combinator follows, its subtree; one a sibling combinator follows,
     /// its later siblings.
-    states_subject: u8,
-    states_ancestor: u8,
-    states_sibling: u8,
+    states_subject: u16,
+    states_ancestor: u16,
+    states_sibling: u16,
     /// What the `:has()` in the sheets read and where they stand (D74),
     /// if any is there.
     has: Option<Box<HasFeatures>>,
@@ -416,6 +416,14 @@ impl SelectorFeatures {
             PseudoClass::FocusWithin => self.read_state(ElementState::FOCUS_WITHIN, at),
             PseudoClass::Active => self.read_state(ElementState::ACTIVE, at),
             PseudoClass::Target => self.read_state(ElementState::TARGET, at),
+            PseudoClass::Modal => self.read_state(ElementState::MODAL, at),
+            PseudoClass::PopoverOpen => self.read_state(ElementState::POPOVER_OPEN, at),
+            PseudoClass::InterestSource => self.read_state(ElementState::INTEREST_SOURCE, at),
+            PseudoClass::InterestTarget => self.read_state(ElementState::INTEREST_TARGET, at),
+            PseudoClass::Open => {
+                self.read_state(ElementState::OPEN, at);
+                self.read(&["open"]);
+            }
             // `:root` (and `:scope`, which is `:root` in a style rule)
             // depends on the parent, which an insertion restyles whole;
             // `:visited` never matches.
@@ -427,7 +435,6 @@ impl SelectorFeatures {
                 self.directionality = true;
                 self.read(&["dir", "type"]);
             }
-            PseudoClass::Open => self.read(&["open"]),
             // A `:has()` is added with its compound (`add_compound`); the
             // anchor of a relative selector reads nothing; no input is
             // autofilled.
@@ -603,6 +610,9 @@ const VALIDITY_ATTRIBUTES: &[&str] = &[
     "selected",
     "name",
     "form",
+    // A button's type with none or an invalid one (gap batch H).
+    "command",
+    "commandfor",
 ];
 
 /// Whether `node` is in `document`'s flat tree (D68): what the cascade
@@ -830,8 +840,18 @@ pub(crate) fn invalidate(
     }
     // A state flag's change restyles as far as the selectors that read
     // it reach (M26.4): the element, its subtree, its later siblings.
+    // Entering or leaving the top layer changes the element's computed
+    // `position` and `display` and what its descendants inherit, and a
+    // modal dialog's changes every node's inertness (gap batch H).
     for (element, old) in states {
         let changed = old.0 ^ document.state(element).0;
+        if changed & ElementState::MODAL.0 != 0 {
+            out.everything = true;
+            return out;
+        }
+        if changed & ElementState::TOP_LAYER.0 != 0 {
+            out.mark(document, element, Reach::Subtree);
+        }
         if changed & features.states_ancestor != 0 {
             out.mark(document, element, Reach::Subtree);
         } else if changed & features.states_subject != 0 {
