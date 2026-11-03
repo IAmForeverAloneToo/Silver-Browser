@@ -386,6 +386,12 @@ impl Transport {
             .clone()
     }
 
+    /// How many HTTP/1.1 connections wait idle for another request: a
+    /// test's way to know a response's connection is back in the pool.
+    pub fn idle_connections(&self) -> usize {
+        self.pool.idle()
+    }
+
     /// Sends `exchange`'s request and reads the response, its body whole
     /// and its content codings removed (none for a `HEAD`).
     ///

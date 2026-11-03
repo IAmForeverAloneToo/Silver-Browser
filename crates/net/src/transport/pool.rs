@@ -259,6 +259,16 @@ impl Pool {
         self.0.changed.notify_all();
     }
 
+    /// How many connections wait idle, to any origin.
+    pub(crate) fn idle(&self) -> usize {
+        self.0
+            .lock()
+            .origins
+            .values()
+            .map(|origin| origin.idle.len())
+            .sum()
+    }
+
     /// How many connections to the origin are open, and how many of
     /// them idle.
     #[cfg(test)]

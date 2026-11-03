@@ -819,6 +819,9 @@ fn the_tabs_of_a_context_share_its_connections() {
     let mut first = RemoteTab::in_context(launcher.clone(), fonts(), &context);
     first.navigate(server.url("/"));
     settle(&mut first, |tab| *tab.load_state() == LoadState::Loaded);
+    // Loaded may come before the response's connection is back in the
+    // pool (CI's Linux run found the second tab opening its own then).
+    settle(&mut first, |_| context.transport().idle_connections() == 1);
     let mut second = RemoteTab::in_context(launcher, fonts(), &context);
     second.navigate(server.url("/"));
     settle(&mut second, |tab| *tab.load_state() == LoadState::Loaded);
