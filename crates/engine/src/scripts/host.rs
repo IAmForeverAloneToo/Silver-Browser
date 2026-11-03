@@ -117,6 +117,12 @@ pub(crate) struct Outputs {
     pub(crate) parser_aborted: bool,
     /// `document.open()` stops a navigation under way.
     pub(crate) stop_navigation: bool,
+    /// The custom highlight registry as the run left it (gap batch H),
+    /// when it changed.
+    pub(crate) highlights: Option<Vec<crate::highlights::Registered>>,
+    /// The selection's live range as the run left it, when it changed:
+    /// its number, or none.
+    pub(crate) selection: Option<Option<u32>>,
 }
 
 /// The document's styles as a run's `getComputedStyle` sees them: the
@@ -1462,6 +1468,52 @@ impl DocumentHost {
                 self.work += 1 + text.len() as u64 / 64;
                 self.cssom(&op, owner, &path, &text, index)
             }
+            Call::CaretFromPoint { x, y } => {
+                let caret = self.caret_from_point(x as f32, y as f32);
+                Ok(Answer::Numbers(match caret {
+                    None => Vec::new(),
+                    Some(super::caret::Caret::At(at)) => {
+                        vec![handle(at.node).0 as f64, f64::from(at.offset), 0.0]
+                    }
+                    Some(super::caret::Caret::Control(node, offset)) => {
+                        vec![handle(node).0 as f64, f64::from(offset), 1.0]
+                    }
+                }))
+            }
+            Call::ControlCaret(node, offset) => {
+                let node = self.node(node)?;
+                Ok(Answer::Numbers(
+                    self.control_caret(node, offset)
+                        .map_or_else(Vec::new, |r| r.into_iter().map(f64::from).collect()),
+                ))
+            }
+            Call::ControlRects(node, start, end) => {
+                let node = self.node(node)?;
+                Ok(Answer::Numbers(
+                    self.control_rects(node, start, end)
+                        .into_iter()
+                        .flatten()
+                        .map(f64::from)
+                        .collect(),
+                ))
+            }
+            Call::SelectionChanged(id) => {
+                self.outputs.selection = Some((id >= 0.0).then_some(id as u32));
+                Ok(Answer::Nothing)
+            }
+            Call::SetHighlights { names, numbers } => {
+                self.work += 1 + numbers.len() as u64 / 16;
+                let document = &self.document;
+                let registry = crate::highlights::read_registry(names, &numbers, |n| {
+                    dom::NodeId::from_bits(n as u64).filter(|&node| document.contains(node))
+                });
+                self.outputs.highlights = Some(registry.unwrap_or_default());
+                Ok(Answer::Nothing)
+            }
+            Call::CheckVisibility(node, flags) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(self.check_visibility(node, flags)))
+            }
             Call::InnerText(node) => {
                 let node = self.node(node)?;
                 Ok(Answer::String(self.inner_text(node)))
@@ -2638,16 +2690,35 @@ impl DocumentHost {
                 if !self.connected(node) {
                     return Ok(Answer::MaybeString(None));
                 }
-                let pseudo = match pseudo.as_str() {
-                    "" => None,
-                    "before" => Some(PseudoElement::Before),
-                    "after" => Some(PseudoElement::After),
-                    "first-letter" => Some(PseudoElement::FirstLetter),
-                    "first-line" => Some(PseudoElement::FirstLine),
-                    "marker" => Some(PseudoElement::Marker),
-                    "backdrop" => Some(PseudoElement::Backdrop),
-                    "details-content" => Some(PseudoElement::DetailsContent),
-                    _ => return Ok(Answer::MaybeString(None)),
+                // What follows the first colon: the pseudo-element read
+                // as CSS after a second one, else one of CSS 2's four; one
+                // that does not parse has no style at all.
+                let mut highlight = None;
+                let pseudo = match pseudo.strip_prefix(':') {
+                    _ if pseudo.is_empty() => None,
+                    Some(rest) => {
+                        match style::selector_matching::parse_pseudo_element_argument(rest) {
+                            // `::part()` and `::slotted()` name elements of
+                            // other trees, not a pseudo-element of this one:
+                            // an empty declaration, as the reference
+                            // browser gives (D69).
+                            Some((PseudoElement::Part | PseudoElement::Slotted, _)) => {
+                                return Ok(Answer::MaybeString(None));
+                            }
+                            Some((pseudo, name)) => {
+                                highlight = name;
+                                Some(pseudo)
+                            }
+                            None => return Ok(Answer::MaybeString(None)),
+                        }
+                    }
+                    None => match pseudo.to_ascii_lowercase().as_str() {
+                        "before" => Some(PseudoElement::Before),
+                        "after" => Some(PseudoElement::After),
+                        "first-letter" => Some(PseudoElement::FirstLetter),
+                        "first-line" => Some(PseudoElement::FirstLine),
+                        _ => return Ok(Answer::MaybeString(None)),
+                    },
                 };
                 // The properties CSSOM names resolve to their used values
                 // (D65), from the layout, and the shorthands of them (D66).
@@ -2686,6 +2757,10 @@ impl DocumentHost {
                 let lineage: Vec<NodeId> = std::iter::once(node)
                     .chain(self.document.ancestors(node))
                     .collect();
+                let highlighted = match highlight {
+                    Some(name) => self.highlight_style_of(node, name),
+                    None => None,
+                };
                 let styles = self.styles_now();
                 // A pseudo-element no rule styles has the style the
                 // cascade would give it: its element's inherited values,
@@ -2694,6 +2769,7 @@ impl DocumentHost {
                 // computes it.
                 let unstyled;
                 let style = match pseudo {
+                    _ if highlighted.is_some() => highlighted.as_deref(),
                     None => styles.and_then(|styles| styles.get(node)),
                     Some(pseudo) => match styles.and_then(|styles| styles.pseudo(node, pseudo)) {
                         Some(style) => Some(style),
@@ -2728,8 +2804,12 @@ impl DocumentHost {
                             || (parent.display == style::computed::Display::Contents
                                 && parent.contents_in_items)
                     });
+                // A pseudo-element no rule styles still lists the
+                // properties, of no value here.
                 let Some(style) = style.cloned() else {
-                    return Ok(Answer::MaybeString(None));
+                    return Ok(Answer::MaybeString(
+                        (pseudo.is_some() && property == "--").then(String::new),
+                    ));
                 };
                 let keeps_auto = pseudo.is_none()
                     && rendered
@@ -2915,9 +2995,18 @@ impl DocumentHost {
                 let node = self.node(node)?;
                 self.styles_now();
                 let styles = self.computed.as_ref().map(|computed| &computed.styles);
-                Ok(Answer::Bool(crate::focus::focusable(
+                if crate::focus::focusable(&self.document, styles, node) {
+                    return Ok(Answer::Bool(true));
+                }
+                // A scroll container that can scroll takes the focus too
+                // (gap batch H), as laid out now.
+                let laid = self.layout_now().map(crate::focus::Laid::of);
+                self.styles_now();
+                let styles = self.computed.as_ref().map(|computed| &computed.styles);
+                Ok(Answer::Bool(crate::focus::focusable_in(
                     &self.document,
                     styles,
+                    laid.as_ref(),
                     node,
                 )))
             }
@@ -5505,6 +5594,245 @@ impl DocumentHost {
         found
     }
 
+    /// The caret position at the viewport point `(x, y)` (CSSOM View
+    /// section 6.1, gap batch H): `None` outside the viewport or over
+    /// nothing laid out.
+    fn caret_from_point(&mut self, x: f32, y: f32) -> Option<super::caret::Caret> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let (width, height) = self.window.viewport;
+        if !(x >= 0.0 && y >= 0.0 && x <= width as f32 && y <= height as f32) {
+            return None;
+        }
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let layout = self.layout_now()?;
+        let (hit, svg_point, _) = crate::geometry::hit(layout, viewport, &offsets, x, y);
+        let document = &self.document;
+        // The element hit, or the root over nothing.
+        let hit = hit
+            .map(|(node, _)| node)
+            .and_then(|node| {
+                std::iter::once(node)
+                    .chain(document.ancestors(node))
+                    .find(|&n| document.is_element(n))
+            })
+            .or_else(|| document.document_element())?;
+        let shape = svg_point.and_then(|(svg, at, size)| {
+            (svg == hit)
+                .then(|| self.svg_shape_at(svg, at, size))
+                .flatten()
+        });
+        self.work += 1 + self.document.len() as u64 / 64;
+        let (Some((_, layout)), Some(fonts)) = (
+            self.laid_out.as_ref(),
+            self.window
+                .layout_fonts
+                .as_ref()
+                .or(self.window.fonts.as_ref()),
+        ) else {
+            return None;
+        };
+        super::caret::caret_at(
+            &self.document,
+            layout,
+            (viewport, &offsets),
+            fonts,
+            hit,
+            shape,
+            (x, y),
+        )
+    }
+
+    /// The style of the element `node`'s `::highlight(name)` (gap batch
+    /// H), as `getComputedStyle()` gives it.
+    fn highlight_style_of(
+        &mut self,
+        node: NodeId,
+        name: style::selector_matching::HighlightName,
+    ) -> Option<std::sync::Arc<style::ComputedStyle>> {
+        self.styles_now()?;
+        let page = self.page.as_ref()?;
+        let computed = self.computed.as_ref()?;
+        let measure = self.window.fonts.as_ref().map(Measure);
+        let context = CascadeContext {
+            viewport_width: self.window.viewport.0 as f32,
+            viewport_height: self.window.viewport.1 as f32,
+            fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
+            language: page.language(),
+            media: self.window.media,
+            animations: Some(&self.animations),
+            inline_styles: Some(page),
+            frame_margins: self.window.frame_margins,
+        };
+        let recascade = computed
+            .sheets
+            .recascader(&self.document, &computed.styles, &context);
+        self.work += 1 + self.document.ancestors(node).count() as u64;
+        crate::highlights::highlight_style(
+            &self.document,
+            &computed.styles,
+            &recascade,
+            node,
+            name,
+            &mut std::collections::HashMap::new(),
+        )
+    }
+
+    /// The shape of the outer `<svg>` `svg` at the point `at` of its
+    /// drawing of `size`, if one is there (M32).
+    fn svg_shape_at(&mut self, svg: NodeId, at: (f32, f32), size: (f32, f32)) -> Option<NodeId> {
+        self.styles_now()?;
+        let page = self.page.as_ref()?;
+        let computed = self.computed.as_ref()?;
+        let measure = self.window.fonts.as_ref().map(Measure);
+        let context = CascadeContext {
+            viewport_width: self.window.viewport.0 as f32,
+            viewport_height: self.window.viewport.1 as f32,
+            fonts: measure.as_ref().map(|measure| measure as &dyn FontMeasure),
+            language: page.language(),
+            media: self.window.media,
+            animations: Some(&self.animations),
+            inline_styles: Some(page),
+            frame_margins: self.window.frame_margins,
+        };
+        let recascade = computed
+            .sheets
+            .recascader(&self.document, &computed.styles, &context);
+        let context = svg::Context {
+            document: &self.document,
+            styles: &computed.styles,
+            recascade: Some(&recascade),
+            fonts: self.window.fonts.as_ref(),
+        };
+        let tree = svg::build(context, svg, f64::from(size.0), f64::from(size.1));
+        self.work += self.document.len() as u64 / 16;
+        tree.hit(f64::from(at.0), f64::from(at.1))
+            .filter(|&shape| shape != svg)
+    }
+
+    /// The caret's box at `offset` in the text control `control`'s value,
+    /// in viewport coordinates.
+    fn control_caret(&mut self, control: NodeId, offset: u32) -> Option<[f32; 4]> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let (width, height) = self.window.viewport;
+        self.layout_now()?;
+        let (Some((_, layout)), Some(fonts)) = (
+            self.laid_out.as_ref(),
+            self.window
+                .layout_fonts
+                .as_ref()
+                .or(self.window.fonts.as_ref()),
+        ) else {
+            return None;
+        };
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        super::caret::control_caret(
+            &self.document,
+            layout,
+            (viewport, &offsets),
+            fonts,
+            control,
+            offset,
+        )
+    }
+
+    /// The boxes of the units `start` to `end` of the text control
+    /// `control`'s value, one a line, in viewport coordinates (an
+    /// `OpaqueRange`'s, gap batch H); none where it shows no text.
+    fn control_rects(&mut self, control: NodeId, start: u32, end: u32) -> Vec<[f32; 4]> {
+        let (scroll_y, offsets) = self.scroll_state();
+        let (width, height) = self.window.viewport;
+        if self.layout_now().is_none() {
+            return Vec::new();
+        }
+        self.work += 1 + u64::from(end.saturating_sub(start)) / 16;
+        let (Some((_, layout)), Some(fonts)) = (
+            self.laid_out.as_ref(),
+            self.window
+                .layout_fonts
+                .as_ref()
+                .or(self.window.fonts.as_ref()),
+        ) else {
+            return Vec::new();
+        };
+        let viewport = paint::Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        super::caret::control_rects(
+            &self.document,
+            layout,
+            (viewport, &offsets),
+            fonts,
+            control,
+            (start, end),
+        )
+    }
+
+    /// `checkVisibility()` (CSSOM View section 4, gap batch H): false for
+    /// an element with no box, or in the contents a `content-visibility:
+    /// hidden` skips; with `flags`' 1, for one of opacity 0 or inside one;
+    /// with 2, for one not visible; with 4, for one in the contents a
+    /// `content-visibility: auto` skips.
+    fn check_visibility(&mut self, node: NodeId, flags: u32) -> bool {
+        use style::computed::{ContentVisibility, Display, Visibility};
+        if !self.connected(node) {
+            return false;
+        }
+        self.styles_now();
+        let Some(styles) = self.computed.as_ref().map(|computed| &computed.styles) else {
+            return false;
+        };
+        let document = &self.document;
+        let Some(style) = styles.get(node) else {
+            return false;
+        };
+        if style.display == Display::Contents {
+            return false;
+        }
+        // In the flat tree: a slotted element's ancestors are its slot's,
+        // a shadow tree's its host's.
+        let ancestors: Vec<NodeId> =
+            std::iter::successors(document.flat_parent_element(node), |&n| {
+                document.flat_parent_element(n)
+            })
+            .take(dom::MAX_DEPTH * 2)
+            .collect();
+        for &element in std::iter::once(&node).chain(&ancestors) {
+            let Some(style) = styles.get(element) else {
+                return false;
+            };
+            if style.display == Display::None {
+                return false;
+            }
+            if flags & 1 != 0 && style.effects().opacity == 0.0 {
+                return false;
+            }
+        }
+        for &ancestor in &ancestors {
+            let Some(style) = styles.get(ancestor) else {
+                return false;
+            };
+            if !style.skips_contents() {
+                continue;
+            }
+            match style.containment().content_visibility {
+                ContentVisibility::Hidden => return false,
+                ContentVisibility::Auto if flags & 4 != 0 => return false,
+                _ => {}
+            }
+        }
+        !(flags & 2 != 0 && style.visibility != Visibility::Visible)
+    }
+
     /// HTML's `innerText` getter (section 3.2.7, "rendered text
     /// collection steps") over the styles: the text of what is rendered,
     /// white space collapsed as its `white-space` says, a line break for
@@ -5552,6 +5880,15 @@ impl DocumentHost {
         // its place.
         if !document.in_flat_tree(node) || !rendered(node) {
             return None;
+        }
+        // In the contents a `content-visibility` skips: nothing rendered
+        // (CSS Containment 2 section 4.1), as the reference browser has
+        // it (gap batch H).
+        if document
+            .flat_ancestors(node)
+            .any(|a| styles.get(a).is_some_and(|s| s.skips_contents()))
+        {
+            return Some(String::new());
         }
         // The part of a text node within the range, in UTF-16 units.
         let within = |n: NodeId, length: u32| -> Option<(u32, u32)> {
@@ -5707,6 +6044,12 @@ impl DocumentHost {
                 }
             }
             stack.push((n, true));
+            // The contents a `content-visibility` skips, `hidden` or an
+            // `auto` not relevant to the user, are not rendered (CSS
+            // Containment 2 section 4.1).
+            if style.skips_contents() {
+                continue;
+            }
             let children: Vec<NodeId> = document.flat_children(n).collect();
             for child in children.into_iter().rev() {
                 stack.push((child, false));

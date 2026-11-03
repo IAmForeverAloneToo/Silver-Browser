@@ -251,18 +251,31 @@ pub fn paint_order_in<'a>(
     offsets: &dyn ScrollOffsets,
     margin: f32,
 ) -> Vec<Step<'a>> {
-    order_within(roots, viewport, offsets, margin, 0.0)
+    order_within(roots, viewport, offsets, margin, 0.0, true)
 }
 
 /// [`paint_order`] with all the page's content listed, wherever it is
 /// (D65): what a script's measuring of the boxes walks, the boxes left,
-/// right, above and below the viewport too.
+/// right, above and below the viewport too, and the contents a box
+/// skips (`content-visibility`, gap batch H), which are not painted but
+/// are laid out, and measured so as in the reference browser.
 pub fn paint_order_everywhere<'a>(
     roots: &'a [Fragment],
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
 ) -> Vec<Step<'a>> {
-    order_within(roots, viewport, offsets, 1.0e7, 1.0e7)
+    order_within(roots, viewport, offsets, 1.0e7, 1.0e7, false)
+}
+
+/// [`paint_order_everywhere`] without the contents a box skips: all the
+/// page's content that is drawn, wherever it is, which a caret's place
+/// is looked for in (gap batch H).
+pub fn paint_order_drawn_everywhere<'a>(
+    roots: &'a [Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+) -> Vec<Step<'a>> {
+    order_within(roots, viewport, offsets, 1.0e7, 1.0e7, true)
 }
 
 /// The shift each `position: sticky` box of `roots` gets for `viewport`
@@ -275,22 +288,31 @@ pub fn sticky_shifts(
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
 ) -> HashMap<NodeId, (f32, f32)> {
-    walk_within(roots, viewport, offsets, 1.0e7, 1.0e7, false)
+    walk_within(roots, viewport, offsets, (1.0e7, 1.0e7), (false, true))
         .1
         .into_iter()
         .collect()
 }
 
 /// [`paint_order_in`] with the content `across` pixels left and right
-/// of the viewport listed too.
+/// of the viewport listed too, and the contents a box skips left out
+/// when `skips` says.
 fn order_within<'a>(
     roots: &'a [Fragment],
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
     margin: f32,
     across: f32,
+    skips: bool,
 ) -> Vec<Step<'a>> {
-    walk_within(roots, viewport, offsets, margin, across, across > 0.0).0
+    walk_within(
+        roots,
+        viewport,
+        offsets,
+        (margin, across),
+        (across > 0.0, skips),
+    )
+    .0
 }
 
 /// A sticky box's shift, across and down, by its node.
@@ -298,14 +320,14 @@ type Shift = (NodeId, (f32, f32));
 
 /// [`order_within`], with the shifts of the sticky boxes walked over;
 /// `wide` when a fixed box and a sticky box's scrollport are as wide as
-/// what is listed, not the viewport.
+/// what is listed, not the viewport; the contents a box skips left out
+/// when `skips` says.
 fn walk_within<'a>(
     roots: &'a [Fragment],
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
-    margin: f32,
-    across: f32,
-    wide: bool,
+    (margin, across): (f32, f32),
+    (wide, skips): (bool, bool),
 ) -> (Vec<Step<'a>>, Vec<Shift>) {
     // What is listed, in document coordinates, rounded out to the rows
     // of tiles when there is a margin.
@@ -352,6 +374,7 @@ fn walk_within<'a>(
         chain: Vec::new(),
         groups: Vec::new(),
         contained: 0,
+        skips,
         fixed: 0,
         segment: None,
         segments: 0,
@@ -644,6 +667,10 @@ struct Walk<'a, 'o> {
     /// descendants (M19) are being walked into: a `position: fixed` box
     /// inside one scrolls with it.
     contained: u32,
+    /// Whether the contents a box skips (`content-visibility`, gap
+    /// batch H) are left out: what is painted and hit leaves them, what
+    /// measures the boxes lists them, laid out as they are.
+    skips: bool,
     /// How many `position: fixed` boxes placed against the viewport are
     /// being walked into.
     fixed: u32,
@@ -1083,8 +1110,14 @@ impl<'a> Walk<'a, '_> {
     /// the box clips and the viewport does not meet it: nothing under
     /// its clip can show. A clip with no step inside it is left out.
     fn content(&mut self, f: &'a Fragment, emit: Emit, body: impl FnOnce(&mut Self, Rect)) {
+        // The contents a box skips are not painted, nor hit (CSS
+        // Containment 2 section 4.1).
+        if self.skips && f.style.skips_contents() && matches!(f.kind, FragmentKind::Box) {
+            return;
+        }
         let contains_all = f.style.effects().contains_all_of(transformable(f))
-            || (f.in_3d && f.style.effects().backface_visibility == BackfaceVisibility::Hidden);
+            || (f.in_3d && f.style.effects().backface_visibility == BackfaceVisibility::Hidden)
+            || f.style.contains_positioned();
         if contains_all {
             self.contained += 1;
         }
@@ -1113,7 +1146,10 @@ impl<'a> Walk<'a, '_> {
                     )
                 })
         };
-        let clips = f.clips() && !svg_only();
+        // Paint containment clips the content to the padding box in both
+        // axes (CSS Containment 2 section 3.5), scrolling nothing.
+        let painted_in = f.style.contains_paint() && matches!(f.kind, FragmentKind::Box);
+        let clips = (f.clips() || painted_in) && !svg_only();
         if clips && !self.visible(rect) {
             return;
         }
@@ -1125,10 +1161,10 @@ impl<'a> Walk<'a, '_> {
         // An axis left `visible` beside one that clips (`overflow: clip`)
         // is not clipped along.
         let mut clip_box = padding_box;
-        if f.style.overflow_x == Overflow::Visible {
+        if f.style.overflow_x == Overflow::Visible && !painted_in {
             (clip_box.x, clip_box.w) = (-UNCLIPPED, 2.0 * UNCLIPPED);
         }
-        if f.style.overflow_y == Overflow::Visible {
+        if f.style.overflow_y == Overflow::Visible && !painted_in {
             (clip_box.y, clip_box.h) = (-UNCLIPPED, 2.0 * UNCLIPPED);
         }
         let effective = match self.clip() {

@@ -27,6 +27,7 @@ pub mod box_tree;
 mod cache;
 mod children;
 mod composite;
+mod contain;
 pub mod decoration;
 mod fieldset;
 mod flex;

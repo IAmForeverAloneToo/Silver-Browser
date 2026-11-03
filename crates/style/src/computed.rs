@@ -20,6 +20,8 @@ pub use crate::cascade::timelines::{
 use crate::custom::CustomProperties;
 use crate::easing::Easing;
 
+mod containment;
+pub use containment::{Contain, ContainIntrinsicSize, Containment, ContentVisibility, ReadingFlow};
 mod text;
 pub use text::{
     AutospaceMode, FontPalette, HangingEnd, HangingPunctuation, Hyphens, LineBreak, MathStyle,
@@ -1610,6 +1612,13 @@ pub struct GridStyle {
     pub justify_items: JustifyItems,
     /// `justify-self`, initially `auto`.
     pub justify_self: SelfAlignment,
+    /// `reading-flow` (CSS Display 4 section 5.1, gap batch H), which
+    /// orders a container's items for focus as these properties order
+    /// them for layout.
+    pub reading_flow: ReadingFlow,
+    /// `reading-order` (CSS Display 4 section 5.2): an item's place in
+    /// its container's `reading-flow`.
+    pub reading_order: i32,
 }
 
 impl Default for GridStyle {
@@ -1628,6 +1637,8 @@ impl Default for GridStyle {
             column_end: GridLine::Auto,
             justify_items: JustifyItems::NORMAL,
             justify_self: SelfAlignment::Auto,
+            reading_flow: ReadingFlow::Normal,
+            reading_order: 0,
         }
     }
 }
@@ -1635,6 +1646,10 @@ impl Default for GridStyle {
 /// The grid properties' initial values, which [`ComputedStyle::grid`]
 /// gives a style that sets none of them.
 static INITIAL_GRID: LazyLock<GridStyle> = LazyLock::new(GridStyle::default);
+
+/// The containment properties' initial values, which
+/// [`ComputedStyle::containment`] gives a style that sets none of them.
+static INITIAL_CONTAINMENT: LazyLock<Containment> = LazyLock::new(Containment::default);
 
 /// One function of a `transform` list (css-transforms-1 §7,
 /// css-transforms-2 §13, M19), as computed: lengths absolute,
@@ -4101,6 +4116,10 @@ pub struct ComputedStyle {
     /// while all are their initial values. Read through
     /// [`ComputedStyle::text`].
     pub text: Option<Arc<TextProps>>,
+    /// The containment properties (CSS Containment 2, gap batch H):
+    /// `None` while all are their initial values. Read through
+    /// [`ComputedStyle::containment`].
+    pub containment: Option<Arc<Containment>>,
 }
 
 /// `font-family`'s initial value, one for every style that has it.
@@ -4199,6 +4218,7 @@ impl Default for ComputedStyle {
             radii: None,
             svg: None,
             text: None,
+            containment: None,
         }
     }
 }
@@ -4586,6 +4606,135 @@ impl ComputedStyle {
         Arc::make_mut(self.image.get_or_insert_with(Default::default))
     }
 
+    /// The containment properties (gap batch H): this style's, or their
+    /// initial values.
+    pub fn containment(&self) -> &Containment {
+        self.containment.as_deref().unwrap_or(&INITIAL_CONTAINMENT)
+    }
+
+    /// The containment properties to change, this style's own copy made
+    /// first if it shares them or has none.
+    pub fn containment_mut(&mut self) -> &mut Containment {
+        Arc::make_mut(self.containment.get_or_insert_with(Default::default))
+    }
+
+    /// Whether the element skips its contents (CSS Containment 2 section
+    /// 4.1): its `content-visibility` is `hidden`, or `auto` while the
+    /// element is not relevant to the user, and its box takes
+    /// containment. Its contents are laid out but neither painted nor
+    /// hit, and the box has size containment.
+    pub fn skips_contents(&self) -> bool {
+        self.containment().skips_contents
+    }
+
+    /// Sets whether the element skips its contents, as
+    /// [`ComputedStyle::would_skip_contents`] says; a style that does not
+    /// is left sharing its containment properties.
+    pub fn set_skips_contents(&mut self, skips: bool) {
+        if skips != self.skips_contents() {
+            self.containment_mut().skips_contents = skips;
+        }
+    }
+
+    /// Whether the element's box takes layout and paint containment (CSS
+    /// Containment 2 sections 3.2 and 3.4): it has a principal box, and
+    /// that is neither an internal table box but a cell, nor an inline
+    /// box (an internal ruby box among them).
+    fn takes_containment(&self) -> bool {
+        !matches!(
+            self.display,
+            Display::None
+                | Display::Contents
+                | Display::TableRowGroup
+                | Display::TableHeaderGroup
+                | Display::TableFooterGroup
+                | Display::TableRow
+                | Display::TableColumnGroup
+                | Display::TableColumn
+        ) && !self.is_inline_box()
+    }
+
+    /// Whether the element's box takes size containment (section 3.1):
+    /// one that takes layout containment and that a size query may ask
+    /// of ([`crate::container::eligible`]): no table, whose inner display
+    /// type is `table`, nor a cell, nor a ruby box.
+    fn takes_size_containment(&self) -> bool {
+        self.takes_containment() && crate::container::eligible(self)
+    }
+
+    /// Whether the box has size containment: `contain: size`, its
+    /// contents skipped (section 4.1), or a `size` container (CSS
+    /// Conditional 5 section 7.2, D72). Its intrinsic size is then as if
+    /// it were empty, or what `contain-intrinsic-size` gives.
+    pub fn contains_size(&self) -> bool {
+        (self.containment().contain.contains(Contain::SIZE)
+            || self.skips_contents()
+            || self.container_type.size == ContainerSize::Both)
+            && self.takes_size_containment()
+    }
+
+    /// Whether the box has inline-size containment (section 3.2): its
+    /// intrinsic width alone is as if it were empty. Size containment,
+    /// `contain: inline-size` and any size container have it.
+    pub fn contains_inline_size(&self) -> bool {
+        (self.contains_size()
+            || self.containment().contain.contains(Contain::INLINE_SIZE)
+            || self.container_type.is_size())
+            && self.takes_size_containment()
+    }
+
+    /// Whether the box has layout containment (section 3.3):
+    /// `contain: layout`, or a `content-visibility` other than `visible`
+    /// (a size container has none, CSS Conditional 5 section 7.2). It is
+    /// an independent formatting context, a containing block for every
+    /// positioned box inside, and a stacking context.
+    pub fn contains_layout(&self) -> bool {
+        let containment = self.containment();
+        (containment.contain.contains(Contain::LAYOUT)
+            || containment.content_visibility != ContentVisibility::Visible)
+            && self.takes_containment()
+    }
+
+    /// Whether the box has paint containment (section 3.5):
+    /// `contain: paint`, or a `content-visibility` other than
+    /// `visible`. Its contents are clipped to its padding box, and it
+    /// is what layout containment makes it besides.
+    pub fn contains_paint(&self) -> bool {
+        let containment = self.containment();
+        (containment.contain.contains(Contain::PAINT)
+            || containment.content_visibility != ContentVisibility::Visible)
+            && self.takes_containment()
+    }
+
+    /// Whether the box is a containing block for every positioned box
+    /// inside, the fixed ones included, and an independent formatting
+    /// context, as layout and paint containment make it (sections 3.3
+    /// and 3.5).
+    pub fn contains_positioned(&self) -> bool {
+        self.contains_layout() || self.contains_paint()
+    }
+
+    /// Whether the box has style containment (section 3.4): its
+    /// counters are scoped to it.
+    pub fn contains_style(&self) -> bool {
+        let containment = self.containment();
+        containment.contain.contains(Contain::STYLE)
+            || containment.content_visibility != ContentVisibility::Visible
+            || self.container_type.is_size()
+    }
+
+    /// Whether the element skips its contents with this
+    /// `content-visibility`, `relevant` saying whether an `auto` one is
+    /// relevant to the user (section 4.3): `hidden` always, `auto`
+    /// while not relevant, on a box that takes containment.
+    pub fn would_skip_contents(&self, relevant: bool) -> bool {
+        match self.containment().content_visibility {
+            ContentVisibility::Visible => false,
+            ContentVisibility::Hidden => self.takes_containment(),
+            ContentVisibility::Auto => !relevant && self.takes_containment(),
+        }
+    }
+
     /// The value of the custom property `name` (M21.1), its substitution
     /// functions replaced; `None` when it has the guaranteed-invalid
     /// value, as one never declared has.
@@ -4610,7 +4759,11 @@ impl ComputedStyle {
     /// counts as a `z-index` would. A box in the top layer is one too
     /// (CSS Position 4 section 4).
     pub fn is_stacking_context_of(&self, item: bool, transformable: bool) -> bool {
+        // The top layer, and layout and paint containment, make one (CSS
+        // Position 4 section 4; CSS Containment 2 sections 3.3 and 3.5).
         self.top_layer
+            || self.contains_layout()
+            || self.contains_paint()
             || ((self.position.is_positioned() || item)
                 && (self.z_index.is_some()
                     || self
@@ -4869,10 +5022,13 @@ mod tests {
         // Whether the parent's `direction` is
         // `rtl`, which way a box wider than its containing block
         // overflows it (gap batch H, D72's scroll states from a right to
-        // left scroll origin), one more byte: 840 before it.
+        // left scroll origin), one more byte: 840 before it. The
+        // containment properties (gap batch H) a pointer, whether the
+        // contents are skipped behind it, no padding being left: 840
+        // before them.
         // Growing this is a decision, not an accident; say why where the
         // number changes.
-        assert_eq!(std::mem::size_of::<ComputedStyle>(), 840);
+        assert_eq!(std::mem::size_of::<ComputedStyle>(), 848);
         assert_eq!(ComputedStyle::default().grid, None);
         assert_eq!(*ComputedStyle::default().grid(), GridStyle::default());
         assert_eq!(ComputedStyle::default().effects, None);

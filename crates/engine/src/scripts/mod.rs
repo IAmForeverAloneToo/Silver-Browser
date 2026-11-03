@@ -13,6 +13,7 @@
 pub(crate) mod canvas;
 #[cfg(test)]
 mod canvas_tests;
+mod caret;
 mod cssom;
 mod decoding;
 mod fetch;
@@ -176,7 +177,8 @@ pub enum ScriptState {
 }
 
 pub(crate) use host::{DocumentHost, ScriptScroll, notices_json};
-pub(crate) use layout_observers::Measured;
+pub(crate) use layout_observers::{Measured, meet};
+pub(crate) use range_rects::{Slot, advance, drawn_chars, match_data, match_text, text_fragments};
 
 /// `text`, cut to [`MAX_CONSOLE_MESSAGE`] bytes at a character boundary.
 fn cut(mut text: String) -> String {
@@ -856,6 +858,10 @@ pub(crate) struct Scripts {
     scroll_to: Option<NodeId>,
     /// The scroll offsets scripts set (D65), the viewport's as `None`.
     scrolls: Vec<ScriptScroll>,
+    /// The custom highlights its scripts registered (gap batch H).
+    highlights: Vec<crate::highlights::Registered>,
+    /// The live range of its selection, by its number, if it has one.
+    selection: Option<u32>,
     /// What a script's validation reported, for the notice (M26.9b).
     notice: Option<String>,
     /// The drop-down whose list a script asked to show (gap batch H).
@@ -934,6 +940,8 @@ impl Scripts {
             handlers: None,
             scroll_to: None,
             scrolls: Vec::new(),
+            highlights: Vec::new(),
+            selection: None,
             notice: None,
             picker: None,
             aborted: false,
@@ -1023,6 +1031,18 @@ impl Scripts {
     /// The scroll offsets scripts set since this was last asked (D65).
     pub(crate) fn take_scrolls(&mut self) -> Vec<ScriptScroll> {
         std::mem::take(&mut self.scrolls)
+    }
+
+    /// The custom highlights the document's scripts registered (gap
+    /// batch H), in the order registered.
+    pub(crate) fn highlights(&self) -> &[crate::highlights::Registered] {
+        &self.highlights
+    }
+
+    /// The live range of the document's selection, by its number, if
+    /// its scripts gave it one.
+    pub(crate) fn selection(&self) -> Option<u32> {
+        self.selection
     }
 
     /// What a script's `reportValidity()` or a form's interactive
@@ -2092,6 +2112,12 @@ impl Scripts {
             self.scroll_to = outputs.scroll_to;
         }
         self.scrolls.extend(outputs.scrolls);
+        if let Some(highlights) = outputs.highlights {
+            self.highlights = highlights;
+        }
+        if let Some(selection) = outputs.selection {
+            self.selection = selection;
+        }
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
@@ -2219,6 +2245,12 @@ impl Scripts {
             self.scroll_to = outputs.scroll_to;
         }
         self.scrolls.extend(outputs.scrolls);
+        if let Some(highlights) = outputs.highlights {
+            self.highlights = highlights;
+        }
+        if let Some(selection) = outputs.selection {
+            self.selection = selection;
+        }
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }

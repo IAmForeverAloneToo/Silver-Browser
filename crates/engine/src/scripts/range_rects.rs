@@ -16,21 +16,21 @@ use style::transform::Matrix;
 
 /// One text fragment of an element, where the walk drew it: its line
 /// box in its group's coordinates and the matrix to the viewport's.
-struct Drawn<'a> {
-    fragment: &'a Fragment,
-    rect: Rect,
-    matrix: Matrix,
+pub(crate) struct Drawn<'a> {
+    pub(crate) fragment: &'a Fragment,
+    pub(crate) rect: Rect,
+    pub(crate) matrix: Matrix,
 }
 
 /// Where a character of a text node is drawn: a fragment's number in
 /// its element's list and the character's number in its text.
-type Place = (usize, usize);
+pub(crate) type Place = (usize, usize);
 
 /// Where a UTF-16 unit of a text node is: a character drawn; a space
 /// the layout left as the room between the characters drawn before and
 /// after it rather than drawing; or nowhere, collapsed away.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Slot {
+pub(crate) enum Slot {
     At(Place),
     Gap(Option<Place>, Option<Place>),
     Nowhere,
@@ -195,7 +195,7 @@ pub(super) fn range_rects(
 
 /// The text fragments of the elements in `elements`, each element's in
 /// the order they are drawn.
-fn text_fragments<'a>(
+pub(crate) fn text_fragments<'a>(
     layout: &'a DocumentLayout,
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
@@ -235,12 +235,28 @@ fn text_fragments<'a>(
 /// Each of `element`'s text children's characters matched to where the
 /// fragments draw them, by UTF-16 unit; the second unit of a pair is
 /// nowhere.
-fn match_text(
+pub(crate) fn match_text(
     document: &Document,
     element: NodeId,
     boxes: &[Drawn<'_>],
 ) -> HashMap<NodeId, Vec<Slot>> {
-    let drawn: Vec<(Place, char)> = boxes
+    let drawn = drawn_chars(boxes);
+    let mut at = 0;
+    // Whether the last unit was white space.
+    let mut in_gap = false;
+    let mut out = HashMap::new();
+    for child in document.children(element) {
+        let Some(data) = document.text(child) else {
+            continue;
+        };
+        out.insert(child, match_data(data, &drawn, &mut at, &mut in_gap));
+    }
+    out
+}
+
+/// The characters `boxes` draw, each with its place.
+pub(crate) fn drawn_chars(boxes: &[Drawn<'_>]) -> Vec<(Place, char)> {
+    boxes
         .iter()
         .enumerate()
         .flat_map(|(i, d)| {
@@ -250,55 +266,56 @@ fn match_text(
             };
             text.chars().enumerate().map(move |(c, ch)| ((i, c), ch))
         })
-        .collect();
-    let mut at = 0;
-    // Whether the last unit was white space.
-    let mut in_gap = false;
-    let mut out = HashMap::new();
-    for child in document.children(element) {
-        let Some(data) = document.text(child) else {
-            continue;
-        };
-        let mut slots = Vec::new();
-        for ch in data.chars() {
-            let slot = match drawn.get(at) {
-                Some(&(place, shown)) if alike(ch, shown) => {
-                    at += 1;
-                    Slot::At(place)
-                }
-                // White space the layout took out: the first of a run
-                // is the room between the words around it.
-                _ if is_collapsible(ch) => {
-                    if in_gap || at == 0 {
-                        Slot::Nowhere
-                    } else {
-                        Slot::Gap(
-                            at.checked_sub(1).and_then(|b| drawn.get(b)).map(|d| d.0),
-                            drawn.get(at).map(|d| d.0),
-                        )
-                    }
-                }
-                // A soft hyphen or another character drawn only where a
-                // line breaks at it, or never: none.
-                _ if is_hidden(ch) => Slot::Nowhere,
-                // Text the layout changed (a transform, a hyphen):
-                // one for one.
-                Some(&(place, _)) => {
-                    at += 1;
-                    Slot::At(place)
-                }
-                None => Slot::Nowhere,
-            };
-            // After white space, drawn or not, more collapses.
-            in_gap = is_collapsible(ch);
-            slots.push(slot);
-            if ch.len_utf16() == 2 {
-                slots.push(Slot::Nowhere);
+        .collect()
+}
+
+/// `data`'s characters matched to where `drawn` draws them, by UTF-16
+/// unit, from the character drawn `*at` on, `*in_gap` saying whether
+/// the unit before was white space; both moved past it.
+pub(crate) fn match_data(
+    data: &str,
+    drawn: &[(Place, char)],
+    at: &mut usize,
+    in_gap: &mut bool,
+) -> Vec<Slot> {
+    let mut slots = Vec::new();
+    for ch in data.chars() {
+        let slot = match drawn.get(*at) {
+            Some(&(place, shown)) if alike(ch, shown) => {
+                *at += 1;
+                Slot::At(place)
             }
+            // White space the layout took out: the first of a run
+            // is the room between the words around it.
+            _ if is_collapsible(ch) => {
+                if *in_gap || *at == 0 {
+                    Slot::Nowhere
+                } else {
+                    Slot::Gap(
+                        at.checked_sub(1).and_then(|b| drawn.get(b)).map(|d| d.0),
+                        drawn.get(*at).map(|d| d.0),
+                    )
+                }
+            }
+            // A soft hyphen or another character drawn only where a
+            // line breaks at it, or never: none.
+            _ if is_hidden(ch) => Slot::Nowhere,
+            // Text the layout changed (a transform, a hyphen):
+            // one for one.
+            Some(&(place, _)) => {
+                *at += 1;
+                Slot::At(place)
+            }
+            None => Slot::Nowhere,
+        };
+        // After white space, drawn or not, more collapses.
+        *in_gap = is_collapsible(ch);
+        slots.push(slot);
+        if ch.len_utf16() == 2 {
+            slots.push(Slot::Nowhere);
         }
-        out.insert(child, slots);
     }
-    out
+    slots
 }
 
 /// Whether the source character `ch` is drawn as `shown`: a soft
@@ -328,7 +345,7 @@ fn is_collapsible(ch: char) -> bool {
 /// `slots` to `boxes`, those on a line together made one; a rectangle
 /// of no width where they take no room, at the place of the next unit
 /// drawn, or past the last.
-fn text_rects(
+pub(crate) fn text_rects(
     boxes: &[Drawn<'_>],
     slots: &[Slot],
     from: u32,
@@ -450,7 +467,7 @@ fn text_rects(
 /// character `n`: the font's advance of the characters before, the
 /// fragment's spacing shared among its characters; from its right edge
 /// in a right-to-left run.
-fn advance(f: &Fragment, n: usize, fonts: &text::FontCollection) -> f32 {
+pub(crate) fn advance(f: &Fragment, n: usize, fonts: &text::FontCollection) -> f32 {
     let FragmentKind::Text(text) = &f.kind else {
         return 0.0;
     };
@@ -479,7 +496,7 @@ fn right_to_left(c: char) -> bool {
 }
 
 /// `r` through `m`: the box around its corners.
-fn map(m: &Matrix, r: Rect) -> [f32; 4] {
+pub(super) fn map(m: &Matrix, r: Rect) -> [f32; 4] {
     let corners = [
         (r.x, r.y),
         (r.x + r.w, r.y),

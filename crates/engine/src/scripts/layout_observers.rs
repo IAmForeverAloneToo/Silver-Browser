@@ -37,7 +37,7 @@ pub(crate) struct Measured {
 
 impl Measured {
     /// The content box's size.
-    fn content(&self) -> (f32, f32) {
+    pub(crate) fn content(&self) -> (f32, f32) {
         let [bt, br, bb, bl] = self.border;
         let [pt, pr, pb, pl] = self.padding;
         (
@@ -99,7 +99,7 @@ fn rect(r: [f32; 4]) -> Json {
 
 /// The intersection of two rectangles, `None` when they do not meet
 /// (edge-adjacent ones meet, in a rectangle of no area).
-fn meet(a: [f32; 4], b: [f32; 4]) -> Option<[f32; 4]> {
+pub(crate) fn meet(a: [f32; 4], b: [f32; 4]) -> Option<[f32; 4]> {
     let left = a[0].max(b[0]);
     let top = a[1].max(b[1]);
     let right = (a[0] + a[2]).min(b[0] + b[2]);

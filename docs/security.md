@@ -618,6 +618,8 @@ earlier milestones say why each is what it is):
 | `engine` | `IDLE_TRIM_AFTER` | `30 s` | How long a renderer's views are all hidden before it trims what it can make again (M35.5). |
 | `engine` | `MAX_KEPT` | `6` | The most documents the back-forward cache keeps besides the one shown, as Chromium's does by default: past it, the one shown least recently goes. |
 | `engine` | `MAX_KEPT` | `1000` | The most answers kept: past it, a new answer is not kept. |
+| `engine` | `MAX_HIGHLIGHTS` | `1 << 10` | The most custom highlights a registry hands the engine (gap batch H): past them a highlight paints nothing. |
+| `engine` | `MAX_HIGHLIGHT_RANGES` | `1 << 14` | The most ranges the highlights a registry hands the engine hold together: past them a range paints nothing. |
 | `engine` | `MAX_CANVAS_MEMORY` | `512 << 20` | The most bytes a document's bitmaps hold in all: a canvas made or resized past it has no bitmap, and draws nothing. |
 | `engine` | `MAX_CANVAS_OBJECTS` | `1 << 18` | The most `Path2D`s, gradients and patterns a document's scripts hold at once: making one more is a `RangeError`. |
 | `engine` | `MAX_CANVAS_POINTS` | `1 << 22` | The most points a document's paths hold together, contexts' and `Path2D`s': past it, a point is not added. |
@@ -844,6 +846,8 @@ earlier milestones say why each is what it is):
 | `style` | `MAX_FAILED` | `1 << 20` | The most places a matcher keeps a selector failed at; past it they are forgotten and found again. |
 | `style` | `MAX_KEPT_STYLES` | `4096` | The most base styles a cascade keeps for the elements made of the same (M35.2); past it they are forgotten and computed again. |
 | `style` | `MAX_CONTAINER_PASSES` | `64` | The most times a document is laid out again for the size containers whose sizes changed what their queries and units answer (gap batch H, D72), each pass settling one more level of nested containers; past it the deepest levels keep the styles of the pass before. |
+| `style` | `MAX_HIGHLIGHT_NAMES` | `1 << 12` | The most distinct highlight names a process interns (gap batch H): a selector naming another `::highlight()` is refused. |
+| `style` | `MAX_HIGHLIGHT_NAME_LENGTH` | `1 << 10` | The longest highlight name interned, in bytes. |
 | `style` | `MAX_SHADOWS` | `64` | The most shadows a `box-shadow` may list (gap batch E): a longer list is invalid. |
 | `style` | `MAX_FILTERS` | `32` | The most functions a `filter` may list (gap batch E): a longer list is invalid. |
 | `style` | `MAX_SCHEME_WORDS` | `16` | The most scheme names a `color-scheme` may list (gap batch E). |

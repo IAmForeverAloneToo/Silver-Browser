@@ -473,6 +473,10 @@
   // hears the handle is released, and may free the node once it is out
   // of the tree.
   const objects = new $Map();
+  // The objects of nodes with event listeners out of the document, each
+  // held by the object of the nearest node around it that has one
+  // (`holdForListeners`).
+  const listenerHolds = new $WeakMap();
   const registry = new $FinalizationRegistry((handle) => {
     const entry = MapGet(objects, handle);
     if (entry !== undefined && WeakRefDeref(entry.ref) !== undefined) {
@@ -482,17 +486,31 @@
     native.released(handle);
   });
 
+  // The text controls with live OpaqueRanges (gap batch H), by handle:
+  // their ranges and their value as the ranges last saw it.
+  const opaqueControls = new $Map();
+  const opaqueControlCount = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
+
   // Holds or lets go of the objects of the nodes that came into the
   // document or left it, as the host says.
   function applyPins() {
     const pins = native.takePins();
     for (let i = 0; i < pins.length; i += 2) {
+      // A text control leaving the document disconnects its OpaqueRanges.
+      if (!pins[i + 1] && opaqueControlCount(opaqueControls) > 0) {
+        opaqueControlLeft(pins[i]);
+      }
       const entry = MapGet(objects, pins[i]);
       if (entry === undefined) {
         continue;
       }
       const object = WeakRefDeref(entry.ref);
       entry.strong = pins[i + 1] && object !== undefined ? object : null;
+      // Out of the document, a node with listeners lives as long as the
+      // tree it is in, which a node around it with an object stands for.
+      if (!pins[i + 1] && object !== undefined && entry.listened) {
+        holdForListeners(object);
+      }
     }
   }
 
@@ -784,6 +802,45 @@
     ArrayPush(listeners, listener);
     if (flags.signal !== null) {
       ArrayPush(signalOf(flags.signal).algorithms, () => removeListener(listeners, listener));
+    }
+    if (target !== global && isNode(target)) {
+      const entry = MapGet(objects, handleOf(target));
+      if (entry !== undefined && !entry.listened) {
+        entry.listened = true;
+        holdForListeners(target);
+      }
+    }
+  }
+
+  // A node's object with listeners, out of the document, is held by the
+  // objects of the nodes around it in its tree, shadow-including, that
+  // have one: its listeners live as long as a script holds the tree by
+  // any of them, as a slot's whose `slotchange` is yet to come (gap
+  // batch H).
+  function holdForListeners(target) {
+    let at = handleOf(target);
+    // The DOM's depth cap bounds the walk.
+    for (let depth = 0; depth < 4096; depth++) {
+      let up = native.parent(at);
+      if (up === null && native.kind(at) === 11) {
+        up = native.shadowHost(at);
+      }
+      if (up === null) {
+        return;
+      }
+      const entry = MapGet(objects, up);
+      const holder = entry === undefined ? undefined : WeakRefDeref(entry.ref);
+      if (holder !== undefined) {
+        let held = WeakMapGet(listenerHolds, holder);
+        if (held === undefined) {
+          held = [];
+          WeakMapSet(listenerHolds, holder, held);
+        }
+        if (!ArrayIncludes(held, target)) {
+          ArrayPush(held, target);
+        }
+      }
+      at = up;
     }
   }
 
@@ -2035,6 +2092,32 @@
     }
   }
 
+  // CSS Containment 2's (section 4.4, gap batch H): a
+  // `content-visibility: auto` element starting or stopping skipping its
+  // contents.
+  const CONTENT_VISIBILITY = 1 << 30;
+  const CONTENT_VISIBILITY_INIT = members(EVENT_INIT, [
+    ["skipped", "boolean", false],
+  ], "ContentVisibilityAutoStateChangeEventInit");
+
+  class ContentVisibilityAutoStateChangeEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(
+        arguments.length,
+        type,
+        eventInitDict,
+        CONTENT_VISIBILITY_INIT,
+        "ContentVisibilityAutoStateChangeEvent",
+      );
+      super(args[0], args[1]);
+      eventState(this).kinds |= CONTENT_VISIBILITY;
+    }
+
+    get skipped() {
+      return fieldsOf(this, CONTENT_VISIBILITY).skipped;
+    }
+  }
+
   // SecurityPolicyViolationEvent (CSP section 5.1, M33.1).
   const SECURITY = 131072;
   const SECURITY_INIT = members(EVENT_INIT, [
@@ -2248,6 +2331,11 @@
     ["HashChangeEvent", HashChangeEvent, HASH_CHANGE_INIT],
     ["AnimationEvent", AnimationEvent, ANIMATION_INIT],
     ["TransitionEvent", TransitionEvent, TRANSITION_INIT],
+    [
+      "ContentVisibilityAutoStateChangeEvent",
+      ContentVisibilityAutoStateChangeEvent,
+      CONTENT_VISIBILITY_INIT,
+    ],
     ["ProgressEvent", ProgressEvent, PROGRESS_INIT],
     ["StorageEvent", StorageEvent, STORAGE_INIT],
     ["SecurityPolicyViolationEvent", SecurityPolicyViolationEvent, SECURITY_INIT],
@@ -2442,6 +2530,12 @@
   // that has one when it bubbles, unless a listener canceled it.
   function* dispatching(target, event, override) {
     const s = eventState(event);
+    // An edit's `input`: the control's OpaqueRanges brought up to its
+    // value before any listener runs (gap batch H).
+    if (s.trusted && s.type === "input" && opaqueControlCount(opaqueControls) > 0 &&
+      isNode(target)) {
+      opaqueSync(handleOf(target));
+    }
     s.dispatching = true;
     s.target = override === undefined ? target : override;
     const made = eventPath(target, s, override);
@@ -11475,6 +11569,14 @@
   let selectionBackward = false;
   let theSelection = null;
 
+  // Makes `range` the selection's, or none, and tells the engine, which
+  // finds a `content-visibility: auto` element holding the selection
+  // relevant to the user (gap batch H).
+  function selectRange(range) {
+    selectionRange = range;
+    native.selectionChanged(range === null ? -1 : rangeId(range));
+  }
+
   class Selection {
     constructor(key) {
       if (key !== KEY) {
@@ -11557,7 +11659,7 @@
       if (attrOf(range) !== undefined || rootHandle(boundsOf(range)[0]) !== native.document()) {
         return;
       }
-      selectionRange = range;
+      selectRange(range);
       selectionBackward = false;
     }
 
@@ -11577,24 +11679,24 @@
           "Selection",
         );
       }
-      selectionRange = null;
+      selectRange(null);
     }
 
     removeAllRanges() {
       selectionOf(this);
-      selectionRange = null;
+      selectRange(null);
     }
 
     empty() {
       selectionOf(this);
-      selectionRange = null;
+      selectRange(null);
     }
 
     collapse(node, offset = 0) {
       selectionOf(this);
       need(arguments.length, 1, "collapse", "Selection");
       if (node === null) {
-        selectionRange = null;
+        selectRange(null);
         return;
       }
       const [handle, at] = checkPoint(node, offset, "collapse", "Selection");
@@ -11603,7 +11705,7 @@
       }
       const range = new Range();
       native.setRange(rangeId(range), handle, at, handle, at);
-      selectionRange = range;
+      selectRange(range);
       selectionBackward = false;
     }
 
@@ -11621,7 +11723,7 @@
       const b = boundsOf(selectionRange);
       const range = new Range();
       native.setRange(rangeId(range), b[0], b[1], b[0], b[1]);
-      selectionRange = range;
+      selectRange(range);
       selectionBackward = false;
     }
 
@@ -11633,7 +11735,7 @@
       const b = boundsOf(selectionRange);
       const range = new Range();
       native.setRange(rangeId(range), b[2], b[3], b[2], b[3]);
-      selectionRange = range;
+      selectRange(range);
       selectionBackward = false;
     }
 
@@ -11667,7 +11769,7 @@
         native.setRange(rangeId(range), handle, at, anchor[0], anchor[1]);
         selectionBackward = true;
       }
-      selectionRange = range;
+      selectRange(range);
     }
 
     setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
@@ -11687,7 +11789,7 @@
         native.setRange(rangeId(range), a, ao, f, fo);
         selectionBackward = false;
       }
-      selectionRange = range;
+      selectRange(range);
     }
 
     selectAllChildren(node) {
@@ -11709,7 +11811,7 @@
       // node's children are none, whatever its length.
       const range = new Range();
       native.setRange(rangeId(range), handle, 0, handle, native.children(handle).length);
-      selectionRange = range;
+      selectRange(range);
       selectionBackward = false;
     }
 
@@ -14738,6 +14840,10 @@
       ArrayPush(names, listed[i]);
     }
     const custom = native.computedValue(state.handle, state.pseudo, "--");
+    // A pseudo-element that does not parse has none (CSSOM section 9).
+    if (custom === null && state.pseudo !== "") {
+      return [];
+    }
     if (custom !== null && custom !== "") {
       const parts = StringSplit(custom, "\u0000");
       for (let i = 0; i < parts.length; i++) {
@@ -18370,37 +18476,17 @@
   expose(Screen, "Screen");
   const screen = new Screen(KEY);
 
-  // A pseudo-element named as getComputedStyle takes it: `::before`,
-  // `:before` (the older one-colon names), or nothing.
+  // A pseudo-element named as getComputedStyle takes it, what follows
+  // its first colon, which the host reads: `::before` and
+  // `::highlight(name)` as `:before` and `:highlight(name)`, CSS 2's
+  // one-colon names as `before`; or nothing, for a value that does not
+  // start with a colon, which is ignored (CSSOM section 9).
   function pseudoName(value) {
     if (value === undefined || value === null) {
       return "";
     }
-    const text = ToLowerCase(str(value));
-    if (text === "") {
-      return "";
-    }
-    const name = StringIndexOf(text, "::") === 0 ? StringSlice(text, 2) :
-      StringIndexOf(text, ":") === 0 ? StringSlice(text, 1) : null;
-    // What does not start with a colon names no pseudo-element: the
-    // element's own style (CSSOM section 9).
-    if (name === null) {
-      return "";
-    }
-    // One colon is CSS 2's four pseudo-elements' alone (Selectors 4
-    // section 3.6.1); `::part()` and `::slotted()` name elements of
-    // other trees, not a pseudo-element of this one: an empty
-    // declaration, as the reference browser gives (D69).
-    const legacy = name === "before" || name === "after" || name === "first-letter" ||
-      name === "first-line";
-    if (
-      (StringIndexOf(text, "::") !== 0 && !legacy) ||
-      StringIndexOf(name, "part(") === 0 ||
-      StringIndexOf(name, "slotted(") === 0
-    ) {
-      return "invalid";
-    }
-    return name;
+    const text = str(value);
+    return StringIndexOf(text, ":") === 0 ? StringSlice(text, 1) : "";
   }
 
   // ---- The window ----------------------------------------------------
@@ -20555,7 +20641,90 @@
     set value(value) {
       const handle = self(this);
       const iface = native.tag(handle) === "textarea" ? "HTMLTextAreaElement" : "HTMLInputElement";
-      valueSetter(handle, strOrEmpty(value), iface);
+      const text = strOrEmpty(value);
+      if (MapGet(opaqueControls, handle) === undefined) {
+        valueSetter(handle, text, iface);
+      } else {
+        opaqueValueSet(handle, () => valueSetter(handle, text, iface));
+      }
+    },
+
+    // HTML's setRangeText() (section 4.10.20): the units from `start` to
+    // `end`, the selection's by default, replaced by `replacement`, the
+    // selection then as `selectionMode` says; the OpaqueRanges moved as
+    // by DOM's "replace data" (gap batch H).
+    setRangeText(replacement, start = undefined, end = undefined, selectionMode = "preserve") {
+      const handle = self(this);
+      const iface = native.tag(handle) === "textarea" ? "HTMLTextAreaElement" : "HTMLInputElement";
+      need(arguments.length, 1, "setRangeText", iface);
+      const text = str(replacement);
+      if (!selectionApplies(handle)) {
+        throw domError(
+          "InvalidStateError",
+          "The input element's type ('" + native.inputType(handle) +
+            "') does not support selection.",
+          "setRangeText",
+          iface,
+        );
+      }
+      const selection = native.textSelection(handle);
+      let from;
+      let to;
+      let mode = "preserve";
+      if (arguments.length < 2) {
+        from = selection[0];
+        to = selection[1];
+      } else {
+        if (arguments.length < 3) {
+          need(arguments.length, 3, "setRangeText", iface);
+        }
+        from = unsigned(start);
+        to = unsigned(end);
+        mode = selectionMode === undefined ? "preserve" : str(selectionMode);
+        if (mode !== "select" && mode !== "start" && mode !== "end" && mode !== "preserve") {
+          throw new $TypeError(prefix("setRangeText", iface) + "The provided value '" + mode +
+            "' is not a valid enum value of type SelectionMode.");
+        }
+        if (from > to) {
+          throw domError(
+            "IndexSizeError",
+            "The provided start value (" + from + ") is larger than the provided end value (" +
+              to + ").",
+            "setRangeText",
+            iface,
+          );
+        }
+      }
+      opaqueSync(handle);
+      const old = native.controlValue(handle);
+      const length = old.length;
+      from = from > length ? length : from;
+      to = to > length ? length : to;
+      const value = StringSlice(old, 0, from) + text + StringSlice(old, to);
+      native.setControlValue(handle, value);
+      const entry = MapGet(opaqueControls, handle);
+      if (entry !== undefined) {
+        opaqueReplace(entry, from, to - from, text.length, native.controlValue(handle));
+      }
+      // The selection after (section 4.10.20, step 10).
+      const newEnd = from + text.length;
+      let s0 = selection[0];
+      let s1 = selection[1];
+      if (mode === "select") {
+        s0 = from;
+        s1 = newEnd;
+      } else if (mode === "start") {
+        s0 = from;
+        s1 = from;
+      } else if (mode === "end") {
+        s0 = newEnd;
+        s1 = newEnd;
+      } else {
+        const delta = text.length - (to - from);
+        s0 = s0 > to ? s0 + delta : s0 > from ? from : s0;
+        s1 = s1 > to ? s1 + delta : s1 > from ? newEnd : s1;
+      }
+      setSelection(handle, s0, s1, DIRECTIONS[selection[2]]);
     },
 
     get form() {
@@ -24007,27 +24176,25 @@
 
   include(
     {
-      // CSSOM View's checkVisibility(): false when the element has no
-      // box; with `checkOpacity` (or `opacityProperty`), when it or an
-      // ancestor in the flat tree has an opacity of 0; with
-      // `checkVisibilityCSS` (or `visibilityProperty`), when its own
-      // `visibility` is not `visible`.
-      checkVisibility(options) {
-        const o = options === undefined || options === null ? {} : options;
+      // CSSOM View's checkVisibility() (section 4): false when the
+      // element has no box, or is in contents a `content-visibility:
+      // hidden` around it in the flat tree skips; with `checkOpacity` (or
+      // `opacityProperty`), when it or an ancestor has an opacity of 0;
+      // with `checkVisibilityCSS` (or `visibilityProperty`), when its own
+      // `visibility` is not `visible`; with `contentVisibilityAuto`, when
+      // a `content-visibility: auto` around it skips it (gap batch H).
+      checkVisibility(options = undefined) {
+        const handle = self(this);
+        const read = (name) =>
+          options !== undefined && options !== null && !!options[name];
         if (geometryOf(this, false).length === 0) {
           return false;
         }
-        if (o.checkOpacity || o.opacityProperty) {
-          for (let at = self(this); at !== null && native.kind(at) === 1; at = flatParent(at)) {
-            if (Number(native.computedValue(at, "", "opacity")) === 0) {
-              return false;
-            }
-          }
-        }
-        if (o.checkVisibilityCSS || o.visibilityProperty) {
-          return native.computedValue(self(this), "", "visibility") === "visible";
-        }
-        return true;
+        let flags = 0;
+        if (read("checkOpacity") || read("opacityProperty")) flags |= 1;
+        if (read("checkVisibilityCSS") || read("visibilityProperty")) flags |= 2;
+        if (read("contentVisibilityAuto")) flags |= 4;
+        return native.checkVisibility(handle, flags);
       },
 
       getBoundingClientRect() {
@@ -24348,6 +24515,919 @@
     },
     [Document.prototype],
   );
+
+  // ---- Caret positions (CSSOM View section 6.1, gap batch H) -----------
+
+  // A CaretPosition's node and offset, and whether the offset is in a
+  // text control's value.
+  const caretPositions = new $WeakMap();
+
+  function caretOf(position) {
+    const state = WeakMapGet(caretPositions, position);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  class CaretPosition {
+    constructor(key, node, offset, control) {
+      if (key !== KEY) {
+        throw illegalConstructor("CaretPosition");
+      }
+      WeakMapSet(caretPositions, this, { node, offset, control });
+    }
+
+    get offsetNode() {
+      return wrap(caretOf(this).node);
+    }
+
+    get offset() {
+      return caretOf(this).offset;
+    }
+
+    // The caret's box: in a text control, where its text puts the place;
+    // else that of the range collapsed at the position, a new DOMRect
+    // each time.
+    getClientRect() {
+      const state = caretOf(this);
+      if (state.control) {
+        const g = native.controlCaret(state.node, state.offset);
+        return g.length < 4 ? null : new DOMRect(g[0], g[1], g[2], g[3]);
+      }
+      return boundingOf(native.rangeRects(state.node, state.offset, state.node, state.offset));
+    }
+  }
+  expose(CaretPosition, "CaretPosition");
+
+  // The union of the boxes `g` lists, four numbers each, as a range's
+  // `getBoundingClientRect()` makes it: those of no size left out unless
+  // all are, the first of them then; zeros for none.
+  function boundingOf(g) {
+    if (g.length < 4) {
+      return new DOMRect(0, 0, 0, 0);
+    }
+    let found = false;
+    let [left, top, right, bottom] = [0, 0, 0, 0];
+    for (let i = 0; i + 3 < g.length; i += 4) {
+      if (g[i + 2] === 0 && g[i + 3] === 0) {
+        continue;
+      }
+      if (!found) {
+        [left, top, right, bottom] = [g[i], g[i + 1], g[i] + g[i + 2], g[i + 1] + g[i + 3]];
+        found = true;
+      } else {
+        left = MathMin(left, g[i]);
+        top = MathMin(top, g[i + 1]);
+        right = MathMax(right, g[i] + g[i + 2]);
+        bottom = MathMax(bottom, g[i + 1] + g[i + 3]);
+      }
+    }
+    if (!found) {
+      return new DOMRect(g[0], g[1], g[2], g[3]);
+    }
+    return new DOMRect(left, top, right - left, bottom - top);
+  }
+
+  // A Web IDL `double` argument: a TypeError where it is not finite.
+  function finiteArgument(value, method, iface) {
+    const n = $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity) {
+      throw new $TypeError(prefix(method, iface) + "The provided double value is non-finite.");
+    }
+    return n;
+  }
+
+  // The `shadowRoots` member of a caret's or a hit test's options: a
+  // sequence of ShadowRoots, those the answer may reach into.
+  function shadowRootsOption(options, method, iface, dictionaryName) {
+    if (options === undefined || options === null) {
+      return [];
+    }
+    if (typeof options !== "object" && typeof options !== "function") {
+      throw new $TypeError(prefix(method, iface) +
+        "The provided value is not of type '" + dictionaryName + "'.");
+    }
+    const given = options.shadowRoots;
+    if (given === undefined) {
+      return [];
+    }
+    const where = prefix(method, iface) + "Failed to read the 'shadowRoots' property from '" +
+      dictionaryName + "': ";
+    if (given === null || typeof given !== "object" || typeof given[iteratorSymbol] !== "function") {
+      throw new $TypeError(where + "The provided value cannot be converted to a sequence.");
+    }
+    const roots = [];
+    const ShadowRootClass = madeInterfaces.ShadowRoot;
+    for (const root of given) {
+      if (ShadowRootClass === undefined || !(root instanceof ShadowRootClass)) {
+        throw new $TypeError(where + "Failed to convert value to 'ShadowRoot'.");
+      }
+      ArrayPush(roots, root);
+    }
+    return roots;
+  }
+
+  // The caret at viewport point (x, y), its node retargeted out of every
+  // shadow tree whose root `roots` does not hold (CSSOM View section
+  // 6.1's steps): its node's handle, its offset, and whether the offset
+  // is a text control's; null over nothing.
+  function caretAt(x, y, roots) {
+    const found = native.caretFromPoint(x, y);
+    if (found.length < 3) {
+      return null;
+    }
+    let node = wrap(found[0]);
+    let offset = found[1];
+    let control = found[2] === 1;
+    let retargeted = false;
+    for (;;) {
+      // A shadow root, the node itself among them, is retargeted to its
+      // host unless given.
+      const root = node.getRootNode();
+      const host = root instanceof madeInterfaces.ShadowRoot ? root.host : null;
+      if (host === undefined || host === null || ArrayIncludes(roots, root)) {
+        break;
+      }
+      const parent = native.parent(handleOf(host));
+      if (parent === null) {
+        break;
+      }
+      offset = native.indexOf(handleOf(host));
+      node = wrap(parent);
+      control = false;
+      retargeted = true;
+    }
+    return { node: handleOf(node), offset, control, retargeted };
+  }
+
+  include(
+    {
+      // The caret position at a viewport point (CSSOM View section 6.1):
+      // null for a document with no viewport, or a point outside it.
+      caretPositionFromPoint(x, y, options = undefined) {
+        const handle = self(this);
+        need(arguments.length, 2, "caretPositionFromPoint", "Document");
+        const px = finiteArgument(x, "caretPositionFromPoint", "Document");
+        const py = finiteArgument(y, "caretPositionFromPoint", "Document");
+        const roots = shadowRootsOption(
+          options,
+          "caretPositionFromPoint",
+          "Document",
+          "CaretPositionFromPointOptions",
+        );
+        if (handle !== native.document()) {
+          return null;
+        }
+        const caret = caretAt(px, py, roots);
+        return caret === null ? null :
+          new CaretPosition(KEY, caret.node, caret.offset, caret.control);
+      },
+
+      // The reference browser's older form: a collapsed Range at the
+      // caret, a text control's standing as the point before it.
+      caretRangeFromPoint(x = 0, y = 0) {
+        const handle = self(this);
+        if (handle !== native.document()) {
+          return null;
+        }
+        const caret = caretAt(long(x), long(y), []);
+        if (caret === null) {
+          return null;
+        }
+        let node = caret.node;
+        let offset = caret.offset;
+        if (caret.control) {
+          const parent = native.parent(node);
+          if (parent === null) {
+            return null;
+          }
+          offset = native.indexOf(node);
+          node = parent;
+        }
+        const range = new Range(KEY, handle);
+        native.setRange(rangeId(range), node, offset, node, offset);
+        return range;
+      },
+    },
+    [Document.prototype],
+  );
+
+  // ---- OpaqueRange (gap batch H) -------------------------------------
+  //
+  // A range over a text control's value, as the reference browser ships
+  // it (`createValueRange()` on an `input` whose type takes a selection
+  // and on a `textarea`): its offsets in the value's UTF-16 units, live
+  // as a range in a text node is under DOM's "replace data" -- the whole
+  // value set collapses it to the start, `setRangeText()` and editing
+  // move it as the text before it grows and shrinks -- and its control
+  // hidden from it. It is disconnected, collapsed at 0 and no longer
+  // live, by `disconnect()`, and when its control leaves the document,
+  // goes to another, or stops taking a selection.
+
+  // Each OpaqueRange's state: its control (null once disconnected), the
+  // control's document and whether it was in it, and its offsets.
+  const opaqueStates = new $WeakMap();
+
+  function opaqueOf(range) {
+    const state = WeakMapGet(opaqueStates, range);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The live OpaqueRanges of a control, and its value as they last saw
+  // it, by its handle (`opaqueControls`, near the top).
+  function opaqueEntry(handle) {
+    let entry = MapGet(opaqueControls, handle);
+    if (entry === undefined) {
+      entry = { value: native.controlValue(handle), ranges: [] };
+      MapSet(opaqueControls, handle, entry);
+    }
+    return entry;
+  }
+
+  // Disconnects `state`'s range: collapsed at 0, no longer live.
+  function opaqueDisconnect(state) {
+    if (state.handle === null) {
+      return;
+    }
+    const entry = MapGet(opaqueControls, state.handle);
+    if (entry !== undefined) {
+      const kept = [];
+      for (let i = 0; i < entry.ranges.length; i++) {
+        const other = WeakRefDeref(entry.ranges[i]);
+        if (other !== undefined && other !== state) {
+          ArrayPush(kept, entry.ranges[i]);
+        }
+      }
+      entry.ranges = kept;
+      if (kept.length === 0) {
+        MapDelete(opaqueControls, state.handle);
+      }
+    }
+    state.handle = null;
+    state.start = 0;
+    state.end = 0;
+    opaqueChanged();
+  }
+
+  // The control `handle` left the document (the pins say): its ranges
+  // are disconnected.
+  function opaqueControlLeft(handle) {
+    const entry = MapGet(opaqueControls, handle);
+    if (entry === undefined) {
+      return;
+    }
+    const states = [];
+    for (let i = 0; i < entry.ranges.length; i++) {
+      const state = WeakRefDeref(entry.ranges[i]);
+      if (state !== undefined && state.connected) {
+        ArrayPush(states, state);
+      }
+    }
+    for (let i = 0; i < states.length; i++) {
+      opaqueDisconnect(states[i]);
+    }
+  }
+
+  // DOM's "replace data" on each live range of the control: `count`
+  // units at `offset` replaced by `length` new ones, which made `value`.
+  function opaqueReplace(entry, offset, count, length, value) {
+    entry.value = value;
+    const moved = (at) => {
+      if (at > offset && at <= offset + count) {
+        return offset;
+      }
+      if (at > offset + count) {
+        return at + length - count;
+      }
+      return at;
+    };
+    for (let i = 0; i < entry.ranges.length; i++) {
+      const state = WeakRefDeref(entry.ranges[i]);
+      if (state !== undefined) {
+        state.start = moved(state.start);
+        state.end = moved(state.end);
+      }
+    }
+    opaqueChanged();
+  }
+
+  // The OpaqueRanges moved: the highlights holding them are painted
+  // where they are now.
+  function opaqueChanged() {
+    if (theRegistry !== null) {
+      sendHighlights();
+    }
+  }
+
+  // Brings the control's ranges up to its value as it is now, an edit
+  // the bindings did not make (the user's typing) read as one change
+  // where the old and new values differ, the longest shared start and
+  // end kept.
+  function opaqueSync(handle) {
+    const entry = MapGet(opaqueControls, handle);
+    if (entry === undefined) {
+      return;
+    }
+    const now = native.controlValue(handle);
+    const before = entry.value;
+    if (now === before) {
+      return;
+    }
+    let head = 0;
+    const shortest = MathMin(now.length, before.length);
+    while (head < shortest && now[head] === before[head]) {
+      head++;
+    }
+    let tail = 0;
+    while (
+      tail < shortest - head &&
+      now[now.length - 1 - tail] === before[before.length - 1 - tail]
+    ) {
+      tail++;
+    }
+    opaqueReplace(entry, head, before.length - head - tail, now.length - head - tail, now);
+  }
+
+  // The state of `range` as it is now: disconnected where its control
+  // left the document or went to another, or its type changed;
+  // else brought up to the control's value.
+  function opaqueNow(range) {
+    const state = opaqueOf(range);
+    const handle = state.handle;
+    if (handle === null) {
+      return state;
+    }
+    const connected = native.connected(handle);
+    if (
+      (state.connected && !connected) ||
+      native.ownerDocument(handle) !== state.document ||
+      (state.type !== "" && native.inputType(handle) !== state.type) ||
+      !selectionApplies(handle)
+    ) {
+      opaqueDisconnect(state);
+      return state;
+    }
+    state.connected = connected;
+    opaqueSync(handle);
+    return state;
+  }
+
+  // A value set whole (HTML's value setter): the ranges brought up to
+  // the value before, then collapsed at its start when it changes.
+  function opaqueValueSet(handle, set) {
+    opaqueSync(handle);
+    const before = native.controlValue(handle);
+    set();
+    const entry = MapGet(opaqueControls, handle);
+    if (entry === undefined) {
+      return;
+    }
+    const now = native.controlValue(handle);
+    if (now !== before) {
+      opaqueReplace(entry, 0, before.length, now.length, now);
+    }
+    entry.value = now;
+  }
+
+  class OpaqueRange extends AbstractRange {
+    constructor(key, handle, start, end) {
+      if (key !== KEY) {
+        throw illegalConstructor("OpaqueRange");
+      }
+      super(KEY);
+      const state = {
+        handle,
+        document: native.ownerDocument(handle),
+        connected: native.connected(handle),
+        type: native.tag(handle) === "input" ? native.inputType(handle) : "",
+        start,
+        end,
+      };
+      WeakMapSet(opaqueStates, this, state);
+      ArrayPush(opaqueEntry(handle).ranges, new $WeakRef(state));
+    }
+
+    // The control is kept from scripts: no containers.
+    get startContainer() {
+      opaqueOf(this);
+      return undefined;
+    }
+
+    get endContainer() {
+      opaqueOf(this);
+      return undefined;
+    }
+
+    get startOffset() {
+      return opaqueNow(this).start;
+    }
+
+    get endOffset() {
+      return opaqueNow(this).end;
+    }
+
+    get collapsed() {
+      const state = opaqueNow(this);
+      return state.start === state.end;
+    }
+
+    // The boxes of the text it holds, one a line; none collapsed, or
+    // disconnected.
+    getClientRects() {
+      const state = opaqueNow(this);
+      const rects = [];
+      if (state.handle !== null && state.start !== state.end) {
+        const g = native.controlRects(state.handle, state.start, state.end);
+        for (let i = 0; i + 3 < g.length; i += 4) {
+          ArrayPush(rects, new DOMRect(g[i], g[i + 1], g[i + 2], g[i + 3]));
+        }
+      }
+      return new DOMRectList(KEY, rects);
+    }
+
+    // Their union; collapsed, the caret's box there; zeros where the
+    // control shows no text, or disconnected.
+    getBoundingClientRect() {
+      const state = opaqueNow(this);
+      if (state.handle === null) {
+        return new DOMRect(0, 0, 0, 0);
+      }
+      if (state.start === state.end) {
+        const g = native.controlCaret(state.handle, state.start);
+        return g.length < 4 ? new DOMRect(0, 0, 0, 0) : new DOMRect(g[0], g[1], g[2], g[3]);
+      }
+      return boundingOf(native.controlRects(state.handle, state.start, state.end));
+    }
+
+    disconnect() {
+      opaqueDisconnect(opaqueOf(this));
+    }
+  }
+  expose(OpaqueRange, "OpaqueRange");
+
+  // The control and offsets of an OpaqueRange, for the highlights; null
+  // for any other value, or one disconnected.
+  function opaqueBounds(value) {
+    if (WeakMapGet(opaqueStates, value) === undefined) {
+      return null;
+    }
+    const state = opaqueNow(value);
+    return state.handle === null ? null : state;
+  }
+
+  include(
+    {
+      // A new OpaqueRange over the value from `start` to `end`, a
+      // backward one collapsed at `start`: a NotSupportedError where the
+      // control takes no selection, an IndexSizeError past the value.
+      createValueRange(start, end) {
+        const handle = self(this);
+        const iface =
+          native.tag(handle) === "textarea" ? "HTMLTextAreaElement" : "HTMLInputElement";
+        need(arguments.length, 2, "createValueRange", iface);
+        const s = unsigned(start);
+        const e = unsigned(end);
+        if (!selectionApplies(handle)) {
+          throw domError(
+            "NotSupportedError",
+            "The element does not support value ranges.",
+            "createValueRange",
+            iface,
+          );
+        }
+        opaqueSync(handle);
+        const length = native.controlValue(handle).length;
+        if (s > length || e > length) {
+          throw domError(
+            "IndexSizeError",
+            "The offset is larger than the value's length.",
+            "createValueRange",
+            iface,
+          );
+        }
+        return new OpaqueRange(KEY, handle, s, e < s ? s : e);
+      },
+    },
+    [madeInterfaces.HTMLInputElement.prototype, madeInterfaces.HTMLTextAreaElement.prototype],
+  );
+
+  // ---- Custom highlights (CSS Custom Highlight API 1, gap batch H) -------
+
+  const HighlightSet = Set;
+  const HighlightSetAdd = uncurry(Set.prototype.add);
+  const HighlightSetDelete = uncurry(Set.prototype.delete);
+  const HighlightSetHas = uncurry(Set.prototype.has);
+  const HighlightSetClear = uncurry(Set.prototype.clear);
+  const HighlightSetForEach = uncurry(Set.prototype.forEach);
+  const HighlightSetValues = uncurry(Set.prototype.values);
+  const HighlightSetEntries = uncurry(Set.prototype.entries);
+  const HighlightSetSize = uncurry(getOwnPropertyDescriptor(Set.prototype, "size").get);
+  const RegistryMapGet = uncurry(Map.prototype.get);
+  const RegistryMapKeys = uncurry(Map.prototype.keys);
+  const RegistryMapValues = uncurry(Map.prototype.values);
+  const RegistryMapEntries = uncurry(Map.prototype.entries);
+  const RegistryMapSize = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
+  const HIGHLIGHT_TYPES = ["highlight", "spelling-error", "grammar-error"];
+
+  // Each Highlight's ranges, priority and type.
+  const highlightStates = new $WeakMap();
+
+  function highlightOf(value) {
+    const state = WeakMapGet(highlightStates, value);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+
+  // The range argument of a Highlight's member: an AbstractRange, or a
+  // TypeError.
+  function abstractRange(value, method) {
+    if (!(value instanceof AbstractRange)) {
+      throw new $TypeError(
+        prefix(method, "Highlight") + "parameter 1 is not of type 'AbstractRange'.",
+      );
+    }
+    return value;
+  }
+
+  // A highlight, a set of ranges (section 3.1): painted over the text
+  // they hold by its name's `::highlight()` once registered.
+  class Highlight {
+    constructor(...initialRanges) {
+      const ranges = new HighlightSet();
+      for (let i = 0; i < initialRanges.length; i++) {
+        if (!(initialRanges[i] instanceof AbstractRange)) {
+          throw new $TypeError(
+            "Failed to construct 'Highlight': parameter " + (i + 1) +
+              " is not of type 'AbstractRange'.",
+          );
+        }
+        HighlightSetAdd(ranges, initialRanges[i]);
+      }
+      WeakMapSet(highlightStates, this, { ranges, priority: 0, type: "highlight" });
+    }
+
+    get priority() {
+      return highlightOf(this).priority;
+    }
+
+    set priority(value) {
+      highlightOf(this).priority = long(value);
+      highlightChanged(this);
+    }
+
+    get type() {
+      return highlightOf(this).type;
+    }
+
+    // An enumeration's attribute: a value of none of its strings is
+    // ignored.
+    set type(value) {
+      const state = highlightOf(this);
+      const text = str(value);
+      if (ArrayIncludes(HIGHLIGHT_TYPES, text)) {
+        state.type = text;
+      }
+    }
+
+    get size() {
+      return HighlightSetSize(highlightOf(this).ranges);
+    }
+
+    add(value) {
+      const state = highlightOf(this);
+      need(arguments.length, 1, "add", "Highlight");
+      HighlightSetAdd(state.ranges, abstractRange(value, "add"));
+      highlightChanged(this);
+      return this;
+    }
+
+    delete(value) {
+      const state = highlightOf(this);
+      need(arguments.length, 1, "delete", "Highlight");
+      const deleted = HighlightSetDelete(state.ranges, value);
+      if (deleted) {
+        highlightChanged(this);
+      }
+      return deleted;
+    }
+
+    has(value) {
+      const state = highlightOf(this);
+      need(arguments.length, 1, "has", "Highlight");
+      return HighlightSetHas(state.ranges, value);
+    }
+
+    clear() {
+      HighlightSetClear(highlightOf(this).ranges);
+      highlightChanged(this);
+    }
+
+    forEach(callback, thisArg = undefined) {
+      const state = highlightOf(this);
+      if (typeof callback !== "function") {
+        throw new $TypeError(
+          prefix("forEach", "Highlight") + "The callback provided as parameter 1 is not a function.",
+        );
+      }
+      HighlightSetForEach(state.ranges, (range) => {
+        ReflectApply(callback, thisArg, [range, range, this]);
+      });
+    }
+
+    entries() {
+      return HighlightSetEntries(highlightOf(this).ranges);
+    }
+
+    keys() {
+      return HighlightSetValues(highlightOf(this).ranges);
+    }
+
+    values() {
+      return HighlightSetValues(highlightOf(this).ranges);
+    }
+  }
+  expose(Highlight, "Highlight");
+  defineProperty(Highlight.prototype, iteratorSymbol, {
+    value: Highlight.prototype.values,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+
+  // The registry's highlights by name, in the order registered.
+  const registries = new $WeakMap();
+  let theRegistry = null;
+
+  function registryOf(value) {
+    const map = WeakMapGet(registries, value);
+    if (map === undefined) {
+      throw illegalInvocation();
+    }
+    return map;
+  }
+
+  // Whether the registry is being handed over, which reading an
+  // OpaqueRange's offsets may ask for again.
+  let sendingHighlights = false;
+
+  // Hands the registry to the engine, which paints its highlights.
+  function sendHighlights() {
+    if (theRegistry === null || sendingHighlights) {
+      return;
+    }
+    sendingHighlights = true;
+    try {
+      sendRegistry();
+    } finally {
+      sendingHighlights = false;
+    }
+  }
+
+  function sendRegistry() {
+    const names = [];
+    const numbers = [];
+    MapForEach(registryOf(theRegistry), (highlight, name) => {
+      const state = highlightOf(highlight);
+      ArrayPush(names, name);
+      ArrayPush(numbers, state.priority, HighlightSetSize(state.ranges));
+      HighlightSetForEach(state.ranges, (range) => {
+        const opaque = opaqueBounds(range);
+        const id = WeakMapGet(rangeIds, range);
+        if (WeakMapGet(opaqueStates, range) !== undefined) {
+          // An OpaqueRange: its control and offsets, or once disconnected
+          // a collapsed range, which paints nothing.
+          if (opaque === null) {
+            const root = native.document();
+            ArrayPush(numbers, 1, root, 0, root, 0);
+          } else {
+            ArrayPush(numbers, 2, opaque.handle, opaque.start, opaque.end);
+          }
+        } else if (id !== undefined) {
+          ArrayPush(numbers, 0, id);
+        } else {
+          const b = WeakMapGet(staticBounds, range);
+          ArrayPush(numbers, 1, b[0], b[1], b[2], b[3]);
+        }
+      });
+    });
+    native.setHighlights(names, numbers);
+  }
+
+  // A highlight changed: the registry is handed over again if it holds
+  // it.
+  function highlightChanged(highlight) {
+    if (theRegistry === null) {
+      return;
+    }
+    let held = false;
+    MapForEach(registryOf(theRegistry), (value) => {
+      held = held || value === highlight;
+    });
+    if (held) {
+      sendHighlights();
+    }
+  }
+
+  // Whether the viewport point (x, y) is over one of the boxes `g` lists,
+  // four numbers each.
+  function overBoxes(g, x, y) {
+    for (let i = 0; i + 3 < g.length; i += 4) {
+      if (x >= g[i] && x <= g[i] + g[i + 2] && y >= g[i + 1] && y <= g[i + 1] + g[i + 3]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Whether the viewport point (x, y) is over the text `range` holds.
+  function overRects(range, x, y) {
+    const b = boundsOf(range);
+    return overBoxes(native.rangeRects(b[0], b[1], b[2], b[3]), x, y);
+  }
+
+  // The highlights of the document, by name (section 3.2): a map, its
+  // values Highlights.
+  class HighlightRegistry {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("HighlightRegistry");
+      }
+      WeakMapSet(registries, this, new $Map());
+    }
+
+    get size() {
+      return RegistryMapSize(registryOf(this));
+    }
+
+    get(key) {
+      const map = registryOf(this);
+      need(arguments.length, 1, "get", "HighlightRegistry");
+      return RegistryMapGet(map, str(key));
+    }
+
+    has(key) {
+      const map = registryOf(this);
+      need(arguments.length, 1, "has", "HighlightRegistry");
+      return MapHas(map, str(key));
+    }
+
+    set(key, value) {
+      const map = registryOf(this);
+      need(arguments.length, 2, "set", "HighlightRegistry");
+      const name = str(key);
+      if (WeakMapGet(highlightStates, value) === undefined) {
+        throw new $TypeError(
+          prefix("set", "HighlightRegistry") + "parameter 2 is not of type 'Highlight'.",
+        );
+      }
+      MapSet(map, name, value);
+      sendHighlights();
+      return this;
+    }
+
+    delete(key) {
+      const map = registryOf(this);
+      need(arguments.length, 1, "delete", "HighlightRegistry");
+      const deleted = MapDelete(map, str(key));
+      if (deleted) {
+        sendHighlights();
+      }
+      return deleted;
+    }
+
+    clear() {
+      MapClear(registryOf(this));
+      sendHighlights();
+    }
+
+    forEach(callback, thisArg = undefined) {
+      const map = registryOf(this);
+      if (typeof callback !== "function") {
+        throw new $TypeError(
+          prefix("forEach", "HighlightRegistry") +
+            "The callback provided as parameter 1 is not a function.",
+        );
+      }
+      MapForEach(map, (value, key) => {
+        ReflectApply(callback, thisArg, [value, key, this]);
+      });
+    }
+
+    entries() {
+      return RegistryMapEntries(registryOf(this));
+    }
+
+    keys() {
+      return RegistryMapKeys(registryOf(this));
+    }
+
+    values() {
+      return RegistryMapValues(registryOf(this));
+    }
+
+    // The highlights at a viewport point (section 3.3), each with its
+    // ranges that hold the caret position there: the higher priority
+    // first, and of equal priorities the one registered last.
+    highlightsFromPoint(x, y, options = undefined) {
+      const map = registryOf(this);
+      need(arguments.length, 2, "highlightsFromPoint", "HighlightRegistry");
+      const px = finiteArgument(x, "highlightsFromPoint", "HighlightRegistry");
+      const py = finiteArgument(y, "highlightsFromPoint", "HighlightRegistry");
+      const roots = shadowRootsOption(
+        options,
+        "highlightsFromPoint",
+        "HighlightRegistry",
+        "HighlightsFromPointOptions",
+      );
+      // A point over text in a shadow tree not given is over no text a
+      // highlight's range outside it holds.
+      const caret = caretAt(px, py, roots);
+      if (caret === null || caret.retargeted) {
+        return [];
+      }
+      const found = [];
+      let order = 0;
+      MapForEach(map, (highlight) => {
+        const state = highlightOf(highlight);
+        const ranges = [];
+        HighlightSetForEach(state.ranges, (range) => {
+          // An OpaqueRange's units of its control's value; the others'
+          // boundary points, a control's place in its value holding none.
+          if (WeakMapGet(opaqueStates, range) !== undefined) {
+            const opaque = opaqueBounds(range);
+            if (
+              caret.control && opaque !== null && opaque.handle === caret.node &&
+              opaque.start <= caret.offset && caret.offset < opaque.end &&
+              overBoxes(native.controlRects(opaque.handle, opaque.start, opaque.end), px, py)
+            ) {
+              ArrayPush(ranges, range);
+            }
+            return;
+          }
+          if (caret.control) {
+            return;
+          }
+          const b = boundsOf(range);
+          if (b[0] === b[2] && b[1] === b[3]) {
+            return;
+          }
+          // A static range whose offsets are past its nodes, or whose
+          // end comes before its start, holds nothing.
+          if (
+            b[1] > native.nodeLength(b[0]) || b[3] > native.nodeLength(b[2]) ||
+            native.compareBoundaries(b[0], b[1], b[2], b[3]) !== -1
+          ) {
+            return;
+          }
+          // A range in another tree than the caret's holds nothing there.
+          if (wrap(b[0]).getRootNode() !== wrap(caret.node).getRootNode()) {
+            return;
+          }
+          const start = native.compareBoundaries(caret.node, caret.offset, b[0], b[1]);
+          const end = native.compareBoundaries(caret.node, caret.offset, b[2], b[3]);
+          // And the point is over the text it holds, not beside it.
+          if (start !== null && start !== -1 && end === -1 && overRects(range, px, py)) {
+            ArrayPush(ranges, range);
+          }
+        });
+        if (ranges.length > 0) {
+          ArrayPush(found, { highlight, ranges, priority: state.priority, order });
+        }
+        order += 1;
+      });
+      ArraySort(found, (a, b) => b.priority - a.priority || b.order - a.order);
+      const out = [];
+      for (let i = 0; i < found.length; i++) {
+        ArrayPush(out, { highlight: found[i].highlight, ranges: found[i].ranges });
+      }
+      return out;
+    }
+  }
+  expose(HighlightRegistry, "HighlightRegistry");
+  defineProperty(HighlightRegistry.prototype, iteratorSymbol, {
+    value: HighlightRegistry.prototype.entries,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+
+  // `CSS.highlights`, the document's registry, made when first asked.
+  defineProperty(CSSNamespace, "highlights", {
+    get() {
+      if (theRegistry === null) {
+        theRegistry = new HighlightRegistry(KEY);
+      }
+      return theRegistry;
+    },
+    enumerable: true,
+    configurable: true,
+  });
 
   // The window's scroll members (CSSOM View section 5): the viewport
   // scrolls down and across.

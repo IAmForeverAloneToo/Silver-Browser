@@ -577,9 +577,14 @@ pub(crate) fn layout_flex_contents<'a>(
     // content's, `content`, the height `auto` would give it: the height
     // imposed; else its known height or `content`, clamped, a keyword
     // limit being `content`, its automatic height (css-sizing-3 §3.2).
-    let fit = |content: f32| match known_height {
-        Some(known) if imposed.is_some() => known,
-        known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
+    // A container with size containment is as tall as if it were empty
+    // (CSS Containment 2 section 3.1, gap batch H).
+    let fit = |content: f32| {
+        let content = crate::contain::content_height(style).unwrap_or(content);
+        match known_height {
+            Some(known) if imposed.is_some() => known,
+            known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
+        }
     };
     // The gaps (CSS Gaps 1 §2): `normal` is zero in a flex container,
     // and a percentage of an indefinite height is resolved against zero,

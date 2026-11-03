@@ -83,6 +83,8 @@ pub(super) fn value(
             get("outline-width")?
         )),
         "gap" => pair("row-gap", "column-gap"),
+        // One value where the two axes are alike.
+        "contain-intrinsic-size" => pair("contain-intrinsic-width", "contain-intrinsic-height"),
         "place-content" => pair("align-content", "justify-content"),
         "place-items" => pair("align-items", "justify-items"),
         "place-self" => pair("align-self", "justify-self"),

@@ -118,9 +118,15 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "color",
     "color-scheme",
     "column-gap",
+    "contain",
+    "contain-intrinsic-block-size",
+    "contain-intrinsic-height",
+    "contain-intrinsic-inline-size",
+    "contain-intrinsic-width",
     "container-name",
     "container-type",
     "content",
+    "content-visibility",
     "counter-increment",
     "counter-reset",
     "counter-set",
@@ -239,6 +245,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "print-color-adjust",
     "quotes",
     "r",
+    "reading-flow",
+    "reading-order",
     "resize",
     "right",
     "rotate",
@@ -1414,6 +1422,19 @@ fn math_at(value: &[Token], at: usize, percentages: bool) -> Option<(usize, Stri
 /// percentages compared where they stand for numbers, as the opacities'
 /// do, `min(50%, 0%)` written `calc(0%)` there.
 pub fn specified_of(name: &str, value: &[Token]) -> String {
+    // `contain`'s keywords in their canonical order (CSS Containment 2
+    // section 2), as the reference browser writes them (gap batch H); a
+    // lone keyword as it is.
+    let words = value
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .count();
+    if name == "contain"
+        && words > 1
+        && let Some(contain) = crate::cascade::parse_contain_value(value)
+    {
+        return longhands::contain_keywords(contain);
+    }
     let numbers = matches!(
         name,
         "opacity" | "fill-opacity" | "stroke-opacity" | "flood-opacity" | "stop-opacity"

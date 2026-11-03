@@ -550,6 +550,19 @@ impl FontStore {
         self.glyph_font.glyph_id(c).0 != 0
     }
 
+    /// The advance of `c`'s glyph at `font_size_px`, scaled from the
+    /// font's units and not hinted: the figure the reference browser's
+    /// font metrics hold, its "average character width" among them (gap
+    /// batch H). `None` when the font has no glyph for `c`.
+    pub fn unhinted_advance(&self, c: char, font_size_px: f32) -> Option<f32> {
+        use ab_glyph::Font as _;
+        let id = self.glyph_font.glyph_id(c);
+        if id.0 == 0 {
+            return None;
+        }
+        Some(self.glyph_font.h_advance_unscaled(id) * font_size_px / self.units_per_em)
+    }
+
     /// The font's underline at `font_size_px` (M21.7): where its top is
     /// below the baseline, and how thick it is, unrounded; `None` when
     /// the font says nothing of it.
@@ -1650,6 +1663,19 @@ impl FontCollection {
         } else {
             font_size_px * 0.5
         }
+    }
+
+    /// The unhinted advance of `c` at `font_size_px` in the face `font`
+    /// draws it in, a web font's chain's or a fallback's as the text's
+    /// (see [`FontStore::unhinted_advance`]).
+    pub fn unhinted_advance_in(&self, font: Font, c: char, font_size_px: f32) -> Option<f32> {
+        let mut buffer = [0; 4];
+        let text: &str = c.encode_utf8(&mut buffer);
+        let mut advance = None;
+        self.for_each_face_run(font, text, |_, _, face| {
+            advance = advance.or_else(|| face.unhinted_advance(c, font_size_px));
+        });
+        advance
     }
 
     /// The line-height-relevant metrics across *every* script actually

@@ -708,13 +708,14 @@ impl<'w, 'a> Walk<'w, 'a> {
 }
 
 /// Whether an element or pseudo-element of `style` has style containment
-/// (CSS Contain 2 section 3.3): a size or anchored container has (CSS
-/// Conditional 5 section 7.2), whatever its `display`, as in the
+/// (CSS Contain 2 section 3.3): `contain: style`, a `content-visibility`
+/// other than `visible` (gap batch H), or a size or anchored container
+/// (CSS Conditional 5 section 7.2), whatever its `display`, as in the
 /// reference browser. Its descendants' increments and sets do not reach
 /// the counters outside it, its own resets end with it, and the quote
 /// depth after it is the one before it.
 fn style_contained(style: &ComputedStyle) -> bool {
-    style.container_type.contains_style()
+    style.contains_style()
 }
 
 /// The set the sibling after an element with style containment starts

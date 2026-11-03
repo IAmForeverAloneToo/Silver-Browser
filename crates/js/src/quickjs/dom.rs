@@ -486,6 +486,34 @@ const NATIVES: &[(&str, Decode)] = &[
             all: a.bool(2),
         })
     }),
+    ("caretFromPoint", |a| {
+        Ok(Call::CaretFromPoint {
+            x: a.number(0),
+            y: a.number(1),
+        })
+    }),
+    ("controlCaret", |a| {
+        Ok(Call::ControlCaret(a.handle(0)?, a.integer(1) as u32))
+    }),
+    ("controlRects", |a| {
+        Ok(Call::ControlRects(
+            a.handle(0)?,
+            a.integer(1) as u32,
+            a.integer(2) as u32,
+        ))
+    }),
+    ("checkVisibility", |a| {
+        Ok(Call::CheckVisibility(a.handle(0)?, a.integer(1) as u32))
+    }),
+    ("setHighlights", |a| {
+        Ok(Call::SetHighlights {
+            names: a.strings(0)?,
+            numbers: a.numbers(1)?,
+        })
+    }),
+    ("selectionChanged", |a| {
+        Ok(Call::SelectionChanged(a.number(0)))
+    }),
     ("innerText", |a| Ok(Call::InnerText(a.handle(0)?))),
     ("selectedText", |a| {
         Ok(Call::SelectedText(

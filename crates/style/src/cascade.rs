@@ -123,9 +123,9 @@ use crate::computed::{
     TextAlign, TextAlignLast, TextJustify, VerticalAlign, WhiteSpace, WhiteSpaceCollapse,
 };
 use crate::computed::{
-    AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontKerning,
-    FontProps, Fragmentation, GridStyle, ImageStyle, InlineSide, JustifyItems, Lists, Motion,
-    Radii, Resize, ScrollSnapType, SnapAlign, SnapAxis, SnapStrictness, Svg, WillChange,
+    AnimationPlayState, Backgrounds, BorderImage, Calc, Containment, Decoration, Effects, Filter,
+    FontKerning, FontProps, Fragmentation, GridStyle, ImageStyle, InlineSide, JustifyItems, Lists,
+    Motion, Radii, Resize, ScrollSnapType, SnapAlign, SnapAxis, SnapStrictness, Svg, WillChange,
 };
 use crate::container::{ContainerSizes, Containers, Queried};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
@@ -134,11 +134,19 @@ use crate::media::{ColorScheme, Media};
 use crate::page::{PagePosition, PageStyle};
 use crate::property::{PropertyRegistration, Registry};
 use crate::rule_set::{InForce, KeyframesInForce, RuleSet};
-use crate::selector_matching::{Matcher, PseudoElement, Selector, SelectorList, Specificity};
+use crate::selector_matching::{
+    HighlightName, Matcher, PseudoArgument, PseudoElement, Selector, SelectorList, Specificity,
+};
 
 mod animated;
 mod backgrounds;
 mod border_image;
+mod containment;
+
+/// `contain`'s value, if `tokens` are one (CSS Containment 2 section 2).
+pub(crate) fn parse_contain_value(tokens: &[Token]) -> Option<crate::computed::Contain> {
+    containment::parse_contain(tokens)
+}
 mod decoration;
 mod effects;
 mod fonts;
@@ -498,7 +506,8 @@ impl PseudoStyles {
             | PseudoElement::Checkmark
             | PseudoElement::WebkitPrefixed
             | PseudoElement::Slotted
-            | PseudoElement::Part => None,
+            | PseudoElement::Part
+            | PseudoElement::Highlight => None,
         }
     }
 }
@@ -517,6 +526,11 @@ enum Target {
     DetailsContent,
     DetailsContentBefore,
     DetailsContentAfter,
+    /// A custom highlight (gap batch H), whose style is asked for alone
+    /// ([`Recascader::highlight`]), never kept with the element's: not
+    /// among [`Target::ALL`], its declarations matched into the
+    /// element's place.
+    Highlight,
 }
 
 impl Target {
@@ -549,7 +563,8 @@ impl Target {
 
     /// The pseudo-element it is, when its animations run (M22.2): the
     /// reference browser animates `::before`, `::after`, `::marker` and
-    /// `::backdrop`, and not `::first-letter` or `::first-line`.
+    /// `::backdrop`, and not `::first-letter`, `::first-line` or a
+    /// highlight.
     fn animated(self) -> Option<PseudoElement> {
         match self {
             Target::Before => Some(PseudoElement::Before),
@@ -561,7 +576,8 @@ impl Target {
             | Target::FirstLine
             | Target::DetailsContent
             | Target::DetailsContentBefore
-            | Target::DetailsContentAfter => None,
+            | Target::DetailsContentAfter
+            | Target::Highlight => None,
         }
     }
 
@@ -586,7 +602,8 @@ impl Target {
             | PseudoElement::Checkmark
             | PseudoElement::WebkitPrefixed
             | PseudoElement::Slotted
-            | PseudoElement::Part => None,
+            | PseudoElement::Part
+            | PseudoElement::Highlight => None,
         }
     }
 
@@ -643,6 +660,22 @@ impl Target {
                 | "text-shadow"
         );
         match self {
+            // A highlight takes the properties CSS Pseudo 4 section 3.2
+            // lets apply that this engine has: its colours, its
+            // decoration's and its shadow.
+            Target::Highlight => matches!(
+                name,
+                "color"
+                    | "background-color"
+                    | "text-decoration"
+                    | "text-decoration-line"
+                    | "text-decoration-style"
+                    | "text-decoration-color"
+                    | "text-decoration-thickness"
+                    | "text-underline-offset"
+                    | "text-underline-position"
+                    | "text-shadow"
+            ),
             Target::FirstLine => line,
             Target::FirstLetter => {
                 line || name == "float"
@@ -1817,6 +1850,18 @@ impl Recascader<'_> {
         element: NodeId,
         cascade: impl FnOnce(&Matched<'_>, &Resolution<'_>) -> R,
     ) -> R {
+        self.with_matched_for(element, None, cascade)
+    }
+
+    /// [`Recascader::with_matched`], or with `highlight` the declarations
+    /// of the rules for `element`'s `::highlight()` of that name alone,
+    /// in the element's place.
+    fn with_matched_for<R>(
+        &self,
+        element: NodeId,
+        highlight: Option<HighlightName>,
+        cascade: impl FnOnce(&Matched<'_>, &Resolution<'_>) -> R,
+    ) -> R {
         let mut cascader = self.cascader.borrow_mut();
         let cascader = &mut *cascader;
         let containers = Containers {
@@ -1833,15 +1878,25 @@ impl Recascader<'_> {
             fonts: cascader.context.fonts,
             own: None,
         };
-        let matched = declarations_for(
-            self.document,
-            (&mut cascader.matcher, &mut cascader.candidates),
-            element,
-            (&cascader.ua, &cascader.author, &cascader.shadow),
-            cascader.context.inline_styles,
-            cascader.context.frame_margins,
-            Some(&containers),
-        );
+        let matched = match highlight {
+            None => declarations_for(
+                self.document,
+                (&mut cascader.matcher, &mut cascader.candidates),
+                element,
+                (&cascader.ua, &cascader.author, &cascader.shadow),
+                cascader.context.inline_styles,
+                cascader.context.frame_margins,
+                Some(&containers),
+            ),
+            Some(name) => highlight_declarations(
+                self.document,
+                (&mut cascader.matcher, &mut cascader.candidates),
+                element,
+                (&cascader.ua, &cascader.author, &cascader.shadow),
+                name,
+                Some(&containers),
+            ),
+        };
         let rem = if self.document.document_element() == Some(element) {
             ComputedStyle::default().font_size_px
         } else {
@@ -1869,6 +1924,37 @@ impl Recascader<'_> {
         };
         cascade(&matched, &resolution)
     }
+}
+
+impl Recascader<'_> {
+    /// The style of `element`'s `::highlight(name)` (CSS Pseudo 4 section
+    /// 3.5, CSS Highlight API section 3, gap batch H), cascaded from its
+    /// rules and inheriting from `parent`: the same highlight's style of
+    /// the element's parent, as highlights inherit, or [`highlight_root`]
+    /// for the root element. `None` when no rule styles it, the style
+    /// then being `parent`'s inherited values.
+    pub fn highlight(
+        &self,
+        element: NodeId,
+        name: HighlightName,
+        parent: &ComputedStyle,
+    ) -> Option<ComputedStyle> {
+        self.with_matched_for(element, Some(name), |matched, resolution| {
+            let applied = matched.of(Target::Element);
+            (!applied.is_empty())
+                .then(|| compute_style(applied, parent, Target::Highlight, resolution, None, None))
+        })
+    }
+}
+
+/// What the root element's highlights inherit from (CSS Pseudo 4
+/// section 3.5): the root's own style, its `color` left as
+/// `currentcolor`, so that a highlight that sets no colour draws its
+/// text in the colour under it, as the reference browser does.
+pub fn highlight_root(root: &ComputedStyle) -> ComputedStyle {
+    let mut style = ComputedStyle::inherited_from(root);
+    style.color = Color::CURRENT;
+    style
 }
 
 impl Recascade for Recascader<'_> {
@@ -2065,7 +2151,20 @@ fn element_style(
         set_language(&mut style, lang);
     }
     top_layer::adjust(document, element, &mut style);
+    // Whether it skips its contents (CSS Containment 2 section 4.1): an
+    // `auto` one by its relevance to the user, which the engine keeps
+    // as a state of the element (gap batch H).
+    let skips = style.would_skip_contents(relevant(document, element));
+    style.set_skips_contents(skips);
     style
+}
+
+/// Whether `element` is relevant to the user, as the engine last found
+/// (CSS Containment 2 section 4.3).
+fn relevant(document: &Document, element: NodeId) -> bool {
+    document
+        .state(element)
+        .contains(dom::ElementState::RELEVANT)
 }
 
 /// The MathML Core layout the MathML element `element` takes (D77), its
@@ -2500,6 +2599,9 @@ fn plain() -> bool {
 struct StyleKey {
     /// Whether the element makes no box with `display: contents` (D77).
     unboxes: bool,
+    /// Whether the element is relevant to the user, which a
+    /// `content-visibility: auto` reads (gap batch H).
+    relevant: bool,
     parent: u32,
     root: bool,
     dir: Option<Box<str>>,
@@ -2936,8 +3038,14 @@ impl<'a> Cascader<'a> {
             let applied = matched.of_pseudo(target, element, &style, Some(&containers));
             compute_style(&applied, parent, target, &pseudo_resolution, None, None)
         };
-        let content = (self.document.tag(element) == Some("details"))
-            .then(|| details(Target::DetailsContent, &style));
+        // A closed one's skips its contents by `content-visibility:
+        // hidden` (CSS Containment 2 section 4.1; gap batch H).
+        let content = (self.document.tag(element) == Some("details")).then(|| {
+            let mut content = details(Target::DetailsContent, &style);
+            let skips = content.would_skip_contents(false);
+            content.set_skips_contents(skips);
+            content
+        });
         let nested = |target: Target| {
             let content = content.as_ref()?;
             (!matched.of(target).is_empty()).then(|| details(target, content))
@@ -3026,6 +3134,7 @@ impl<'a> Cascader<'a> {
             parent,
             root: self.document.document_element() == Some(element),
             unboxes: unboxes_to_nothing(self.document, element),
+            relevant: relevant(self.document, element),
             dir: self.document.attr(element, "dir").map(Box::from),
             lang: self.document.attr(element, "lang").map(Box::from),
             rem: rem.to_bits(),
@@ -3914,6 +4023,63 @@ fn collect_scoped<'a>(
     }
 }
 
+/// The declarations of the rules that style `element`'s `::highlight()`
+/// of the name `name` (gap batch H), in the element's place of the
+/// [`Matched`] made: a sheet's rules alone, no presentational hint nor
+/// inline style styling a pseudo-element.
+fn highlight_declarations<'a>(
+    document: &Document,
+    (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
+    element: NodeId,
+    (ua, author, shadow): RulesInForce<'_, 'a>,
+    name: HighlightName,
+    containers: Option<&Containers<'_>>,
+) -> Matched<'a> {
+    let mut order = 0u32;
+    let mut out = Matched::default();
+    let svg = document.svg_tag(element).is_some();
+    // The user agent's rules, then its own tree's, a shadow tree's scoped
+    // to it, as `declarations_for` takes them.
+    let own_tree = match document.has_shadow_roots() {
+        true => document.root_of(element),
+        false => document.root(),
+    };
+    let own = tree_depth(document, own_tree);
+    let own_root = Some(own_tree).filter(|&root| document.is_shadow_root(root));
+    matcher.set_shadow_scope(None);
+    ua.candidates(document, element, candidates);
+    collect_from_sheet_for(
+        matcher,
+        (element, svg),
+        (ua, candidates),
+        (TierBase::UserAgent, (own, own_root)),
+        (&mut order, &mut out),
+        containers,
+        Some(name),
+    );
+    let own_rules = match document.is_shadow_root(own_tree) {
+        true => {
+            matcher.set_shadow_scope(Some(own_tree));
+            shadow.get(&own_tree)
+        }
+        false => Some(author),
+    };
+    if let Some(rules) = own_rules {
+        rules.candidates(document, element, candidates);
+        collect_from_sheet_for(
+            matcher,
+            (element, svg),
+            (rules, candidates),
+            (TierBase::AuthorSheet, (own, own_root)),
+            (&mut order, &mut out),
+            containers,
+            Some(name),
+        );
+    }
+    matcher.set_shadow_scope(None);
+    out
+}
+
 /// `element`'s presentational hints (M21.6) and, for an SVG element,
 /// its presentation attributes (M32), built as declarations, never as
 /// text a value could add another to.
@@ -3957,6 +4123,29 @@ fn collect_from_sheet<'a>(
     out: &mut Matched<'a>,
     containers: Option<&Containers<'_>>,
 ) {
+    collect_from_sheet_for(
+        matcher,
+        (element, svg),
+        (sheet, candidates),
+        (base, (context, tree)),
+        (order, out),
+        containers,
+        None,
+    );
+}
+
+/// [`collect_from_sheet`], or with `highlight` the rules for the
+/// element's `::highlight()` of that name alone, their declarations in
+/// the element's place.
+fn collect_from_sheet_for<'a>(
+    matcher: &mut Matcher<'a>,
+    (element, svg): (NodeId, bool),
+    (sheet, candidates): (&InForce<'a>, &[(u32, u32)]),
+    (base, (context, tree)): (TierBase, (u32, Option<NodeId>)),
+    (order, out): (&mut u32, &mut Matched<'a>),
+    containers: Option<&Containers<'_>>,
+    highlight: Option<HighlightName>,
+) {
     // The scoping roots of each scope met, for `element`.
     let mut roots: HashMap<u32, Vec<(NodeId, u32)>> = HashMap::new();
     // Whether each `@container` block met holds for the element, whose
@@ -3993,13 +4182,20 @@ fn collect_from_sheet<'a>(
         let mut best: [Option<(Specificity, Reverse<u32>)>; 10] = [None; 10];
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
-            let target = match &selector.pseudo_element {
-                None => Target::Element,
+            let target = match (&selector.pseudo_element, highlight) {
+                (None, None) => Target::Element,
                 // One matched and set aside: nothing draws it yet.
-                Some(ending) => match Target::of(ending.element) {
+                (Some(ending), None) => match Target::of(ending.element) {
                     Some(target) => target,
                     None => continue,
                 },
+                // The highlight asked for, in the element's place.
+                (Some(ending), Some(name))
+                    if ending.argument == PseudoArgument::Highlight(name) =>
+                {
+                    Target::Element
+                }
+                (_, Some(_)) => continue,
             };
             let matches = |matcher: &mut Matcher<'a>| match &selector.pseudo_element {
                 None => matcher.matches_element(element, selector),
@@ -6133,6 +6329,39 @@ fn apply_declaration(
                 |g, v| g.justify_self = v,
             )
         }
+        "reading-flow" => set_grid(style, containment::parse_reading_flow(value), |g, v| {
+            g.reading_flow = v
+        }),
+        "reading-order" => set_grid(
+            style,
+            containment::parse_reading_order(value, bases),
+            |g, v| g.reading_order = v,
+        ),
+        "contain" => set_containment(style, containment::parse_contain(value), |c, v| {
+            c.contain = v
+        }),
+        "content-visibility" => set_containment(
+            style,
+            containment::parse_content_visibility(value),
+            |c, v| c.content_visibility = v,
+        ),
+        "contain-intrinsic-size" => set_containment(
+            style,
+            containment::parse_contain_intrinsic_size(value, bases),
+            |c, v| c.intrinsic = v,
+        ),
+        // The logical longhands map as horizontal text maps them, the
+        // only writing mode the engine lays out.
+        "contain-intrinsic-width" | "contain-intrinsic-inline-size" => set_containment(
+            style,
+            containment::parse_contain_intrinsic_axis(value, bases),
+            |c, v| c.intrinsic[0] = v,
+        ),
+        "contain-intrinsic-height" | "contain-intrinsic-block-size" => set_containment(
+            style,
+            containment::parse_contain_intrinsic_axis(value, bases),
+            |c, v| c.intrinsic[1] = v,
+        ),
         "place-items" => match parse_place_items(value, parent.grid().justify_items) {
             Some((align, justify)) => {
                 style.align_items = align;
@@ -6656,6 +6885,29 @@ fn set_effects<T>(
     update: impl FnOnce(&mut Effects, T),
 ) -> bool {
     v.map(|v| update(style.effects_mut(), v)).is_some()
+}
+
+/// [`set`] for the containment properties (gap batch H), which live
+/// behind [`ComputedStyle::containment`].
+fn set_containment<T>(
+    style: &mut ComputedStyle,
+    v: Option<T>,
+    update: impl FnOnce(&mut Containment, T),
+) -> bool {
+    v.map(|v| update(style.containment_mut(), v)).is_some()
+}
+
+/// [`copy_grid`] for the containment properties.
+fn copy_containment(
+    style: &mut ComputedStyle,
+    src: &ComputedStyle,
+    copy: impl FnOnce(&mut Containment, &Containment),
+) {
+    if style.containment.is_none() && src.containment.is_none() {
+        return;
+    }
+    let src = src.containment().clone();
+    copy(style.containment_mut(), &src);
 }
 
 /// [`set`] for the break properties, `orphans`, `widows` and
@@ -7378,6 +7630,19 @@ fn apply_css_wide(
             style.flex_wrap = src.flex_wrap;
         }
         "order" => style.order = src.order,
+        "reading-flow" => copy_grid(style, src, |g, s| g.reading_flow = s.reading_flow),
+        "reading-order" => copy_grid(style, src, |g, s| g.reading_order = s.reading_order),
+        "contain" => copy_containment(style, src, |c, s| c.contain = s.contain),
+        "content-visibility" => copy_containment(style, src, |c, s| {
+            c.content_visibility = s.content_visibility
+        }),
+        "contain-intrinsic-size" => copy_containment(style, src, |c, s| c.intrinsic = s.intrinsic),
+        "contain-intrinsic-width" | "contain-intrinsic-inline-size" => {
+            copy_containment(style, src, |c, s| c.intrinsic[0] = s.intrinsic[0])
+        }
+        "contain-intrinsic-height" | "contain-intrinsic-block-size" => {
+            copy_containment(style, src, |c, s| c.intrinsic[1] = s.intrinsic[1])
+        }
         "flex-grow" => style.flex_grow = src.flex_grow,
         "flex-shrink" => style.flex_shrink = src.flex_shrink,
         "flex-basis" => style.flex_basis = src.flex_basis.clone(),

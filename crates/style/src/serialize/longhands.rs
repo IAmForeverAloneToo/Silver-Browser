@@ -17,6 +17,7 @@ use crate::computed::{
     TextAlignLast, TextJustify, Timeline, TrackBreadth, TrackList, TrackSection, TrackSize,
     TransformFunction, TransformStyle, TransitionBehavior, TransitionProperty, UnderlinePosition,
 };
+use crate::computed::{Contain, ContainIntrinsicSize, ContentVisibility, ReadingFlow};
 use crate::easing::{Easing, StepPosition};
 
 use super::{color, length_percentage, number, px, self_alignment, string, text_align};
@@ -38,6 +39,57 @@ fn hyphenate_limit_chars(limits: [Option<i32>; 3]) -> String {
         }
     }
     parts.join(" ")
+}
+
+/// `contain`: `strict` and `content` for their sets, else the keywords
+/// in the grammar's order.
+pub(super) fn contain(value: Contain) -> String {
+    match value {
+        Contain::NONE => return "none".to_owned(),
+        Contain::STRICT => return "strict".to_owned(),
+        Contain::CONTENT => return "content".to_owned(),
+        _ => {}
+    }
+    contain_keywords(value)
+}
+
+/// `contain`'s keywords for `value`, in the grammar's order.
+pub(super) fn contain_keywords(value: Contain) -> String {
+    [
+        (Contain::SIZE, "size"),
+        (Contain::INLINE_SIZE, "inline-size"),
+        (Contain::LAYOUT, "layout"),
+        (Contain::STYLE, "style"),
+        (Contain::PAINT, "paint"),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| value.contains(*flag))
+    .map(|(_, word)| word)
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// One axis of `contain-intrinsic-size`.
+pub(super) fn intrinsic_size(value: ContainIntrinsicSize) -> String {
+    match value {
+        ContainIntrinsicSize::None => "none".to_owned(),
+        ContainIntrinsicSize::Length(v) => px(v),
+        ContainIntrinsicSize::Auto(None) => "auto none".to_owned(),
+        ContainIntrinsicSize::Auto(Some(v)) => format!("auto {}", px(v)),
+    }
+}
+
+/// `reading-flow`'s keyword.
+fn reading_flow(value: ReadingFlow) -> &'static str {
+    match value {
+        ReadingFlow::Normal => "normal",
+        ReadingFlow::FlexVisual => "flex-visual",
+        ReadingFlow::FlexFlow => "flex-flow",
+        ReadingFlow::GridRows => "grid-rows",
+        ReadingFlow::GridColumns => "grid-columns",
+        ReadingFlow::GridOrder => "grid-order",
+        ReadingFlow::SourceOrder => "source-order",
+    }
 }
 
 /// `text-autospace`, its keywords in the grammar's order.
@@ -250,6 +302,21 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             }
         }
         "justify-self" => self_alignment(style.grid().justify_self),
+        "reading-flow" => reading_flow(style.grid().reading_flow).to_owned(),
+        "reading-order" => style.grid().reading_order.to_string(),
+        "contain" => contain(style.containment().contain),
+        "content-visibility" => match style.containment().content_visibility {
+            ContentVisibility::Visible => "visible",
+            ContentVisibility::Auto => "auto",
+            ContentVisibility::Hidden => "hidden",
+        }
+        .to_owned(),
+        "contain-intrinsic-width" | "contain-intrinsic-inline-size" => {
+            intrinsic_size(style.containment().intrinsic[0])
+        }
+        "contain-intrinsic-height" | "contain-intrinsic-block-size" => {
+            intrinsic_size(style.containment().intrinsic[1])
+        }
         "grid-template-columns" => track_list(style.grid().template_columns.as_ref()),
         "grid-template-rows" => track_list(style.grid().template_rows.as_ref()),
         "grid-template-areas" => match &style.grid().template_areas {

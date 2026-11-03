@@ -1324,20 +1324,6 @@ pub(crate) fn relative_offset(
     (dx, dy)
 }
 
-/// Whether a box of `style` has size containment in its block axis as a
-/// `size` container (CSS Conditional 5 section 7.2, D72): its auto height
-/// is that of no content.
-pub(crate) fn size_contained(style: &ComputedStyle) -> bool {
-    style.container_type.size == style::computed::ContainerSize::Both
-        && style::container::eligible(style)
-}
-
-/// Whether a box of `style` has inline-size containment as a size
-/// container: its intrinsic widths are those of no content.
-pub(crate) fn inline_size_contained(style: &ComputedStyle) -> bool {
-    style.container_type.is_size() && style::container::eligible(style)
-}
-
 /// Whether a box with this style establishes a block formatting context
 /// of its own (CSS2 section 9.4.1, M10.4): `overflow` other than `visible`
 /// and `clip` (css-overflow-3 section 3, M26.11), an atomic inline (an
@@ -1349,6 +1335,9 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     style.flow_root
         || style.root
         || style.fieldset
+        // Layout and paint containment make an independent formatting
+        // context (CSS Containment 2 sections 3.3 and 3.5).
+        || style.contains_positioned()
         || style.overflow().scrolls()
         || style.display.is_atomic_inline()
         || matches!(
@@ -1361,8 +1350,8 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
         )
         || style.float != Float::None
         || style.position.is_out_of_flow()
-        // A size container's layout containment (D72).
-        || inline_size_contained(style)
+        // A size container (D72).
+        || style.contains_inline_size() && style.container_type.is_size()
 }
 
 /// The float context a block container's content is laid out in: a
@@ -2087,12 +2076,19 @@ pub(crate) fn layout_flow<'a>(
     // content's, which it scrolls or clips; a box of size containment's,
     // a `size` container's, that of no content (CSS Contain 2 section
     // 3.1, D72), its content overflowing it.
-    let contained = size_contained(&b.style);
-    let natural_height = b
-        .control_size
-        .and_then(|size| size.height)
-        .or(contained.then_some(0.0));
-    let sized_by_content = if contained { 0.0 } else { auto_content_height };
+    // Its `contain-intrinsic-height`, or none, where it has size
+    // containment (CSS Containment 2 section 3.1, gap batch H).
+    let contained = crate::contain::content_height(&b.style);
+    // A textarea's rows are lines of its font and `line-height`, as the
+    // reference browser measures them (gap batch H).
+    let control_height = b.control_size.map(|size| match size.height {
+        crate::box_tree::ControlHeight::Px(px) => px,
+        crate::box_tree::ControlHeight::Rows(rows) => {
+            rows as f32 * crate::font::line(pass.fonts, " ", &b.style).line_height()
+        }
+    });
+    let natural_height = control_height.or(contained);
+    let sized_by_content = contained.unwrap_or(auto_content_height);
     let specified_height = match (ratio, specified_height) {
         (Some(r), Some(h)) if h == r && !b.style.overflow().scrolls() => {
             Some(h.max(sized_by_content))
@@ -2249,6 +2245,14 @@ pub(crate) fn layout_flow<'a>(
             .max(padding_box);
     }
 
+    // A box with layout containment gives its parent no baseline, one
+    // synthesized from its box standing for it (CSS Containment 2 section
+    // 3.3, gap batch H).
+    let contained = b.style.contains_layout();
+    if contained {
+        first_baseline = None;
+        last_baseline = None;
+    }
     BlockLayout {
         root,
         height: border_box_height,
@@ -2263,7 +2267,10 @@ pub(crate) fn layout_flow<'a>(
         first_line: children
             .first_line
             .map(|(top, height)| (content_y + top, height)),
-        inline_block_baseline: children.inline_block_baseline.map(|y| content_y + y),
+        inline_block_baseline: children
+            .inline_block_baseline
+            .map(|y| content_y + y)
+            .filter(|_| !contained),
         absolutes,
         // What the box is with an `auto` height: a control's own (M26.11).
         auto_content_height: natural_height.unwrap_or(auto_content_height),

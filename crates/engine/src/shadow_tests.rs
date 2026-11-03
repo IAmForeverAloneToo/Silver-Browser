@@ -90,6 +90,60 @@ fn slotchange_fires_once_a_microtask_for_each_slot_changed() {
 }
 
 #[test]
+fn a_slot_out_of_the_document_is_held_until_its_slotchange() {
+    // Nothing holds the slots once the function returns but their
+    // signals, which keep their objects, and so their listeners, until
+    // the events fire (DOM's signal slots).
+    let lines = said(
+        "<body>",
+        "(function () { \
+           const host = document.createElement('div'); \
+           const root = host.attachShadow({mode: 'open', slotAssignment: 'manual'}); \
+           const slot = document.createElement('slot'); \
+           const named = document.createElement('slot'); \
+           slot.addEventListener('slotchange', () => console.log('slot', slot.assignedNodes().length)); \
+           named.addEventListener('slotchange', () => console.log('named')); \
+           root.append(slot, named); \
+           const child = document.createElement('i'); \
+           host.append(child); \
+           slot.assign(child); \
+         })(); \
+         let kept = []; \
+         for (let i = 0; i < 200000; i++) kept.push({i}); \
+         kept = null; \
+         console.log('sync');",
+    );
+    assert_eq!(lines, ["sync", "slot 1"]);
+}
+
+#[test]
+fn a_nodes_listeners_live_as_long_as_its_tree_out_of_the_document() {
+    // Only the host is held; the slot's object, with its listener, lives
+    // as long as the tree it is in, and hears a change made later.
+    let mut engine = test_engine();
+    engine.set_viewport(800, 600);
+    engine.load_document("<body>");
+    engine.take_console();
+    differential::run_script(
+        &mut engine,
+        "window.host = document.createElement('div'); \
+         (function () { \
+           const slot = document.createElement('slot'); \
+           slot.addEventListener('slotchange', () => console.log('heard', slot.assignedNodes().length)); \
+           host.attachShadow({mode: 'open'}).append(slot); \
+         })(); \
+         let kept = []; \
+         for (let i = 0; i < 200000; i++) kept.push({i}); \
+         kept = null;",
+    );
+    engine.run_tasks();
+    differential::run_script(&mut engine, "host.append(document.createElement('i'));");
+    engine.run_tasks();
+    let lines: Vec<String> = engine.take_console().into_iter().map(|e| e.text).collect();
+    assert_eq!(lines, ["heard 1"]);
+}
+
+#[test]
 fn a_host_that_delegates_focus_gives_it_to_its_first_area() {
     let lines = said(
         "<div id=host></div><input id=after>",

@@ -44,8 +44,8 @@ use std::sync::Arc;
 
 use dom::{Document, NodeId};
 use style::computed::{
-    BackfaceVisibility, CaptionSide, Content, Display, Float, ListStylePosition, ListStyleType,
-    Overflow, TransformStyle,
+    BackfaceVisibility, CaptionSide, ContainIntrinsicSize, Content, Display, Float,
+    ListStylePosition, ListStyleType, Overflow, TransformStyle,
 };
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
@@ -198,12 +198,33 @@ impl LayoutBox {
     }
 }
 
-/// A form control's own content size (M26.11), each side `None` where
-/// its content sizes it (a drop-down's width, its widest option's).
+/// A form control's own content size (M26.11).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlSize {
-    pub width: Option<f32>,
-    pub height: Option<f32>,
+    pub width: ControlWidth,
+    pub height: ControlHeight,
+}
+
+/// A form control's own content height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ControlHeight {
+    /// So many pixels.
+    Px(f32),
+    /// A textarea's `rows`: that many of its lines (gap batch H), which
+    /// layout measures in its font and `line-height`.
+    Rows(u32),
+}
+
+/// A form control's own content width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ControlWidth {
+    /// What it holds sizes it (a drop-down's, its widest option's).
+    Content,
+    /// So many pixels.
+    Px(f32),
+    /// A textarea's `cols`: that many of its font's average characters
+    /// (gap batch H), which layout measures.
+    Columns(u32),
 }
 
 /// What a replaced box shows (M23.2, `docs/design/images.md`), as HTML
@@ -344,6 +365,14 @@ pub trait Images {
     /// once known, and what its controls show.
     fn media(&self, _node: NodeId) -> MediaState {
         MediaState::default()
+    }
+
+    /// The last remembered size of the element `node`'s content box,
+    /// width and height, each if remembered (CSS Sizing 4 section 5.2,
+    /// gap batch H): what the engine kept of its size when last laid out
+    /// without size containment, which an `auto` intrinsic size takes.
+    fn remembered_size(&self, _node: NodeId) -> [Option<f32>; 2] {
+        [None; 2]
     }
 }
 
@@ -640,6 +669,7 @@ impl LayoutBox {
             .effects()
             .contains_all_of(self.is_transformable())
             || self.backface_hidden_in_3d()
+            || self.style.contains_positioned()
     }
 
     /// Whether the box is a containing block for its absolutely
@@ -651,6 +681,7 @@ impl LayoutBox {
             .effects()
             .contains_absolutes_of(self.is_transformable())
             || self.backface_hidden_in_3d()
+            || self.style.contains_positioned()
     }
 
     fn backface_hidden_in_3d(&self) -> bool {
@@ -1464,7 +1495,7 @@ impl<'a> Styled<'a> {
             return b;
         }
         LayoutBox {
-            style: self.control_style(item, style),
+            style: self.remembered(item, self.control_style(item, style)),
             kind,
             children: build(),
             node: item.node(),
@@ -1483,13 +1514,37 @@ impl<'a> Styled<'a> {
         }
     }
 
+    /// `style` with the element's last remembered size in the axes its
+    /// `contain-intrinsic-size` is `auto` in (CSS Sizing 4 section 5.2,
+    /// gap batch H), when its box has size containment and the engine
+    /// remembers one: what the box is then sized by.
+    fn remembered(&self, item: Item, style: Arc<ComputedStyle>) -> Arc<ComputedStyle> {
+        let Item::Node(node) = item else {
+            return style;
+        };
+        let intrinsic = style.containment().intrinsic;
+        if !intrinsic.iter().any(|axis| axis.is_auto()) || !style.contains_inline_size() {
+            return style;
+        }
+        let remembered = self.images.remembered_size(node);
+        let mut style = style;
+        for (axis, size) in remembered.into_iter().enumerate() {
+            if let (ContainIntrinsicSize::Auto(_), Some(px)) = (intrinsic[axis], size) {
+                Arc::make_mut(&mut style).containment_mut().intrinsic[axis] =
+                    ContainIntrinsicSize::Auto(Some(px));
+            }
+        }
+        style
+    }
+
     /// A form control's own content size (M26.11), as the reference
     /// browser sizes it at its default 13.33px Arial, taken as ems of the
     /// control's font so that it scales with it: a text field 0.525em a
     /// character of its `size` (20 when it has none, and for the types
     /// that take none) and 2.175em more, by a line of 1.125em; a textarea
-    /// 0.5475em a column of its `cols` (20) and 1.2em more, by 1.125em a
-    /// row of its `rows` (2); a select 1.275em a row, one for a drop-down
+    /// its `cols` (20) of its own font's average character wide, which
+    /// layout measures ([`crate::intrinsic::textarea_width`]), by its
+    /// `rows` (2) of its lines; a select 1.275em a row, one for a drop-down
     /// and its display size for a list box, as wide as what it holds.
     /// Each a positive integer, else the default. `None` for any other
     /// box, and for a checkbox, a radio button, a button and an image
@@ -1528,24 +1583,24 @@ impl<'a> Styled<'a> {
                 );
                 let size = positive("size").filter(|_| sized).unwrap_or(20);
                 Some(ControlSize {
-                    width: Some((size as f32 * 0.525 + 2.175) * em),
-                    height: Some(1.125 * em),
+                    width: ControlWidth::Px((size as f32 * 0.525 + 2.175) * em),
+                    height: ControlHeight::Px(1.125 * em),
                 })
             }
             "textarea" => {
                 let cols = positive("cols").unwrap_or(20);
                 let rows = positive("rows").unwrap_or(2);
                 Some(ControlSize {
-                    width: Some((cols as f32 * 0.5475 + 1.2) * em),
-                    height: Some(rows as f32 * 1.125 * em),
+                    width: ControlWidth::Columns(u32::try_from(cols).unwrap_or(u32::MAX)),
+                    height: ControlHeight::Rows(u32::try_from(rows).unwrap_or(u32::MAX)),
                 })
             }
             "select" => {
                 let multiple = document.attr(node, "multiple").is_some();
                 let rows = positive("size").unwrap_or(if multiple { 4 } else { 1 });
                 Some(ControlSize {
-                    width: None,
-                    height: Some(rows as f32 * 1.275 * em),
+                    width: ControlWidth::Content,
+                    height: ControlHeight::Px(rows as f32 * 1.275 * em),
                 })
             }
             _ => None,
@@ -4751,6 +4806,32 @@ mod tests {
     }
 
     #[test]
+    fn style_containment_scopes_counters_and_quotes_to_the_subtree() {
+        // CSS Containment 2 section 3.4 (gap batch H): an increment
+        // inside takes a counter of its own, the one outside reads on as
+        // it was; a `counter()` inside reads the outer one until then.
+        assert_eq!(
+            texts_of(
+                "<div class=s><span class=read></span><span class=inc></span>\
+                 <span class=read></span></div><span class=read></span>\
+                 <div class=v><span class=inc></span></div><span class=read></span>",
+                "body { counter-reset: c 5 } .s { contain: style }
+                 .v { content-visibility: hidden }
+                 .inc { counter-increment: c } .read::before, .inc::before { content: counter(c) }",
+            ),
+            ["5", "1", "1", "5", "1", "5"]
+        );
+        // The quote depth is where it was once the walk leaves it.
+        assert_eq!(
+            texts_of(
+                "<div class=s><span class=o></span></div><span class=o></span>",
+                ".s { contain: style } .o::before { content: open-quote }",
+            ),
+            ["\u{201C}", "\u{201C}"]
+        );
+    }
+
+    #[test]
     fn a_counter_a_sibling_nests_passes_on_unless_an_ancestor_has_the_name() {
         let use_ = ".s::before { content: counters(c, '.') }";
         // The outer counter is a preceding sibling's of the parent: the
@@ -4815,11 +4896,21 @@ mod tests {
     fn a_details_element_shows_its_summary_and_its_content_when_open() {
         let css = "details::details-content::before { content: '<' }
             details::details-content::after { content: '>' }";
-        // Closed: the summary alone, a list item with the closed
-        // disclosure triangle inside it.
+        // Closed: the summary, a list item with the closed disclosure
+        // triangle inside it, and the content in a box that skips it,
+        // `content-visibility: hidden` (laid out, not drawn).
         let html = "<details><p>a</p><summary>S</summary>t<summary>T</summary></details>";
         let tree = tree_of(html, css);
-        assert_eq!(tree.texts(&tree.body().children), ["\u{25b8} ", "S"]);
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["\u{25b8} ", "S", "<", "a", "t", "T", ">"]
+        );
+        let closed = tree.body().children[0]
+            .children
+            .iter()
+            .find(|b| b.generated == Some(PseudoElement::DetailsContent))
+            .expect("the closed content's box");
+        assert!(closed.style.skips_contents());
         // Open: the content but the first summary, in the order it has,
         // inside the `::details-content` box, its `::before` and
         // `::after` around it; the triangle open. A summary after the
@@ -4845,7 +4936,8 @@ mod tests {
             .find(|b| matches!(&b.kind, BoxKind::Text(t) if t == "t"))
             .expect("the text's box");
         assert_eq!(text.generated, None);
-        // An author's display for it, and none of a closed one's.
+        // An author's display for it, a closed one's content skipped in
+        // it all the same.
         let styled = "details::details-content { display: flex }";
         let tree = tree_of(&open, styled);
         assert_eq!(
@@ -4853,7 +4945,12 @@ mod tests {
             ["\u{25be} ", "S", "a", "t", "T"]
         );
         let tree = tree_of(html, styled);
-        assert_eq!(tree.texts(&tree.body().children), ["\u{25b8} ", "S"]);
+        let closed = tree.body().children[0]
+            .children
+            .iter()
+            .find(|b| b.generated == Some(PseudoElement::DetailsContent))
+            .expect("the closed content's box");
+        assert!(closed.style.skips_contents() && closed.style.display == Display::Flex);
     }
 
     #[test]

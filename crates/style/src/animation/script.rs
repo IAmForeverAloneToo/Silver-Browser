@@ -195,7 +195,17 @@ pub fn pseudo_element(text: Option<&str>) -> Result<Option<PseudoElement>, Scrip
         "::placeholder" => Ok(Some(PseudoElement::Placeholder)),
         "::selection" => Ok(Some(PseudoElement::Selection)),
         "::backdrop" => Ok(Some(PseudoElement::Backdrop)),
-        _ => Err(ScriptError::Syntax(text.to_owned())),
+        // A custom highlight's, which no animation applies to (CSS
+        // Pseudo 4 section 3.2), its name as written.
+        _ => match text
+            .strip_prefix("::")
+            .and_then(crate::selector_matching::parse_pseudo_element_argument)
+        {
+            Some((PseudoElement::Highlight, _)) if text.ends_with(')') => {
+                Ok(Some(PseudoElement::Highlight))
+            }
+            _ => Err(ScriptError::Syntax(text.to_owned())),
+        },
     }
 }
 
@@ -217,8 +227,12 @@ pub fn pseudo_element_name(pseudo: PseudoElement) -> Option<&'static str> {
         PseudoElement::PickerIcon => Some("::picker-icon"),
         PseudoElement::Checkmark => Some("::checkmark"),
         PseudoElement::Backdrop => Some("::backdrop"),
-        // Elements of other trees, not pseudo-elements of this one (D69).
-        PseudoElement::WebkitPrefixed | PseudoElement::Slotted | PseudoElement::Part => None,
+        // Elements of other trees, not pseudo-elements of this one (D69),
+        // and a highlight, which no animation applies to.
+        PseudoElement::WebkitPrefixed
+        | PseudoElement::Slotted
+        | PseudoElement::Part
+        | PseudoElement::Highlight => None,
     }
 }
 

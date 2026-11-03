@@ -150,10 +150,12 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 /// [`content_widths`], measured.
 fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     pass.measuring();
-    // A size container's inline-size containment (CSS Conditional 5
-    // section 7.2, D72): its content counts for nothing.
-    if crate::block::inline_size_contained(&b.style) {
-        return (0.0, 0.0);
+    // A box with inline-size containment, a size container's or one
+    // `contain` or skipped contents give (CSS Conditional 5 section 7.2,
+    // D72; CSS Containment 2 section 3.2, gap batch H), is as wide as if
+    // it were empty, or as its `contain-intrinsic-width` says.
+    if let Some(width) = crate::contain::content_width(&b.style) {
+        return (width, width);
     }
     if let Some(replaced) = &b.replaced {
         return crate::replaced::content_widths(b, replaced);
@@ -166,8 +168,13 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
         return crate::math::content_widths(b, pass);
     }
     // A form control's own width (M26.11), whatever it holds.
-    if let Some(width) = b.control_size.and_then(|size| size.width) {
-        return (width, width);
+    match b.control_size.map(|size| size.width) {
+        Some(crate::box_tree::ControlWidth::Px(width)) => return (width, width),
+        Some(crate::box_tree::ControlWidth::Columns(columns)) => {
+            let width = textarea_width(pass.fonts, &b.style, columns);
+            return (width, width);
+        }
+        _ => {}
     }
     if b.is_table() {
         return crate::table::content_widths(b, pass);
@@ -233,6 +240,83 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     (min, floats_max + in_flow_max)
 }
 
+/// The families whose average character width the reference browser
+/// does not trust, taking the width of a zero for it instead.
+const FAMILIES_WITH_INVALID_CHAR_WIDTH: [&str; 34] = [
+    "American Typewriter",
+    "Arial Hebrew",
+    "Chalkboard",
+    "Cochin",
+    "Corsiva Hebrew",
+    "Courier",
+    "Euphemia UCAS",
+    "Geneva",
+    "Gill Sans",
+    "Hei",
+    "Helvetica",
+    "Hoefler Text",
+    "InaiMathi",
+    "Kai",
+    "Lucida Grande",
+    "Marker Felt",
+    "Monaco",
+    "Mshtakan",
+    "New Peninim MT",
+    "Osaka",
+    "Raanana",
+    "STHeiti",
+    "Symbol",
+    "Times",
+    "Apple Braille",
+    "Apple LiGothic",
+    "Apple LiSung",
+    "Apple Symbols",
+    "AppleGothic",
+    "AppleMyungjo",
+    "#GungSeo",
+    "#HeadLineA",
+    "#PCMyungjo",
+    "#PilGi",
+];
+
+/// The scroll bar a textarea's width keeps room for: the reference
+/// browser's 15px. Kept whatever its `overflow`: the scroll bars here take
+/// no room (an `overflow: scroll` box has none), so a textarea that cannot
+/// scroll is as wide as one that can, as the reference's would be.
+const TEXTAREA_SCROLLBAR: f32 = 15.0;
+
+/// A textarea's own content width (HTML section 15.5.15, gap batch H),
+/// as the reference browser sizes it: `columns` of its font's average
+/// character, the product rounded up to a whole pixel, and room for a
+/// scroll bar ([`TEXTAREA_SCROLLBAR`]). The average character is
+/// that of its first font: the unhinted advance of an `x`, rounded up
+/// where its fraction is a half or more, and kept as it is below that;
+/// or the width of a zero where the font's family is one whose average
+/// the reference does not trust, or the average is more than 1.7 zeros
+/// wide (a font matching it to full-width characters).
+pub(crate) fn textarea_width(
+    fonts: &text::FontCollection,
+    style: &style::computed::ComputedStyle,
+    columns: u32,
+) -> f32 {
+    let size = style.font_size_px;
+    let font = crate::font::font_of(fonts, style);
+    let zero = fonts.unhinted_advance_in(font, '0', size);
+    let family = style.font.as_deref().map_or("serif", |props| {
+        let first = props.family.split(',').next().unwrap_or("").trim();
+        first.trim_matches(|c| c == '"' || c == '\'')
+    });
+    let average = fonts
+        .unhinted_advance_in(font, 'x', size)
+        .filter(|&x| !zero.is_some_and(|zero| x > zero * 1.7))
+        .filter(|_| !family.is_empty() && !FAMILIES_WITH_INVALID_CHAR_WIDTH.contains(&family));
+    let average = match average {
+        Some(x) => x.max(x.round()),
+        None => fonts.measure_in(font, "0", size),
+    };
+    (average * columns as f32).ceil() + TEXTAREA_SCROLLBAR
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +332,51 @@ mod tests {
         let doc = dom::Node::document(vec![root.into()]);
         let sheet = css::parse_stylesheet(css).expect("test css is valid");
         crate::testing::boxes_of(&doc, &[sheet]).1
+    }
+
+    #[test]
+    fn a_textarea_is_its_columns_of_its_fonts_average_character() {
+        let fonts = test_fonts();
+        let mut style = style::computed::ComputedStyle {
+            font_size_px: 16.0,
+            overflow_y: style::computed::Overflow::Auto,
+            ..Default::default()
+        };
+        style.font_mut().family = "Test".into();
+        let font = crate::font::font_of(&fonts, &style);
+        let x = fonts.unhinted_advance_in(font, 'x', 16.0).expect("an x");
+        let average = x.max(x.round());
+        assert_eq!(
+            textarea_width(&fonts, &style, 20),
+            (average * 20.0).ceil() + 15.0
+        );
+        assert_eq!(
+            textarea_width(&fonts, &style, 3),
+            (average * 3.0).ceil() + 15.0
+        );
+        // The room for a scroll bar kept where it cannot scroll, the
+        // scroll bars here taking none.
+        style.overflow_y = style::computed::Overflow::Hidden;
+        assert_eq!(
+            textarea_width(&fonts, &style, 20),
+            (average * 20.0).ceil() + 15.0
+        );
+        // A family whose average is not trusted: a zero's width.
+        style.font_mut().family = "Courier, monospace".into();
+        let font = crate::font::font_of(&fonts, &style);
+        let zero = fonts.measure_in(font, "0", 16.0);
+        assert_eq!(
+            textarea_width(&fonts, &style, 20),
+            (zero * 20.0).ceil() + 15.0
+        );
+        // The font's size scales it.
+        style.font_mut().family = "Test".into();
+        style.font_size_px = 32.0;
+        let x = fonts.unhinted_advance_in(font, 'x', 32.0).expect("an x");
+        assert_eq!(
+            textarea_width(&fonts, &style, 20),
+            (x.max(x.round()) * 20.0).ceil() + 15.0
+        );
     }
 
     #[test]

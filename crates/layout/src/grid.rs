@@ -951,9 +951,14 @@ pub(crate) fn layout_grid_contents<'a>(
             (height, height)
         }
     };
-    let fit = |content: f32| match known_height {
-        Some(known) if imposed.is_some() => known,
-        known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
+    // A container with size containment is as tall as if it were empty
+    // (CSS Containment 2 section 3.1, gap batch H).
+    let fit = |content: f32| {
+        let content = crate::contain::content_height(style).unwrap_or(content);
+        match known_height {
+            Some(known) if imposed.is_some() => known,
+            known => clamp_height(known.unwrap_or(content), bounds(Some(content))),
+        }
     };
     let (min_height, max_height) = bounds(None);
     let min_height = (min_height > 0.0).then_some(min_height);

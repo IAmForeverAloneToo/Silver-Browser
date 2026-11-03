@@ -222,7 +222,7 @@ impl SelectorFeatures {
                         }
                     }
                     PseudoArgument::Part(_) => self.read(&["part", "exportparts"]),
-                    PseudoArgument::None => {}
+                    PseudoArgument::None | PseudoArgument::Highlight(_) => {}
                 }
             }
         }
@@ -854,7 +854,12 @@ pub(crate) fn invalidate(
         }
         if changed & features.states_ancestor != 0 {
             out.mark(document, element, Reach::Subtree);
-        } else if changed & features.states_subject != 0 {
+        } else if changed & features.states_subject != 0
+            // Whether a `content-visibility: auto` element skips its
+            // contents is its own style's (gap batch H), which its
+            // children's inherit.
+            || changed & ElementState::RELEVANT.0 != 0
+        {
             out.mark(document, element, Reach::Element);
         }
         if changed & features.states_sibling != 0 {

@@ -44,14 +44,16 @@
 //! pseudo-element inside `:not()`, `:is()` or `:where()` (which the
 //! last two forgive), namespaces (`|`), and anything unknown.
 
+use std::collections::HashMap;
+
 mod language;
 mod matcher;
 mod parse;
 
 pub use matcher::{Matcher, matches_selector, matches_selector_list};
 pub use parse::{
-    Nest, Relative, parse_nested_selector_list, parse_selector_list, parse_selector_list_in,
-    supports_selector,
+    Nest, Relative, parse_nested_selector_list, parse_pseudo_element_argument, parse_selector_list,
+    parse_selector_list_in, supports_selector,
 };
 
 /// A comma-separated selector list.
@@ -138,7 +140,7 @@ pub struct PseudoElementSelector {
     /// Which pseudo-element.
     pub element: PseudoElement,
     /// What a functional one takes: `::slotted()`'s compound,
-    /// `::part()`'s names.
+    /// `::part()`'s names, `::highlight()`'s name.
     pub argument: PseudoArgument,
     /// The pseudo-classes after it, in source order: the user-action
     /// ones (`:hover`, `:focus`, `:focus-visible`, `:focus-within`,
@@ -187,6 +189,11 @@ pub enum PseudoElement {
     /// beneath an element in the top layer, as big as the viewport,
     /// inheriting from its element.
     Backdrop,
+    /// `::highlight(name)`: a custom highlight's (CSS Highlight API
+    /// section 3, gap batch H), which the engine paints over the text
+    /// its ranges hold; its name is the selector's argument
+    /// ([`PseudoArgument::Highlight`]).
+    Highlight,
     /// A `::-webkit-` name that is not a function: valid, so that the
     /// list it is in keeps its other selectors, and matching nothing
     /// (selectors-4 Appendix B).
@@ -209,6 +216,61 @@ pub enum PseudoArgument {
     Slotted(Box<CompoundSelector>),
     /// `::part()`'s names, in their case.
     Part(Vec<String>),
+    /// `::highlight()`'s name (gap batch H), kept here rather than in the
+    /// [`PseudoElement`], which boxes and fragments carry, a byte each.
+    Highlight(HighlightName),
+}
+
+/// A custom highlight's name as `::highlight()` names it (CSS Highlight
+/// API section 3), interned so that a pseudo-element stays a copy of a
+/// few bytes: at most [`MAX_HIGHLIGHT_NAMES`] distinct names a process,
+/// each at most [`MAX_HIGHLIGHT_NAME_LENGTH`] bytes, past which a
+/// selector naming another is refused (`docs/security.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HighlightName(u32);
+
+/// The most distinct highlight names a process interns.
+pub const MAX_HIGHLIGHT_NAMES: usize = 1 << 12;
+
+/// The longest highlight name interned, in bytes.
+pub const MAX_HIGHLIGHT_NAME_LENGTH: usize = 1 << 10;
+
+/// The names interned, by number, and the numbers by name.
+type Interned = (Vec<std::sync::Arc<str>>, HashMap<std::sync::Arc<str>, u32>);
+
+static HIGHLIGHT_NAMES: std::sync::LazyLock<std::sync::Mutex<Interned>> =
+    std::sync::LazyLock::new(Default::default);
+
+impl HighlightName {
+    /// The name `name`, interned if it is not yet; `None` past the
+    /// limits.
+    pub fn new(name: &str) -> Option<HighlightName> {
+        let mut names = HIGHLIGHT_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&n) = names.1.get(name) {
+            return Some(HighlightName(n));
+        }
+        if names.0.len() >= MAX_HIGHLIGHT_NAMES || name.len() > MAX_HIGHLIGHT_NAME_LENGTH {
+            return None;
+        }
+        let n = names.0.len() as u32;
+        let shared: std::sync::Arc<str> = std::sync::Arc::from(name);
+        names.0.push(shared.clone());
+        names.1.insert(shared, n);
+        Some(HighlightName(n))
+    }
+
+    /// The name `name` if it was interned: what a highlight registered
+    /// by that name is styled by, none when no selector names it.
+    pub fn find(name: &str) -> Option<HighlightName> {
+        let names = HIGHLIGHT_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        names.1.get(name).map(|&n| HighlightName(n))
+    }
+
+    /// The name.
+    pub fn name(self) -> std::sync::Arc<str> {
+        let names = HIGHLIGHT_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+        names.0[self.0 as usize].clone()
+    }
 }
 
 /// How two compound selectors relate.

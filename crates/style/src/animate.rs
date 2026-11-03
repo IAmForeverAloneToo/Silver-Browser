@@ -286,6 +286,13 @@ longhands! {
     R = "r": ByComputedValue,
     Rx = "rx": ByComputedValue,
     Ry = "ry": ByComputedValue,
+    Contain = "contain": NotAnimatable,
+    ContentVisibility = "content-visibility": Discrete,
+    ContainIntrinsicWidth = "contain-intrinsic-width": ByComputedValue,
+    ContainIntrinsicHeight = "contain-intrinsic-height": ByComputedValue,
+    ReadingFlow = "reading-flow": Discrete,
+    ReadingOrder = "reading-order": ByComputedValue,
+    PointerEvents = "pointer-events": Discrete,
     BackgroundImage = "background-image": Discrete,
     BackgroundRepeat = "background-repeat": Discrete,
     BackgroundPositionX = "background-position-x": ByComputedValue,
@@ -456,6 +463,10 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
         "flex" => &[FlexGrow, FlexShrink, FlexBasis],
         "flex-flow" => &[FlexDirection, FlexWrap],
         "gap" => &[RowGap, ColumnGap],
+        "contain-intrinsic-size" => &[ContainIntrinsicWidth, ContainIntrinsicHeight],
+        // The logical longhands, as horizontal text maps them.
+        "contain-intrinsic-inline-size" => &[ContainIntrinsicWidth],
+        "contain-intrinsic-block-size" => &[ContainIntrinsicHeight],
         "place-content" => &[AlignContent, JustifyContent],
         "place-items" => &[AlignItems, JustifyItems],
         "place-self" => &[AlignSelf, JustifySelf],
@@ -955,6 +966,28 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         R => copy_group!(to, from, svg, svg_own, svg_own_mut, r),
         Rx => copy_group!(to, from, svg, svg_own, svg_own_mut, rx),
         Ry => copy_group!(to, from, svg, svg_own, svg_own_mut, ry),
+        Contain => copy_group!(to, from, containment, containment, containment_mut, contain),
+        ContentVisibility => copy_group!(
+            to,
+            from,
+            containment,
+            containment,
+            containment_mut,
+            content_visibility
+        ),
+        ContainIntrinsicWidth => {
+            if to.containment().intrinsic[0] != from.containment().intrinsic[0] {
+                to.containment_mut().intrinsic[0] = from.containment().intrinsic[0];
+            }
+        }
+        ContainIntrinsicHeight => {
+            if to.containment().intrinsic[1] != from.containment().intrinsic[1] {
+                to.containment_mut().intrinsic[1] = from.containment().intrinsic[1];
+            }
+        }
+        ReadingFlow => copy_group!(to, from, grid, grid, grid_mut, reading_flow),
+        ReadingOrder => copy_group!(to, from, grid, grid, grid_mut, reading_order),
+        PointerEvents => to.pointer_events = from.pointer_events,
     }
 }
 
@@ -1207,6 +1240,15 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         R => a.svg_own().r == b.svg_own().r,
         Rx => a.svg_own().rx == b.svg_own().rx,
         Ry => a.svg_own().ry == b.svg_own().ry,
+        Contain => a.containment().contain == b.containment().contain,
+        ContentVisibility => {
+            a.containment().content_visibility == b.containment().content_visibility
+        }
+        ContainIntrinsicWidth => a.containment().intrinsic[0] == b.containment().intrinsic[0],
+        ContainIntrinsicHeight => a.containment().intrinsic[1] == b.containment().intrinsic[1],
+        ReadingFlow => a.grid().reading_flow == b.grid().reading_flow,
+        ReadingOrder => a.grid().reading_order == b.grid().reading_order,
+        PointerEvents => a.pointer_events == b.pointer_events,
     }
 }
 
@@ -1241,6 +1283,27 @@ pub fn blend(
             } else {
                 other.display
             };
+        }
+        // `content-visibility` likewise, its value other than `hidden`
+        // strictly between the ends (CSS Containment 2 section 4).
+        _ if property == Longhand::ContentVisibility
+            && (a.containment().content_visibility == computed::ContentVisibility::Hidden)
+                != (b.containment().content_visibility == computed::ContentVisibility::Hidden) =>
+        {
+            let hidden = computed::ContentVisibility::Hidden;
+            let other = if a.containment().content_visibility == hidden {
+                b
+            } else {
+                a
+            };
+            let from = if p <= 0.0 {
+                a
+            } else if p >= 1.0 {
+                b
+            } else {
+                other
+            };
+            copy(property, from, to);
         }
         _ => copy(property, if p < 0.5 { a } else { b }, to),
     }
@@ -2449,6 +2512,37 @@ pub fn interpolate(
             }
             true
         }
+        // Two lengths, or two `auto` lengths, interpolate (CSS Sizing 4
+        // section 5.1); `none` flips.
+        ContainIntrinsicWidth | ContainIntrinsicHeight => {
+            use computed::ContainIntrinsicSize::{Auto, Length};
+            let axis = usize::from(property == ContainIntrinsicHeight);
+            let value = match (
+                a.containment().intrinsic[axis],
+                b.containment().intrinsic[axis],
+            ) {
+                (Length(x), Length(y)) => Length(length(x, y, p, true)),
+                (Auto(Some(x)), Auto(Some(y))) => Auto(Some(length(x, y, p, true))),
+                _ => return false,
+            };
+            if to.containment().intrinsic[axis] != value {
+                to.containment_mut().intrinsic[axis] = value;
+            }
+            true
+        }
+        ReadingOrder => {
+            let value = integer(
+                a.grid().reading_order.into(),
+                b.grid().reading_order.into(),
+                p,
+                i32::MIN.into(),
+                i32::MAX.into(),
+            ) as i32;
+            if to.grid().reading_order != value {
+                to.grid_mut().reading_order = value;
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -2489,6 +2583,7 @@ pub const SHORTHANDS: &[&str] = &[
     "flex",
     "flex-flow",
     "gap",
+    "contain-intrinsic-size",
     "place-content",
     "place-items",
     "place-self",

@@ -30,9 +30,9 @@ use css::Token;
 
 use super::language::is_well_formed_range;
 use super::{
-    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoArgument,
-    PseudoClass, PseudoElement, PseudoElementSelector, Selector, SelectorList, SimpleSelector,
-    Specificity,
+    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, HighlightName, Namespaces,
+    PseudoArgument, PseudoClass, PseudoElement, PseudoElementSelector, Selector, SelectorList,
+    SimpleSelector, Specificity,
 };
 
 /// How deep `:not()`, `:is()`, `:where()` and `of S` may nest.
@@ -686,6 +686,11 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                             return None;
                         }
                         let states = parse_states(c, depth, &mut spec)?;
+                        // A highlight is in no user-action state (CSS
+                        // Pseudo 4 section 3.1).
+                        if element == PseudoElement::Highlight && !states.is_empty() {
+                            return None;
+                        }
                         if simple.is_empty() {
                             simple.push(SimpleSelector::Universal);
                         }
@@ -870,7 +875,9 @@ fn parse_pseudo(
             c.advance();
             // `::name`, or one of the functional pseudo-elements this
             // engine knows: `::picker(select)` (D74), `::slotted()` and
-            // `::part()` (D69).
+            // `::part()` (D69), and `::highlight(name)`, a custom
+            // highlight's (CSS Highlight API section 3, gap batch H): an
+            // identifier, white space around it.
             if let Some(Token::Function(name)) = c.peek() {
                 let name = name.to_ascii_lowercase();
                 c.advance();
@@ -914,6 +921,16 @@ fn parse_pseudo(
                         }
                         *spec += Specificity(0, 0, 1);
                         Pseudo::Element(PseudoElement::Part, PseudoArgument::Part(names))
+                    }
+                    "highlight" => {
+                        c.skip_ws();
+                        let Some(Token::Ident(name)) = c.peek() else {
+                            return None;
+                        };
+                        let name = HighlightName::new(name)?;
+                        c.advance();
+                        *spec += Specificity(0, 0, 1);
+                        Pseudo::Element(PseudoElement::Highlight, PseudoArgument::Highlight(name))
                     }
                     _ => return None,
                 };
@@ -1114,6 +1131,36 @@ fn parse_pseudo(
             }
             c.advance();
             Some(Pseudo::Class(pc))
+        }
+        _ => None,
+    }
+}
+
+/// The pseudo-element `text` names, as `getComputedStyle()` takes one
+/// (CSSOM section 9), and the name a `::highlight()` names: what follows
+/// its `::`, read as CSS, an argument's closing parenthesis optional as
+/// at the end of a style sheet; `None` for one this engine does not know
+/// or that does not parse.
+pub fn parse_pseudo_element_argument(text: &str) -> Option<(PseudoElement, Option<HighlightName>)> {
+    let tokens = css::tokenize(text);
+    let mut at = tokens.iter();
+    match at.next()? {
+        Token::Ident(name) => {
+            let element = pseudo_element(name)?;
+            at.next().is_none().then_some((element, None))
+        }
+        Token::Function(function) if function.eq_ignore_ascii_case("highlight") => {
+            let mut rest = at.skip_while(|t| matches!(t, Token::Whitespace));
+            let Some(Token::Ident(name)) = rest.next() else {
+                return None;
+            };
+            let mut rest = rest.skip_while(|t| matches!(t, Token::Whitespace));
+            match rest.next() {
+                None => {}
+                Some(Token::CloseParen) if rest.next().is_none() => {}
+                Some(_) => return None,
+            }
+            HighlightName::new(name).map(|name| (PseudoElement::Highlight, Some(name)))
         }
         _ => None,
     }

@@ -384,6 +384,11 @@ impl ElementState {
     /// A control whose picker is shown, a drop-down's list: `:open`,
     /// which a `dialog` and a `details` match by their `open` attribute.
     pub const OPEN: ElementState = ElementState(2048);
+    /// Relevant to the user (CSS Containment 2 section 4.3, gap batch
+    /// H): near the viewport, or holding the focus or the selection, as
+    /// the engine finds at each rendering update. An element with
+    /// `content-visibility: auto` skips its contents while it is not.
+    pub const RELEVANT: ElementState = ElementState(4096);
 
     /// Whether every flag of `flags` is set.
     pub fn contains(self, flags: ElementState) -> bool {

@@ -15,6 +15,8 @@ mod cache_api_tests;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
+mod containment_tests;
+#[cfg(test)]
 mod control_tests;
 #[cfg(test)]
 mod cookie_tests;

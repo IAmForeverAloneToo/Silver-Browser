@@ -98,6 +98,7 @@ pub mod address;
 pub mod audio_output;
 mod blob_urls;
 pub mod caches;
+mod content_visibility;
 mod context;
 #[cfg(test)]
 mod context_tests;
@@ -112,6 +113,7 @@ mod focus;
 mod frames;
 mod geometry;
 pub mod gpu;
+mod highlights;
 #[cfg(test)]
 mod history_tests;
 pub mod idb;
@@ -715,6 +717,14 @@ struct Shown {
     /// What the user's light dismiss, close requests and interest
     /// invokers keep (gap batch H).
     overlays: top_layer::Overlays,
+    /// The `content-visibility: auto` elements the rendering updates
+    /// have met (gap batch H), and whether each was last found
+    /// relevant to the user.
+    relevance: HashMap<NodeId, bool>,
+    /// What the last layout holds of the elements the rendering updates
+    /// watch for their relevance and their sizes, with the layout's run:
+    /// found again when the document is laid out again.
+    watched: Option<(u64, content_visibility::Watched)>,
 }
 
 /// The lifecycle events a document has had (HTML section 8.4.6, "the
@@ -820,6 +830,8 @@ impl Shown {
             pointer_frame: None,
             pressed_frame: None,
             overlays: top_layer::Overlays::default(),
+            relevance: HashMap::new(),
+            watched: None,
         }
     }
 
@@ -2802,6 +2814,10 @@ impl Engine {
     /// top of its first box is in the viewport already and no scroll
     /// container holds it, as the reference browser's focus does.
     fn scroll_focus_into_view(&mut self, node: NodeId) {
+        // The `content-visibility: auto` elements around it are relevant
+        // to the user now (CSS Containment 2 section 4.3), its box drawn
+        // to be scrolled to (gap batch H).
+        self.relevant_around(node);
         let height = self.viewport.1 as f32;
         let at = self.shown.scroll_target;
         if let Some((top, chain)) = self.locate(node)
@@ -2863,8 +2879,19 @@ impl Engine {
     /// when it has none. Past the end, the page gives up the focus.
     fn focus_from(&mut self, current: Option<NodeId>, backward: bool) -> bool {
         self.cached_styles();
+        // As laid out now: which scrollers can scroll, and where reading
+        // flows' items are (gap batch H).
+        let (width, _) = self.viewport;
+        if width > 0 {
+            self.layout(width as f32);
+        }
+        let laid = self
+            .shown
+            .layout
+            .as_ref()
+            .map(|cached| focus::Laid::of(&cached.layout));
         let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
-        let order = focus::sequential_order(&self.shown.document, styles);
+        let order = focus::sequential_order(&self.shown.document, styles, laid.as_ref());
         let mut at = current.and_then(|current| order.iter().position(|&node| node == current));
         // An element focused that is not in the order (a negative
         // `tabindex`, or in a scope skipped so, D68) is left for the area
@@ -2876,6 +2903,7 @@ impl Engine {
             beside = Some(focus::navigate_from(
                 &self.shown.document,
                 styles,
+                laid.as_ref(),
                 current,
                 backward,
             ));
@@ -3766,7 +3794,21 @@ impl Engine {
         let Some(styled) = &self.shown.styled else {
             return;
         };
-        if !focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
+        if focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
+            return;
+        }
+        // A scroller keeps the focus while it can scroll (gap batch H).
+        let laid = self
+            .shown
+            .layout
+            .as_ref()
+            .map(|cached| focus::Laid::of(&cached.layout));
+        if !focus::focusable_in(
+            &self.shown.document,
+            Some(&styled.styles),
+            laid.as_ref(),
+            focused,
+        ) {
             self.focus(None, false, false);
         }
     }
@@ -8221,10 +8263,19 @@ impl Engine {
         // The frames drawn into it are drawn for its time (M33.2).
         self.drawing_at = Some(time);
         let budget = time.deadline.saturating_sub(time.now);
-        let empty = self.draw(width, height, budget).is_empty();
+        let mut empty = self.draw(width, height, budget).is_empty();
+        // An element of `content-visibility: auto` met for the first time
+        // is found relevant or not as drawn, at its scroll offsets, and
+        // drawn again so before the observers look (gap batch H).
+        if self.first_relevance() {
+            empty = self.draw(width, height, budget).is_empty();
+        }
         // Laid out: the resize and intersection observers' turn (gap
-        // batch A, D45), their callbacks' changes the next frame's.
+        // batch A, D45), their callbacks' changes the next frame's; then
+        // which `content-visibility: auto` elements are relevant to the
+        // user (gap batch H), their changes the next frame's too.
         self.observe_layout(time.now);
+        self.update_relevance();
         self.drawing_at = None;
         if empty {
             return &[];
@@ -8365,8 +8416,14 @@ impl Engine {
         let scrollbar = self.scrollbar();
         let across = self.scrollbar_across();
         self.layout(width as f32);
+        // The custom highlights over its text (gap batch H).
+        let overlays = self.highlight_overlays(viewport, &offsets);
         let layout = &self.shown.layout.as_ref().expect("just laid out").layout;
-        let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &self.shown.images);
+        let painting = highlights::Painting {
+            images: &self.shown.images,
+            overlays: &overlays,
+        };
+        let mut list = paint_fragments_with(&layout.roots, viewport, &offsets, &painting);
         // A frame's canvas is clear where its document gives it no
         // background, its parent's showing through (M33.2), as in the
         // reference browser.
@@ -11741,7 +11798,9 @@ mod tests {
         // The textarea is two lines tall and keeps its line break.
         let textarea = fragment("t").expect("the textarea's box");
         assert!(near(textarea.h, 36.0), "{}", textarea.h);
-        assert!(near(textarea.w, 168.0), "{}", textarea.w);
+        // Its 20 columns of its own font's average character, a scroll
+        // bar's room and its edges (gap batch H).
+        assert!(near(textarea.w, 181.0), "{}", textarea.w);
         assert!(text("two").unwrap().y > text("one").unwrap().y);
         // The checkbox's bottom margin keeps it above the baseline the
         // field's text sits on.
@@ -11784,11 +11843,11 @@ mod tests {
         for (id, expected) in [
             ("g", (300.0, 21.0)),
             ("f", (177.0, 40.0)),
-            ("ta", (95.0, 40.0)),
+            ("ta", (101.0, 40.0)),
             ("c", (200.0, 21.0)),
             ("s", (200.0, 19.0)),
             ("l", (size("l").0, 53.0)),
-            ("rows", (95.0, 51.0)),
+            ("rows", (101.0, 51.0)),
             // `size` is a text field's alone; `multiple` shows four rows.
             ("n", (177.0, 21.0)),
             ("m", (size("m").0, 70.0)),

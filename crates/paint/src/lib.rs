@@ -46,7 +46,10 @@ use style::computed::{
 };
 use style::transform::Matrix;
 
-pub use order::{Rect, Step, padding_box, paint_order, paint_order_everywhere, paint_order_in};
+pub use order::{
+    Rect, Step, padding_box, paint_order, paint_order_drawn_everywhere, paint_order_everywhere,
+    paint_order_in,
+};
 use rounded::RoundedRect;
 
 /// What names a group across frames (M19), which a backend keeps a
@@ -553,6 +556,28 @@ pub trait Pictures {
     fn gradient(&self, gradient: &style::computed::Gradient, w: f32, h: f32) -> Arc<images::Image> {
         Arc::new(gradient::render(gradient, w, h))
     }
+
+    /// The highlights over the text fragment `fragment` (CSS Highlight
+    /// API, gap batch H), bottom first: none unless the implementation
+    /// keeps them, as the engine does for the layout it paints.
+    fn highlights(&self, _fragment: &Fragment) -> &[HighlightOverlay] {
+        &[]
+    }
+}
+
+/// A highlight's part of a text fragment (CSS Highlight API section 5,
+/// CSS Pseudo 4 section 3.5, gap batch H): the span of the fragment it
+/// covers, from its left edge, and what its `::highlight()` paints
+/// there: a background, the text in its colour when it sets one, its
+/// text's shadows, and its decoration's lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HighlightOverlay {
+    pub from: f32,
+    pub to: f32,
+    pub background: Rgba8,
+    pub color: Option<Rgba8>,
+    pub shadows: Vec<style::computed::Shadow>,
+    pub decorated: Option<layout::decoration::Decorated>,
 }
 
 impl Pictures for () {
@@ -1017,7 +1042,7 @@ fn paint_children(
 /// Converts `style`'s 0.0–1.0-channel color to `paint`'s 8-bit form —
 /// `style` owns its own color type (the layering contract: types belong
 /// to their producer), so this is the one place that boundary is crossed.
-fn to_rgba8(c: Color) -> Rgba8 {
+pub fn to_rgba8(c: Color) -> Rgba8 {
     let scale = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Rgba8 {
         r: scale(c.r),
@@ -1262,6 +1287,12 @@ pub fn paint_fragments_with(
                     let blank = |c: char| {
                         c.is_whitespace() && (!c.is_control() || matches!(c, '\t' | '\n' | '\r'))
                     };
+                    // The highlights over it (gap batch H): their
+                    // backgrounds over the text's decorations, the text
+                    // in each span in the colour of the highlight on top
+                    // that sets one, then their own shadows and lines.
+                    let overlays = pictures.highlights(fragment);
+                    push_highlight_backgrounds(&mut items, overlays, rect);
                     if !text.chars().all(blank) {
                         // Its shadows under it, the first on top (D56).
                         for shadow in fragment.style.decoration().text_shadow.iter().rev() {
@@ -1275,17 +1306,73 @@ pub fn paint_fragments_with(
                                 color: to_rgba8(shadow.color),
                             });
                         }
-                        items.push(DisplayItem::Text {
+                        let colour = to_rgba8(fragment.style.color);
+                        let text_item = |color: Rgba8| DisplayItem::Text {
                             text: text.clone(),
                             x: rect.x,
                             y: baseline,
                             size: fragment.style.font_size_px,
-                            color: to_rgba8(fragment.style.color),
+                            color,
                             font: fragment.font,
-                        });
+                        };
+                        match highlight_spans(overlays, rect, colour).as_slice() {
+                            [] => items.push(text_item(colour)),
+                            [(_, _, color)] => items.push(text_item(*color)),
+                            spans => {
+                                for &(from, to, color) in spans {
+                                    let span = Rect {
+                                        x: from,
+                                        w: to - from,
+                                        ..rect
+                                    };
+                                    push_clipped(&mut items, span, |items| {
+                                        items.push(text_item(color));
+                                    });
+                                }
+                            }
+                        }
+                        for overlay in overlays {
+                            let span = Rect {
+                                x: rect.x + overlay.from,
+                                w: overlay.to - overlay.from,
+                                ..rect
+                            };
+                            if overlay.shadows.is_empty() {
+                                continue;
+                            }
+                            push_clipped(&mut items, span, |items| {
+                                for shadow in overlay.shadows.iter().rev() {
+                                    items.push(DisplayItem::TextShadow {
+                                        text: text.clone(),
+                                        x: rect.x + shadow.x,
+                                        y: baseline + shadow.y,
+                                        size: fragment.style.font_size_px,
+                                        font: fragment.font,
+                                        sigma: shadow.blur / 2.0,
+                                        color: to_rgba8(shadow.color),
+                                    });
+                                }
+                                items.push(text_item(overlay.color.unwrap_or(colour)));
+                            });
+                        }
                     }
                     if let Some(decorated) = decorated {
                         push_decorations(&mut items, decorated, rect, baseline, true, None);
+                    }
+                    for overlay in overlays {
+                        let Some(lines) = &overlay.decorated else {
+                            continue;
+                        };
+                        let span = Rect {
+                            x: rect.x + overlay.from,
+                            w: overlay.to - overlay.from,
+                            ..rect
+                        };
+                        push_clipped(&mut items, span, |items| {
+                            for through in [false, true] {
+                                push_decorations(items, lines, span, baseline, through, None);
+                            }
+                        });
                     }
                 }
                 FragmentKind::Marker(shape) => {
@@ -1572,6 +1659,89 @@ struct Cast {
     dy: f32,
     sigma: f32,
     color: Rgba8,
+}
+
+/// The backgrounds of the highlights over a text fragment drawn at
+/// `rect`, bottom first, each across its span and the line's height.
+fn push_highlight_backgrounds(
+    items: &mut Vec<DisplayItem>,
+    overlays: &[HighlightOverlay],
+    rect: Rect,
+) {
+    for overlay in overlays {
+        if overlay.background.a == 0 || overlay.to <= overlay.from {
+            continue;
+        }
+        let span = snapped(Rect {
+            x: rect.x + overlay.from,
+            w: overlay.to - overlay.from,
+            ..rect
+        });
+        items.push(DisplayItem::Rect {
+            x: span.x,
+            y: span.y,
+            w: span.w,
+            h: span.h,
+            color: overlay.background,
+        });
+    }
+}
+
+/// The spans of a text fragment drawn at `rect` by the colour its text
+/// is drawn in, `colour` where no highlight over it sets one, else the
+/// topmost's that does: left to right, in viewport coordinates, each
+/// with its colour, those alike side by side made one.
+fn highlight_spans(
+    overlays: &[HighlightOverlay],
+    rect: Rect,
+    colour: Rgba8,
+) -> Vec<(f32, f32, Rgba8)> {
+    let mut edges: Vec<f32> = vec![0.0, rect.w];
+    for overlay in overlays.iter().filter(|o| o.color.is_some()) {
+        edges.push(overlay.from.clamp(0.0, rect.w));
+        edges.push(overlay.to.clamp(0.0, rect.w));
+    }
+    edges.sort_by(f32::total_cmp);
+    edges.dedup();
+    let mut out: Vec<(f32, f32, Rgba8)> = Vec::new();
+    for pair in edges.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        if to <= from {
+            continue;
+        }
+        let middle = (from + to) / 2.0;
+        let color = overlays
+            .iter()
+            .rev()
+            .filter(|o| o.from <= middle && middle < o.to)
+            .find_map(|o| o.color)
+            .unwrap_or(colour);
+        match out.last_mut() {
+            Some(last) if last.2 == color => last.1 = rect.x + to,
+            _ => out.push((rect.x + from, rect.x + to, color)),
+        }
+    }
+    out
+}
+
+/// What `draw` pushes, clipped to `clip` across and unclipped up and
+/// down, so that glyphs reaching past their line keep their tops.
+fn push_clipped(
+    items: &mut Vec<DisplayItem>,
+    clip: Rect,
+    draw: impl FnOnce(&mut Vec<DisplayItem>),
+) {
+    if clip.w <= 0.0 {
+        return;
+    }
+    items.push(DisplayItem::PushClip {
+        x: clip.x,
+        y: clip.y - clip.h,
+        w: clip.w,
+        h: clip.h * 3.0,
+    });
+    draw(items);
+    items.push(DisplayItem::PopClip);
 }
 
 /// A list item's marker drawn as `shape` in `color` (M21.6), in the
@@ -6101,6 +6271,70 @@ mod styled_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_highlights_colour_is_the_topmosts_that_sets_one() {
+        // Gap batch H: spans of a run 100 wide at x 10 by the colour its
+        // text is drawn in.
+        let overlay = |from: f32, to: f32, color: Option<Rgba8>| HighlightOverlay {
+            from,
+            to,
+            background: Rgba8::rgb(255, 255, 0),
+            color,
+            shadows: Vec::new(),
+            decorated: None,
+        };
+        let rect = Rect {
+            x: 10.0,
+            y: 0.0,
+            w: 100.0,
+            h: 20.0,
+        };
+        let black = Rgba8::rgb(0, 0, 0);
+        let (red, green) = (Rgba8::rgb(255, 0, 0), Rgba8::rgb(0, 128, 0));
+        assert_eq!(highlight_spans(&[], rect, black), [(10.0, 110.0, black)]);
+        // One that sets no colour leaves the text's.
+        assert_eq!(
+            highlight_spans(&[overlay(20.0, 40.0, None)], rect, black),
+            [(10.0, 110.0, black)]
+        );
+        // The top one wins where two overlap; alike spans are one.
+        let spans = highlight_spans(
+            &[
+                overlay(20.0, 60.0, Some(red)),
+                overlay(40.0, 80.0, Some(green)),
+                overlay(50.0, 55.0, None),
+            ],
+            rect,
+            black,
+        );
+        assert_eq!(
+            spans,
+            [
+                (10.0, 30.0, black),
+                (30.0, 50.0, red),
+                (50.0, 90.0, green),
+                (90.0, 110.0, black)
+            ]
+        );
+        // The backgrounds bottom first, each over its span alone.
+        let mut items = Vec::new();
+        push_highlight_backgrounds(
+            &mut items,
+            &[overlay(20.0, 40.0, None), overlay(0.0, 0.0, None)],
+            rect,
+        );
+        assert_eq!(
+            items,
+            [DisplayItem::Rect {
+                x: 30.0,
+                y: 0.0,
+                w: 20.0,
+                h: 20.0,
+                color: Rgba8::rgb(255, 255, 0)
+            }]
+        );
+    }
 
     #[test]
     fn a_canvas_image_number_names_its_node_and_no_other_image() {

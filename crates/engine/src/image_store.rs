@@ -248,6 +248,11 @@ pub(crate) struct ImageStore {
     budget: Option<usize>,
     /// What each media element shows (M40), as of the frame.
     media: HashMap<NodeId, layout::MediaState>,
+    /// The last remembered sizes of the elements whose
+    /// `contain-intrinsic-size` is `auto` (gap batch H), as of the
+    /// frame: what their boxes are sized by while they have size
+    /// containment.
+    remembered: HashMap<NodeId, [Option<f32>; 2]>,
 }
 
 /// Rendered gradients, kept under [`GRADIENT_BUDGET`].
@@ -765,9 +770,34 @@ impl ImageStore {
     }
 }
 
+impl ImageStore {
+    /// The last remembered sizes as the frame found them (CSS Sizing 4
+    /// section 5.2): those of the elements laid out by their content
+    /// whose intrinsic size is `auto`, set; those of the elements whose
+    /// intrinsic size is no longer `auto`, or that are gone, dropped; and
+    /// those of the elements with size containment kept as they were.
+    pub(crate) fn set_remembered(
+        &mut self,
+        measured: HashMap<NodeId, [Option<f32>; 2]>,
+        keep: impl Fn(NodeId) -> bool,
+    ) {
+        self.remembered.retain(|node, _| keep(*node));
+        self.remembered.extend(measured);
+    }
+
+    /// Whether any element's size is remembered.
+    pub(crate) fn remembers(&self) -> bool {
+        !self.remembered.is_empty()
+    }
+}
+
 impl layout::Images for ImageStore {
     fn media(&self, node: NodeId) -> layout::MediaState {
         self.media.get(&node).copied().unwrap_or_default()
+    }
+
+    fn remembered_size(&self, node: NodeId) -> [Option<f32>; 2] {
+        self.remembered.get(&node).copied().unwrap_or_default()
     }
 
     fn image(&self, node: NodeId) -> layout::ImageState {

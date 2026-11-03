@@ -244,6 +244,18 @@ pub(crate) fn lines(decorations: &[Decorating], fonts: &FontCollection) -> Vec<D
     out
 }
 
+/// The lines a style's own decoration draws over a span of text, as a
+/// highlight's (CSS Pseudo 4 section 3.5, gap batch H): `None` for one
+/// that draws none.
+pub fn decorated_by(style: &ComputedStyle, fonts: &FontCollection) -> Option<Decorated> {
+    let own = Decorating::of(style)?;
+    Some(Decorated {
+        lines: Arc::from(lines(&[own], fonts)),
+        left: 0.0,
+        right: 0.0,
+    })
+}
+
 /// `v` rounded to the nearest whole pixel, a half up, towards the bottom
 /// of the page, as the reference browser rounds a line's place: the
 /// same whatever side of the baseline it is measured from.

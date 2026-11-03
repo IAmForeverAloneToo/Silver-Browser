@@ -383,6 +383,35 @@ pub enum Call {
         y: f64,
         all: bool,
     },
+    /// The caret position at a viewport point (CSSOM View section 6.1,
+    /// gap batch H): its node, its offset, and 1 for a place in a text
+    /// control's value or 0 for a boundary point; none over nothing.
+    CaretFromPoint {
+        x: f64,
+        y: f64,
+    },
+    /// The caret's box at a place in a text control's value, in viewport
+    /// coordinates: four numbers, none where it shows no text.
+    ControlCaret(Handle, u32),
+    /// The boxes of the units `start` to `end` of a text control's value
+    /// (an `OpaqueRange`'s, gap batch H), in viewport coordinates: four
+    /// numbers each, one box a line.
+    ControlRects(Handle, u32, u32),
+    /// `checkVisibility()` (CSSOM View section 4): whether the element
+    /// has a box no `content-visibility: hidden` around it skips, and,
+    /// as the flags ask, no ancestor's opacity is 0 (1), it is visible
+    /// (2), and no `content-visibility: auto` around it skips it (4).
+    CheckVisibility(Handle, u32),
+    /// The document's custom highlight registry (gap batch H), handed
+    /// over whole when it or a highlight in it changes: its names in
+    /// order, and for each the numbers `engine::highlights` reads.
+    SetHighlights {
+        names: Vec<String>,
+        numbers: Vec<f64>,
+    },
+    /// The selection's range changed: its live range's number, or -1
+    /// for none (gap batch H).
+    SelectionChanged(f64),
     /// An element's `innerText`.
     InnerText(Handle),
     /// The rendered text between two boundary points, as `innerText`

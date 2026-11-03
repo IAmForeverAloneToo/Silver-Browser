@@ -144,13 +144,21 @@ listing, main, menu, nav, plaintext, search, section, summary, xmp {
  * section 5.1). The summary's display and the triangle's place are the
  * cascade's hints for its first `summary` child, which a structural
  * selector here would make every insertion restyle more for. The
- * reference browser hides the content of a closed one by
- * `content-visibility: hidden`, which is not a property here: it is not
- * displayed, whatever an author's sheet says. */
+ * content of a closed one skips its contents by `content-visibility:
+ * hidden` (CSS Containment 2 section 4), as the reference browser's
+ * does: laid out, but neither drawn, hit, nor focusable. */
 details > summary { list-style-type: disclosure-closed; }
 details[open] > summary { list-style-type: disclosure-open; }
 details::details-content { display: block; }
-details:not([open])::details-content { display: none !important; }
+details:not([open])::details-content { content-visibility: hidden; }
+
+/* An image whose `sizes` is `auto` (HTML section 15.4.1): sized as if
+ * empty, 300 by 150, until it is laid out, as the reference browser's
+ * sheet has it. */
+img:is([sizes="auto" i], [sizes^="auto," i]) {
+  contain: size !important;
+  contain-intrinsic-size: 300px 150px;
+}
 
 /* Fieldsets and their legends (HTML section 15.3.13), as the reference
  * browser's sheet has them; layout places a fieldset's rendered legend
@@ -305,6 +313,7 @@ textarea {
   background-color: Field;
   font-family: monospace;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
   overflow: auto;
   cursor: text;
 }
