@@ -36879,3 +36879,17 @@ css/css-pseudo/pseudo-replaced-elements.html gap batch H follow-up (pseudo-eleme
 css/css-pseudo/scroll-button-pseudo-element-click.html	Clicking a ::scroll-button() sets pseudoTarget to its CSSPseudoElement	gap batch H follow-up (pseudo-elements) not yet worked
 css/css-pseudo/selection-universal-shadow-dom.html	getComputedStyle() for #target ::selection	gap batch H follow-up (pseudo-elements) not yet worked
 css/css-pseudo/text-selection.html gap batch H follow-up (pseudo-elements) not yet worked
+css/css-conditional/container-queries/flex-basis-with-container-type.html gap batch H follow-up (container tests the second pull brought) not yet worked
+css/css-cascade/revert-layer-005.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-cascade/revert-layer-010.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-text/text-autospace/text-autospace-elements-006.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-text/text-autospace/text-autospace-elements-007.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-text/text-justify/text-justify-and-trailing-spaces-003.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-text/text-justify/text-justify-and-trailing-spaces-004.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-display/display-contents-first-line-002.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-display/display-contents-svg-elements.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-sizing/aspect-ratio/abspos-021.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+css/css-logical/logical-values-float-clear-reftest.html gap batch H follow-up (tests the second pull brought into earlier directories) not yet worked
+scroll-animations/animation-trigger/animation-trigger-fill-mode-none.tentative.html gap batch H follow-up (scroll-driven tests the second pull brought) not yet worked
+scroll-animations/css/scroll-timeline-on-pseudo-002.html gap batch H follow-up (scroll-driven tests the second pull brought) not yet worked
+scroll-animations/css/view-timeline-pseudo-on-scroller-002.html gap batch H follow-up (scroll-driven tests the second pull brought) not yet worked
