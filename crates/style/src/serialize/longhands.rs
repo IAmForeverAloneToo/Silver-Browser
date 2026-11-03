@@ -44,7 +44,6 @@ pub(super) fn text_autospace(value: TextAutospace) -> String {
     match value {
         TextAutospace::Normal => "normal".to_owned(),
         TextAutospace::NoAutospace => "no-autospace".to_owned(),
-        TextAutospace::Auto => "auto".to_owned(),
         TextAutospace::Spaces {
             ideograph_alpha,
             ideograph_numeric,

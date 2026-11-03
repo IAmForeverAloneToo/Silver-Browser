@@ -193,10 +193,11 @@ pub enum Hyphens {
 /// `text-autospace` (CSS Text 4 section 8.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextAutospace {
-    #[default]
     Normal,
+    /// The initial value in the reference browser, which `auto` computes
+    /// to as well: Chrome 156 puts no space between scripts unless asked.
+    #[default]
     NoAutospace,
-    Auto,
     /// Where space goes, and how.
     Spaces {
         ideograph_alpha: bool,

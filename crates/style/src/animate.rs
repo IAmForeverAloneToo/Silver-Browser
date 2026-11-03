@@ -369,7 +369,6 @@ pub fn longhands_of(name: &str) -> Vec<Longhand> {
         ],
         "white-space" => &[WhiteSpaceCollapse, TextWrapMode],
         "text-wrap" => &[TextWrapMode, TextWrapStyle],
-        "text-spacing" => &[TextSpacingTrim, TextAutospace],
         "padding" => &[PaddingTop, PaddingRight, PaddingBottom, PaddingLeft],
         "border-width" => &[
             BorderTopWidth,
@@ -2447,7 +2446,6 @@ pub const SHORTHANDS: &[&str] = &[
     "font-variant",
     "white-space",
     "text-wrap",
-    "text-spacing",
     "padding",
     "border-width",
     "border-color",

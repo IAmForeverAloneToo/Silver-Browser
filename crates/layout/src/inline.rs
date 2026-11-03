@@ -2272,7 +2272,7 @@ fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
 fn autospace_classes(style: &ComputedStyle) -> Option<(bool, bool)> {
     use style::computed::TextAutospace;
     match style.text().text_autospace {
-        TextAutospace::Normal | TextAutospace::Auto => Some((true, true)),
+        TextAutospace::Normal => Some((true, true)),
         TextAutospace::NoAutospace => None,
         TextAutospace::Spaces {
             ideograph_alpha,
@@ -4361,7 +4361,19 @@ mod tests {
     #[test]
     fn text_autospace_puts_an_eighth_of_an_em_between_ideographs_and_letters() {
         let fonts = test_fonts();
-        let spaced = lay_styled("\u{65e5}a1\u{672c}", 400.0, ComputedStyle::default());
+        let normal = || {
+            let mut style = ComputedStyle {
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            style.text_mut().text_autospace = style::computed::TextAutospace::Normal;
+            style
+        };
+        let lay_normal = |text: &str| {
+            let run = [styled_text_box(text, normal())];
+            lay(&run, 400.0, TextAlign::Left, &fonts).0
+        };
+        let spaced = lay_normal("\u{65e5}a1\u{672c}");
         let xs: Vec<(String, f32)> = spaced
             .iter()
             .map(|f| match &f.kind {
@@ -4393,11 +4405,14 @@ mod tests {
             ["\u{65e5}a1\u{672c}"],
             "no space"
         );
-        assert_eq!(lay_styled("abc", 400.0, ComputedStyle::default()).len(), 1);
+        assert_eq!(texts(&lay_normal("abc")).len(), 1);
         // An iteration mark is an ideograph's: no space before it.
+        assert_eq!(texts(&lay_normal("\u{65e5}\u{3005}")).len(), 1);
+        // The initial value is the reference browser's, `no-autospace`.
         assert_eq!(
-            lay_styled("\u{65e5}\u{3005}", 400.0, ComputedStyle::default()).len(),
-            1
+            lay_styled("\u{65e5}a1\u{672c}", 400.0, ComputedStyle::default()).len(),
+            1,
+            "no space by default"
         );
     }
 
@@ -4408,9 +4423,13 @@ mod tests {
         // elements nested deeper; none where either side's
         // `text-autospace` is `no-autospace`, nor after white space.
         let fonts = test_fonts();
-        let style = || ComputedStyle {
-            font_size_px: 16.0,
-            ..ComputedStyle::default()
+        let style = || {
+            let mut style = ComputedStyle {
+                font_size_px: 16.0,
+                ..ComputedStyle::default()
+            };
+            style.text_mut().text_autospace = style::computed::TextAutospace::Normal;
+            style
         };
         let xs = |run: &[LayoutBox]| -> Vec<f32> {
             let (fragments, _) = lay(run, 400.0, TextAlign::Left, &fonts);

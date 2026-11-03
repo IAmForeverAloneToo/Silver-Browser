@@ -108,19 +108,6 @@ pub(super) fn value(
                 format!("{mode} {wrap_style}")
             })
         }
-        // `normal` and `none` where the two say them, else each that is
-        // not `normal`.
-        "text-spacing" => {
-            let (trim, autospace) = (get("text-spacing-trim")?, get("text-autospace")?);
-            Some(match (trim.as_str(), autospace.as_str()) {
-                ("normal", "normal") => "normal".to_owned(),
-                ("space-all", "no-autospace") => "none".to_owned(),
-                ("auto", "auto") => "auto".to_owned(),
-                ("normal", _) => autospace,
-                (_, "normal") => trim,
-                _ => format!("{trim} {autospace}"),
-            })
-        }
         "list-style" => Some(format!(
             "{} {} {}",
             get("list-style-position")?,

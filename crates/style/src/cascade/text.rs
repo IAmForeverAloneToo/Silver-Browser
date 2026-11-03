@@ -123,13 +123,14 @@ pub(super) fn parse_hyphenate_limit_lines(
 
 /// `text-autospace`: `normal`, `auto`, `no-autospace`, or any of
 /// `ideograph-alpha`, `ideograph-numeric` and `punctuation` with
-/// `insert` or `replace`, each at most once, in any order.
+/// `insert` or `replace`, each at most once, in any order. `auto`, the
+/// user agent's choice, computes to `no-autospace`, as in Chrome 156.
 pub(super) fn parse_text_autospace(tokens: &[Token]) -> Option<TextAutospace> {
     let parts = components(tokens);
     if let [one] = parts.as_slice() {
         match keyword(one)?.as_str() {
             "normal" => return Some(TextAutospace::Normal),
-            "auto" => return Some(TextAutospace::Auto),
+            "auto" => return Some(TextAutospace::NoAutospace),
             "no-autospace" => return Some(TextAutospace::NoAutospace),
             _ => {}
         }
@@ -204,52 +205,6 @@ pub(super) fn parse_ruby_align(tokens: &[Token]) -> Option<RubyAlign> {
         "start" => RubyAlign::Start,
         "center" => RubyAlign::Center,
         _ => return None,
-    })
-}
-
-/// `text-spacing`, the shorthand of `text-spacing-trim` and
-/// `text-autospace`: `none`, `auto`, or a value of either or both, in
-/// either order, `normal` standing for either.
-pub(super) fn parse_text_spacing(tokens: &[Token]) -> Option<(TextSpacingTrim, TextAutospace)> {
-    let parts = components(tokens);
-    if let [one] = parts.as_slice() {
-        match keyword(one)?.as_str() {
-            "none" => return Some((TextSpacingTrim::SpaceAll, TextAutospace::NoAutospace)),
-            "auto" => return Some((TextSpacingTrim::Auto, TextAutospace::Auto)),
-            _ => {}
-        }
-    }
-    let (mut trim, mut autospace) = (None, None);
-    for part in &parts {
-        if keyword(part).as_deref() == Some("normal") {
-            if trim.is_none() {
-                trim = Some(TextSpacingTrim::Normal);
-            } else if autospace.is_none() {
-                autospace = Some(TextAutospace::Normal);
-            } else {
-                return None;
-            }
-            continue;
-        }
-        if let Some(t) = parse_text_spacing_trim(part).filter(|t| *t != TextSpacingTrim::Auto) {
-            if trim.is_some_and(|old| old != TextSpacingTrim::Normal) {
-                return None;
-            }
-            if trim == Some(TextSpacingTrim::Normal) && autospace.is_none() {
-                autospace = Some(TextAutospace::Normal);
-            }
-            trim = Some(t);
-        } else if keyword(part).as_deref() == Some("no-autospace") && autospace.is_none() {
-            autospace = Some(TextAutospace::NoAutospace);
-        } else {
-            return None;
-        }
-    }
-    (!parts.is_empty()).then(|| {
-        (
-            trim.unwrap_or_default(),
-            autospace.unwrap_or(TextAutospace::Normal),
-        )
     })
 }
 
@@ -469,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn text_autospace_and_text_spacing() {
+    fn text_autospace_takes_its_spaces_and_auto_computes_to_none() {
         assert_eq!(
             parse_text_autospace(&tokens("insert punctuation ideograph-alpha")),
             Some(TextAutospace::Spaces {
@@ -482,14 +437,9 @@ mod tests {
         assert!(parse_text_autospace(&tokens("insert")).is_none());
         assert!(parse_text_autospace(&tokens("punctuation punctuation")).is_none());
         assert_eq!(
-            parse_text_spacing(&tokens("no-autospace space-all")),
-            Some((TextSpacingTrim::SpaceAll, TextAutospace::NoAutospace))
+            parse_text_autospace(&tokens("auto")),
+            Some(TextAutospace::NoAutospace)
         );
-        assert_eq!(
-            parse_text_spacing(&tokens("normal trim-start")),
-            Some((TextSpacingTrim::TrimStart, TextAutospace::Normal))
-        );
-        assert!(parse_text_spacing(&tokens("trim-start space-all")).is_none());
     }
 
     #[test]

@@ -4911,10 +4911,6 @@ fn apply_declaration(
         "math-style" => set_text(style, text::parse_math_style(value), |t, v| {
             t.math_style = v
         }),
-        "text-spacing" => set_text(style, text::parse_text_spacing(value), |t, (trim, auto)| {
-            t.text_spacing_trim = trim;
-            t.text_autospace = auto;
-        }),
         "hanging-punctuation" => set_text(style, text::parse_hanging_punctuation(value), |t, v| {
             t.hanging_punctuation = v
         }),
@@ -6012,7 +6008,6 @@ fn is_inherited(name: &str) -> bool {
             | "ruby-position"
             | "ruby-align"
             | "math-style"
-            | "text-spacing"
             | "hanging-punctuation"
             | "word-space-transform"
             | "text-fit"
@@ -6202,10 +6197,6 @@ fn apply_css_wide(
         "ruby-position" => copy_text(style, src, |t, s| t.ruby_position = s.ruby_position),
         "ruby-align" => copy_text(style, src, |t, s| t.ruby_align = s.ruby_align),
         "math-style" => copy_text(style, src, |t, s| t.math_style = s.math_style),
-        "text-spacing" => copy_text(style, src, |t, s| {
-            t.text_spacing_trim = s.text_spacing_trim;
-            t.text_autospace = s.text_autospace;
-        }),
         "hanging-punctuation" => copy_text(style, src, |t, s| {
             t.hanging_punctuation = s.hanging_punctuation
         }),
