@@ -145,6 +145,18 @@ const DIRECTORIES: &[&str] = &[
     "css/css-env",
     "web-animations",
     "scroll-animations",
+    // What closing gap batch H's found gaps reached: the top layer and
+    // the invokers, highlights, containment, focus order, snapping,
+    // positioning, the rendering section and the pseudo-elements.
+    "html/semantics/interactive-elements",
+    "html/semantics/popovers",
+    "html/semantics/the-button-element",
+    "css/css-highlight-api",
+    "css/css-contain",
+    "css/css-scroll-snap",
+    "css/css-position",
+    "html/rendering",
+    "css/css-pseudo",
 ];
 
 /// The directories whose testharness.js tests are taken (M27), each with
@@ -248,6 +260,18 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     ("css/css-transitions", ""),
     ("web-animations", ""),
     ("scroll-animations", ""),
+    // And by their scripts, close watchers and focus with them.
+    ("html/semantics/interactive-elements", ""),
+    ("html/semantics/popovers", ""),
+    ("html/semantics/the-button-element", ""),
+    ("close-watcher", ""),
+    ("css/css-highlight-api", ""),
+    ("css/css-contain", ""),
+    ("html/interaction/focus", ""),
+    ("css/css-scroll-snap", ""),
+    ("css/css-position", ""),
+    ("html/rendering", ""),
+    ("css/css-pseudo", ""),
 ];
 
 /// Tests the rule would take that are left out by name, and why: what the
