@@ -17596,6 +17596,10 @@
       ["disabled", "disabled", "boolean"],
       ["name", "name", "string"],
     ]],
+    // HTML section 16.3, obsolete but reflected.
+    ["HTMLLegendElement", [
+      ["align", "align", "string"],
+    ]],
     ["HTMLMetaElement", [
       ["name", "name", "string"],
       ["content", "content", "string"],

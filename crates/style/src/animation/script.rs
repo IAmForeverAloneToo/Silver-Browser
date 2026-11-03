@@ -229,7 +229,8 @@ pub fn pseudo_element_name(pseudo: PseudoElement) -> Option<&'static str> {
         PseudoElement::Backdrop => Some("::backdrop"),
         // Elements of other trees, not pseudo-elements of this one (D69),
         // and a highlight, which no animation applies to.
-        PseudoElement::WebkitPrefixed
+        PseudoElement::TextHighlight
+        | PseudoElement::WebkitPrefixed
         | PseudoElement::Slotted
         | PseudoElement::Part
         | PseudoElement::Highlight => None,

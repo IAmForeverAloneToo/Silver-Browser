@@ -12,18 +12,19 @@
 //! Its top margin is not counted and its bottom margin is, as in the
 //! reference browser. Across, it is at the content box's start past its
 //! start margin, at the end with an `auto` start margin, centred with
-//! both `auto`; with neither, its legacy `text-align` (HTML's `align`)
-//! places it. The rest of the content is laid out as the fieldset's
-//! with that area for its top border: the content box starts below it,
-//! and so does an absolutely positioned box's containing block. The
-//! fieldset's heights are as if the area were its border, the legend
+//! both `auto`; with neither, its `justify-self` (which HTML's `align`
+//! gives) places it, not the `text-align` it inherits. The rest of the
+//! content is laid out as the fieldset's with that area for its top
+//! border: the content box starts below it, and so does an absolutely
+//! positioned box's containing block. The fieldset's heights are as if
+//! the area were its border, the legend
 //! taking room from its content; the box is as tall as it would be with
 //! no legend unless the area is the taller. Paint draws the background
 //! and the border from the middle of a taller legend down, the border
 //! with a gap where the legend is ([`Fragment::legend`]).
 
 use style::computed::{
-    ComputedStyle, Direction, LEFT, LegacyAlign, LengthPercentageAuto, RIGHT, TOP,
+    AlignPosition, ComputedStyle, Direction, LEFT, LengthPercentageAuto, RIGHT, SelfAlignment, TOP,
 };
 
 use crate::block::{
@@ -119,8 +120,9 @@ pub(crate) fn layout_fieldset_contents<'a>(
 /// Where a legend `width` wide with the inline margins `margins`, left
 /// and right, goes across a fieldset's content box `room` wide: its
 /// border box's left edge from the content box's. `auto` margins place
-/// it, else the legend's legacy `text-align`, in the fieldset's
-/// direction.
+/// it, else the legend's `justify-self` (HTML section 15.3.13), in the
+/// fieldset's direction: `left` and `right` as they say, the rest at
+/// the start but `center` and the ends.
 fn inline_offset(
     fieldset: &ComputedStyle,
     legend: &ComputedStyle,
@@ -141,9 +143,17 @@ fn inline_offset(
         (true, true) => free / 2.0,
         (true, false) => free,
         (false, true) => 0.0,
-        (false, false) => match (legend.legacy_align, rtl) {
-            (LegacyAlign::Center, _) => free / 2.0,
-            (LegacyAlign::Right, false) | (LegacyAlign::Left, true) => free,
+        (false, false) => match (&legend.grid().justify_self, rtl) {
+            (SelfAlignment::Position(AlignPosition::Center, _), _) => free / 2.0,
+            (SelfAlignment::Position(AlignPosition::Right, _), false)
+            | (SelfAlignment::Position(AlignPosition::Left, _), true)
+            | (
+                SelfAlignment::Position(
+                    AlignPosition::End | AlignPosition::SelfEnd | AlignPosition::FlexEnd,
+                    _,
+                ),
+                _,
+            ) => free,
             _ => 0.0,
         },
     };
@@ -242,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_margins_and_the_legacy_alignment_place_the_legend_across() {
+    fn auto_margins_and_justify_self_place_the_legend_across() {
         let laid = lay(
             "<fieldset><legend id=a style='margin-left: 20px'></legend></fieldset>\
              <fieldset><legend id=b style='margin: 0 auto'></legend></fieldset>\
@@ -251,7 +261,7 @@ mod tests {
              <fieldset><legend id=e align=right></legend></fieldset>\
              <fieldset><legend id=f align=center style='margin-right: auto'></legend></fieldset>\
              <fieldset dir=rtl><legend id=g></legend></fieldset>\
-             <fieldset dir=rtl><legend id=h align=left></legend></fieldset>",
+             <fieldset dir=rtl><legend id=h align=left></legend></fieldset>             <div align=center><fieldset id=fi><legend id=i></legend></fieldset></div>             <fieldset><legend id=j style='justify-self: end'></legend></fieldset>             <fieldset><legend id=k style='text-align: center'></legend></fieldset>",
             CSS,
         );
         // The content box runs from 16 for 300; the legend is 84 wide.
@@ -268,6 +278,11 @@ mod tests {
         );
         assert_eq!(x("g"), 16.0 + 216.0, "the start is the right in rtl");
         assert_eq!(x("h"), 16.0, "left is the end in rtl");
+        // Neither an inherited nor its own text-align moves it; its
+        // justify-self does.
+        assert_eq!(x("i") - x("fi"), 14.0, "past the border and padding");
+        assert_eq!(x("j"), 16.0 + 216.0);
+        assert_eq!(x("k"), 16.0);
     }
 
     #[test]

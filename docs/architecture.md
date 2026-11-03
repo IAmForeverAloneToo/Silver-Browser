@@ -588,10 +588,16 @@ scroll it; the initial containing block takes the rest, fixed boxes
 among them as the document's last roots, which the walk paints with
 the viewport's offset left out. `position: sticky` (M11.5) is laid
 out in flow and shifted in the walk by `paint::order::sticky_shift`,
-keeping each inset that is not `auto` from the visible edge of its
-nearest scrollport within its containing block (the parent's padding
-box, the border box kept inside it: two stated approximations), the
-subtree moving with it. Stacking (M11.6): the walk is CSS2 Appendix E
+keeping each inset that is not `auto` from the edge of its nearest
+scroll container's own scrollport along each axis that container
+scrolls (a single-axis one's other axis left to the next), within its
+containing block (the parent's padding box, a scroll container's
+scrollable area for its children: a stated approximation) with its
+margin box inside it; where the room between two insets is less than
+the box the end edge gives way, and the start edge wins, the right one
+in a right-to-left containing block; the subtree moves with it. A
+script's `offsetTop` and `offsetLeft` count the shift at the scroll
+positions in force (`DocumentHost::sticky_shift`). Stacking (M11.6): the walk is CSS2 Appendix E
 — the root element and each positioned box with a `z-index` not
 `auto` are stacking contexts; one silent pass gathers a context's
 positioned descendants with the clips and scroll offsets of their

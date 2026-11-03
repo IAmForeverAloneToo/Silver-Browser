@@ -685,6 +685,15 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         if scope != Scope::Rule {
                             return None;
                         }
+                        // A highlight pseudo-element takes no pseudo-class
+                        // after it (CSS Pseudo-Elements 4 section 3).
+                        let highlight = matches!(
+                            element,
+                            PseudoElement::Selection | PseudoElement::TextHighlight
+                        );
+                        if highlight && matches!(c.peek(), Some(Token::Colon)) {
+                            return None;
+                        }
                         let states = parse_states(c, depth, &mut spec)?;
                         // A highlight is in no user-action state (CSS
                         // Pseudo 4 section 3.1).
@@ -1176,6 +1185,9 @@ fn pseudo_element(name: &str) -> Option<PseudoElement> {
         "marker" => Some(PseudoElement::Marker),
         "placeholder" => Some(PseudoElement::Placeholder),
         "selection" => Some(PseudoElement::Selection),
+        "target-text" | "spelling-error" | "grammar-error" | "search-text" => {
+            Some(PseudoElement::TextHighlight)
+        }
         "details-content" => Some(PseudoElement::DetailsContent),
         "file-selector-button" => Some(PseudoElement::FileSelectorButton),
         "picker-icon" => Some(PseudoElement::PickerIcon),
@@ -1926,6 +1938,28 @@ mod tests {
     }
 
     #[test]
+    fn highlight_pseudo_elements_parse_and_take_no_pseudo_class() {
+        // CSS Pseudo-Elements 4 section 3, as the reference browser has
+        // them.
+        for src in [
+            "::target-text",
+            ".a::spelling-error",
+            "div ::GRAMMAR-ERROR",
+            "::search-text",
+        ] {
+            assert_eq!(
+                ending(src).expect(src).element,
+                PseudoElement::TextHighlight,
+                "{src}"
+            );
+        }
+        assert!(ending("::selection").is_some());
+        err("::selection:hover");
+        err("::target-text:focus");
+        assert!(ending("::before:hover").is_some());
+    }
+
+    #[test]
     fn webkit_pseudo_elements_are_valid_and_match_nothing_but_others_stay_invalid() {
         // selectors-4 Appendix B: any `::-webkit-` name that is not a
         // function, matched ASCII case-insensitively.
@@ -2029,7 +2063,7 @@ mod tests {
             vec![PseudoClass::FocusVisible]
         );
         assert_eq!(
-            states("::selection:FOCUS-WITHIN"),
+            states("::marker:FOCUS-WITHIN"),
             vec![PseudoClass::FocusWithin]
         );
         assert_eq!(states(":before:hover").len(), 1);

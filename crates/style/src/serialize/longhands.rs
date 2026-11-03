@@ -204,6 +204,15 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             crate::computed::RubyPosition::Under => "under",
         }
         .to_owned(),
+        "unicode-bidi" => match style.text().unicode_bidi {
+            crate::computed::UnicodeBidi::Normal => "normal",
+            crate::computed::UnicodeBidi::Embed => "embed",
+            crate::computed::UnicodeBidi::Isolate => "isolate",
+            crate::computed::UnicodeBidi::BidiOverride => "bidi-override",
+            crate::computed::UnicodeBidi::IsolateOverride => "isolate-override",
+            crate::computed::UnicodeBidi::Plaintext => "plaintext",
+        }
+        .to_owned(),
         "math-style" => match style.text().math_style {
             crate::computed::MathStyle::Normal => "normal",
             crate::computed::MathStyle::Compact => "compact",

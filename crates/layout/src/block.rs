@@ -1693,13 +1693,15 @@ pub(crate) fn layout_inline_block<'a>(
     // inline flex or grid container by its first baseline (css-align-3
     // §9.1, M17, M18), in its initial scroll position (css-flexbox-1
     // §8.5, css-grid-2 §11.6); an inline-block by its last line box's, a
-    // flex or grid container in it counting by its first.
+    // flex or grid container in it counting by its first, unless it
+    // scrolls; a one-line field by its text's, whatever its `overflow`.
+    let one_line = b.control_size.is_some_and(|size| size.one_line());
     let baseline = if b.is_table() || b.has_items() {
         layout.first_baseline
     } else {
         layout
             .inline_block_baseline
-            .filter(|_| !b.style.overflow().scrolls())
+            .filter(|_| one_line || !b.style.overflow().scrolls())
     };
     let ascent = match baseline {
         Some(baseline) => margin_top + baseline,
@@ -2082,7 +2084,7 @@ pub(crate) fn layout_flow<'a>(
     // A textarea's rows are lines of its font and `line-height`, as the
     // reference browser measures them (gap batch H).
     let control_height = b.control_size.map(|size| match size.height {
-        crate::box_tree::ControlHeight::Px(px) => px,
+        crate::box_tree::ControlHeight::Px(px) | crate::box_tree::ControlHeight::Line(px) => px,
         crate::box_tree::ControlHeight::Rows(rows) => {
             rows as f32 * crate::font::line(pass.fonts, " ", &b.style).line_height()
         }
@@ -2118,8 +2120,14 @@ pub(crate) fn layout_flow<'a>(
     let mut root = box_fragment(border_box_width, border_box_height, b);
     // The content's positions are from the content top: the leading
     // set, where it is this box's, is in them already (or, with nothing
-    // materialised, is the gap the self-collapsing boxes sit above).
-    let content_y = border[TOP] + padding[TOP];
+    // materialised, is the gap the self-collapsing boxes sit above). A
+    // one-line field's text is centred down its content box, past it
+    // on both sides when the box is the shorter.
+    let centring = match b.control_size {
+        Some(size) if size.one_line() => (content_height - auto_content_height) / 2.0,
+        _ => 0.0,
+    };
+    let content_y = border[TOP] + padding[TOP] + centring;
     root.children = children
         .fragments
         .into_iter()

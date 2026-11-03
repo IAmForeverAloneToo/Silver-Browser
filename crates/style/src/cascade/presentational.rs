@@ -64,11 +64,14 @@ pub(crate) fn is_presentational_hint(tag: &str, name: &str) -> bool {
             tag,
             "table" | "td" | "th" | "col" | "colgroup" | "hr" | "pre"
         ),
-        "height" => matches!(tag, "table" | "tr" | "td" | "th"),
+        "height" => matches!(
+            tag,
+            "table" | "tr" | "td" | "th" | "thead" | "tbody" | "tfoot"
+        ),
+        "clear" => tag == "br",
         "border" => matches!(tag, "table" | "img" | "object"),
         "cellpadding" | "cellspacing" => tag == "table",
         "nowrap" => matches!(tag, "td" | "th"),
-        "hspace" | "vspace" => matches!(tag, "img" | "iframe" | "embed" | "object" | "video"),
         "color" => matches!(tag, "font" | "hr"),
         "face" => tag == "font",
         "size" => matches!(tag, "font" | "hr"),
@@ -160,7 +163,22 @@ pub(super) fn hints(
                 push(format!("color: {c};"));
             }
         }
-        "div" | "caption" | "legend" => {
+        // A legend's `align` places it in its fieldset's border by
+        // `justify-self`, matched exactly (HTML section 15.3.13), and is
+        // its `text-align` too, as the reference browser maps it.
+        "legend" => {
+            if let Some(align) = attr("align").and_then(plain_text_align) {
+                push(format!("text-align: {align};"));
+            }
+            if let Some(side) = attr("align").and_then(|a| {
+                ["left", "center", "right"]
+                    .into_iter()
+                    .find(|side| a.eq_ignore_ascii_case(side))
+            }) {
+                push(format!("justify-self: {side};"));
+            }
+        }
+        "div" | "caption" => {
             if tag == "caption"
                 && let Some(side) =
                     attr("align").and_then(|a| match a.trim().to_ascii_lowercase().as_str() {
@@ -192,7 +210,7 @@ pub(super) fn hints(
             if let Some(w) = dimension("width", true) {
                 push(format!("width: {w};"));
             }
-            if let Some(h) = dimension("height", true) {
+            if let Some(h) = dimension("height", false) {
                 push(format!("height: {h};"));
             }
             if let Some(c) = colour("bgcolor") {
@@ -251,7 +269,9 @@ pub(super) fn hints(
                 push(format!("background-color: {c};"));
             }
             push(image("background").unwrap_or_default());
-            if tag == "tr"
+            // A row's and, as the reference browser has it, a row
+            // group's.
+            if matches!(tag, "tr" | "thead" | "tbody" | "tfoot")
                 && let Some(h) = dimension("height", false)
             {
                 push(format!("height: {h};"));
@@ -286,7 +306,7 @@ pub(super) fn hints(
             {
                 push("border-left: thin solid; border-right: thin solid;".into());
             }
-            if let Some(w) = dimension("width", true) {
+            if let Some(w) = dimension("width", false) {
                 push(format!("width: {w};"));
             }
             if let Some(v) = attr("valign").and_then(vertical_align) {
@@ -320,22 +340,28 @@ pub(super) fn hints(
                 push(format!("width: {w};"));
             }
         }
+        // A line break's `clear` (HTML section 15.3.9).
+        "br" => {
+            let clear = attr("clear").and_then(|c| match c.trim().to_ascii_lowercase().as_str() {
+                "left" => Some("left"),
+                "right" => Some("right"),
+                "all" | "both" => Some("both"),
+                _ => None,
+            });
+            if let Some(clear) = clear {
+                push(format!("clear: {clear};"));
+            }
+        }
         "pre" => {
             if attr("wrap").is_some() {
                 push("white-space: pre-wrap;".into());
             }
         }
         "img" | "iframe" | "embed" | "object" | "video" | "input" => {
-            if tag != "input" || attr("type").is_some_and(|t| t.eq_ignore_ascii_case("image")) {
-                if let Some(h) = pixels("hspace").filter(|_| tag != "input") {
-                    push(format!("margin-left: {h}px; margin-right: {h}px;"));
-                }
-                if let Some(v) = pixels("vspace").filter(|_| tag != "input") {
-                    push(format!("margin-top: {v}px; margin-bottom: {v}px;"));
-                }
-                if let Some(a) = attr("align").and_then(image_align) {
-                    push(a.into());
-                }
+            if (tag != "input" || attr("type").is_some_and(|t| t.eq_ignore_ascii_case("image")))
+                && let Some(a) = attr("align").and_then(image_align)
+            {
+                push(a.into());
             }
             if matches!(tag, "img" | "object")
                 && let Some(b) = pixels("border")
@@ -348,11 +374,19 @@ pub(super) fn hints(
                 push(format!("color: {c};"));
             }
             if let Some(face) = attr("face").map(str::trim).filter(|f| !f.is_empty()) {
+                // A generic family's keyword stays the generic family,
+                // as the reference browser reads the attribute; any other
+                // name is a name.
                 let families: Vec<String> = face
                     .split(',')
                     .map(str::trim)
                     .filter(|f| !f.is_empty())
-                    .map(css_string)
+                    .map(|f| {
+                        let generic = crate::font_family::GENERIC_FAMILIES
+                            .iter()
+                            .find(|g| g.eq_ignore_ascii_case(f));
+                        generic.map_or_else(|| css_string(f), |g| (*g).to_owned())
+                    })
                     .collect();
                 if !families.is_empty() {
                     push(format!("font-family: {};", families.join(", ")));
@@ -380,10 +414,11 @@ fn ancestor(document: &Document, element: NodeId, tag: &str) -> Option<NodeId> {
 }
 
 /// `value` as a length the attributes map: pixels or a percentage, none
-/// of zero where `nonzero`.
+/// of zero where `nonzero` (HTML section 15.2's "maps to the dimension
+/// property (ignoring zero)", a zero percentage too).
 fn length(value: &str, nonzero: bool) -> Option<String> {
     match dom::parse_dimension(value)? {
-        dom::Dimension::Length(px) if nonzero && px == 0.0 => None,
+        dom::Dimension::Length(n) | dom::Dimension::Percentage(n) if nonzero && n == 0.0 => None,
         dom::Dimension::Length(px) => Some(format!("{px}px")),
         dom::Dimension::Percentage(p) => Some(format!("{p}%")),
     }
@@ -546,7 +581,8 @@ fn image_align(value: &str) -> Option<&'static str> {
         "left" => Some("float: left;"),
         "right" => Some("float: right;"),
         "top" => Some("vertical-align: top;"),
-        "middle" | "absmiddle" | "abscenter" => Some("vertical-align: middle;"),
+        "middle" | "center" => Some("vertical-align: -webkit-baseline-middle;"),
+        "absmiddle" | "abscenter" => Some("vertical-align: middle;"),
         "bottom" | "baseline" => Some("vertical-align: baseline;"),
         "texttop" => Some("vertical-align: text-top;"),
         "absbottom" => Some("vertical-align: bottom;"),
@@ -751,6 +787,30 @@ mod tests {
         assert_eq!(img.margin[1], LengthPercentageAuto::Px(4.0));
         assert_eq!(img.margin[0], LengthPercentageAuto::Px(6.0));
         assert_eq!(s("x").display, Display::None);
+        // An image's `align=middle` is the reference browser's baseline
+        // middle, `absmiddle` CSS's middle; a face's generic family
+        // stays one.
+        let aligned = "<img id=m align=Center><img id=a align=absmiddle>\
+            <font id=f face='SERIF, A'>f</font>";
+        assert_eq!(
+            style(aligned, "m").vertical_align,
+            VerticalAlign::BaselineMiddle
+        );
+        assert_eq!(style(aligned, "a").vertical_align, VerticalAlign::Middle);
+        assert_eq!(&*style(aligned, "f").font().family, "serif, A");
+        // A line break's `clear`, and a row group's height.
+        let more = "<p>a<br id=b clear=ALL>b<br id=l clear=left></p>\
+            <table><tbody id=g height=40><tr><td>x</td></tr></tbody></table>";
+        assert_eq!(style(more, "b").clear, crate::computed::Clear::Both);
+        assert_eq!(style(more, "l").clear, crate::computed::Clear::Left);
+        assert_eq!(style(more, "g").height, crate::computed::Size::Px(40.0));
+        // A cell's width ignores a zero, a percentage's too; a table's
+        // height and a column's width take it.
+        let zero = "<table id=t height=0><col id=c width=0>\
+            <tr><td id=d width=0%>x</td></tr></table>";
+        assert_eq!(style(zero, "d").width, crate::computed::Size::Auto);
+        assert_eq!(style(zero, "t").height, crate::computed::Size::Px(0.0));
+        assert_eq!(style(zero, "c").width, crate::computed::Size::Px(0.0));
         // A `border` with no number is 1.
         let bare = "<table id=t border><tr><td id=d>d</td></tr></table>";
         assert_eq!(style(bare, "t").used_border_width(), [1.0; 4]);

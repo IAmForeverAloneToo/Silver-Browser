@@ -962,6 +962,57 @@ mod tests {
     }
 
     #[test]
+    fn a_checkbox_of_no_appearance_shows_no_mark_and_holds_its_children() {
+        // CSS UI 4 section 7.1, as the reference browser has it: no
+        // longer replaced, a box of its own style. Nodes: input c.
+        let marks = |css: &str| {
+            let l = laid("<p>x<input id=c type=checkbox checked>y</p>", css);
+            fragments(&l, "c")
+                .iter()
+                .filter(|f| matches!(f.kind, FragmentKind::Replaced(Replaced::Mark(_))))
+                .count()
+        };
+        assert_eq!(marks("p { margin: 0 }"), 1);
+        assert_eq!(marks("p { margin: 0 } input { appearance: none }"), 0);
+    }
+
+    #[test]
+    fn a_tall_text_field_centres_its_text_and_sits_on_it_whatever_its_overflow() {
+        // As the reference browser's: the field's text is centred down
+        // its content box, and the line's baseline is that text's, a
+        // hidden or a scrolling overflow notwithstanding.
+        for overflow in ["visible", "hidden", "scroll"] {
+            let l = laid(
+                "<p id=p>x<input id=c value=v>y</p>",
+                &format!(
+                    "p {{ margin: 0 }} input {{ height: 60px; padding: 0; border: 0; \
+                     overflow: {overflow} }}"
+                ),
+            );
+            let input = fragments(&l, "c")
+                .into_iter()
+                .find(|f| matches!(f.kind, FragmentKind::Box))
+                .expect("its box");
+            let text = |t: &str| {
+                l.iter()
+                    .find(|f| matches!(&f.kind, FragmentKind::Text(s) if s == t))
+                    .expect("the text")
+                    .clone()
+            };
+            let (outside, inside) = (text("x"), text("v"));
+            assert_eq!(input.h, 60.0);
+            assert!(
+                (inside.y - inside.ascent + inside.h / 2.0 - (input.y + 30.0)).abs() < 1.0,
+                "{overflow}: centred"
+            );
+            assert!(
+                (outside.y - inside.y).abs() < 0.01,
+                "{overflow}: on its text"
+            );
+        }
+    }
+
+    #[test]
     fn an_inline_image_sits_on_the_baseline_and_makes_its_line_tall() {
         let l = laid(
             "<p id=p>x<img id=i src=200x100.png>y</p>",

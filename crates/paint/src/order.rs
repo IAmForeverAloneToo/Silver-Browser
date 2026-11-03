@@ -91,11 +91,34 @@ use style::transform::Matrix;
 
 use crate::rounded::RoundedRect;
 use crate::{GroupKey, LayerReason, ScrollOffsets, Viewport};
-use style::computed::WillChange;
+use style::computed::{Direction, WillChange};
 
 /// A clip of the chain in force: the node it scrolls, its effective
-/// rectangle, the depth of groups it is in, and its rounded shape.
-type ChainClip = (Option<NodeId>, Rect, usize, Option<(NodeId, RoundedRect)>);
+/// rectangle, the depth of groups it is in, its rounded shape, and for
+/// a scroll container what a sticky box inside it is held by.
+type ChainClip = (
+    Option<NodeId>,
+    Rect,
+    usize,
+    Option<(NodeId, RoundedRect)>,
+    Option<ScrollPort>,
+);
+
+/// What a sticky box inside a scroll container is held by (CSS Position
+/// 3 section 3.4): the container's own scrollport, not intersected with
+/// the clips around it, and whether it scrolls across and down, which a
+/// box sticks to along those axes; its padding box, which its children
+/// are given as their containing block; and its scrollable area, as
+/// wide and as tall as its content and scrolled with it, which holds a
+/// sticky child in place of that padding box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScrollPort {
+    clip: Rect,
+    across: bool,
+    down: bool,
+    padding: Rect,
+    area: Rect,
+}
 
 /// An axis-aligned rectangle in viewport coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -369,6 +392,7 @@ fn walk_within<'a>(
         ox: 0.0,
         oy: 0.0,
         ts: 0,
+        rtl: false,
         dx: 0.0,
         dy: 0.0,
         chain: Vec::new(),
@@ -415,6 +439,8 @@ fn walk_within<'a>(
                     ox: 0.0,
                     oy: 0.0,
                     ts: 0,
+                    // The initial containing block, as the root walk has it.
+                    rtl: false,
                     dx: 0.0,
                     dy: 0.0,
                     contained: 0,
@@ -644,6 +670,9 @@ struct Walk<'a, 'o> {
     /// moved: the shifts of the lists of children being walked into,
     /// added up (M35.9).
     ts: u32,
+    /// Whether the box whose content is being walked is right to left:
+    /// the direction a sticky box in it sticks by across.
+    rtl: bool,
     /// From a document `x` to the coordinates of the group being walked
     /// into: the shifts of the sticky boxes being walked into (M11).
     dx: f32,
@@ -710,6 +739,7 @@ struct Positioned<'a> {
     ox: f32,
     oy: f32,
     ts: u32,
+    rtl: bool,
     dx: f32,
     dy: f32,
     contained: u32,
@@ -956,8 +986,37 @@ impl<'a> Walk<'a, '_> {
         self.chain
             .iter()
             .rev()
-            .find(|(_, _, d, _)| *d == depth)
-            .map(|(_, rect, _, _)| *rect)
+            .find(|(_, _, d, _, _)| *d == depth)
+            .map(|(_, rect, _, _, _)| *rect)
+    }
+
+    /// What a sticky box being walked into sticks to (CSS Position 3
+    /// section 3.4): along each axis, the scrollport of the nearest
+    /// scroll container scrolling along it, in the coordinates of the
+    /// group being walked into, or the viewport's where there is none or
+    /// it is outside the group.
+    fn scrollport(&self) -> Rect {
+        let depth = self.groups.len();
+        let window = self.window_in_group();
+        let along = |across: bool| {
+            self.chain
+                .iter()
+                .rev()
+                .find_map(|&(_, _, d, _, port)| {
+                    port.filter(|p| if across { p.across } else { p.down })
+                        .map(|p| (d, p.clip))
+                })
+                .filter(|&(d, _)| d == depth)
+                .map(|(_, rect)| rect)
+        };
+        let x = along(true).map_or((window.x, window.w), |r| (r.x, r.w));
+        let y = along(false).map_or((window.y, window.h), |r| (r.y, r.h));
+        Rect {
+            x: x.0,
+            y: y.0,
+            w: x.1,
+            h: y.1,
+        }
     }
 
     /// Whether what is listed meets `rect`, a rectangle in the
@@ -1007,11 +1066,12 @@ impl<'a> Walk<'a, '_> {
     /// Runs `body` over the fragments under `f`, whose offsets are from
     /// its place.
     fn inside(&mut self, f: &Fragment, body: impl FnOnce(&mut Self)) {
-        let (ox, oy, ts) = (self.ox, self.oy, self.ts);
+        let (ox, oy, ts, rtl) = (self.ox, self.oy, self.ts, self.rtl);
         (self.ox, self.oy) = self.place(f);
         self.ts = ts.wrapping_add(f.children.shift());
+        self.rtl = f.style.direction == Direction::Rtl;
         body(self);
-        (self.ox, self.oy, self.ts) = (ox, oy, ts);
+        (self.ox, self.oy, self.ts, self.rtl) = (ox, oy, ts, rtl);
     }
 
     /// A fragment's own step — a box's background and border, a text
@@ -1085,9 +1145,24 @@ impl<'a> Walk<'a, '_> {
             },
             Position::Fixed => {}
             Position::Sticky => {
-                let scrollport = self.clip().unwrap_or_else(|| self.window_in_group());
+                let scrollport = self.scrollport();
+                // A scroll container's child is held in its scrollable
+                // area, not its padding box.
+                let depth = self.groups.len();
+                let containing = self
+                    .chain
+                    .iter()
+                    .rev()
+                    .find_map(|&(_, _, d, _, port)| port.filter(|_| d == depth))
+                    .filter(|p| p.padding == containing)
+                    .map_or(containing, |p| p.area);
                 let rect = self.rect_of(f);
-                let (sx, sy) = sticky_shift(&f.style, rect, containing, scrollport);
+                let direction = if self.rtl {
+                    Direction::Rtl
+                } else {
+                    Direction::Ltr
+                };
+                let (sx, sy) = sticky_shift(&f.style, rect, (containing, direction), scrollport);
                 self.sticky.push((f.node, (sx, sy)));
                 self.dx += sx;
                 self.dy += sy;
@@ -1184,10 +1259,37 @@ impl<'a> Walk<'a, '_> {
                 rounded,
             });
         }
-        self.chain
-            .push((node, effective, self.groups.len(), rounded));
         let offset = node.map_or(0.0, |node| self.offsets.offset(node));
         let offset_x = node.map_or(0.0, |node| self.offsets.offset_x(node));
+        // The scrollable area, in the coordinates its content is walked
+        // in: scrolled but in a scroll layer, whose content is unscrolled.
+        let layered = node.is_some()
+            && f.style
+                .effects()
+                .will_change
+                .names(WillChange::SCROLL_POSITION);
+        let (by_x, by_y) = if layered {
+            (0.0, 0.0)
+        } else {
+            (offset_x, offset)
+        };
+        let port = node.map(|_| ScrollPort {
+            clip: clip_box,
+            across: f.style.overflow_x.scrolls(),
+            down: f.style.overflow_y.scrolls(),
+            padding: padding_box,
+            area: Rect {
+                x: padding_box.x - by_x,
+                y: padding_box.y - by_y,
+                w: f.children
+                    .iter()
+                    .map(|c| rect.x + c.x + c.w - padding_box.x)
+                    .fold(padding_box.w, f32::max),
+                h: padding_box.h.max(f.scroll_height),
+            },
+        });
+        self.chain
+            .push((node, effective, self.groups.len(), rounded, port));
         // The scrolled content of a container whose `will-change` names
         // `scroll-position` is a group that is a layer (M19), its matrix
         // the offset, its steps inside unscrolled: a scroll of it is a
@@ -1555,6 +1657,7 @@ impl<'a> Walk<'a, '_> {
                 ox: self.ox,
                 oy: self.oy,
                 ts: self.ts,
+                rtl: self.rtl,
                 dx: self.dx,
                 dy: self.dy,
                 contained: self.contained,
@@ -1634,6 +1737,7 @@ impl<'a> Walk<'a, '_> {
                     ox: self.ox,
                     oy: self.oy,
                     ts: self.ts,
+                    rtl: self.rtl,
                     dx: self.dx,
                     dy: self.dy,
                     contained: self.contained,
@@ -1813,7 +1917,7 @@ impl<'a> Walk<'a, '_> {
             self.steps.push(Step::PopClip);
         }
         let mark = self.steps.len();
-        for &(node, rect, _, rounded) in &self.chain[shared..] {
+        for &(node, rect, _, rounded, _) in &self.chain[shared..] {
             self.steps.push(Step::PushClip {
                 node,
                 rect,
@@ -1821,16 +1925,16 @@ impl<'a> Walk<'a, '_> {
             });
         }
         let opened = self.chain.len() - shared;
-        let (ox, oy, ts) = (self.ox, self.oy, self.ts);
+        let (ox, oy, ts, rtl) = (self.ox, self.oy, self.ts, self.rtl);
         let (dx, dy, contained) = (self.dx, self.dy, self.contained);
-        (self.ox, self.oy, self.ts) = (p.ox, p.oy, p.ts);
+        (self.ox, self.oy, self.ts, self.rtl) = (p.ox, p.oy, p.ts, p.rtl);
         (self.dx, self.dy, self.contained) = (p.dx, p.dy, p.contained);
         if stacking_context(p.f, p.item) {
             self.stacking(p.f, p.containing, &[], p.space);
         } else {
             self.unit(p.f, p.containing);
         }
-        (self.ox, self.oy, self.ts) = (ox, oy, ts);
+        (self.ox, self.oy, self.ts, self.rtl) = (ox, oy, ts, rtl);
         (self.dx, self.dy, self.contained) = (dx, dy, contained);
         if self.steps.len() == mark + opened {
             // Nothing of it shows: its clips are left out with it.
@@ -1840,7 +1944,7 @@ impl<'a> Walk<'a, '_> {
                 self.steps.push(Step::PopClip);
             }
         }
-        for &(node, rect, _, rounded) in &current[shared..] {
+        for &(node, rect, _, rounded, _) in &current[shared..] {
             self.steps.push(Step::PushClip {
                 node,
                 rect,
@@ -1870,52 +1974,71 @@ fn shows_scrollbar(f: &Fragment) -> bool {
 /// between its border box `rect` and the matching edge of
 /// `scrollport`, the visible part of its nearest scroll container (the
 /// viewport, without one), and never past `containing`, its containing
-/// block, so that the box scrolls away with it. A box pushed one way
-/// by its start inset is not pulled back by its end inset: the start
-/// edge wins. All rectangles are in viewport coordinates. The
-/// containing rectangle taken is the parent's padding box, and it is
-/// the border box, not the margin box, that is kept inside it: stated
-/// approximations.
+/// block, its margin box kept inside it, so that the box scrolls away
+/// with it. A box the end inset pulls back is then pushed by the start
+/// inset, which comes to the same as moving the end of a room smaller
+/// than the box out to fit it: the start edge wins, across the right
+/// one when the containing block's direction is right to left. All
+/// rectangles are in viewport coordinates. The containing rectangle
+/// taken is the parent's padding box: a stated approximation.
 pub fn sticky_shift(
     style: &ComputedStyle,
     rect: Rect,
-    containing: Rect,
+    (containing, direction): (Rect, Direction),
     scrollport: Rect,
 ) -> (f32, f32) {
     let inset = |side: usize, of: f32| match &style.inset[side] {
         LengthPercentageAuto::Auto => None,
         inset => Some(inset.resolve(of, 0.0)),
     };
-    // Along one axis: the box from `pos` for `size`, the scrollport
-    // from `port` for `port_size`, the containing block from `cb` for
-    // `cb_size`.
-    let along = |insets: (Option<f32>, Option<f32>),
+    let margin = |side: usize, of: f32| style.margin[side].resolve(of, 0.0);
+    // Along one axis: the box from `pos` for `size` with its margins
+    // `before` and `after` it, the scrollport from `port` for
+    // `port_size`, the containing block from `cb` for `cb_size`.
+    let along = |(start, end): (Option<f32>, Option<f32>),
                  (pos, size): (f32, f32),
+                 (before, after): (f32, f32),
                  (port, port_size): (f32, f32),
                  (cb, cb_size): (f32, f32)| {
-        if let Some(start) = insets.0 {
-            let push = (port + start - pos).max(0.0);
-            if push > 0.0 {
-                let room = (cb + cb_size - (pos + size)).max(0.0);
-                return push.min(room);
-            }
+        let view_start = start.map(|s| port + s);
+        let view_end = end.map(|e| port + port_size - e);
+        // How far either way the containing block lets it go.
+        let back = (cb + before - pos).min(0.0);
+        let on = (cb + cb_size - after - (pos + size)).max(0.0);
+        let mut shift = 0.0f32;
+        if let Some(b) = view_end
+            && pos + size > b
+        {
+            shift = (b - (pos + size)).max(back);
         }
-        if let Some(end) = insets.1 {
-            let pull = ((port + port_size - end) - (pos + size)).min(0.0);
-            let room = (cb - pos).min(0.0);
-            return pull.max(room);
+        if let Some(a) = view_start
+            && pos + shift < a
+        {
+            shift = (a - pos).min(on);
         }
-        0.0
+        shift
     };
-    let dx = along(
-        (inset(LEFT, scrollport.w), inset(RIGHT, scrollport.w)),
-        (rect.x, rect.w),
-        (scrollport.x, scrollport.w),
-        (containing.x, containing.w),
-    );
+    let dx = match direction {
+        Direction::Ltr => along(
+            (inset(LEFT, scrollport.w), inset(RIGHT, scrollport.w)),
+            (rect.x, rect.w),
+            (margin(LEFT, containing.w), margin(RIGHT, containing.w)),
+            (scrollport.x, scrollport.w),
+            (containing.x, containing.w),
+        ),
+        // Mirrored, so that the right edge is the start.
+        Direction::Rtl => -along(
+            (inset(RIGHT, scrollport.w), inset(LEFT, scrollport.w)),
+            (-(rect.x + rect.w), rect.w),
+            (margin(RIGHT, containing.w), margin(LEFT, containing.w)),
+            (-(scrollport.x + scrollport.w), scrollport.w),
+            (-(containing.x + containing.w), containing.w),
+        ),
+    };
     let dy = along(
         (inset(TOP, scrollport.h), inset(BOTTOM, scrollport.h)),
         (rect.y, rect.h),
+        (margin(TOP, containing.w), margin(BOTTOM, containing.w)),
         (scrollport.y, scrollport.h),
         (containing.y, containing.h),
     );
@@ -2474,7 +2597,7 @@ mod tests {
             sticky_shift(
                 &top,
                 rect(0.0, 100.0, 50.0, 20.0),
-                rect(0.0, -200.0, 800.0, 1000.0),
+                (rect(0.0, -200.0, 800.0, 1000.0), Direction::Ltr),
                 port
             ),
             (0.0, 0.0)
@@ -2485,7 +2608,7 @@ mod tests {
             sticky_shift(
                 &top,
                 rect(0.0, -50.0, 50.0, 20.0),
-                rect(0.0, -200.0, 800.0, 1000.0),
+                (rect(0.0, -200.0, 800.0, 1000.0), Direction::Ltr),
                 port
             ),
             (0.0, 60.0)
@@ -2496,7 +2619,7 @@ mod tests {
             sticky_shift(
                 &top,
                 rect(0.0, -50.0, 50.0, 20.0),
-                rect(0.0, -200.0, 800.0, 200.0),
+                (rect(0.0, -200.0, 800.0, 200.0), Direction::Ltr),
                 port
             ),
             (0.0, 30.0)
@@ -2508,7 +2631,7 @@ mod tests {
             sticky_shift(
                 &bottom,
                 rect(0.0, 590.0, 50.0, 20.0),
-                rect(0.0, 500.0, 800.0, 400.0),
+                (rect(0.0, 500.0, 800.0, 400.0), Direction::Ltr),
                 port
             ),
             (0.0, -10.0)
@@ -2517,7 +2640,7 @@ mod tests {
             sticky_shift(
                 &bottom,
                 rect(0.0, 590.0, 50.0, 20.0),
-                rect(0.0, 585.0, 800.0, 400.0),
+                (rect(0.0, 585.0, 800.0, 400.0), Direction::Ltr),
                 port
             ),
             (0.0, -5.0)
@@ -2528,10 +2651,54 @@ mod tests {
             sticky_shift(
                 &both,
                 rect(0.0, -50.0, 50.0, 20.0),
-                rect(0.0, -200.0, 800.0, 1000.0),
+                (rect(0.0, -200.0, 800.0, 1000.0), Direction::Ltr),
                 port
             ),
             (0.0, 60.0)
+        );
+        // Both given and the room between them less than the box: a box
+        // below is pulled up by the end inset and held at the start one
+        // (CSS Position 3 section 3.4).
+        let tall = sticky([px(20.0), AUTO, px(0.0), AUTO]);
+        let room = rect(0.0, 0.0, 800.0, 100.0);
+        assert_eq!(
+            sticky_shift(
+                &tall,
+                rect(0.0, 200.0, 50.0, 200.0),
+                (rect(0.0, 0.0, 800.0, 600.0), Direction::Ltr),
+                room
+            ),
+            (0.0, -180.0)
+        );
+        // Across in right-to-left text the right edge is the start: a
+        // box wider than the room is held by its right inset.
+        let rtl = ComputedStyle {
+            direction: style::computed::Direction::Rtl,
+            ..sticky([AUTO, px(0.0), AUTO, px(0.0)])
+        };
+        let narrow = rect(0.0, 0.0, 100.0, 600.0);
+        assert_eq!(
+            sticky_shift(
+                &rtl,
+                rect(-300.0, 0.0, 200.0, 20.0),
+                (rect(-500.0, 0.0, 600.0, 600.0), Direction::Rtl),
+                narrow
+            ),
+            (200.0, 0.0)
+        );
+        // A margin is kept inside the containing block too.
+        let held = ComputedStyle {
+            margin: [const { LengthPercentageAuto::Px(15.0) }; 4],
+            ..sticky([px(10.0), AUTO, AUTO, AUTO])
+        };
+        assert_eq!(
+            sticky_shift(
+                &held,
+                rect(0.0, -50.0, 50.0, 20.0),
+                (rect(0.0, -200.0, 800.0, 200.0), Direction::Ltr),
+                port
+            ),
+            (0.0, 15.0)
         );
         // Horizontal the same way; a percentage is of the scrollport.
         let left = sticky([AUTO, AUTO, AUTO, px(5.0)]);
@@ -2539,7 +2706,7 @@ mod tests {
             sticky_shift(
                 &left,
                 rect(-20.0, 0.0, 10.0, 10.0),
-                rect(-100.0, 0.0, 1000.0, 100.0),
+                (rect(-100.0, 0.0, 1000.0, 100.0), Direction::Ltr),
                 port
             ),
             (25.0, 0.0)
@@ -2549,7 +2716,7 @@ mod tests {
             sticky_shift(
                 &percent,
                 rect(0.0, 0.0, 50.0, 20.0),
-                rect(0.0, 0.0, 800.0, 1000.0),
+                (rect(0.0, 0.0, 800.0, 1000.0), Direction::Ltr),
                 port
             ),
             (0.0, 60.0)
@@ -2560,7 +2727,7 @@ mod tests {
             sticky_shift(
                 &none,
                 rect(-500.0, -500.0, 50.0, 20.0),
-                rect(-600.0, -600.0, 2000.0, 2000.0),
+                (rect(-600.0, -600.0, 2000.0, 2000.0), Direction::Ltr),
                 port
             ),
             (0.0, 0.0)
@@ -2614,6 +2781,50 @@ mod tests {
             rects(290.0),
             (280.0, 280.0),
             "held by the container's bottom"
+        );
+    }
+
+    #[test]
+    fn a_sticky_box_sticks_to_its_nearest_scroller_along_each_axis_it_scrolls() {
+        // An outer scroller 100px tall scrolled by 10, holding an inner
+        // box 200px tall around a sticky box with `top: 0`. Nodes: outer
+        // 1, inner 2, s 3. Inside an inner scroller (`overflow: hidden`)
+        // the box sticks to it, which has not scrolled: it stays at the
+        // inner box's top, 10 up in the outer's port. Inside one that
+        // scrolls across alone (`overflow-y: clip`) it sticks to the
+        // outer down, held at its top.
+        let top = |inner: &str| {
+            let layout = layout_of(
+                Element::new("div").attr("class", "o").push(
+                    Element::new("div")
+                        .attr("class", "i")
+                        .push(Element::new("div").attr("class", "s"))
+                        .push(Element::new("div").attr("class", "p")),
+                ),
+                &format!(
+                    "div {{ margin: 0 }} .o {{ height: 100px; overflow-y: scroll }} \
+                     .i {{ height: 200px; {inner} }} .s {{ position: sticky; top: 0; \
+                     height: 20px; background: red }} .p {{ height: 500px }}"
+                ),
+            );
+            let mut offsets = crate::Offsets::default();
+            offsets.y.insert(layout.element(1), 10.0);
+            let steps = paint_order(&layout.roots, Viewport::new(800.0, 600.0), &offsets);
+            steps
+                .iter()
+                .find_map(|st| match st {
+                    Step::Box { fragment, rect, .. } if layout.number(fragment.node) == 3 => {
+                        Some(rect.y)
+                    }
+                    _ => None,
+                })
+                .expect("the sticky box")
+        };
+        assert_eq!(top("overflow: hidden"), -10.0, "stuck to the inner");
+        assert_eq!(
+            top("overflow-x: scroll; overflow-y: clip"),
+            0.0,
+            "stuck to the outer down"
         );
     }
 

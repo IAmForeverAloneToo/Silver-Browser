@@ -3231,6 +3231,7 @@ fn baseline_shift(
         VerticalAlign::TextTop => above - parent.ascent,
         VerticalAlign::TextBottom => parent.descent - below,
         VerticalAlign::Middle => (above - below - parent.x_height) / 2.0,
+        VerticalAlign::BaselineMiddle => (above - below) / 2.0,
         VerticalAlign::Length(px) => -px,
         VerticalAlign::Percent(p) => -p / 100.0 * line_height(),
         VerticalAlign::Calc(calc) => -calc.resolve(line_height()),
@@ -4220,6 +4221,8 @@ mod tests {
         near(top_of(VerticalAlign::Sub), -10.0 + 16.0 / 5.0 + 1.0);
         near(top_of(VerticalAlign::Super), -10.0 - 16.0 / 3.0 - 1.0);
         near(top_of(VerticalAlign::Middle), -x_height / 2.0 - 5.0);
+        // The box's middle on the baseline.
+        near(top_of(VerticalAlign::BaselineMiddle), -5.0);
         near(top_of(VerticalAlign::TextTop), -strut.ascent);
         near(top_of(VerticalAlign::TextBottom), strut.descent - 10.0);
         let line = strut.line_height();

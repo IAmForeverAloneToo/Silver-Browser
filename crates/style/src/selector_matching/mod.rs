@@ -168,6 +168,12 @@ pub enum PseudoElement {
     Placeholder,
     /// `::selection`: recognised; there is no selection yet (M26).
     Selection,
+    /// `::target-text`, `::spelling-error`, `::grammar-error` and
+    /// `::search-text` (CSS Pseudo-Elements 4 section 3): highlight
+    /// pseudo-elements of what the engine does not mark (a URL's text
+    /// fragment, a spelling or grammar checker's findings, a find in the
+    /// page), valid and matching nothing.
+    TextHighlight,
     /// `::details-content` (CSS Pseudo-Elements 4 section 5.1, D74): a
     /// `details` element's content but its summary, in a box of its own.
     DetailsContent,

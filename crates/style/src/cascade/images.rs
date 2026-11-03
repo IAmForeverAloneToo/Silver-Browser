@@ -105,30 +105,79 @@ pub(super) fn parse_image_rendering(tokens: &[Token]) -> Option<ImageRendering> 
 /// Whether the attribute `name` of an element named `tag` is one of the
 /// hints [`img_hints`] reads, whose change restyles the element.
 pub(crate) fn is_img_hint(tag: &str, name: &str) -> bool {
-    tag == "img" && matches!(name, "width" | "height")
+    match name {
+        "width" | "height" => matches!(
+            tag,
+            "img" | "video" | "canvas" | "embed" | "object" | "marquee" | "input"
+        ),
+        "hspace" | "vspace" => matches!(
+            tag,
+            "img" | "embed" | "object" | "iframe" | "marquee" | "input"
+        ),
+        "type" => tag == "input",
+        _ => false,
+    }
 }
 
-/// The declarations an `img`'s `width` and `height` are presentational
-/// hints for (HTML section 15.4.3), as the text of a declaration block:
-/// each a length or a percentage by the rules for parsing dimension
-/// values, and both lengths together `aspect-ratio: auto w / h`. Empty
-/// for any other element, and for an `img` with neither.
+/// The declarations the attributes of embedded content and images are
+/// presentational hints for (HTML sections 15.4.3 and 15.5.12), as the
+/// text of a declaration block. `width` and `height` map to the
+/// dimension properties on an `img`, a `video`, an `embed`, an `object`,
+/// a `marquee` and an image button (`input type=image`), each a length
+/// or a percentage by the rules for parsing dimension values; on an
+/// `img`, a `video` and an image button both lengths together are also
+/// `aspect-ratio: auto w / h`, and on a `canvas`, whose attributes are
+/// its surface's size and no dimension, both read as non-negative
+/// integers are. `hspace` maps to the left and right margins and
+/// `vspace` to the top and bottom ones, by the same rules, on an `img`,
+/// an `embed`, an `object`, an `iframe`, a `marquee` and an image
+/// button. Empty for any other element.
 pub(super) fn img_hints(tag: &str, attr: impl Fn(&str) -> Option<String>) -> String {
-    if tag != "img" {
+    let image_button =
+        tag == "input" && attr("type").is_some_and(|t| t.trim().eq_ignore_ascii_case("image"));
+    if tag == "input" && !image_button {
         return String::new();
     }
     let dimension = |name: &str| attr(name).and_then(|value| dom::parse_dimension(&value));
-    let (width, height) = (dimension("width"), dimension("height"));
+    let css = |value: dom::Dimension| match value {
+        dom::Dimension::Length(px) => format!("{px}px"),
+        dom::Dimension::Percentage(p) => format!("{p}%"),
+    };
     let mut out = String::new();
-    for (property, value) in [("width", width), ("height", height)] {
-        match value {
-            Some(dom::Dimension::Length(px)) => out.push_str(&format!("{property}: {px}px;")),
-            Some(dom::Dimension::Percentage(p)) => out.push_str(&format!("{property}: {p}%;")),
-            None => {}
+    if matches!(
+        tag,
+        "img" | "video" | "embed" | "object" | "marquee" | "input"
+    ) {
+        for name in ["width", "height"] {
+            if let Some(value) = dimension(name) {
+                out.push_str(&format!("{name}: {};", css(value)));
+            }
         }
     }
-    if let (Some(dom::Dimension::Length(w)), Some(dom::Dimension::Length(h))) = (width, height) {
+    if matches!(tag, "img" | "video" | "input")
+        && let (Some(dom::Dimension::Length(w)), Some(dom::Dimension::Length(h))) =
+            (dimension("width"), dimension("height"))
+    {
         out.push_str(&format!("aspect-ratio: auto {w} / {h};"));
+    }
+    if tag == "canvas"
+        && let (Some(w), Some(h)) = (
+            attr("width").and_then(|v| dom::parse_non_negative_integer(&v)),
+            attr("height").and_then(|v| dom::parse_non_negative_integer(&v)),
+        )
+    {
+        out.push_str(&format!("aspect-ratio: auto {w} / {h};"));
+    }
+    if matches!(
+        tag,
+        "img" | "embed" | "object" | "iframe" | "marquee" | "input"
+    ) {
+        if let Some(h) = dimension("hspace").map(css) {
+            out.push_str(&format!("margin-left: {h}; margin-right: {h};"));
+        }
+        if let Some(v) = dimension("vspace").map(css) {
+            out.push_str(&format!("margin-top: {v}; margin-bottom: {v};"));
+        }
     }
     out
 }
@@ -284,7 +333,55 @@ mod tests {
         );
         assert_eq!(hints(&[("width", "x"), ("height", "20")]), "height: 20px;");
         assert_eq!(hints(&[]), "");
-        assert_eq!(img_hints("video", |_| Some("10".into())), "");
+        assert_eq!(hints(&[("width", "200.%")]), "width: 200%;");
+        assert_eq!(hints(&[("width", "+200")]), "");
+        assert_eq!(img_hints("div", |_| Some("10".into())), "");
         assert!(is_img_hint("img", "width") && !is_img_hint("img", "alt"));
+        assert!(is_img_hint("embed", "hspace") && !is_img_hint("canvas", "hspace"));
+    }
+
+    #[test]
+    fn embedded_contents_sizes_ratios_and_spaces_are_hints() {
+        // HTML sections 15.4.3 and 15.5.12, as the reference browser
+        // computes them.
+        let hints = |tag: &str, pairs: &[(&str, &str)]| {
+            img_hints(tag, |name| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).to_owned())
+            })
+        };
+        let size = [("width", "10"), ("height", "20")];
+        assert_eq!(
+            hints("video", &size),
+            "width: 10px;height: 20px;aspect-ratio: auto 10 / 20;"
+        );
+        assert_eq!(hints("embed", &size), "width: 10px;height: 20px;");
+        assert_eq!(hints("object", &size), "width: 10px;height: 20px;");
+        assert_eq!(hints("marquee", &size), "width: 10px;height: 20px;");
+        // A canvas keeps its size and takes the ratio, by integers.
+        assert_eq!(
+            hints("canvas", &[("width", "0.5"), ("height", "1.5")]),
+            "aspect-ratio: auto 0 / 1;"
+        );
+        assert_eq!(hints("canvas", &[("width", "10%")]), "");
+        // An input only as an image button.
+        assert_eq!(hints("input", &size), "");
+        assert_eq!(
+            hints(
+                "input",
+                &[("type", " IMAGE"), ("width", "10"), ("height", "20")]
+            ),
+            "width: 10px;height: 20px;aspect-ratio: auto 10 / 20;"
+        );
+        // Spaces are dimensions: a percentage kept, a sign refused, and a
+        // video takes none.
+        assert_eq!(
+            hints("iframe", &[("hspace", "5%"), ("vspace", "3")]),
+            "margin-left: 5%; margin-right: 5%;margin-top: 3px; margin-bottom: 3px;"
+        );
+        assert_eq!(hints("img", &[("hspace", "+3")]), "");
+        assert_eq!(hints("video", &[("hspace", "3")]), "");
     }
 }

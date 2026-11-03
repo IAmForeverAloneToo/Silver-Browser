@@ -2065,7 +2065,8 @@ fn an_svg_script_runs_as_htmls_does_parsed_made_or_by_its_href() {
 
 #[test]
 fn the_user_agents_rules_are_htmls_or_svgs_and_a_sheet_declares_its_namespaces() {
-    // M32: an SVG `a` takes no link colour and an SVG `title` is not
+    // M32: an SVG `a` takes no link colour, but the pointer as the
+    // reference browser's sheet gives it, and an SVG `title` is not
     // hidden by HTML's rules; SVG's own make a `text` a block and clip a
     // nested viewport; an author sheet's `@namespace` names its
     // prefixes, one after a style rule is not taken.
@@ -2083,7 +2084,7 @@ fn the_user_agents_rules_are_htmls_or_svgs_and_a_sheet_declares_its_namespaces()
     );
     assert_eq!(
         console,
-        ["rgb(1, 2, 3) auto inline block hidden rgb(1, 2, 3)"]
+        ["rgb(1, 2, 3) pointer inline block hidden rgb(1, 2, 3)"]
     );
 }
 

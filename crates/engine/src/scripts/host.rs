@@ -2737,6 +2737,20 @@ impl DocumentHost {
                 } else {
                     Vec::new()
                 };
+                // An inline box's width and height keep their computed
+                // values; a replaced element's, inline or not, are used.
+                let inline_box = used && self.has_inline_box(node);
+                let own_size = if used { self.own_box_size(node) } else { None };
+                // A `::before` or `::after` box's width and height are
+                // used values too, as an element's (CSSOM section 9).
+                let pseudo_size = match pseudo {
+                    Some(side @ (PseudoElement::Before | PseudoElement::After))
+                        if matches!(property.as_str(), "width" | "height") =>
+                    {
+                        self.pseudo_content_size(node, side)
+                    }
+                    _ => None,
+                };
                 let insets = if pseudo.is_none()
                     && matches!(
                         property.as_str(),
@@ -2844,9 +2858,11 @@ impl DocumentHost {
                     if min == Some(&style::computed::Size::Auto) && !keeps_auto {
                         return Some("0px".to_owned());
                     }
-                    match side.and_then(|i| insets[i]) {
-                        Some(value) => Some(style::serialize::px(value)),
-                        None => used_value(&style, name, &geometry),
+                    match (side.and_then(|i| insets[i]), pseudo_size, name) {
+                        (Some(value), ..) => Some(style::serialize::px(value)),
+                        (None, Some([width, _]), "width") => Some(style::serialize::px(width)),
+                        (None, Some([_, height]), "height") => Some(style::serialize::px(height)),
+                        _ => used_value(name, &geometry, own_size, inline_box, &style),
                     }
                 };
                 // URLs resolved against the document's base, which the
@@ -4916,6 +4932,104 @@ impl DocumentHost {
         (y, offsets)
     }
 
+    /// How far the sticky positioning of `node` or of a box around it
+    /// moves `node` at the page's and its scrollers' scroll positions
+    /// from where it is with none of them scrolled (CSS Position 3
+    /// section 3.4): what its offsets as laid out (`offsetTop` and
+    /// `offsetLeft`) count, the scrolls themselves not. `unscrolled` is
+    /// its bounds unscrolled. `None` when nothing around it is sticky.
+    fn sticky_shift(&mut self, node: NodeId, unscrolled: [f32; 4]) -> Option<(f32, f32)> {
+        let lineage: Vec<NodeId> = std::iter::once(node)
+            .chain(self.document.ancestors(node))
+            .collect();
+        // The styles the layout measured was made of: no flush.
+        let styles = &self.computed.as_ref()?.styles;
+        let position = |n: NodeId| styles.get(n).map(|s| s.position);
+        if !lineage
+            .iter()
+            .any(|&n| position(n) == Some(style::computed::Position::Sticky))
+        {
+            return None;
+        }
+        let fixed = lineage
+            .iter()
+            .any(|&n| position(n) == Some(style::computed::Position::Fixed));
+        let (scroll_y, offsets) = self.scroll_state();
+        // The scrolls that move it: its scrollers', and the page's but
+        // under a fixed box.
+        let (mut by_x, mut by_y) = if fixed {
+            (0.0, 0.0)
+        } else {
+            (offsets.viewport_x, scroll_y)
+        };
+        for &a in &lineage[1..] {
+            by_x += offsets.x.get(&a).copied().unwrap_or(0.0);
+            by_y += offsets.y.get(&a).copied().unwrap_or(0.0);
+        }
+        let scrolled = self.geometry(node, true);
+        if scrolled.len() < 2 {
+            return None;
+        }
+        Some((
+            scrolled[0] as f32 + by_x - unscrolled[0],
+            scrolled[1] as f32 + by_y - unscrolled[1],
+        ))
+    }
+
+    /// The used width and height of `node`'s `pseudo` box, of its content
+    /// box or its border box as its `box-sizing` says, when it makes one
+    /// that is not an inline box: its padding's percentages are of its
+    /// originating element's content width, its containing block's.
+    fn pseudo_content_size(&mut self, node: NodeId, pseudo: PseudoElement) -> Option<[f32; 2]> {
+        let basis = {
+            let g = self.geometry(node, false);
+            (g.len() >= 12).then(|| (g[2] - g[5] - g[7] - g[9] - g[11]).max(0.0) as f32)
+        }?;
+        let layout = self.layout_now()?;
+        let f = layout.iter().find(|f| {
+            f.node == node
+                && f.generated == Some(pseudo)
+                && matches!(f.kind, layout::FragmentKind::Box)
+        })?;
+        let style = &f.style;
+        if style.box_sizing == style::computed::BoxSizing::BorderBox {
+            return Some([f.w, f.h]);
+        }
+        let border = style.used_border_width();
+        let padding: [f32; 4] = std::array::from_fn(|i| style.padding[i].resolve(basis));
+        Some([
+            (f.w - border[1] - border[3] - padding[1] - padding[3]).max(0.0),
+            (f.h - border[0] - border[2] - padding[0] - padding[2]).max(0.0),
+        ])
+    }
+
+    /// The width and height of `node`'s first box of its own that is
+    /// not an inline box, as layout made it: untransformed, where
+    /// [`DocumentHost::geometry`]'s bounds are what the page shows.
+    fn own_box_size(&mut self, node: NodeId) -> Option<[f32; 2]> {
+        let layout = self.layout_now()?;
+        let f = layout.iter().find(|f| {
+            f.node == node
+                && f.generated.is_none()
+                && !matches!(
+                    f.kind,
+                    layout::FragmentKind::InlineBox | layout::FragmentKind::Text(_)
+                )
+        })?;
+        Some([f.w, f.h])
+    }
+
+    /// Whether `node` is laid out as an inline box (CSS2 section 10.8),
+    /// whose width and height are not its own: an inline element that
+    /// is not replaced.
+    fn has_inline_box(&mut self, node: NodeId) -> bool {
+        self.layout_now().is_some_and(|layout| {
+            layout
+                .iter()
+                .any(|f| f.node == node && matches!(f.kind, layout::FragmentKind::InlineBox))
+        })
+    }
+
     /// `node` measured in the layout (CSSOM View): where its border box
     /// is, in viewport coordinates when `scrolled`, else in the
     /// document's, unscrolled; then its border widths, its padding, its
@@ -4957,7 +5071,12 @@ impl DocumentHost {
         out.push(f64::from(scroll_height));
         out.extend([f64::from(m.origin.0), f64::from(m.origin.1)]);
         out.extend(m.rects.iter().flatten().map(|&v| f64::from(v)));
+        let bounds = m.bounds;
         self.work += layout.iter().count() as u64 / 16;
+        if !scrolled && let Some((dx, dy)) = self.sticky_shift(node, bounds) {
+            out[17] += f64::from(dx);
+            out[18] += f64::from(dy);
+        }
         out
     }
 
@@ -7841,14 +7960,24 @@ const USED_PROPERTIES: [&str; 10] = [
 /// `property`'s used value from an element's `geometry` (as
 /// [`DocumentHost::geometry`] gives it), for one of [`USED_PROPERTIES`];
 /// `None` for an element with no box, or a width or height of an inline
-/// box, which keep their computed values.
-fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) -> Option<String> {
+/// box, which keep their computed values: one of an inline display laid
+/// out as an inline box (`laid_inline`), not a replaced element's. Its
+/// width and height are of `own_size`, its box as layout made it, when
+/// it has one, else of the geometry's bounds.
+fn used_value(
+    property: &str,
+    geometry: &[f64],
+    own_size: Option<[f32; 2]>,
+    laid_inline: bool,
+    style: &style::ComputedStyle,
+) -> Option<String> {
     if geometry.len() < 16 {
         return None;
     }
     let g = |i: usize| geometry[i] as f32;
-    let inline = style.is_inline_box();
+    let inline = laid_inline && style.is_inline_box();
     let border_box = style.box_sizing == style::computed::BoxSizing::BorderBox;
+    let [width, height] = own_size.unwrap_or([g(2), g(3)]);
     let value = match property {
         "width" if !inline => {
             let edges = if border_box {
@@ -7856,7 +7985,7 @@ fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) ->
             } else {
                 g(5) + g(7) + g(9) + g(11)
             };
-            (g(2) - edges).max(0.0)
+            (width - edges).max(0.0)
         }
         "height" if !inline => {
             let edges = if border_box {
@@ -7864,7 +7993,7 @@ fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) ->
             } else {
                 g(4) + g(6) + g(8) + g(10)
             };
-            (g(3) - edges).max(0.0)
+            (height - edges).max(0.0)
         }
         "padding-top" => g(8),
         "padding-right" => g(9),

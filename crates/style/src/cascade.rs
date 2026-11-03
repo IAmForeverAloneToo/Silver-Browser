@@ -501,6 +501,7 @@ impl PseudoStyles {
             PseudoElement::DetailsContentAfter => self.details_content_after.as_ref(),
             PseudoElement::Placeholder
             | PseudoElement::Selection
+            | PseudoElement::TextHighlight
             | PseudoElement::FileSelectorButton
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
@@ -597,6 +598,7 @@ impl Target {
             PseudoElement::DetailsContentAfter => Some(Target::DetailsContentAfter),
             PseudoElement::Placeholder
             | PseudoElement::Selection
+            | PseudoElement::TextHighlight
             | PseudoElement::FileSelectorButton
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
@@ -715,8 +717,17 @@ impl Target {
                         | "word-spacing"
                         | "quotes"
                         | "direction"
+                        | "unicode-bidi"
                         | "content"
+                        | "line-height"
+                        | "hyphens"
+                        | "line-break"
+                        | "overflow-wrap"
+                        | "tab-size"
+                        | "word-break"
+                        | "cursor"
                 ) || motion::is_motion_property(name)
+                    || (name.starts_with("animation") && timelines::is_timeline_property(name))
             }
             // An element takes `content` too (M23.3): an image alone
             // replaces its content, which the box tree honours, and the
@@ -1644,6 +1655,20 @@ impl Recascader<'_> {
         let ua = ua();
         for (in_force, author) in [(&cascader.ua, false), (&cascader.author, true)] {
             if author {
+                let ua_important = ua_important_declarations(document, element);
+                if !ua_important.is_empty() {
+                    add_block(
+                        &mut blocks,
+                        &mut keys,
+                        &mut order,
+                        RuleOrigin::UserAgent,
+                        String::new(),
+                        Specificity::default(),
+                        Vec::new(),
+                        (TierBase::UserAgent, 0, 0),
+                        &ua_important,
+                    );
+                }
                 // The hints come before every author sheet's rules.
                 let hints = hint_declarations(document, element, cascader.context.frame_margins);
                 if !hints.is_empty() {
@@ -3734,8 +3759,8 @@ enum TierBase {
 /// cases at apply time. Lowest to highest precedence: UA normal, author
 /// normal (inline beats any selector-matched normal rule, regardless of
 /// specificity), author `!important` (inline again beats sheet rules),
-/// UA `!important` (unused by `assets/ua.css` today, but modeled for
-/// correctness — a UA sheet is allowed to use `!important`).
+/// UA `!important` (`assets/ua.css`'s hidden input and a form inside a
+/// table's parts, which no author rule shows).
 fn tier(base: TierBase, important: bool) -> u8 {
     match (base, important) {
         (TierBase::UserAgent, false) => 0,
@@ -3804,6 +3829,22 @@ fn declarations_for<'a>(
         &mut out,
         containers,
     );
+    let ua_important = order;
+    for decl in ua_important_declarations(document, element) {
+        out.element().push(Applied {
+            tier: tier(TierBase::UserAgent, decl.important),
+            layer: 0,
+            specificity: Specificity::default(),
+            proximity: UNSCOPED,
+            order,
+            rule: ua_important,
+            context: own,
+            tree: own_root,
+            decl: Cow::Owned(decl),
+            container: None,
+        });
+        order += 1;
+    }
     // HTML's presentational hints (M21.6): author declarations with no
     // specificity, before every author sheet's, so that any author rule
     // overrides them; together one rule.
@@ -4172,6 +4213,24 @@ fn hint_declarations(
     };
     declarations.extend(svg_hints);
     declarations
+}
+
+/// The user agent's `!important` declarations for `element` that no
+/// selector can say, as the reference browser's sheet says them for an
+/// HTML document alone: a `form` the HTML parser left a child of a
+/// table, a row group or a row is not shown (HTML section 15.3.8), and
+/// one in an XML document is.
+fn ua_important_declarations(document: &Document, element: NodeId) -> Vec<css::Declaration> {
+    let in_table = document.tag(element) == Some("form")
+        && document
+            .parent(element)
+            .and_then(|p| document.tag(p))
+            .is_some_and(|p| matches!(p, "table" | "thead" | "tbody" | "tfoot" | "tr"))
+        && !document.is_xml_node(element);
+    if !in_table {
+        return Vec::new();
+    }
+    css::parse_style_attribute("display: none !important").unwrap_or_default()
 }
 
 /// Matches `sheet`'s rules against `element` and its pseudo-elements,
@@ -5349,6 +5408,21 @@ fn compute_style(
     if matches!(target, Target::Before | Target::After | Target::Marker) {
         style.display = style.display.without_math();
     }
+    // A marker (Lists 3 section 3.1, as the reference browser computes
+    // it): an outside one an inline block, an inside one inline, neither
+    // indented and each aligned at its start, whatever its list item's
+    // text says.
+    if target == Target::Marker {
+        style.display = match parent.lists().list_style_position {
+            crate::computed::ListStylePosition::Outside => Display::InlineBlock,
+            crate::computed::ListStylePosition::Inside => Display::Inline,
+        };
+        style.text_align = crate::computed::TextAlign::Start;
+        style.legacy_align = crate::computed::LegacyAlign::None;
+        if style.text().text_indent != crate::computed::TextIndent::default() {
+            style.text_mut().text_indent = crate::computed::TextIndent::default();
+        }
+    }
     // A spacing of a percentage is of the element's own font size, which
     // an inherited one is resolved against again.
     if let Some(text) = style.text.as_deref() {
@@ -6188,6 +6262,9 @@ fn apply_declaration(
         "text-group-align" => set_text(style, text::parse_text_group_align(value), |t, v| {
             t.text_group_align = v
         }),
+        "unicode-bidi" => set_text(style, text::parse_unicode_bidi(value), |t, v| {
+            t.unicode_bidi = v
+        }),
         "overflow-wrap" => set(&mut style.overflow_wrap, parse_overflow_wrap(value)),
         "word-break" => set(&mut style.word_break, parse_word_break(value)),
         "visibility" => set(&mut style.visibility, parse_visibility(value)),
@@ -6311,6 +6388,11 @@ fn apply_declaration(
             None => false,
         },
         "resize" => set_effects(style, parse_resize(value), |e, v| e.resize = v),
+        "appearance" => set_effects(
+            style,
+            single_ident(value).and_then(crate::computed::Appearance::from_keyword),
+            |e, v| e.appearance = v,
+        ),
         // The container properties (D72).
         "container-type" => set(
             &mut style.container_type,
@@ -7618,6 +7700,7 @@ fn apply_css_wide(
         }),
         "text-fit" => copy_text(style, src, |t, s| t.text_fit = s.text_fit),
         "text-group-align" => copy_text(style, src, |t, s| t.text_group_align = s.text_group_align),
+        "unicode-bidi" => copy_text(style, src, |t, s| t.unicode_bidi = s.unicode_bidi),
         "overflow-wrap" => style.overflow_wrap = src.overflow_wrap,
         "word-break" => style.word_break = src.word_break,
         "visibility" => style.visibility = src.visibility,
@@ -7697,6 +7780,7 @@ fn apply_css_wide(
             style.flow_relative.clear = src.flow_relative.clear;
         }
         "resize" => copy_effects(style, src, |e, s| e.resize = s.resize),
+        "appearance" => copy_effects(style, src, |e, s| e.appearance = s.appearance),
         "container-type" => style.container_type = src.container_type,
         "container-name" => style.container_names = src.container_names.clone(),
         "container" => {
@@ -8862,6 +8946,7 @@ fn parse_vertical_align(tokens: &[Token], bases: &LengthBases<'_>) -> Option<Ver
             "middle" => Some(VerticalAlign::Middle),
             "bottom" => Some(VerticalAlign::Bottom),
             "text-bottom" => Some(VerticalAlign::TextBottom),
+            "-webkit-baseline-middle" => Some(VerticalAlign::BaselineMiddle),
             _ => None,
         };
     }
@@ -9422,6 +9507,7 @@ pub(crate) fn canonical_name(name: &str) -> &str {
         "-webkit-justify-content" => "justify-content",
         "-webkit-order" => "order",
         "-webkit-box-sizing" => "box-sizing",
+        "-webkit-appearance" => "appearance",
         "word-wrap" => "overflow-wrap",
         "-webkit-transform" => "transform",
         "-webkit-transform-origin" => "transform-origin",
@@ -11900,11 +11986,13 @@ mod tests {
             (Overflow::Hidden, Overflow::Auto)
         );
         assert_eq!(p.overflow(), Overflow::Auto);
+        // A clip beside a scrolling axis stays: a single-axis scroll
+        // container, as the reference browser has it.
         let sheets = [sheet("p { overflow-y: scroll; overflow-x: clip }")];
         let p = style_of("<div><p>x</p></div>", &sheets, "p");
         assert_eq!(
             (p.overflow_x, p.overflow_y),
-            (Overflow::Hidden, Overflow::Scroll)
+            (Overflow::Clip, Overflow::Scroll)
         );
         let sheets = [sheet("p { overflow-y: clip }")];
         let p = style_of("<div><p>x</p></div>", &sheets, "p");
@@ -13505,6 +13593,16 @@ mod tests {
                 (RuleOrigin::Author(1), "p"),
                 (RuleOrigin::Author(0), "p"),
                 (RuleOrigin::Author(0), "p.x"),
+                // The UA sheet's isolates (HTML section 15.3.5).
+                (
+                    RuleOrigin::UserAgent,
+                    "address, blockquote, center, div, figure, figcaption, footer, form, \
+                     header, hr, legend, listing, main, p, plaintext, pre, summary, xmp, \
+                     article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav, section, search, \
+                     table, caption, colgroup, col, thead, tbody, tfoot, tr, td, th, dir, dd, \
+                     dl, dt, menu, ol, ul, li, bdi, output, [dir=ltr i], [dir=rtl i], \
+                     [dir=auto i]"
+                ),
                 (RuleOrigin::UserAgent, "p"),
             ],
             "{rules:#?}"
@@ -17633,7 +17731,8 @@ mod tests {
     fn a_list_items_marker_takes_the_properties_that_apply_to_it() {
         let sheets = [sheet(
             "li::marker { color: #f00; font-size: 20px; margin-left: 9px; content: 'x';
-                 text-transform: uppercase; display: block; --m: 1 }
+                 text-transform: uppercase; display: block; --m: 1; line-height: 30px;
+                 word-break: break-all }
              p::marker { color: #f00 }",
         )];
         let marker = pseudo_of("<ol><li>a</li></ol>", &sheets, "li", PseudoElement::Marker)
@@ -17643,9 +17742,15 @@ mod tests {
         assert_eq!(marker.content, items(&[text("x")]));
         assert_eq!(marker.text_transform, TextTransform::Uppercase);
         assert!(marker.custom_property("--m").is_some());
-        // Not the box's properties.
+        assert_eq!(
+            marker.font().line_height,
+            crate::computed::LineHeight::Px(30.0)
+        );
+        assert_eq!(marker.word_break, crate::computed::WordBreak::BreakAll);
+        // Not the box's properties; an outside marker is an inline block
+        // whatever its rule says.
         assert_eq!(marker.margin[LEFT], LengthPercentageAuto::Px(0.0));
-        assert_eq!(marker.display, Display::Inline);
+        assert_eq!(marker.display, Display::InlineBlock);
         // Unstyled, it inherits the list item's, with the user agent's
         // rule; its `content` stays `normal`.
         let marker = pseudo_of(
@@ -17659,6 +17764,26 @@ mod tests {
         assert_eq!(marker.content, Content::Normal);
         assert_eq!(marker.text_transform, TextTransform::None);
         assert_eq!(marker.white_space, WhiteSpace::PRE);
+        // An isolate of tabular figures, not indented nor aligned as its
+        // list item's text; inline when inside.
+        let marker = pseudo_of(
+            "<ol style='text-indent: 5px; text-align: center'>\
+             <li style='list-style-position: inside'>a</li></ol>",
+            &[],
+            "li",
+            PseudoElement::Marker,
+        )
+        .expect("a list item has a marker");
+        assert_eq!(
+            marker.text().unicode_bidi,
+            crate::computed::UnicodeBidi::Isolate
+        );
+        assert_eq!(marker.display, Display::Inline);
+        assert_eq!(marker.text_align, TextAlign::Start);
+        assert_eq!(
+            marker.text().text_indent,
+            crate::computed::TextIndent::default()
+        );
         // What is no list item has none.
         assert_eq!(
             pseudo_of("<p>a</p>", &sheets, "p", PseudoElement::Marker),
@@ -17719,9 +17844,91 @@ mod tests {
         let s = img("<img width=300 height=150>", "* { height: auto }");
         assert_eq!(s.height, Size::Auto);
         assert!(matches!(s.image().aspect_ratio, AspectRatio::AutoOr(_)));
-        // On another element they are no hints.
-        let s = style_of("<video width=300></video>", &[], "video");
+        // An image button's are hints, a text field's none.
+        let s = style_of("<input type=image width=30 hspace=2%>", &[], "input");
+        assert_eq!(s.width, Size::Px(30.0));
+        assert_eq!(s.margin[3], LengthPercentageAuto::Percent(2.0));
+        let s = style_of("<input width=30>", &[], "input");
         assert_eq!(s.width, Size::Auto);
+        // A video's are hints too (HTML section 15.4.3), a div's none.
+        let s = style_of("<video width=300></video>", &[], "video");
+        assert_eq!(s.width, Size::Px(300.0));
+        let s = style_of("<div width=300></div>", &[], "div");
+        assert_eq!(s.width, Size::Auto);
+    }
+
+    #[test]
+    fn a_form_in_a_tables_parts_is_hidden_in_an_html_document_alone() {
+        // HTML section 15.3.8: the user agent's `!important`, over an
+        // author's.
+        let css = "form { display: block !important }";
+        for parent in ["table", "thead", "tbody", "tfoot", "tr"] {
+            let mut document = Document::from_node(&html::parse_document("").expect("never fails"));
+            let body = document
+                .subtree(document.root())
+                .find(|&n| document.tag(n) == Some("body"))
+                .expect("a body");
+            let table = document.create_element(parent).expect("a valid name");
+            let form = document.create_element("form").expect("a valid name");
+            document.append_child(body, table).expect("appended");
+            document.append_child(table, form).expect("appended");
+            let styles = cascade_document(&document, &[sheet(css)], &CascadeContext::default());
+            assert_eq!(
+                styles.get(form).map(|s| s.display),
+                Some(Display::None),
+                "{parent}"
+            );
+        }
+        let s = style_of("<div><form></form></div>", &[], "form");
+        assert_eq!(s.display, Display::Block);
+        let xml = html::xml::parse_xml_text(
+            "<table xmlns='http://www.w3.org/1999/xhtml'><form id='f'/></table>",
+        )
+        .expect("well-formed");
+        let styles = cascade_document(&xml, &[], &CascadeContext::default());
+        let form = xml
+            .subtree(xml.root())
+            .find(|&n| xml.tag(n) == Some("form"))
+            .expect("a form");
+        assert_eq!(styles.get(form).map(|s| s.display), Some(Display::Block));
+    }
+
+    #[test]
+    fn unicode_bidi_and_appearance_compute_and_do_not_inherit() {
+        use crate::computed::{Appearance, UnicodeBidi};
+        // The UA sheet's isolates and overrides (HTML section 15.3.5).
+        let s = style_of("<p><span>x</span></p>", &[], "p");
+        assert_eq!(s.text().unicode_bidi, UnicodeBidi::Isolate);
+        let s = style_of("<p><span>x</span></p>", &[], "span");
+        assert_eq!(s.text().unicode_bidi, UnicodeBidi::Normal);
+        let s = style_of("<bdo dir=rtl>x</bdo>", &[], "bdo");
+        assert_eq!(s.text().unicode_bidi, UnicodeBidi::IsolateOverride);
+        let css = "span { unicode-bidi: Bidi-Override } i { unicode-bidi: inherit }";
+        let s = style_of("<span><i>x</i></span>", &[sheet(css)], "i");
+        assert_eq!(s.text().unicode_bidi, UnicodeBidi::BidiOverride);
+        let s = style_of("<span><b>x</b></span>", &[sheet(css)], "b");
+        assert_eq!(s.text().unicode_bidi, UnicodeBidi::Normal);
+        // Taking a first line's inherited properties keeps it, as it
+        // keeps every property not inherited.
+        let p = style_of("<p>x</p>", &[], "p");
+        let line = style_of("<p style='text-indent: 3px'>x</p>", &[], "p");
+        let on_line = p.with_inherited_from(&line);
+        assert_eq!(on_line.text().unicode_bidi, UnicodeBidi::Isolate);
+        assert_eq!(
+            on_line.text().text_indent.length,
+            crate::computed::LengthPercentage::Px(3.0)
+        );
+        // A control's native look, and its `-webkit-` alias.
+        let s = style_of("<input>", &[], "input");
+        assert_eq!(s.effects().appearance, Appearance::Auto);
+        let s = style_of("<input type=hidden>", &[], "input");
+        assert_eq!(s.effects().appearance, Appearance::None);
+        let css = "button { -webkit-appearance: menulist-button }";
+        let s = style_of("<button></button>", &[sheet(css)], "button");
+        assert_eq!(s.effects().appearance, Appearance::MenulistButton);
+        let css = "button { appearance: push-button }";
+        let s = style_of("<button></button>", &[sheet(css)], "button");
+        assert_eq!(s.effects().appearance, Appearance::Auto);
     }
 
     #[test]

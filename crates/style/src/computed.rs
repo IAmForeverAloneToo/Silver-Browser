@@ -27,7 +27,7 @@ pub use text::{
     AutospaceMode, FontPalette, HangingEnd, HangingPunctuation, Hyphens, LineBreak, MathStyle,
     PaletteMix, RubyAlign, RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind,
     TextFitMethod, TextGroupAlign, TextIndent, TextProps, TextSpacingTrim, TextWrapStyle,
-    TransformExtra, WordSpaceTransform,
+    TransformExtra, UnicodeBidi, WordSpaceTransform,
 };
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
@@ -389,6 +389,10 @@ pub enum VerticalAlign {
     Middle,
     Bottom,
     TextBottom,
+    /// `-webkit-baseline-middle`, the reference browser's: the box's
+    /// middle on the parent's baseline, what an image's `align=middle`
+    /// maps to (HTML section 15.4.3).
+    BaselineMiddle,
     /// A length, in CSS pixels: the baseline raised by it (negative,
     /// lowered).
     Length(f32),
@@ -1084,6 +1088,75 @@ pub enum Resize {
     Vertical,
     Block,
     Inline,
+}
+
+/// `appearance` (CSS UI 4 section 7.1): `none`, `auto`, `base-select`,
+/// and the compatibility keywords the reference browser takes, each
+/// kept as it is written; `-webkit-appearance` is its alias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Appearance {
+    #[default]
+    None,
+    Auto,
+    BaseSelect,
+    MenulistButton,
+    Textfield,
+    Searchfield,
+    Textarea,
+    Checkbox,
+    Radio,
+    Menulist,
+    Listbox,
+    Meter,
+    ProgressBar,
+    Button,
+}
+
+impl Appearance {
+    /// Every value, in the order of [`Appearance::keyword`]'s names.
+    const ALL: [Appearance; 14] = [
+        Appearance::None,
+        Appearance::Auto,
+        Appearance::BaseSelect,
+        Appearance::MenulistButton,
+        Appearance::Textfield,
+        Appearance::Searchfield,
+        Appearance::Textarea,
+        Appearance::Checkbox,
+        Appearance::Radio,
+        Appearance::Menulist,
+        Appearance::Listbox,
+        Appearance::Meter,
+        Appearance::ProgressBar,
+        Appearance::Button,
+    ];
+
+    /// The value's keyword.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Appearance::None => "none",
+            Appearance::Auto => "auto",
+            Appearance::BaseSelect => "base-select",
+            Appearance::MenulistButton => "menulist-button",
+            Appearance::Textfield => "textfield",
+            Appearance::Searchfield => "searchfield",
+            Appearance::Textarea => "textarea",
+            Appearance::Checkbox => "checkbox",
+            Appearance::Radio => "radio",
+            Appearance::Menulist => "menulist",
+            Appearance::Listbox => "listbox",
+            Appearance::Meter => "meter",
+            Appearance::ProgressBar => "progress-bar",
+            Appearance::Button => "button",
+        }
+    }
+
+    /// The value `keyword` names, ASCII case-insensitively.
+    pub fn from_keyword(keyword: &str) -> Option<Appearance> {
+        Appearance::ALL
+            .into_iter()
+            .find(|a| a.keyword().eq_ignore_ascii_case(keyword))
+    }
 }
 
 /// A `<length-percentage>` value, or `auto` (css-values-4 §6.3): the
@@ -2019,6 +2092,8 @@ pub struct Effects {
     /// `resize` (CSS UI 4 section 5.1, D74), its flow-relative values
     /// kept, rare enough to be kept here. No box is drawn with a resizer.
     pub resize: Resize,
+    /// `appearance` (CSS UI 4 section 7.1), kept here as `resize` is.
+    pub appearance: Appearance,
     /// `transform-origin`.
     pub transform_origin: TransformOrigin,
     /// `transform-box`.
@@ -2151,6 +2226,7 @@ impl Default for Effects {
         Effects {
             transform: Vec::new(),
             resize: Resize::None,
+            appearance: Appearance::None,
             transform_origin: TransformOrigin::CENTER,
             transform_box: TransformBox::ViewBox,
             translate: None,
@@ -4276,19 +4352,19 @@ impl ComputedStyle {
     }
 
     /// The axes' computed values (css-overflow-3 section 3.1): beside an
-    /// axis that is neither `visible` nor `clip`, `visible` is `auto` and
-    /// `clip` is `hidden`.
+    /// axis that is neither `visible` nor `clip`, `visible` is `auto`;
+    /// `clip` stays, the box a scroll container along the other axis
+    /// alone, as the reference browser has it (its single-axis scroll
+    /// containers).
     pub(crate) fn fix_overflow(&mut self) {
         let plain = |o: Overflow| matches!(o, Overflow::Visible | Overflow::Clip);
         if plain(self.overflow_x) == plain(self.overflow_y) {
             return;
         }
         for axis in [&mut self.overflow_x, &mut self.overflow_y] {
-            *axis = match *axis {
-                Overflow::Visible => Overflow::Auto,
-                Overflow::Clip => Overflow::Hidden,
-                other => other,
-            };
+            if *axis == Overflow::Visible {
+                *axis = Overflow::Auto;
+            }
         }
     }
 
@@ -4809,6 +4885,7 @@ impl ComputedStyle {
     /// [`ComputedStyle::with_inherited_from`], taking this style rather
     /// than copying it.
     fn inheriting(self, from: &ComputedStyle) -> Self {
+        let text = inherited_text_onto(from, self.text.as_ref());
         ComputedStyle {
             color: from.color,
             font_size_px: from.font_size_px,
@@ -4840,7 +4917,7 @@ impl ComputedStyle {
             decoration: inherited_decoration(from),
             image: inherited_image(from),
             svg: inherited_svg(from),
-            text: inherited_text(from),
+            text,
             custom: from.custom.clone(),
             inert: from.inert,
             interactivity_inert: from.interactivity_inert,
@@ -4899,11 +4976,30 @@ fn inherited_decoration(from: &ComputedStyle) -> Option<Arc<Decoration>> {
 /// [`inherited_fragmentation`] gives the fragmentation properties.
 fn inherited_text(from: &ComputedStyle) -> Option<Arc<TextProps>> {
     let own = from.text.as_ref()?;
-    if own.text_group_align == TextGroupAlign::None {
+    if own.inherits_whole() {
         return Some(Arc::clone(own));
     }
     let inherited = own.inherited();
     (inherited != TextProps::default()).then(|| Arc::new(inherited))
+}
+
+/// The text properties of a style whose own are `own` and whose
+/// inherited ones are taken from `from`: [`inherited_text`] with `own`'s
+/// that are not inherited kept.
+fn inherited_text_onto(
+    from: &ComputedStyle,
+    own: Option<&Arc<TextProps>>,
+) -> Option<Arc<TextProps>> {
+    let inherited = inherited_text(from);
+    let Some(own) = own.filter(|own| !own.inherits_whole() || own.math != Default::default())
+    else {
+        return inherited;
+    };
+    let mut text = inherited.map(|t| (*t).clone()).unwrap_or_default();
+    text.text_group_align = own.text_group_align;
+    text.unicode_bidi = own.unicode_bidi;
+    text.math = own.math;
+    Some(Arc::new(text))
 }
 
 /// The image properties a child of `from` inherits, as

@@ -407,7 +407,10 @@ impl<'a> Matcher<'a> {
                 | PseudoElement::DetailsContentAfter
         );
         ending.element == pseudo
-            && pseudo != PseudoElement::WebkitPrefixed
+            && !matches!(
+                pseudo,
+                PseudoElement::WebkitPrefixed | PseudoElement::TextHighlight
+            )
             && (!details || self.document.tag(element) == Some("details"))
             && ending
                 .states

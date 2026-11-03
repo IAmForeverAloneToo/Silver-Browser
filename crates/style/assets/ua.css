@@ -54,12 +54,12 @@ body {
   margin: 8px;
 }
 
-h1 { display: block; font-size: 2em; margin: 0.67em 0; }
-h2 { display: block; font-size: 1.5em; margin: 0.83em 0; }
-h3 { display: block; font-size: 1.17em; margin: 1em 0; }
-h4 { display: block; margin: 1.33em 0; }
-h5 { display: block; font-size: 0.83em; margin: 1.67em 0; }
-h6 { display: block; font-size: 0.67em; margin: 2.33em 0; }
+h1 { display: block; font-size: 2em; margin: 0.67em 0; font-weight: bold; }
+h2 { display: block; font-size: 1.5em; margin: 0.83em 0; font-weight: bold; }
+h3 { display: block; font-size: 1.17em; margin: 1em 0; font-weight: bold; }
+h4 { display: block; margin: 1.33em 0; font-weight: bold; }
+h5 { display: block; font-size: 0.83em; margin: 1.67em 0; font-weight: bold; }
+h6 { display: block; font-size: 0.67em; margin: 2.33em 0; font-weight: bold; }
 
 p { display: block; margin: 1em 0; }
 
@@ -82,9 +82,14 @@ dir, menu, ul { list-style-type: disc; }
 :is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: circle; }
 :is(dir, menu, ol, ul) :is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: square; }
 :is(dir, dl, menu, ol, ul) :is(dir, dl, menu, ol, ul) { margin-top: 0; margin-bottom: 0; }
-::marker { white-space: pre; text-transform: none; }
+::marker {
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  text-transform: none;
+}
 
-blockquote { display: block; margin: 1em 40px; }
+blockquote, figure { display: block; margin: 1em 40px; }
 
 /* `font-family` here parses and is stored (M5.1), but `text::FontStore`
  * doesn't act on it yet (M5's own note: real font *selection* per
@@ -93,7 +98,7 @@ blockquote { display: block; margin: 1em 40px; }
  * pre` (M8.4) is real today: a <pre> block's line breaks are preserved. */
 pre { display: block; margin: 1em 0; font-family: monospace; white-space: pre; }
 
-b, strong { font-weight: bold; }
+b, strong { font-weight: bolder; }
 i, em { font-style: italic; }
 /* Marked text in the system colours for it (HTML 15.3.4). */
 mark { background-color: Mark; color: MarkText; }
@@ -103,6 +108,21 @@ mark { background-color: Mark; color: MarkText; }
  * text. */
 [dir]:dir(ltr), bdi:dir(ltr), input[type=tel i]:dir(ltr) { direction: ltr; }
 [dir]:dir(rtl), bdi:dir(rtl) { direction: rtl; }
+/* The block-level elements, `bdi` and what has a `dir` are isolates,
+ * `bdo` an override, and an `auto` field of free text a paragraph of
+ * its own direction (`unicode-bidi`), as the standard's sheet has them. */
+address, blockquote, center, div, figure, figcaption, footer, form, header, hr,
+legend, listing, main, p, plaintext, pre, summary, xmp, article, aside, h1, h2,
+h3, h4, h5, h6, hgroup, nav, section, search, table, caption, colgroup, col,
+thead, tbody, tfoot, tr, td, th, dir, dd, dl, dt, menu, ol, ul, li, bdi, output,
+[dir=ltr i], [dir=rtl i], [dir=auto i] {
+  unicode-bidi: isolate;
+}
+bdo, bdo[dir] { unicode-bidi: isolate-override; }
+input[dir=auto i]:is([type=search i], [type=tel i], [type=url i], [type=email i]),
+textarea[dir=auto i], pre[dir=auto i] {
+  unicode-bidi: plaintext;
+}
 
 /* Quotation marks (HTML §15.3.4, M16), by `quotes`, whose `auto`
  * gives the same marks in every language until M42. */
@@ -172,8 +192,18 @@ fieldset {
 }
 legend { padding-inline: 2px; }
 
-/* `hidden` (HTML section 15.3.1), and `<center>` and the table's
- * defaults the presentational hints build on (D60). */
+/* A marquee (HTML section 15.5.12) is an inline block of one line,
+ * clipped, as the reference browser's sheet has it. */
+marquee {
+  display: inline-block;
+  overflow: hidden;
+  text-align: initial;
+  white-space: nowrap;
+}
+
+/* `hidden` (HTML section 15.3.1), and `<center>` (D60). A table's
+ * border colour is its `currentcolor`, as the reference browser's
+ * sheet now has it, the presentational hints' borders taking it. */
 [hidden]:not([hidden=until-found i]) { display: none; }
 
 /* Dialogs and popovers (HTML sections 15.3.4 and 15.3.17, gap batch
@@ -236,11 +266,18 @@ center { text-align: -webkit-center; }
 /* A slot makes no box (HTML section 15.3.1, gap batch H): its
  * assigned nodes, or its fallback content, are laid out in its place. */
 slot { display: contents; }
-table { border-color: gray; }
 
 dl { margin: 1em 0; }
 dd { margin-left: 40px; }
-hr { margin: 8px 0; border-width: 1px; border-style: solid; }
+/* The rule (HTML section 15.3.10), as the reference browser's sheet has
+ * it: a grey inset line, centred where it is narrower than its block. */
+hr {
+  color: gray;
+  border-style: inset;
+  border-width: 1px;
+  margin: 0.5em auto;
+  overflow: hidden;
+}
 
 /* Tables (HTML §15.3.8, M12): CSS2 §17.2's display values for the
  * table elements, and the standard's own defaults. The `vertical-align`
@@ -265,6 +302,7 @@ table {
   box-sizing: border-box;
   border-spacing: 2px;
   border-collapse: separate;
+  text-indent: initial;
 }
 td, th { padding: 1px; }
 th { font-weight: bold; text-align: center; }
@@ -296,7 +334,10 @@ input, button, select, textarea {
   color: FieldText;
   letter-spacing: normal;
   word-spacing: normal;
+  line-height: normal;
   text-transform: none;
+  text-indent: 0;
+  text-shadow: none;
   text-align: start;
   margin: 0;
 }
@@ -391,7 +432,13 @@ input[type=checkbox i]:disabled, input[type=radio i]:disabled {
   border: none;
   background-color: transparent;
 }
-input[type=hidden i] { display: none; }
+input[type=hidden i] { display: none !important; }
+/* The controls' native look (CSS UI 4 section 7.1), as the reference
+ * browser's sheet gives it. */
+input, button, select, textarea, meter, progress { appearance: auto; }
+input[type=hidden i], input[type=file i], input[type=image i] { appearance: none; }
+input[type=search i] { box-sizing: border-box; }
+input[type=range i] { overflow: visible; }
 /* Options and their groups are blocks, in a list box and standing
  * alone as in the reference browser (M26.11); a drop-down lays out none
  * of its children, and a datalist shows none. */
@@ -446,6 +493,10 @@ svg|svg:root {
 
 svg|text, svg|foreignObject {
   display: block;
+}
+
+svg|a:any-link {
+  cursor: pointer;
 }
 
 svg|text {

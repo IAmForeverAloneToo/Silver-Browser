@@ -672,13 +672,18 @@ fn the_rules_that_matched_and_the_computed_values_are_given() {
                 .unwrap_or_default()
         })
         .collect();
-    assert_eq!(selectors, [".x", "p", "p"]);
+    // The page's two, then the user agent's isolates (HTML section
+    // 15.3.5) and its paragraphs.
+    assert_eq!(selectors.len(), 4, "{selectors:?}");
+    assert_eq!(selectors[..2], [".x", "p"]);
+    assert!(selectors[2].contains(", p, "), "{selectors:?}");
+    assert_eq!(selectors[3], "p");
     assert_eq!(
         rules[0].get("source").and_then(Json::as_str),
         Some("<style>")
     );
     assert_eq!(
-        rules[2].get("source").and_then(Json::as_str),
+        rules[3].get("source").and_then(Json::as_str),
         Some("user agent stylesheet")
     );
     let overridden = |rule: &Json, name: &str| {

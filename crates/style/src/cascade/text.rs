@@ -14,7 +14,7 @@ use crate::computed::{
     AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LengthPercentage, LineBreak, MathStyle,
     RubyAlign, RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind, TextFitMethod,
     TextGroupAlign, TextIndent, TextSpacingTrim, TextTransform, TextWrapStyle, TransformExtra,
-    WordSpaceTransform,
+    UnicodeBidi, WordSpaceTransform,
 };
 
 /// The keyword `tokens` are, lowercased.
@@ -193,6 +193,19 @@ pub(super) fn parse_math_style(tokens: &[Token]) -> Option<MathStyle> {
     Some(match keyword(tokens)?.as_str() {
         "normal" => MathStyle::Normal,
         "compact" => MathStyle::Compact,
+        _ => return None,
+    })
+}
+
+/// `unicode-bidi` (CSS Writing Modes 4 section 2.2).
+pub(super) fn parse_unicode_bidi(tokens: &[Token]) -> Option<UnicodeBidi> {
+    Some(match keyword(tokens)?.as_str() {
+        "normal" => UnicodeBidi::Normal,
+        "embed" => UnicodeBidi::Embed,
+        "isolate" => UnicodeBidi::Isolate,
+        "bidi-override" => UnicodeBidi::BidiOverride,
+        "isolate-override" => UnicodeBidi::IsolateOverride,
+        "plaintext" => UnicodeBidi::Plaintext,
         _ => return None,
     })
 }

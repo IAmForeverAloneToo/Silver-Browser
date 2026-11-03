@@ -1,7 +1,7 @@
 //! The text properties past the common ones (CSS Text 3 and 4, gap batch
 //! D's text gaps): what [`super::ComputedStyle::text`] points to when any
 //! of them is not its initial value. All of them are inherited but
-//! `text-group-align`.
+//! `text-group-align` and `unicode-bidi`.
 
 use std::sync::Arc;
 
@@ -43,6 +43,8 @@ pub struct TextProps {
     pub text_fit: TextFit,
     /// `text-group-align`, not inherited.
     pub text_group_align: TextGroupAlign,
+    /// `unicode-bidi`, not inherited.
+    pub unicode_bidi: UnicodeBidi,
     /// `text-transform`'s keywords past the case: `full-width`,
     /// `full-size-kana` and `math-auto`.
     pub transform_extra: TransformExtra,
@@ -126,15 +128,40 @@ pub enum RubyAlign {
 }
 
 impl TextProps {
-    /// The values a child inherits: all but `text-group-align` and the
-    /// MathML layout.
+    /// The values a child inherits: all but `text-group-align`,
+    /// `unicode-bidi` and the MathML layout.
     pub(super) fn inherited(&self) -> TextProps {
         TextProps {
             text_group_align: TextGroupAlign::None,
+            unicode_bidi: UnicodeBidi::Normal,
             math: MathElement::None,
             ..self.clone()
         }
     }
+
+    /// Whether every property here a child does not inherit has its
+    /// initial value, so that a child may share these.
+    pub(super) fn inherits_whole(&self) -> bool {
+        self.text_group_align == TextGroupAlign::None && self.unicode_bidi == UnicodeBidi::Normal
+    }
+}
+
+/// `unicode-bidi` (CSS Writing Modes 4 section 2.2): how an element's
+/// text takes part in the bidirectional algorithm, not inherited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnicodeBidi {
+    #[default]
+    Normal,
+    /// An embedding of the element's direction, inline.
+    Embed,
+    /// An isolate of the element's direction.
+    Isolate,
+    /// An override of the element's direction, inline.
+    BidiOverride,
+    /// An isolate whose content overrides to its direction.
+    IsolateOverride,
+    /// Each paragraph's direction from its own text.
+    Plaintext,
 }
 
 /// `text-indent`: a length or percentage, and whether it is `hanging`

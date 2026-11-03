@@ -70,11 +70,17 @@ pub(super) fn value(
             if alike { top } else { Some(String::new()) }
         }
         "border-radius" => radius(style),
-        "border-spacing" => Some(format!(
-            "{} {}",
-            get("-webkit-border-horizontal-spacing")?,
-            get("-webkit-border-vertical-spacing")?
-        )),
+        // One length for both when they are alike, as the reference
+        // browser writes it.
+        "border-spacing" => {
+            let across = get("-webkit-border-horizontal-spacing")?;
+            let down = get("-webkit-border-vertical-spacing")?;
+            Some(if across == down {
+                across
+            } else {
+                format!("{across} {down}")
+            })
+        }
         "border-image" => border_image(style, resolver),
         "outline" => Some(format!(
             "{} {} {}",

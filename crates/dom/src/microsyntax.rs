@@ -52,8 +52,10 @@ pub enum Dimension {
 
 /// An attribute's value by HTML's rules for parsing dimension values
 /// (section 2.3.4.4): leading ASCII white space is skipped, then digits,
-/// an optional fraction, and a `%` makes it a percentage; whatever
-/// follows is ignored. No leading digit is an error (`None`).
+/// an optional `.` and fraction, and a `%` right after them makes it a
+/// percentage, after a `.` with no fraction too (the "current dimension
+/// value" step reads the character the `.` leaves); whatever follows is
+/// ignored. No leading digit is an error (`None`), so a sign is one.
 pub fn parse_dimension(value: &str) -> Option<Dimension> {
     let s = value.trim_start_matches([' ', '\t', '\n', '\r', '\x0c']);
     let digits = s.bytes().take_while(u8::is_ascii_digit).count();
@@ -68,8 +70,8 @@ pub fn parse_dimension(value: &str) -> Option<Dimension> {
             number += format!("0.{}", &fraction[..places])
                 .parse::<f64>()
                 .unwrap_or(0.0);
-            rest = &fraction[places..];
         }
+        rest = &fraction[places..];
     }
     Some(if rest.starts_with('%') {
         Dimension::Percentage(number)
@@ -101,7 +103,10 @@ mod tests {
         assert_eq!(parse_dimension("12.5px"), Some(Dimension::Length(12.5)));
         assert_eq!(parse_dimension("50%"), Some(Dimension::Percentage(50.0)));
         assert_eq!(parse_dimension("2.5%"), Some(Dimension::Percentage(2.5)));
-        assert_eq!(parse_dimension("7.%"), Some(Dimension::Length(7.0)));
+        assert_eq!(parse_dimension("7.%"), Some(Dimension::Percentage(7.0)));
+        assert_eq!(parse_dimension("7."), Some(Dimension::Length(7.0)));
+        assert_eq!(parse_dimension("7 %"), Some(Dimension::Length(7.0)));
+        assert_eq!(parse_dimension("20.25e2"), Some(Dimension::Length(20.25)));
         assert_eq!(parse_dimension("0"), Some(Dimension::Length(0.0)));
         assert_eq!(parse_dimension("+3"), None);
         assert_eq!(parse_dimension("-3"), None);

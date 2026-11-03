@@ -55,6 +55,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "animation-timeline",
     "animation-timing-function",
     "animation-trigger",
+    "appearance",
     "aspect-ratio",
     "backface-visibility",
     "background-attachment",
@@ -330,6 +331,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "transition-timing-function",
     "translate",
     "trigger-scope",
+    "unicode-bidi",
     "vector-effect",
     "vertical-align",
     "view-timeline-axis",
@@ -691,6 +693,7 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
         .to_owned(),
         "container-type" => crate::container::container_type_text(style.container_type),
         "container-name" => crate::container::container_name_text(&style.container_names),
+        "appearance" => style.effects().appearance.keyword().to_owned(),
         "resize" => match style.effects().resize {
             Resize::None => "none",
             Resize::Both => "both",
@@ -758,6 +761,7 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             VerticalAlign::Middle => "middle".to_owned(),
             VerticalAlign::Bottom => "bottom".to_owned(),
             VerticalAlign::TextBottom => "text-bottom".to_owned(),
+            VerticalAlign::BaselineMiddle => "-webkit-baseline-middle".to_owned(),
             VerticalAlign::Length(v) => px(*v),
             VerticalAlign::Percent(p) => percent(*p),
             VerticalAlign::Calc(c) => longhands::calc(c),
@@ -1677,6 +1681,22 @@ mod tests {
         assert_eq!(of("ruby-align: center", "ruby-align"), "center");
         assert_eq!(of("math-style: compact", "math-style"), "compact");
         assert_eq!(of("", "ruby-align"), "space-around");
+    }
+
+    #[test]
+    fn unicode_bidi_appearance_and_border_spacing_are_written_as_the_reference_browser_writes_them()
+    {
+        assert_eq!(of("unicode-bidi: plaintext", "unicode-bidi"), "plaintext");
+        assert_eq!(of("", "unicode-bidi"), "isolate", "a div's, by the sheet");
+        assert_eq!(of("appearance: base-select", "appearance"), "base-select");
+        assert_eq!(of("", "appearance"), "none");
+        assert_eq!(
+            of("vertical-align: -webkit-baseline-middle", "vertical-align"),
+            "-webkit-baseline-middle"
+        );
+        // One length for both axes when they are alike.
+        assert_eq!(of("border-spacing: 3px", "border-spacing"), "3px");
+        assert_eq!(of("border-spacing: 3px 4px", "border-spacing"), "3px 4px");
     }
 
     #[test]

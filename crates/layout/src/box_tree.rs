@@ -205,11 +205,23 @@ pub struct ControlSize {
     pub height: ControlHeight,
 }
 
+impl ControlSize {
+    /// Whether it is a one-line field (an `input`): its text is centred
+    /// down its content box, and its baseline is its text's whatever its
+    /// `overflow`, as the reference browser lays it out.
+    pub fn one_line(&self) -> bool {
+        matches!(self.height, ControlHeight::Line(_))
+    }
+}
+
 /// A form control's own content height.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlHeight {
     /// So many pixels.
     Px(f32),
+    /// So many pixels of a one-line field's (see [`ControlSize::one_line`]),
+    /// kept in the height so that a box stays as small as it was.
+    Line(f32),
     /// A textarea's `rows`: that many of its lines (gap batch H), which
     /// layout measures in its font and `line-height`.
     Rows(u32),
@@ -1339,7 +1351,7 @@ impl<'a> Styled<'a> {
     /// when that is `normal` and the type not `none`;
     /// `list-style-image` never gives one until images (M23).
     fn generates(&self, node: NodeId, side: Side) -> bool {
-        if !self.document.is_element(node) || self.document.tag(node).is_some_and(is_replaced) {
+        if !self.document.is_element(node) || self.replaced_element(node) {
             return false;
         }
         let Some(style) = self.styles.pseudo(node, side.pseudo_element()) else {
@@ -1451,6 +1463,25 @@ impl<'a> Styled<'a> {
         }
     }
 
+    /// Whether the element `node` is replaced ([`is_replaced`]): a
+    /// checkbox or a radio button of `appearance: none` is not, as the
+    /// reference browser has it (CSS UI 4 section 7.1).
+    fn replaced_element(&self, node: NodeId) -> bool {
+        if !self.document.tag(node).is_some_and(is_replaced) {
+            return false;
+        }
+        let unmarked = self.document.tag(node) == Some("input")
+            && matches!(
+                dom::forms::input_type(self.document, node),
+                "checkbox" | "radio"
+            )
+            && self
+                .styles
+                .get(node)
+                .is_some_and(|s| s.effects().appearance == style::computed::Appearance::None);
+        !unmarked
+    }
+
     /// The text decorations in force over the element `node`'s text: its
     /// own inside its parent's, unless its box stops theirs.
     fn element_decorations(&self, node: NodeId) -> Option<Arc<[Decorating]>> {
@@ -1458,8 +1489,7 @@ impl<'a> Styled<'a> {
             return found.clone();
         }
         let found = self.styles.get(node).and_then(|style| {
-            let stops = decoration::stops_propagation(style)
-                || self.document.tag(node).is_some_and(is_replaced);
+            let stops = decoration::stops_propagation(style) || self.replaced_element(node);
             let parent = match self.document.flat_parent_element(node) {
                 Some(parent) if !stops => self.element_decorations(parent),
                 _ => None,
@@ -1584,7 +1614,12 @@ impl<'a> Styled<'a> {
                 let size = positive("size").filter(|_| sized).unwrap_or(20);
                 Some(ControlSize {
                     width: ControlWidth::Px((size as f32 * 0.525 + 2.175) * em),
-                    height: ControlHeight::Px(1.125 * em),
+                    // A range is a slider, aligned as a replaced box.
+                    height: if kind == "range" {
+                        ControlHeight::Px(1.125 * em)
+                    } else {
+                        ControlHeight::Line(1.125 * em)
+                    },
                 })
             }
             "textarea" => {
@@ -1738,7 +1773,14 @@ impl<'a> Styled<'a> {
         let Item::Node(node) = item else {
             return None;
         };
-        if let Some(mark) = self.mark_of(node) {
+        // A checkbox or a radio button of `appearance: none` shows no mark
+        // and is no replaced element (CSS UI 4 section 7.1): a box of its
+        // own style and its children, as the reference browser has it.
+        let unmarked = |mark: &Mark| {
+            matches!(mark, Mark::Checkbox { .. } | Mark::Radio { .. })
+                && style.effects().appearance == style::computed::Appearance::None
+        };
+        if let Some(mark) = self.mark_of(node).filter(|mark| !unmarked(mark)) {
             return Some(self.replaced_box(item, style, Replaced::Mark(mark)));
         }
         if is_outer_svg(self.document, node) {

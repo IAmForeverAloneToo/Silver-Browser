@@ -73,9 +73,19 @@ fn condition(c: &mut Cursor<'_>, depth: usize) -> Option<bool> {
 fn in_parens(c: &mut Cursor<'_>, depth: usize) -> Option<bool> {
     match c.peek()? {
         Token::Function(name) => {
-            let selector = name.eq_ignore_ascii_case("selector");
+            let name = name.to_ascii_lowercase();
             let argument = c.take_block();
-            Some(selector && crate::selector_matching::supports_selector(argument))
+            Some(match name.as_str() {
+                "selector" => crate::selector_matching::supports_selector(argument),
+                // `named-feature()`, as the reference browser has it: the
+                // features it names that the engine has.
+                "named-feature" => matches!(
+                    trim(argument),
+                    [Token::Ident(feature)]
+                        if feature.eq_ignore_ascii_case("single-axis-scroll-container")
+                ),
+                _ => false,
+            })
         }
         Token::OpenParen => {
             let inner = trim(c.take_block());
@@ -269,6 +279,12 @@ mod tests {
             // Not this engine's.
             ("font-tech(color-COLRv1)", Some(false)),
             ("font-format(woff2)", Some(false)),
+            // The features the engine has, by the reference browser's
+            // names.
+            ("named-feature(single-axis-scroll-container)", Some(true)),
+            ("NAMED-FEATURE( Single-Axis-Scroll-Container )", Some(true)),
+            ("named-feature(gap-decorations)", Some(false)),
+            ("named-feature(single-axis-scroll-container x)", Some(false)),
         ]);
     }
 
