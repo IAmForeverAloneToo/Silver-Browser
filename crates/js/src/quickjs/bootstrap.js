@@ -23977,12 +23977,13 @@
     }
     interruptScrolls(target);
     const smooth = smoothScroll(element, options[2]);
-    native.scrollTo(target, x, y, smooth);
+    native.scrollTo(target, x, y, smooth, relative);
     if (!smooth) return PromiseResolve({ interrupted: false });
-    // Where it goes, as far as the scroller can.
-    const clamp = (v, max) => (v < 0 ? 0 : v > max ? max : v);
-    const toY = y === y ? MathRound(clamp(y, now[1])) : NaN;
-    const toX = x === x ? MathRound(clamp(x, now[3])) : NaN;
+    // Where it goes, as far as the scroller can: across from the least
+    // to the most, the least below 0 right to left.
+    const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
+    const toY = y === y ? MathRound(clamp(y, 0, now[1])) : NaN;
+    const toX = x === x ? MathRound(clamp(x, now[7], now[3])) : NaN;
     return scrollPromise([target], () => {
       const at = native.scrollOffset(target);
       return (toY !== toY || MathRound(at[0]) === toY) && (toX !== toX || MathRound(at[2]) === toX);

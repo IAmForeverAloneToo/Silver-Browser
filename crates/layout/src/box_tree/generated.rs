@@ -38,6 +38,16 @@
 //! `list-style-type` with the counter style's prefix and suffix, or the
 //! type's string (§3.2).
 //!
+//! **Style containment.** A size container has style containment (CSS
+//! Conditional 5 section 7.2, CSS Contain 2 section 3.3), as the
+//! reference browser gives it: inside it, an increment or a set of a
+//! counter instantiated outside it, or by it, instantiates a new counter
+//! at 0 first, nested in the other, which `counter()` and `counters()`
+//! inside still read; the counters its own `counter-reset` instantiates
+//! end with it, where its own increments and sets reach its following
+//! siblings as anyone's; and the quote depth after it, its `::before`
+//! and `::after` among what is inside, is the one before it.
+//!
 //! A reversed counter written without a value starts at what §4.4.2
 //! calculates from the increments and sets of it that come after it in
 //! its scope, which the walk knows only once it has passed them: when a
@@ -112,7 +122,7 @@ impl GeneratedText {
 
 /// The texts of each element's pseudo-elements, by side, by the
 /// element's slot in the document: none for one that generates none.
-type Texts = Vec<Option<Box<[Option<String>; 3]>>>;
+type Texts = Vec<Option<Box<[Option<String>; 7]>>>;
 
 /// One counter (Lists 3 §4.4).
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +136,11 @@ struct Counter {
     value: i32,
     /// Whether it is `reversed()`, which a list item counts down.
     reversed: bool,
+    /// Whether an increment or a set inside an element with style
+    /// containment instantiated it in place of one outside, which then
+    /// passes on to the following siblings whatever their ancestors
+    /// instantiated, as the reference browser has it.
+    contained: bool,
 }
 
 /// One element's or pseudo-element's set of counters: their numbers in
@@ -167,6 +182,16 @@ struct Frame {
     number: u32,
     display: Display,
     set: Set,
+    /// The set its following sibling starts from when it has style
+    /// containment and instantiated counters by `counter-reset`, which
+    /// end with it; `None` for its own set.
+    passed: Option<Set>,
+    /// The number of the innermost element with style containment it is
+    /// or is inside; 0 for none.
+    boundary: u32,
+    /// The quote depth before it, which it is put back to when it has
+    /// style containment.
+    quote_depth: Option<u32>,
     /// Its children, and the next one to visit.
     children: Vec<Item>,
     next: usize,
@@ -220,6 +245,9 @@ impl<'w, 'a> Walk<'w, 'a> {
             number: 0,
             display: Display::Block,
             set: Set::of(0, Rc::from([])),
+            passed: None,
+            boundary: 0,
+            quote_depth: None,
             children: self.styled.children(root),
             next: 0,
             last: None,
@@ -227,8 +255,11 @@ impl<'w, 'a> Walk<'w, 'a> {
         while let Some(top) = stack.last_mut() {
             let Some(&child) = top.children.get(top.next) else {
                 let done = stack.pop().expect("the frame just looked at");
+                if let Some(depth) = done.quote_depth {
+                    self.quote_depth = depth;
+                }
                 if let Some(parent) = stack.last_mut() {
-                    parent.last = Some(done.set);
+                    parent.last = Some(done.passed.unwrap_or(done.set));
                 }
                 continue;
             };
@@ -239,17 +270,24 @@ impl<'w, 'a> Walk<'w, 'a> {
             let number = self.next_number;
             self.next_number = self.next_number.saturating_add(1);
             let parent = top.number;
+            // Counters of an element inside one with style containment
+            // are changed only where they were instantiated inside it.
+            let boundary = top.boundary;
+            let contained = style_contained(style);
             let mut set = match top.last.take() {
                 Some(sibling) => self.inherit(number, sibling, &stack),
                 None => Set::of(number, Rc::clone(&top.set.counters)),
             };
             let mut working = None;
+            let mut resets = Vec::new();
             let list_item = matches!(child, Item::Node(_)) && style.display.is_list_item();
             if style.lists.is_some() || list_item {
                 let working = working.get_or_insert_with(|| Working::of(self, &set));
-                self.change(working, style.lists(), list_item, number, parent);
+                resets = self.change(working, style.lists(), list_item, number, parent, boundary);
             }
+            let quote_depth = contained.then_some(self.quote_depth);
             if let Item::Generated(node, side) = child
+                && side != Side::Content
                 && holds_content(style.display)
             {
                 let text = self.text(style, side, &mut working, &set, number, parent);
@@ -257,25 +295,37 @@ impl<'w, 'a> Walk<'w, 'a> {
                     slot.get_or_insert_default()[side as usize] = Some(text);
                 }
             }
+            let mut passed = None;
             if let Some(working) = working {
                 set = Set {
                     counters: Rc::from(working.counters),
                     owner: number,
                     instantiated: working.instantiated,
                 };
+                if contained && !resets.is_empty() {
+                    passed = Some(without_resets(&set, &resets));
+                }
             }
             let top = stack.len() - 1;
-            if matches!(child, Item::Node(_)) && style.display != Display::TableColumn {
+            if matches!(child, Item::Node(_) | Item::Generated(_, Side::Content))
+                && style.display != Display::TableColumn
+            {
                 stack.push(Frame {
                     number,
                     display: style.display,
                     set,
+                    passed,
+                    boundary: if contained { number } else { boundary },
+                    quote_depth,
                     children: self.styled.children(child),
                     next: 0,
                     last: None,
                 });
             } else {
-                stack[top].last = Some(set);
+                if let Some(depth) = quote_depth {
+                    self.quote_depth = depth;
+                }
+                stack[top].last = Some(passed.unwrap_or(set));
             }
         }
     }
@@ -317,6 +367,7 @@ impl<'w, 'a> Walk<'w, 'a> {
         for &id in sibling.counters.iter() {
             let counter = self.counters[id as usize];
             if counter.creator == sibling.owner
+                && !counter.contained
                 && innermost
                     .get(&counter.name)
                     .is_some_and(|&outer| is_ancestor(outer))
@@ -332,6 +383,14 @@ impl<'w, 'a> Walk<'w, 'a> {
     /// Applies `lists`, the counter properties of the element numbered
     /// `number`, whose parent is numbered `parent`, to its set: resets,
     /// then increments, a `list_item`'s own last, then sets (§4.4).
+    ///
+    /// Inside the element numbered `boundary`, which has style
+    /// containment (CSS Contain 2 section 3.3), an increment or a set of
+    /// a counter instantiated outside it, or by it, instantiates a new
+    /// one at 0 first, so that the counter outside keeps its value; 0
+    /// for an element inside none. What its resets did: the place of
+    /// each counter one instantiated, the counter it replaced there if
+    /// any, and the new one.
     fn change(
         &mut self,
         working: &mut Working,
@@ -339,7 +398,9 @@ impl<'w, 'a> Walk<'w, 'a> {
         list_item: bool,
         number: u32,
         parent: u32,
-    ) {
+        boundary: u32,
+    ) -> Vec<(usize, Option<u32>)> {
+        let mut resets = Vec::new();
         for reset in &lists.counter_reset {
             let name = self.intern(&reset.name);
             let replaced = working.innermost(name).filter(|&at| {
@@ -365,13 +426,19 @@ impl<'w, 'a> Walk<'w, 'a> {
                 self.pending.insert(id, Start::default());
             }
             match replaced {
-                Some(at) => working.replace(at, id),
-                None => working.push(name, id),
+                Some(at) => {
+                    resets.push((at, Some(working.counters[at])));
+                    working.replace(at, id);
+                }
+                None => {
+                    resets.push((working.counters.len(), None));
+                    working.push(name, id);
+                }
             }
         }
         let mut seen: HashMap<u32, (i64, Option<i32>)> = HashMap::new();
         let mut increment = |walk: &mut Self, working: &mut Working, name: u32, by: Option<i32>| {
-            let id = walk.counter_named(working, name, number, parent)?;
+            let id = walk.counter_changed(working, name, number, parent, boundary)?;
             let counter = &mut walk.counters[id as usize];
             // A list item's own increment counts down a reversed counter.
             let by = by.unwrap_or(if counter.reversed { -1 } else { 1 });
@@ -402,7 +469,7 @@ impl<'w, 'a> Walk<'w, 'a> {
         }
         for set in &lists.counter_set {
             let name = self.intern(&set.name);
-            let Some(id) = self.counter_named(working, name, number, parent) else {
+            let Some(id) = self.counter_changed(working, name, number, parent, boundary) else {
                 continue;
             };
             self.counters[id as usize].value = set.value;
@@ -429,6 +496,35 @@ impl<'w, 'a> Walk<'w, 'a> {
                 None => start.num = start.num.saturating_add(negated),
             }
         }
+        resets
+    }
+
+    /// The counter named `name` an increment or a set of the element
+    /// numbered `number` changes: [`Walk::counter_named`]'s, unless that
+    /// was instantiated outside the element numbered `boundary`, which
+    /// has style containment, or by it, when a new one is instantiated
+    /// at 0 inside the other (CSS Contain 2 section 3.3).
+    fn counter_changed(
+        &mut self,
+        working: &mut Working,
+        name: u32,
+        number: u32,
+        parent: u32,
+        boundary: u32,
+    ) -> Option<u32> {
+        let outside = working
+            .innermost(name)
+            .is_some_and(|at| self.counters[working.counters[at] as usize].creator <= boundary);
+        if boundary == 0 || !outside {
+            return self.counter_named(working, name, number, parent);
+        }
+        if working.is_full() {
+            return None;
+        }
+        let id = self.new_counter(name, 0, false, number, parent)?;
+        self.counters[id as usize].contained = true;
+        working.push(name, id);
+        Some(id)
     }
 
     /// The innermost counter named `name` in `working`, instantiated at 0
@@ -471,6 +567,7 @@ impl<'w, 'a> Walk<'w, 'a> {
             parent,
             value,
             reversed,
+            contained: false,
         });
         Some((self.counters.len() - 1) as u32)
     }
@@ -607,6 +704,34 @@ impl<'w, 'a> Walk<'w, 'a> {
                 )
             })
             .collect()
+    }
+}
+
+/// Whether an element or pseudo-element of `style` has style containment
+/// (CSS Contain 2 section 3.3): a size or anchored container has (CSS
+/// Conditional 5 section 7.2), whatever its `display`, as in the
+/// reference browser. Its descendants' increments and sets do not reach
+/// the counters outside it, its own resets end with it, and the quote
+/// depth after it is the one before it.
+fn style_contained(style: &ComputedStyle) -> bool {
+    style.container_type.contains_style()
+}
+
+/// The set the sibling after an element with style containment starts
+/// from, the element's being `set`: without the counters its resets
+/// instantiated, each at the place `resets` gives with the counter it
+/// replaced there, put back.
+fn without_resets(set: &Set, resets: &[(usize, Option<u32>)]) -> Set {
+    let mut counters: Vec<Option<u32>> = set.counters.iter().copied().map(Some).collect();
+    for &(at, replaced) in resets.iter().rev() {
+        if let Some(slot) = counters.get_mut(at) {
+            *slot = replaced;
+        }
+    }
+    Set {
+        counters: counters.into_iter().flatten().collect(),
+        owner: set.owner,
+        instantiated: set.instantiated,
     }
 }
 

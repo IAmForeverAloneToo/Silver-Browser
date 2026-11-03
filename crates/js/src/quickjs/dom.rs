@@ -468,6 +468,7 @@ const NATIVES: &[(&str, Decode)] = &[
             a.number(1),
             a.number(2),
             a.bool(3),
+            a.bool(4),
         ))
     }),
     ("scrollIntoView", |a| {

@@ -50,13 +50,16 @@ struct Frame {
 
 /// A script's scroll (D65): of the viewport (`None`) or of a scroll
 /// container, across to `x` and down to `y`, each left where it is when
-/// `None`; smooth (CSSOM View's `smooth` behavior) or at once.
+/// `None`; smooth (CSSOM View's `smooth` behavior) or at once; relative
+/// (`scrollBy()`) or not, which `scroll-state(scrolled)` and snapping
+/// read (D72).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ScriptScroll {
     pub(crate) node: Option<NodeId>,
     pub(crate) x: Option<f32>,
     pub(crate) y: Option<f32>,
     pub(crate) smooth: bool,
+    pub(crate) relative: bool,
 }
 
 /// What a run leaves the engine to do: the console's lines and the count
@@ -339,6 +342,12 @@ pub(crate) struct DocumentHost {
     /// The layout scripts asked of (D65), by the document's version it
     /// is of; at most one a version.
     laid_out: Option<(u64, layout::DocumentLayout)>,
+    /// The snapping scroll containers of that layout (D72), found once a
+    /// version of it.
+    snap_containers: Option<(u64, Vec<crate::scroll_state::SnapContainer>)>,
+    /// What each snapping scroll container is snapped to as the run's
+    /// scripts have read or scrolled it, over the frame's (D72).
+    snapped_in_run: crate::scroll_state::Snaps,
     /// The document's version the page's `<style>` sheets were last
     /// made again at in the run ([`Page::rescan_inline`]).
     inline_scanned: Option<u64>,
@@ -1426,9 +1435,9 @@ impl DocumentHost {
                 let node = node.map(|node| self.node(node)).transpose()?;
                 Ok(Answer::Numbers(self.scroll_offset(node)))
             }
-            Call::ScrollTo(node, x, y, smooth) => {
+            Call::ScrollTo(node, x, y, smooth, relative) => {
                 let node = node.map(|node| self.node(node)).transpose()?;
-                self.scroll_to(node, x, y, smooth);
+                self.scroll_to(node, x, y, smooth, relative);
                 Ok(Answer::Nothing)
             }
             Call::ScrollIntoView(node, block, inline, behavior) => {
@@ -2637,6 +2646,7 @@ impl DocumentHost {
                     "first-line" => Some(PseudoElement::FirstLine),
                     "marker" => Some(PseudoElement::Marker),
                     "backdrop" => Some(PseudoElement::Backdrop),
+                    "details-content" => Some(PseudoElement::DetailsContent),
                     _ => return Ok(Answer::MaybeString(None)),
                 };
                 // The properties CSSOM names resolve to their used values
@@ -2677,9 +2687,27 @@ impl DocumentHost {
                     .chain(self.document.ancestors(node))
                     .collect();
                 let styles = self.styles_now();
+                // A pseudo-element no rule styles has the style the
+                // cascade would give it: its element's inherited values,
+                // the initial ones of the rest, and `content: none` for a
+                // `::before` or `::after`, as the reference browser
+                // computes it.
+                let unstyled;
                 let style = match pseudo {
                     None => styles.and_then(|styles| styles.get(node)),
-                    Some(pseudo) => styles.and_then(|styles| styles.pseudo(node, pseudo)),
+                    Some(pseudo) => match styles.and_then(|styles| styles.pseudo(node, pseudo)) {
+                        Some(style) => Some(style),
+                        None => {
+                            unstyled = styles.and_then(|styles| styles.get(node)).map(|element| {
+                                let mut style = style::ComputedStyle::inherited_from(element);
+                                if matches!(pseudo, PseudoElement::Before | PseudoElement::After) {
+                                    style.content = style::computed::Content::None;
+                                }
+                                style
+                            });
+                            unstyled.as_ref()
+                        }
+                    },
                 };
                 // Whether the element's minimum sizes' `auto` is kept as it
                 // is (CSS Sizing 3 section 4.4, as the reference browser
@@ -2879,6 +2907,7 @@ impl DocumentHost {
                     && crate::web_fonts::lay_over(fonts, &self.outputs.fonts[before..])
                 {
                     self.laid_out = None;
+                    self.snap_containers = None;
                 }
                 Ok(answer)
             }
@@ -4061,6 +4090,8 @@ impl DocumentHost {
         self.computed = None;
         self.svg_questions = None;
         self.laid_out = None;
+        self.snapped_in_run.clear();
+        self.snap_containers = None;
         self.inline_scanned = None;
         if let Some(images) = lent.images.as_deref_mut() {
             self.images = std::mem::take(images);
@@ -4112,6 +4143,8 @@ impl DocumentHost {
         self.computed = None;
         self.svg_questions = None;
         self.laid_out = None;
+        self.snapped_in_run.clear();
+        self.snap_containers = None;
         std::mem::take(&mut self.outputs)
     }
 
@@ -4322,6 +4355,7 @@ impl DocumentHost {
             page.register_property(registration)?;
             self.computed = None;
             self.laid_out = None;
+            self.snap_containers = None;
             return Ok(Answer::Nothing);
         }
         if owner.is_none() && op != "sheets" {
@@ -4385,6 +4419,7 @@ impl DocumentHost {
                 page.adopt_shadow_sheets(owner, serials);
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Nothing)
             }
             // An element out of the document has no sheet, though the
@@ -4420,6 +4455,7 @@ impl DocumentHost {
                 page.set_sheet_disabled(serial, index == 1);
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Nothing)
             }
             "rules" => {
@@ -4461,6 +4497,7 @@ impl DocumentHost {
                 // The cascade and layout of the run are of the old rules.
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Number(done as f64))
             }
             _ => Err(gone()),
@@ -4515,6 +4552,7 @@ impl DocumentHost {
                 page.adopt_sheets(path.iter().take(1 << 12).map(|&n| number(n)).collect());
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 return Ok(Answer::Nothing);
             }
             _ => {}
@@ -4540,6 +4578,7 @@ impl DocumentHost {
                 }
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Nothing)
             }
             "replace" => {
@@ -4549,6 +4588,7 @@ impl DocumentHost {
                 }
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Nothing)
             }
             "sheet" => Ok(Answer::Numbers(
@@ -4602,6 +4642,7 @@ impl DocumentHost {
                 let done = done.ok_or_else(gone)?;
                 self.computed = None;
                 self.laid_out = None;
+                self.snap_containers = None;
                 Ok(Answer::Number(done as f64))
             }
             _ => Err(gone()),
@@ -4692,13 +4733,22 @@ impl DocumentHost {
                 return;
             };
             self.work += self.document.len() as u64;
-            let (_, offsets) = self.scroll_state();
-            let sizes = laid_out.container_sizes(self.window.viewport.0 as f32, &|node| {
-                (
-                    offsets.x.get(&node).copied().unwrap_or(0.0),
-                    offsets.y.get(&node).copied().unwrap_or(0.0),
-                )
-            });
+            let (scroll_y, offsets) = self.scroll_state();
+            let sizes = crate::scroll_state::container_states(
+                &laid_out,
+                &crate::scroll_state::Inputs {
+                    viewport: (self.window.viewport.0 as f32, self.window.viewport.1 as f32),
+                    viewport_scroll: (offsets.viewport_x, scroll_y),
+                    offsets: &|node| {
+                        (
+                            offsets.x.get(&node).copied().unwrap_or(0.0),
+                            offsets.y.get(&node).copied().unwrap_or(0.0),
+                        )
+                    },
+                    scrolled: &self.window.scrolled,
+                    snaps: &self.window.snaps,
+                },
+            );
             self.laid_out = Some((version, laid_out));
             let Some(page) = self.page.as_ref() else {
                 return;
@@ -4732,6 +4782,7 @@ impl DocumentHost {
                 return;
             }
             self.laid_out = None;
+            self.snap_containers = None;
         }
     }
 
@@ -5036,12 +5087,13 @@ impl DocumentHost {
     /// for another element); then how far the content reaches past the
     /// box, down and across, whether it scrolls or not.
     fn scroll_offset(&mut self, node: Option<NodeId>) -> Vec<f64> {
+        self.resnap(node);
         let (scroll_y, offsets) = self.scroll_state();
         let (width, height) = self.window.viewport;
         let Some(layout) = self.layout_now() else {
-            return vec![0.0; 7];
+            return vec![0.0; 8];
         };
-        let (at, max, at_x, max_x) = match node {
+        let (at, max, at_x, (min_x, max_x)) = match node {
             None => {
                 let bottom = crate::geometry::document_height(layout);
                 let right = crate::geometry::document_width(layout);
@@ -5049,7 +5101,7 @@ impl DocumentHost {
                     scroll_y,
                     (bottom - height as f32).max(0.0),
                     offsets.viewport_x,
-                    (right - width as f32).max(0.0),
+                    (0.0, (right - width as f32).max(0.0)),
                 )
             }
             Some(node) => {
@@ -5059,14 +5111,14 @@ impl DocumentHost {
                         .filter(move |f| f.node == node && f.generated.is_none() && f.clips())
                 };
                 let max = own().map(|f| f.max_scroll()).fold(0.0f32, f32::max);
-                let max_x = own()
-                    .map(crate::geometry::max_scroll_x)
-                    .fold(0.0f32, f32::max);
+                let range_x = own()
+                    .map(crate::geometry::scroll_range_x)
+                    .fold((0.0f32, 0.0f32), |(a, b), (c, d)| (a.min(c), b.max(d)));
                 (
                     offsets.y.get(&node).copied().unwrap_or(0.0),
                     max,
                     offsets.x.get(&node).copied().unwrap_or(0.0),
-                    max_x,
+                    range_x,
                 )
             }
         };
@@ -5082,15 +5134,34 @@ impl DocumentHost {
                         && f.generated.is_none()
                         && matches!(f.kind, layout::FragmentKind::Box)
                 })
-                .map_or([0.0, 0.0], crate::geometry::overflow),
+                .map_or([0.0, 0.0], |f| {
+                    // Right to left, the content may reach past the box's
+                    // left edge too, the further of the two counting.
+                    let [right, down] = crate::geometry::overflow(f);
+                    match f.style.direction {
+                        style::computed::Direction::Ltr => [right, down],
+                        style::computed::Direction::Rtl => {
+                            [right.max(crate::geometry::overflow_left(f)), down]
+                        }
+                    }
+                }),
         };
         // Whether a smooth scroll is on its way: the engine's, or one this
         // run asked for.
         let moving = self.window.scrolling || self.outputs.scrolls.iter().any(|s| s.smooth);
-        let mut out = [at.min(max), max, at_x.min(max_x), max_x, over_y, over_x]
-            .map(f64::from)
-            .to_vec();
+        let mut out = [
+            at.min(max),
+            max,
+            at_x.clamp(min_x, max_x),
+            max_x,
+            over_y,
+            over_x,
+        ]
+        .map(f64::from)
+        .to_vec();
         out.push(if moving { 1.0 } else { 0.0 });
+        // The least it scrolls across: below 0 right to left.
+        out.push(f64::from(min_x));
         out
     }
 
@@ -5098,20 +5169,121 @@ impl DocumentHost {
     /// `x` and down to `y`, each clamped and left where it is when not
     /// a number: kept for what the run asks next when at once, and for
     /// the engine, which moves a smooth one over the frames to come.
-    fn scroll_to(&mut self, node: Option<NodeId>, x: f64, y: f64, smooth: bool) {
+    fn scroll_to(&mut self, node: Option<NodeId>, x: f64, y: f64, smooth: bool, relative: bool) {
         let now = self.scroll_offset(node);
-        let (max, max_x) = (now[1], now[3]);
-        if node.is_some() && max <= 0.0 && max_x <= 0.0 {
+        let (max, max_x, min_x) = (now[1], now[3], now[7]);
+        if node.is_some() && max <= 0.0 && max_x <= 0.0 && min_x >= 0.0 {
             return;
         }
         let y = y.is_finite().then(|| y.clamp(0.0, max) as f32);
-        let x = x.is_finite().then(|| x.clamp(0.0, max_x) as f32);
+        let x = x.is_finite().then(|| x.clamp(min_x, max_x) as f32);
         if x.is_none() && y.is_none() {
             return;
         }
-        self.outputs
-            .scrolls
-            .push(ScriptScroll { node, x, y, smooth });
+        let from = (now[2] as f32, now[0] as f32);
+        let (x, y) = self.snapped(node, from, (x, y), relative);
+        self.outputs.scrolls.push(ScriptScroll {
+            node,
+            x,
+            y,
+            smooth,
+            relative,
+        });
+    }
+
+    /// The snapping scroll container that is the viewport (`None`) or
+    /// `node`, in the layout as it stands, if it snaps.
+    fn snap_container(
+        &mut self,
+        node: Option<NodeId>,
+    ) -> Option<crate::scroll_state::SnapContainer> {
+        let version = self.document.version();
+        if self
+            .snap_containers
+            .as_ref()
+            .is_none_or(|(at, _)| *at != version)
+        {
+            let viewport = (self.window.viewport.0 as f32, self.window.viewport.1 as f32);
+            let found = crate::scroll_state::snap_containers(self.layout_now()?, viewport);
+            self.snap_containers = Some((version, found));
+        }
+        self.snap_containers
+            .as_ref()?
+            .1
+            .iter()
+            .find(|c| c.scroller == node)
+            .cloned()
+    }
+
+    /// Puts the viewport (`None`) or `node` back on its snap positions
+    /// where a layout since the frame moved them, at once, as the
+    /// reference browser has a script read its offsets after a change of
+    /// style or layout (CSS Scroll Snap 1 section 5.2): a scroll of its
+    /// own for the engine to make.
+    fn resnap(&mut self, node: Option<NodeId>) {
+        // Not while a smooth scroll goes on, which snaps where it ends.
+        if self.window.scrolling || self.outputs.scrolls.iter().any(|s| s.smooth) {
+            return;
+        }
+        let Some(container) = self.snap_container(node) else {
+            return;
+        };
+        let (scroll_y, offsets) = self.scroll_state();
+        let at = match node {
+            None => (offsets.viewport_x, scroll_y),
+            Some(node) => (
+                offsets.x.get(&node).copied().unwrap_or(0.0),
+                offsets.y.get(&node).copied().unwrap_or(0.0),
+            ),
+        };
+        let snap = self
+            .snapped_in_run
+            .get(&node)
+            .or_else(|| self.window.snaps.get(&node))
+            .copied();
+        let (to, areas) = container.settle(snap, at, [0, 0]);
+        self.snapped_in_run
+            .insert(node, crate::scroll_state::Snap { areas, at: to });
+        if (to.0 - at.0).abs() > 0.5 || (to.1 - at.1).abs() > 0.5 {
+            self.outputs.scrolls.push(ScriptScroll {
+                node,
+                x: Some(to.0),
+                y: Some(to.1),
+                smooth: container.smooth,
+                relative: false,
+            });
+        }
+    }
+
+    /// Where a script's scroll of the viewport (`None`) or of `node` from
+    /// `from` to `to`, across and down (`None` where it stays), comes to
+    /// rest when that snaps (CSS Scroll Snap 1, [`crate::scroll_state`]):
+    /// on its snap positions at once, as the reference browser has a
+    /// script read them, one past where it was in its direction for a
+    /// `relative` one. An axis the scroll left that snaps is snapped too.
+    fn snapped(
+        &mut self,
+        node: Option<NodeId>,
+        from: (f32, f32),
+        to: (Option<f32>, Option<f32>),
+        relative: bool,
+    ) -> (Option<f32>, Option<f32>) {
+        let Some(container) = self.snap_container(node) else {
+            return to;
+        };
+        let wanted = (to.0.unwrap_or(from.0), to.1.unwrap_or(from.1));
+        let sign = |a: f32, b: f32| match b.partial_cmp(&a) {
+            Some(std::cmp::Ordering::Greater) if relative => 1,
+            Some(std::cmp::Ordering::Less) if relative => -1,
+            _ => 0,
+        };
+        let direction = [sign(from.0, wanted.0), sign(from.1, wanted.1)];
+        let (at, areas) = container.select(wanted, from, direction);
+        self.snapped_in_run
+            .insert(node, crate::scroll_state::Snap { areas, at });
+        let axis =
+            |given: Option<f32>, was: f32, now: f32| (given.is_some() || now != was).then_some(now);
+        (axis(to.0, from.0, at.0), axis(to.1, from.1, at.1))
     }
 
     /// CSSOM View's `scrollIntoView` (section 7.1, "scroll a target into
@@ -5255,7 +5427,7 @@ impl DocumentHost {
             let y = wanted(block, now[0], (target[1], target[3]), (port[1], port[3]))
                 .clamp(0.0, now[1]);
             let x = wanted(inline, now[2], (target[0], target[2]), (port[0], port[2]))
-                .clamp(0.0, now[3]);
+                .clamp(now[7], now[3]);
             target[0] -= x - now[2];
             target[1] -= y - now[0];
             if x != now[2] || y != now[0] {
@@ -5265,6 +5437,7 @@ impl DocumentHost {
                     x: Some(x as f32),
                     y: Some(y as f32),
                     smooth,
+                    relative: false,
                 });
             }
         }
@@ -6386,6 +6559,7 @@ impl DocumentHost {
                 x: Some(0.0),
                 y: Some(0.0),
                 smooth: false,
+                relative: false,
             }),
             None => {}
         }

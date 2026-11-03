@@ -942,10 +942,18 @@ fn parse_pseudo(
                 && matches!(c.peek_ahead(2), Some(Token::Ident(name))
                     if name.eq_ignore_ascii_case("before") || name.eq_ignore_ascii_case("after"))
             {
+                let before = matches!(c.peek_ahead(2), Some(Token::Ident(name))
+                    if name.eq_ignore_ascii_case("before"));
                 c.advance();
                 c.advance();
                 c.advance();
-                return Some(Pseudo::Element(PseudoElement::Nested, PseudoArgument::None));
+                *spec += Specificity(0, 0, 1);
+                let nested = if before {
+                    PseudoElement::DetailsContentBefore
+                } else {
+                    PseudoElement::DetailsContentAfter
+                };
+                return Some(Pseudo::Element(nested, PseudoArgument::None));
             }
             Some(Pseudo::Element(element, PseudoArgument::None))
         }

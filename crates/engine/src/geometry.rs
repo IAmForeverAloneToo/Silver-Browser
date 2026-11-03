@@ -29,6 +29,8 @@ pub(crate) fn measure(
     targets: &HashSet<NodeId>,
 ) -> HashMap<NodeId, scripts::Measured> {
     let mut out: HashMap<NodeId, scripts::Measured> = HashMap::new();
+    // The `display` of each one's first box, which its others share.
+    let mut displays: HashMap<NodeId, style::computed::Display> = HashMap::new();
     // The matrices to viewport coordinates of the groups walked
     // into, and the clips in force, each in viewport coordinates.
     let mut matrices = vec![style::transform::Matrix::IDENTITY];
@@ -83,6 +85,10 @@ pub(crate) fn measure(
             } if fragment.generated.is_none() && targets.contains(&fragment.node) => {
                 let bounds = map(&matrix, rect);
                 match out.entry(fragment.node) {
+                    // An anonymous box named after the element, a table
+                    // wrapping a cell inside it, is none of its own.
+                    std::collections::hash_map::Entry::Occupied(_)
+                        if displays.get(&fragment.node) != Some(&fragment.style.display) => {}
                     // An inline element's boxes on its lines: their
                     // union.
                     std::collections::hash_map::Entry::Occupied(mut kept) => {
@@ -97,6 +103,7 @@ pub(crate) fn measure(
                     }
                     std::collections::hash_map::Entry::Vacant(slot) => {
                         let style = &fragment.style;
+                        displays.insert(fragment.node, style.display);
                         let padding = style.padding.clone().map(|p| p.resolve(cb_width));
                         let margin = style.margin.clone().map(|m| m.resolve(cb_width, 0.0));
                         slot.insert(scripts::Measured {
@@ -136,10 +143,38 @@ fn reach(f: &layout::Fragment) -> f32 {
 /// How far a scroll container `f` can scroll across past its padding
 /// box's width; zero for a box that is not one.
 pub(crate) fn max_scroll_x(f: &layout::Fragment) -> f32 {
+    scroll_range_x(f).1
+}
+
+/// The least and the most a scroll container `f` scrolls across from
+/// its scroll origin: from 0 to how far its content reaches past its
+/// padding box to the right, left to right; right to left, where the
+/// origin is the right edge (css-overflow-3 section 2.2, CSSOM View
+/// section 4), from minus how far it reaches past it to the left, to 0.
+/// Both 0 for a box that is not one.
+pub(crate) fn scroll_range_x(f: &layout::Fragment) -> (f32, f32) {
     if !f.clips() {
-        return 0.0;
+        return (0.0, 0.0);
     }
-    overflow(f)[0]
+    match f.style.direction {
+        style::computed::Direction::Ltr => (0.0, overflow(f)[0]),
+        style::computed::Direction::Rtl => (-overflow_left(f), 0.0),
+    }
+}
+
+/// How far the content of `f` reaches left of its padding box: each box's
+/// and line's left edge, inside the boxes that do not clip.
+pub(crate) fn overflow_left(f: &layout::Fragment) -> f32 {
+    let [_, _, _, border_left] = f.style.used_border_width();
+    let mut left = 0.0f32;
+    let mut stack: Vec<(f32, &layout::Fragment)> = f.children.iter().map(|c| (0.0, c)).collect();
+    while let Some((dx, c)) = stack.pop() {
+        left = left.min(dx + c.x - border_left);
+        if !c.clips() {
+            stack.extend(c.children.iter().map(|g| (dx + c.x, g)));
+        }
+    }
+    -left
 }
 
 /// How far the content of `f` reaches past its padding box, across and

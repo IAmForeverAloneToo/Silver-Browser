@@ -389,6 +389,10 @@ pub(crate) struct WindowEnv {
     /// Whether a smooth scroll is on its way to where it goes, which the
     /// scroll methods' promises wait for.
     pub(crate) scrolling: bool,
+    /// The direction of each scroll container's last relative scroll,
+    /// and what each snapping one is snapped to (D72).
+    pub(crate) scrolled: Arc<crate::scroll_state::Scrolled>,
+    pub(crate) snaps: Arc<crate::scroll_state::Snaps>,
     pub(crate) compat: bool,
     /// The user's languages, the most wanted first (M37).
     pub(crate) languages: Vec<String>,

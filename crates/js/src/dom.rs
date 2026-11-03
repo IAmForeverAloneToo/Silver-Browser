@@ -368,8 +368,10 @@ pub enum Call {
     /// most, down then across.
     ScrollOffset(Option<Handle>),
     /// Scrolls the viewport (`None`) or an element across to an offset
-    /// and down to another, either kept when NaN; smoothly or not.
-    ScrollTo(Option<Handle>, f64, f64, bool),
+    /// and down to another, either kept when NaN; smoothly or not; and
+    /// whether it is a relative scroll (`scrollBy()`), which a
+    /// `scroll-state(scrolled)` query reads.
+    ScrollTo(Option<Handle>, f64, f64, bool, bool),
     /// Scrolls an element into view, aligned in the block and the
     /// inline axes as `start`, `center`, `end` or `nearest`, with a
     /// `ScrollBehavior` (`auto`, `instant`, `smooth`).

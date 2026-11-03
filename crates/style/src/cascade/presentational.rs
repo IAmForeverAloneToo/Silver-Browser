@@ -112,6 +112,26 @@ pub(super) fn hints(
             .map(|url| format!("background-image: url({});", css_string(url)))
     };
     match tag {
+        // A `details` element's summary, its first `summary` child, is a
+        // list item with its disclosure triangle inside (HTML section
+        // 15.5.1), the triangle the user agent's sheet gives; another
+        // `summary` is a block. The reference browser's sheet says it by
+        // `:first-of-type`, a structural selector that would widen what
+        // every insertion restyles here.
+        "summary"
+            if document.parent(element).is_some_and(|details| {
+                document.tag(details) == Some("details")
+                    && document
+                        .element_children(details)
+                        .find(|&child| document.tag(child) == Some("summary"))
+                        == Some(element)
+            }) =>
+        {
+            push(
+                "display: list-item; counter-increment: list-item 0; list-style-position: inside;"
+                    .to_owned(),
+            );
+        }
         "body" => {
             if let Some(c) = colour("bgcolor") {
                 push(format!("background-color: {c};"));

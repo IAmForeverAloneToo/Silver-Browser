@@ -210,16 +210,15 @@ pub fn pseudo_element_name(pseudo: PseudoElement) -> Option<&'static str> {
         PseudoElement::Placeholder => Some("::placeholder"),
         PseudoElement::Selection => Some("::selection"),
         PseudoElement::DetailsContent => Some("::details-content"),
+        PseudoElement::DetailsContentBefore => Some("::details-content::before"),
+        PseudoElement::DetailsContentAfter => Some("::details-content::after"),
         PseudoElement::FileSelectorButton => Some("::file-selector-button"),
         PseudoElement::Picker => Some("::picker(select)"),
         PseudoElement::PickerIcon => Some("::picker-icon"),
         PseudoElement::Checkmark => Some("::checkmark"),
         PseudoElement::Backdrop => Some("::backdrop"),
         // Elements of other trees, not pseudo-elements of this one (D69).
-        PseudoElement::Nested
-        | PseudoElement::WebkitPrefixed
-        | PseudoElement::Slotted
-        | PseudoElement::Part => None,
+        PseudoElement::WebkitPrefixed | PseudoElement::Slotted | PseudoElement::Part => None,
     }
 }
 

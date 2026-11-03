@@ -970,13 +970,17 @@ pub struct FlowRelative {
 
 /// `container-type` (CSS Conditional 5 section 7.2, D72): `normal`, a
 /// style container alone, or a size container of its inline axis or of
-/// both, a scroll-state container, or both.
+/// both, a scroll-state container, an anchored container (CSS Anchor
+/// Positioning 2), or more than one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ContainerType {
     /// `inline-size` or `size`: the axes size queries may ask of it.
     pub size: ContainerSize,
     /// `scroll-state`: its scroll state may be queried.
     pub scroll_state: bool,
+    /// `anchored`: the position fallback it is laid out with may be
+    /// queried.
+    pub anchored: bool,
 }
 
 impl ContainerType {
@@ -984,6 +988,7 @@ impl ContainerType {
     pub const NORMAL: ContainerType = ContainerType {
         size: ContainerSize::None,
         scroll_state: false,
+        anchored: false,
     };
 
     /// Whether it is a size container, which takes layout, style and
@@ -991,6 +996,70 @@ impl ContainerType {
     pub fn is_size(self) -> bool {
         self.size != ContainerSize::None
     }
+
+    /// Whether it gives its element style containment (CSS Contain 2
+    /// section 3.3): a size container's and an anchored container's, as
+    /// the reference browser has it; a scroll-state container's not.
+    pub fn contains_style(self) -> bool {
+        self.is_size() || self.anchored
+    }
+}
+
+/// `scroll-snap-type` (Scroll Snap 1 section 5.1): the axes a scroll
+/// container snaps its offset in, and how strictly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScrollSnapType {
+    pub axis: SnapAxis,
+    pub strictness: SnapStrictness,
+}
+
+impl ScrollSnapType {
+    /// `none`, the initial value.
+    pub const NONE: ScrollSnapType = ScrollSnapType {
+        axis: SnapAxis::None,
+        strictness: SnapStrictness::Proximity,
+    };
+
+    /// The physical axes it snaps in, across and down, in horizontal
+    /// writing, the only writing mode this engine lays out: the block
+    /// axis is down, the inline one across.
+    pub fn axes(self) -> [bool; 2] {
+        match self.axis {
+            SnapAxis::None => [false, false],
+            SnapAxis::X | SnapAxis::Inline => [true, false],
+            SnapAxis::Y | SnapAxis::Block => [false, true],
+            SnapAxis::Both => [true, true],
+        }
+    }
+}
+
+/// `scroll-snap-type`'s axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SnapAxis {
+    None,
+    X,
+    Y,
+    Block,
+    Inline,
+    Both,
+}
+
+/// `scroll-snap-type`'s strictness: `proximity`, the default, snaps
+/// only near a snap position; `mandatory` always rests on one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SnapStrictness {
+    Proximity,
+    Mandatory,
+}
+
+/// A `scroll-snap-align` keyword (Scroll Snap 1 section 6.3): which of
+/// a snap area's edges, if any, snaps to the scrollport's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SnapAlign {
+    None,
+    Start,
+    End,
+    Center,
 }
 
 /// The axes a size container's size may be queried on.
@@ -1961,6 +2030,13 @@ pub struct Effects {
     /// pointed at or focused before its target gains interest, and left
     /// before it loses it; `None` is `normal`.
     pub interest_delay: [Option<f64>; 2],
+    /// `scroll-snap-type` (Scroll Snap 1 section 5.1).
+    pub scroll_snap_type: ScrollSnapType,
+    /// `scroll-snap-align` (section 6.3): in the block axis, then the
+    /// inline one.
+    pub scroll_snap_align: [SnapAlign; 2],
+    /// `scroll-snap-stop: always` (section 6.4).
+    pub scroll_snap_stop_always: bool,
     /// Not a property: what the element's animations current or in
     /// effect animate, which the engine acts as if `will-change` named
     /// (Web Animations §5.6, M22.2), so that an animated transform or
@@ -2059,6 +2135,9 @@ impl Default for Effects {
             scroll_margin: [0.0; 4],
             scroll_padding: std::array::from_fn(|_| LengthPercentageAuto::Auto),
             interest_delay: [None; 2],
+            scroll_snap_type: ScrollSnapType::NONE,
+            scroll_snap_align: [SnapAlign::None; 2],
+            scroll_snap_stop_always: false,
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
@@ -3992,6 +4071,10 @@ pub struct ComputedStyle {
     /// container's (D77): they are its items, and blockified, as the
     /// container's own children are.
     pub contents_in_items: bool,
+    /// Not a property: whether its parent's `direction` is `rtl`, which
+    /// way a box of it in flow, wider than its containing block,
+    /// overflows it (CSS2 section 10.3.3).
+    pub placed_rtl: bool,
     /// The transition and animation properties (M22), behind one pointer
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
@@ -4041,6 +4124,7 @@ impl Default for ComputedStyle {
             visibility: Visibility::Visible,
             legacy_align: LegacyAlign::None,
             placed_by: LegacyAlign::None,
+            placed_rtl: false,
             letter_spacing: 0.0,
             word_spacing: 0.0,
             direction: Direction::Ltr,
@@ -4568,6 +4652,7 @@ impl ComputedStyle {
             visibility: from.visibility,
             legacy_align: from.legacy_align,
             placed_by: from.legacy_align,
+            placed_rtl: from.direction == Direction::Rtl,
             letter_spacing: from.letter_spacing,
             word_spacing: from.word_spacing,
             direction: from.direction,
@@ -4781,6 +4866,10 @@ mod tests {
         // and `pointer-events` (gap batch H), read at every hit test and
         // every element's style, three bytes past the padding: 832
         // before them.
+        // Whether the parent's `direction` is
+        // `rtl`, which way a box wider than its containing block
+        // overflows it (gap batch H, D72's scroll states from a right to
+        // left scroll origin), one more byte: 840 before it.
         // Growing this is a decision, not an accident; say why where the
         // number changes.
         assert_eq!(std::mem::size_of::<ComputedStyle>(), 840);

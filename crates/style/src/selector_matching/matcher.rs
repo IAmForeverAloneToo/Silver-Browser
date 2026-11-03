@@ -398,11 +398,17 @@ impl<'a> Matcher<'a> {
         let Some(ending) = &selector.pseudo_element else {
             return false;
         };
+        // `::details-content` and its own pseudo-elements are a `details`
+        // element's alone.
+        let details = matches!(
+            pseudo,
+            PseudoElement::DetailsContent
+                | PseudoElement::DetailsContentBefore
+                | PseudoElement::DetailsContentAfter
+        );
         ending.element == pseudo
-            && !matches!(
-                pseudo,
-                PseudoElement::WebkitPrefixed | PseudoElement::Nested
-            )
+            && pseudo != PseudoElement::WebkitPrefixed
+            && (!details || self.document.tag(element) == Some("details"))
             && ending
                 .states
                 .iter()

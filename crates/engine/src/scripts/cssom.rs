@@ -173,6 +173,18 @@ const PADDING: [&str; 4] = sides(
     "padding-left",
 );
 const INSET: [&str; 4] = sides("top", "right", "bottom", "left");
+const SCROLL_MARGIN: [&str; 4] = sides(
+    "scroll-margin-top",
+    "scroll-margin-right",
+    "scroll-margin-bottom",
+    "scroll-margin-left",
+);
+const SCROLL_PADDING: [&str; 4] = sides(
+    "scroll-padding-top",
+    "scroll-padding-right",
+    "scroll-padding-bottom",
+    "scroll-padding-left",
+);
 const BORDER_WIDTH: [&str; 4] = sides(
     "border-top-width",
     "border-right-width",
@@ -298,12 +310,14 @@ const BORDER_BLOCK: [&str; 6] = [
 
 /// The shorthands a declaration block keeps as their longhands (G50),
 /// each with its longhands in their canonical order.
-const SHORTHANDS: [(&str, &[&str]); 49] = [
+const SHORTHANDS: [(&str, &[&str]); 51] = [
     ("font", &FONT_LONGHANDS),
     ("font-variant", &style::VARIANT_LONGHANDS),
     ("margin", &MARGIN),
     ("padding", &PADDING),
     ("inset", &INSET),
+    ("scroll-margin", &SCROLL_MARGIN),
+    ("scroll-padding", &SCROLL_PADDING),
     ("border", &BORDER),
     ("border-width", &BORDER_WIDTH),
     ("border-style", &BORDER_STYLE),
@@ -586,7 +600,8 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
         )
     };
     match name {
-        "margin" | "padding" | "inset" | "border-width" | "border-style" | "border-color" => {
+        "margin" | "padding" | "inset" | "scroll-margin" | "scroll-padding" | "border-width"
+        | "border-style" | "border-color" => {
             return pair(four_sides(value)?.to_vec());
         }
         "overflow" => {
@@ -768,6 +783,19 @@ fn written(name: &str, value: &str) -> String {
         // Its names escaped as identifiers are (D72).
         "container-name" => style::container::container_name_value(&tokens),
         "container-type" => style::container::container_type_value(&tokens),
+        // At their shortest, as the reference browser writes them (Scroll
+        // Snap 1 section 5).
+        "scroll-snap-type" | "scroll-snap-align" | "scroll-snap-stop" => {
+            style::scroll_snap_value(name, &tokens)
+        }
+        // A length of 0 written with its unit.
+        _ if name.starts_with("scroll-margin") || name.starts_with("scroll-padding") => Some(
+            style::serialize::specified_of(name, &tokens)
+                .split(' ')
+                .map(|word| if word == "0" { "0px" } else { word })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         "font-stretch" | "font-weight" | "font-style" => {
             Some(style::serialize::tokens(&tokens).to_ascii_lowercase())
         }

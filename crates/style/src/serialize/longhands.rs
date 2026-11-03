@@ -24,6 +24,7 @@ use crate::computed::{
     AutospaceMode, HangingEnd, Hyphens, LineBreak, TabSize, TextAutospace, TextFitKind,
     TextFitMethod, TextSpacingTrim, TextWrapStyle, WordSpaceTransform,
 };
+use crate::computed::{SnapAlign, SnapAxis, SnapStrictness};
 
 /// `hyphenate-limit-chars`, at its shortest: the third left out where it
 /// is the second, then the second where it is `auto`.
@@ -326,6 +327,41 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             "smooth"
         } else {
             "auto"
+        }
+        .to_owned(),
+        "scroll-snap-type" => {
+            let kind = style.effects().scroll_snap_type;
+            let axis = match kind.axis {
+                SnapAxis::None => return Some("none".to_owned()),
+                SnapAxis::X => "x",
+                SnapAxis::Y => "y",
+                SnapAxis::Block => "block",
+                SnapAxis::Inline => "inline",
+                SnapAxis::Both => "both",
+            };
+            match kind.strictness {
+                SnapStrictness::Proximity => axis.to_owned(),
+                SnapStrictness::Mandatory => format!("{axis} mandatory"),
+            }
+        }
+        "scroll-snap-align" => {
+            let word = |align: SnapAlign| match align {
+                SnapAlign::None => "none",
+                SnapAlign::Start => "start",
+                SnapAlign::End => "end",
+                SnapAlign::Center => "center",
+            };
+            let [block, inline] = style.effects().scroll_snap_align;
+            if block == inline {
+                word(block).to_owned()
+            } else {
+                format!("{} {}", word(block), word(inline))
+            }
+        }
+        "scroll-snap-stop" => if style.effects().scroll_snap_stop_always {
+            "always"
+        } else {
+            "normal"
         }
         .to_owned(),
         "transition-property" => {

@@ -265,6 +265,22 @@ pub fn paint_order_everywhere<'a>(
     order_within(roots, viewport, offsets, 1.0e7, 1.0e7)
 }
 
+/// The shift each `position: sticky` box of `roots` gets for `viewport`
+/// and `offsets`, across and down, by its node, as the paint order
+/// shifts it ([`sticky_shift`]): what a scroll-state query's `stuck`
+/// reads (CSS Conditional 5 section 7.4.4). Every box is walked, wherever
+/// it is, against the viewport itself.
+pub fn sticky_shifts(
+    roots: &[Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+) -> HashMap<NodeId, (f32, f32)> {
+    walk_within(roots, viewport, offsets, 1.0e7, 1.0e7, false)
+        .1
+        .into_iter()
+        .collect()
+}
+
 /// [`paint_order_in`] with the content `across` pixels left and right
 /// of the viewport listed too.
 fn order_within<'a>(
@@ -274,6 +290,23 @@ fn order_within<'a>(
     margin: f32,
     across: f32,
 ) -> Vec<Step<'a>> {
+    walk_within(roots, viewport, offsets, margin, across, across > 0.0).0
+}
+
+/// A sticky box's shift, across and down, by its node.
+type Shift = (NodeId, (f32, f32));
+
+/// [`order_within`], with the shifts of the sticky boxes walked over;
+/// `wide` when a fixed box and a sticky box's scrollport are as wide as
+/// what is listed, not the viewport.
+fn walk_within<'a>(
+    roots: &'a [Fragment],
+    viewport: Viewport,
+    offsets: &dyn ScrollOffsets,
+    margin: f32,
+    across: f32,
+    wide: bool,
+) -> (Vec<Step<'a>>, Vec<Shift>) {
     // What is listed, in document coordinates, rounded out to the rows
     // of tiles when there is a margin.
     let (mut top, mut bottom) = (
@@ -294,7 +327,7 @@ fn order_within<'a>(
             h: bottom - top,
         },
         // A fixed box is listed wherever it is when everything is.
-        window: if across > 0.0 {
+        window: if wide {
             Rect {
                 x: -across,
                 y: -margin,
@@ -326,6 +359,7 @@ fn order_within<'a>(
         taken: HashSet::new(),
         offsets,
         ink: 0.0,
+        sticky: Vec::new(),
     };
     // The roots' containing block is the initial one: as wide as the
     // viewport, from the document's top down without end.
@@ -384,7 +418,7 @@ fn order_within<'a>(
         walk.positioned(p);
     }
     walk.close_segment();
-    tidy_segments(walk.steps)
+    (tidy_segments(walk.steps), walk.sticky)
 }
 
 /// `steps` with the document's groups tidied: one with nothing in it
@@ -631,6 +665,8 @@ struct Walk<'a, 'o> {
     /// of them itself.
     taken: HashSet<StackingKey>,
     offsets: &'o dyn ScrollOffsets,
+    /// The shift each sticky box walked over got, by its node.
+    sticky: Vec<Shift>,
 }
 
 /// A positioned descendant of a stacking context, or a stacking context
@@ -1025,6 +1061,7 @@ impl<'a> Walk<'a, '_> {
                 let scrollport = self.clip().unwrap_or_else(|| self.window_in_group());
                 let rect = self.rect_of(f);
                 let (sx, sy) = sticky_shift(&f.style, rect, containing, scrollport);
+                self.sticky.push((f.node, (sx, sy)));
                 self.dx += sx;
                 self.dy += sy;
             }

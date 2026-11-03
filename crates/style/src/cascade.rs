@@ -125,7 +125,7 @@ use crate::computed::{
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Decoration, Effects, Filter, FontKerning,
     FontProps, Fragmentation, GridStyle, ImageStyle, InlineSide, JustifyItems, Lists, Motion,
-    Radii, Resize, Svg, WillChange,
+    Radii, Resize, ScrollSnapType, SnapAlign, SnapAxis, SnapStrictness, Svg, WillChange,
 };
 use crate::container::{ContainerSizes, Containers, Queried};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
@@ -464,6 +464,12 @@ pub struct PseudoStyles {
     pub marker: Option<Arc<ComputedStyle>>,
     /// `::backdrop` (gap batch H): an element's in the top layer alone.
     pub backdrop: Option<Arc<ComputedStyle>>,
+    /// `::details-content` (CSS Pseudo-Elements 4 section 5.1): a
+    /// `details` element's alone, which the user agent's sheet styles;
+    /// and its `::before` and `::after`, which inherit from it.
+    pub details_content: Option<Arc<ComputedStyle>>,
+    pub details_content_before: Option<Arc<ComputedStyle>>,
+    pub details_content_after: Option<Arc<ComputedStyle>>,
 }
 
 impl PseudoStyles {
@@ -481,14 +487,15 @@ impl PseudoStyles {
             PseudoElement::FirstLine => self.first_line.as_ref(),
             PseudoElement::Marker => self.marker.as_ref(),
             PseudoElement::Backdrop => self.backdrop.as_ref(),
+            PseudoElement::DetailsContent => self.details_content.as_ref(),
+            PseudoElement::DetailsContentBefore => self.details_content_before.as_ref(),
+            PseudoElement::DetailsContentAfter => self.details_content_after.as_ref(),
             PseudoElement::Placeholder
             | PseudoElement::Selection
-            | PseudoElement::DetailsContent
             | PseudoElement::FileSelectorButton
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
             | PseudoElement::Checkmark
-            | PseudoElement::Nested
             | PseudoElement::WebkitPrefixed
             | PseudoElement::Slotted
             | PseudoElement::Part => None,
@@ -507,11 +514,14 @@ enum Target {
     FirstLine,
     Marker,
     Backdrop,
+    DetailsContent,
+    DetailsContentBefore,
+    DetailsContentAfter,
 }
 
 impl Target {
     /// The targets in the order [`Matched`] keeps them.
-    const ALL: [Target; 7] = [
+    const ALL: [Target; 10] = [
         Target::Element,
         Target::Before,
         Target::After,
@@ -519,12 +529,22 @@ impl Target {
         Target::FirstLine,
         Target::Marker,
         Target::Backdrop,
+        Target::DetailsContent,
+        Target::DetailsContentBefore,
+        Target::DetailsContentAfter,
     ];
 
     /// Whether `content`'s `normal` computes to `none`: on `::before`
-    /// and `::after` (CSS 2.2 §12.2); on `::marker` it stays.
+    /// and `::after` (CSS 2.2 section 12.2), `::details-content`'s among them;
+    /// on `::marker` it stays.
     fn takes_content(self) -> bool {
-        matches!(self, Target::Before | Target::After)
+        matches!(
+            self,
+            Target::Before
+                | Target::After
+                | Target::DetailsContentBefore
+                | Target::DetailsContentAfter
+        )
     }
 
     /// The pseudo-element it is, when its animations run (M22.2): the
@@ -536,7 +556,12 @@ impl Target {
             Target::After => Some(PseudoElement::After),
             Target::Marker => Some(PseudoElement::Marker),
             Target::Backdrop => Some(PseudoElement::Backdrop),
-            Target::Element | Target::FirstLetter | Target::FirstLine => None,
+            Target::Element
+            | Target::FirstLetter
+            | Target::FirstLine
+            | Target::DetailsContent
+            | Target::DetailsContentBefore
+            | Target::DetailsContentAfter => None,
         }
     }
 
@@ -550,14 +575,15 @@ impl Target {
             PseudoElement::FirstLine => Some(Target::FirstLine),
             PseudoElement::Marker => Some(Target::Marker),
             PseudoElement::Backdrop => Some(Target::Backdrop),
+            PseudoElement::DetailsContent => Some(Target::DetailsContent),
+            PseudoElement::DetailsContentBefore => Some(Target::DetailsContentBefore),
+            PseudoElement::DetailsContentAfter => Some(Target::DetailsContentAfter),
             PseudoElement::Placeholder
             | PseudoElement::Selection
-            | PseudoElement::DetailsContent
             | PseudoElement::FileSelectorButton
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
             | PseudoElement::Checkmark
-            | PseudoElement::Nested
             | PseudoElement::WebkitPrefixed
             | PseudoElement::Slotted
             | PseudoElement::Part => None,
@@ -661,8 +687,12 @@ impl Target {
             // An element takes `content` too (M23.3): an image alone
             // replaces its content, which the box tree honours, and the
             // rest it ignores.
-            Target::Element => true,
-            Target::Before | Target::After | Target::Backdrop => true,
+            Target::Element | Target::DetailsContent => true,
+            Target::Before
+            | Target::After
+            | Target::Backdrop
+            | Target::DetailsContentBefore
+            | Target::DetailsContentAfter => true,
         }
     }
 }
@@ -1801,6 +1831,7 @@ impl Recascader<'_> {
             ),
             rem: self.styles.rem,
             fonts: cascader.context.fonts,
+            own: None,
         };
         let matched = declarations_for(
             self.document,
@@ -1913,9 +1944,9 @@ impl Recascade for Recascader<'_> {
             return None;
         }
         let base = self.with_matched(element, |matched, resolution| {
-            let applied = matched.of(target);
+            let applied = matched.of_pseudo(target, element, parent, resolution.containers);
             (marker || !applied.is_empty())
-                .then(|| compute_style(applied, parent, target, resolution, None, None))
+                .then(|| compute_style(&applied, parent, target, resolution, None, None))
         })?;
         let Some(pseudo) = target.animated() else {
             return Some(base);
@@ -1939,8 +1970,9 @@ impl Recascade for Recascader<'_> {
             |_| true,
             |parent, animated, transitioned| {
                 self.with_matched(element, |matched, resolution| {
+                    let own = self.styles.get(element).unwrap_or(parent);
                     compute_style(
-                        matched.of(target),
+                        &matched.of_pseudo(target, element, own, resolution.containers),
                         parent,
                         target,
                         resolution,
@@ -2280,6 +2312,9 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
                 first_line,
                 marker,
                 backdrop,
+                details_content,
+                details_content_before,
+                details_content_after,
             } = a;
             for (pseudo, a, b) in [
                 (PseudoElement::Before, before, &b.before),
@@ -2288,6 +2323,21 @@ fn composited_change(node: NodeId, old: &Computed, new: &Computed) -> Option<Vec
                 (PseudoElement::FirstLine, first_line, &b.first_line),
                 (PseudoElement::Marker, marker, &b.marker),
                 (PseudoElement::Backdrop, backdrop, &b.backdrop),
+                (
+                    PseudoElement::DetailsContent,
+                    details_content,
+                    &b.details_content,
+                ),
+                (
+                    PseudoElement::DetailsContentBefore,
+                    details_content_before,
+                    &b.details_content_before,
+                ),
+                (
+                    PseudoElement::DetailsContentAfter,
+                    details_content_after,
+                    &b.details_content_after,
+                ),
             ] {
                 match (a, b) {
                     (None, None) => {}
@@ -2591,6 +2641,7 @@ impl<'a> Cascader<'a> {
                 viewport,
                 rem,
                 fonts: self.context.fonts,
+                own: None,
             };
             declarations_for(
                 self.document,
@@ -2612,6 +2663,7 @@ impl<'a> Cascader<'a> {
             viewport,
             rem,
             fonts: self.context.fonts,
+            own: None,
         };
         let resolution = Resolution {
             rem,
@@ -2696,6 +2748,7 @@ impl<'a> Cascader<'a> {
                     viewport,
                     rem,
                     fonts: self.context.fonts,
+                    own: None,
                 };
                 let matched = declarations_for(
                     self.document,
@@ -2801,7 +2854,8 @@ impl<'a> Cascader<'a> {
         // either way; with the animations and transitions of those that
         // run them, and those of the others cancelled.
         let pseudo = |target: Target| {
-            let applied = matched.of(target);
+            let applied = matched.of_pseudo(target, element, &style, Some(&containers));
+            let applied = &*applied;
             let styled = match target {
                 Target::Marker => style.display.is_list_item(),
                 // A `::backdrop` is an element's in the top layer alone
@@ -2875,6 +2929,21 @@ impl<'a> Cascader<'a> {
             );
             Some(style)
         };
+        // A `details` element's `::details-content`, which the user
+        // agent's sheet styles, and the `::before` and `::after` of it some
+        // rule styles, from its style (CSS Pseudo-Elements 4 section 5.1).
+        let details = |target: Target, parent: &ComputedStyle| {
+            let applied = matched.of_pseudo(target, element, &style, Some(&containers));
+            compute_style(&applied, parent, target, &pseudo_resolution, None, None)
+        };
+        let content = (self.document.tag(element) == Some("details"))
+            .then(|| details(Target::DetailsContent, &style));
+        let nested = |target: Target| {
+            let content = content.as_ref()?;
+            (!matched.of(target).is_empty()).then(|| details(target, content))
+        };
+        let details_content_before = nested(Target::DetailsContentBefore).map(Arc::new);
+        let details_content_after = nested(Target::DetailsContentAfter).map(Arc::new);
         let pseudo = PseudoStyles {
             before: pseudo(Target::Before).map(Arc::new),
             after: pseudo(Target::After).map(Arc::new),
@@ -2882,6 +2951,9 @@ impl<'a> Cascader<'a> {
             first_line: pseudo(Target::FirstLine).map(Arc::new),
             marker: pseudo(Target::Marker).map(Arc::new),
             backdrop: pseudo(Target::Backdrop).map(Arc::new),
+            details_content: content.map(Arc::new),
+            details_content_before,
+            details_content_after,
         };
         let pseudo = (pseudo != PseudoStyles::default()).then(|| Box::new(pseudo));
         // The kept base style itself when nothing changed it, so that the
@@ -3395,12 +3467,50 @@ pub(crate) struct ParsedRule<'s> {
 /// pseudo-elements, unsorted, by [`Target`].
 #[derive(Default)]
 struct Matched<'a> {
-    targets: [Vec<Applied<'a>>; 7],
+    targets: [Vec<Applied<'a>>; 10],
 }
 
 impl<'a> Matched<'a> {
     fn of(&self, target: Target) -> &[Applied<'a>] {
         &self.targets[target as usize]
+    }
+
+    /// The declarations of the pseudo-element `target` of `element`,
+    /// whose style is `own`: those of an `@container` block kept where
+    /// it holds, the pseudo-element's query containers being the element
+    /// and its ancestors (CSS Conditional 5 section 7.1, D72).
+    fn of_pseudo(
+        &self,
+        target: Target,
+        element: NodeId,
+        own: &ComputedStyle,
+        containers: Option<&Containers<'_>>,
+    ) -> Cow<'_, [Applied<'a>]> {
+        let applied = self.of(target);
+        if applied.iter().all(|a| a.container.is_none()) {
+            return Cow::Borrowed(applied);
+        }
+        let containers = containers.map(|c| Containers {
+            own: Some((element, own)),
+            ..*c
+        });
+        let mut held: HashMap<(usize, u32), bool> = HashMap::new();
+        Cow::Owned(
+            applied
+                .iter()
+                .filter(|a| match a.container {
+                    None => true,
+                    Some((blocks, block)) => *held
+                        .entry((blocks.as_ptr() as usize, block))
+                        .or_insert_with(|| {
+                            containers.as_ref().is_some_and(|containers| {
+                                container_holds(blocks, block, Some(element), containers)
+                            })
+                        }),
+                })
+                .cloned()
+                .collect(),
+        )
     }
 
     /// The element's own declarations.
@@ -3410,6 +3520,7 @@ impl<'a> Matched<'a> {
 }
 
 /// A declaration plus everything needed to sort it into cascade order.
+#[derive(Clone)]
 struct Applied<'a> {
     /// See [`tier`] — encodes origin *and* importance in one order.
     tier: u8,
@@ -3440,6 +3551,11 @@ struct Applied<'a> {
     /// A stylesheet's declaration, borrowed, or an inline style's, parsed
     /// for the element.
     decl: Cow<'a, css::Declaration>,
+    /// For a pseudo-element's declaration, the `@container` block of its
+    /// sheet's blocks it is in, if any: whether it holds is known once
+    /// the element's own style is, the element being the pseudo-element's
+    /// first query container (D72).
+    container: Option<(&'a [crate::rule_set::ContainerBlock], u32)>,
 }
 
 impl Applied<'_> {
@@ -3553,6 +3669,7 @@ fn declarations_for<'a>(
             context: own,
             tree: own_root,
             decl: Cow::Owned(decl),
+            container: None,
         });
         order += 1;
     }
@@ -3613,6 +3730,7 @@ fn declarations_for<'a>(
                 context: own,
                 tree: own_root,
                 decl: Cow::Owned(decl),
+                container: None,
             });
             order += 1;
         }
@@ -3789,6 +3907,7 @@ fn collect_scoped<'a>(
                 context,
                 tree,
                 decl: Cow::Borrowed(decl),
+                container: None,
             });
         }
         *order += rule.declarations.len() as u32;
@@ -3840,10 +3959,9 @@ fn collect_from_sheet<'a>(
 ) {
     // The scoping roots of each scope met, for `element`.
     let mut roots: HashMap<u32, Vec<(NodeId, u32)>> = HashMap::new();
-    // Whether each `@container` block met holds, for the element and for
-    // its pseudo-elements, whose query containers are its own and its
-    // ancestors (D72).
-    let mut held: HashMap<(u32, bool), bool> = HashMap::new();
+    // Whether each `@container` block met holds for the element, whose
+    // query containers are its ancestors (D72).
+    let mut held: HashMap<u32, bool> = HashMap::new();
     let parent = matcher.document().flat_parent_element(element);
     let mut next = 0;
     while next < candidates.len() {
@@ -3872,7 +3990,7 @@ fn collect_from_sheet<'a>(
         // for the element and for each of its pseudo-elements, and of
         // those the nearest scoping root (Cascade 6 section 6.5).
         let list: &'a SelectorList = rule.list;
-        let mut best: [Option<(Specificity, Reverse<u32>)>; 7] = [None; 7];
+        let mut best: [Option<(Specificity, Reverse<u32>)>; 10] = [None; 10];
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
             let target = match &selector.pseudo_element {
@@ -3910,18 +4028,25 @@ fn collect_from_sheet<'a>(
             let Some((specificity, Reverse(proximity))) = best else {
                 continue;
             };
-            if let Some(block) = rule.container {
-                let pseudo = target != Target::Element;
-                let holds = *held.entry((block, pseudo)).or_insert_with(|| {
-                    let from = if pseudo { Some(element) } else { parent };
+            // A pseudo-element's block is weighed once the element's
+            // style is known ([`Matched::of_pseudo`]).
+            let pseudo = target != Target::Element;
+            if let Some(block) = rule.container
+                && !pseudo
+            {
+                let holds = *held.entry(block).or_insert_with(|| {
                     containers.is_some_and(|containers| {
-                        container_holds(sheet.containers, block, from, containers)
+                        container_holds(sheet.containers, block, parent, containers)
                     })
                 });
                 if !holds {
                     continue;
                 }
             }
+            let container = rule
+                .container
+                .filter(|_| pseudo)
+                .map(|block| (sheet.containers, block));
             // The same order for each target: within one, it is the
             // declarations' order in the sheets.
             for (offset, decl) in rule.declarations.iter().enumerate() {
@@ -3939,6 +4064,7 @@ fn collect_from_sheet<'a>(
                     context,
                     tree,
                     decl: Cow::Borrowed(decl),
+                    container,
                 });
             }
         }
@@ -6167,6 +6293,20 @@ fn apply_declaration(
             top_layer::parse_interest_delay_shorthand(value, bases),
             |e, v| e.interest_delay = v,
         ),
+        "scroll-snap-type" => set_effects(style, parse_scroll_snap_type(value), |e, v| {
+            e.scroll_snap_type = v
+        }),
+        "scroll-snap-align" => set_effects(style, parse_scroll_snap_align(value), |e, v| {
+            e.scroll_snap_align = v
+        }),
+        "scroll-snap-stop" => {
+            let always = match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
+                Some("normal") => Some(false),
+                Some("always") => Some(true),
+                _ => None,
+            };
+            set_effects(style, always, |e, v| e.scroll_snap_stop_always = v)
+        }
         // Scroll Snap 1 section 6: lengths, and `auto` or lengths and
         // percentages not below zero.
         "scroll-margin" => {
@@ -7350,6 +7490,15 @@ fn apply_css_wide(
             copy_effects(style, src, |e, s| e.interest_delay[1] = s.interest_delay[1])
         }
         "interest-delay" => copy_effects(style, src, |e, s| e.interest_delay = s.interest_delay),
+        "scroll-snap-type" => {
+            copy_effects(style, src, |e, s| e.scroll_snap_type = s.scroll_snap_type)
+        }
+        "scroll-snap-align" => {
+            copy_effects(style, src, |e, s| e.scroll_snap_align = s.scroll_snap_align)
+        }
+        "scroll-snap-stop" => copy_effects(style, src, |e, s| {
+            e.scroll_snap_stop_always = s.scroll_snap_stop_always
+        }),
         "scroll-margin" => copy_effects(style, src, |e, s| e.scroll_margin = s.scroll_margin),
         "scroll-padding" => copy_effects(style, src, |e, s| {
             e.scroll_padding = s.scroll_padding.clone()
@@ -10093,6 +10242,87 @@ fn single_token(tokens: &[Token]) -> Option<&Token> {
     match it.next() {
         None => Some(first),
         Some(_) => None,
+    }
+}
+
+/// A `scroll-snap-type`, `scroll-snap-align` or `scroll-snap-stop` value
+/// as a declaration block keeps it: at its shortest, as its computed
+/// value is written (a `proximity` and a second alignment saying the
+/// first again left out); `None` for one not valid.
+pub fn scroll_snap_value(name: &str, tokens: &[Token]) -> Option<String> {
+    let mut style = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    let taken = with_default_bases(|bases| {
+        apply_declaration(&mut style, name, tokens, bases, &parent, &mut [false; 4])
+    });
+    taken
+        .then(|| crate::serialize::computed_value(&style, name))
+        .flatten()
+}
+
+/// `scroll-snap-type` (Scroll Snap 1 section 5.1): `none`, or an axis
+/// and, after it, a strictness, `proximity` when none is given.
+fn parse_scroll_snap_type(tokens: &[Token]) -> Option<ScrollSnapType> {
+    let words: Option<Vec<String>> = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .map(|t| match t {
+            Token::Ident(word) => Some(word.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let words = words?;
+    let axis = |word: &str| {
+        Some(match word {
+            "x" => SnapAxis::X,
+            "y" => SnapAxis::Y,
+            "block" => SnapAxis::Block,
+            "inline" => SnapAxis::Inline,
+            "both" => SnapAxis::Both,
+            _ => return None,
+        })
+    };
+    let strictness = |word: &str| match word {
+        "mandatory" => Some(SnapStrictness::Mandatory),
+        "proximity" => Some(SnapStrictness::Proximity),
+        _ => None,
+    };
+    match &words[..] {
+        [none] if none == "none" => Some(ScrollSnapType::NONE),
+        [a] => Some(ScrollSnapType {
+            axis: axis(a)?,
+            strictness: SnapStrictness::Proximity,
+        }),
+        [a, s] => Some(ScrollSnapType {
+            axis: axis(a)?,
+            strictness: strictness(s)?,
+        }),
+        _ => None,
+    }
+}
+
+/// `scroll-snap-align` (section 6.3): one or two of `none`, `start`,
+/// `end` and `center`, the block axis's then the inline one's, one alone
+/// for both.
+fn parse_scroll_snap_align(tokens: &[Token]) -> Option<[SnapAlign; 2]> {
+    let aligns: Option<Vec<SnapAlign>> = tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Whitespace))
+        .map(|t| match t {
+            Token::Ident(word) => match word.to_ascii_lowercase().as_str() {
+                "none" => Some(SnapAlign::None),
+                "start" => Some(SnapAlign::Start),
+                "end" => Some(SnapAlign::End),
+                "center" => Some(SnapAlign::Center),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    match aligns?[..] {
+        [one] => Some([one, one]),
+        [block, inline] => Some([block, inline]),
+        _ => None,
     }
 }
 
@@ -13356,6 +13586,13 @@ mod tests {
             "size scroll-state"
         );
         assert_eq!(
+            value(
+                "p { container-type: Anchored scroll-state size }",
+                "container-type"
+            ),
+            "size scroll-state anchored"
+        );
+        assert_eq!(
             value("p { container-name: none }", "container-name"),
             "none"
         );
@@ -13369,7 +13606,13 @@ mod tests {
                 "{invalid}"
             );
         }
-        for invalid in ["size inline-size", "normal size", "style"] {
+        for invalid in [
+            "size inline-size",
+            "normal size",
+            "style",
+            "anchored anchored",
+            "normal anchored",
+        ] {
             assert!(
                 !supports("container-type", &css::tokenize(invalid)),
                 "{invalid}"
@@ -16257,6 +16500,71 @@ mod tests {
     /// The style of the first `p` in `html` with `css` as its one sheet.
     fn p_with(html: &str, css: &str) -> ComputedStyle {
         style_of(html, &[sheet(css)], "p")
+    }
+
+    #[test]
+    fn the_scroll_snap_properties_parse_and_serialize() {
+        let value = |css: &str, name: &str| {
+            let document = Document::from_node(&html::parse_document("<p>x</p>").unwrap());
+            let styles = cascade_document(&document, &[sheet(css)], &CascadeContext::default());
+            crate::serialize::computed_value(styles.get(first(&document, "p")).unwrap(), name)
+                .unwrap()
+        };
+        for (written, name, computed) in [
+            ("", "scroll-snap-type", "none"),
+            (
+                "scroll-snap-type: Y Mandatory",
+                "scroll-snap-type",
+                "y mandatory",
+            ),
+            (
+                "scroll-snap-type: both proximity",
+                "scroll-snap-type",
+                "both",
+            ),
+            ("scroll-snap-type: inline", "scroll-snap-type", "inline"),
+            ("", "scroll-snap-align", "none"),
+            ("scroll-snap-align: start", "scroll-snap-align", "start"),
+            ("scroll-snap-align: end end", "scroll-snap-align", "end"),
+            (
+                "scroll-snap-align: center start",
+                "scroll-snap-align",
+                "center start",
+            ),
+            ("", "scroll-snap-stop", "normal"),
+            ("scroll-snap-stop: ALWAYS", "scroll-snap-stop", "always"),
+        ] {
+            assert_eq!(
+                value(&format!("p {{ {written} }}"), name),
+                computed,
+                "{written}"
+            );
+        }
+        for (name, invalid) in [
+            ("scroll-snap-type", "mandatory"),
+            ("scroll-snap-type", "none mandatory"),
+            ("scroll-snap-type", "x y"),
+            ("scroll-snap-align", "start start start"),
+            ("scroll-snap-align", "left"),
+            ("scroll-snap-stop", "none"),
+        ] {
+            assert!(
+                !supports(name, &css::tokenize(invalid)),
+                "{name}: {invalid}"
+            );
+        }
+        // Not inherited.
+        let document = Document::from_node(&html::parse_document("<div><p>x</p></div>").unwrap());
+        let styles = cascade_document(
+            &document,
+            &[sheet(
+                "div { scroll-snap-type: y; scroll-snap-align: start }",
+            )],
+            &CascadeContext::default(),
+        );
+        let p = styles.get(first(&document, "p")).unwrap();
+        assert_eq!(p.effects().scroll_snap_type, ScrollSnapType::NONE);
+        assert_eq!(p.effects().scroll_snap_align, [SnapAlign::None; 2]);
     }
 
     #[test]

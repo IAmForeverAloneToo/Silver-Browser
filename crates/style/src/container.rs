@@ -22,6 +22,10 @@
 //! rule applies when one of its queries is true. Style queries read the
 //! container's computed custom properties, equal as their values' text
 //! once substituted, or ordered as numbers and lengths in the range form.
+//! Anchored queries (`anchored()`, CSS Anchor Positioning 2) are taken
+//! as the reference browser takes them, and answer as of a container
+//! laid out with no position fallback, the engine having no anchor
+//! positioning (see [`AnchoredCondition`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -83,14 +87,24 @@ impl ContainerSizes {
 }
 
 /// What a scroll-state query asks of its container (section 7.4.4), as
-/// a layout and the scroll offsets give it: towards which of its sides,
-/// top, right, bottom and left, it can be scrolled. No box of this
-/// engine is stuck by `position: sticky` or snapped as a query asks, and
-/// none keeps the direction it was last scrolled in: `stuck`, `snapped`
-/// and `scrolled` answer as of a container in none of those states.
+/// a layout, the scroll offsets and the scrolls since give it, each by
+/// its sides, top, right, bottom and left, or its axes, across and down.
+/// A container is in the states its box can be: a scroll container
+/// scrollable and scrolled, a sticky box stuck, a snap target snapped;
+/// in none of the others.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScrollState {
+    /// The sides a scroll container can be scrolled towards.
     pub scrollable: [bool; 4],
+    /// The sides the last relative scroll of a scroll container (a
+    /// `scrollBy()`, a wheel or a key) that moved its offset moved it
+    /// towards, one of each axis at most, each axis keeping its own.
+    pub scrolled: [bool; 4],
+    /// The sides of its scrollport a `position: sticky` box is held off
+    /// by its insets.
+    pub stuck: [bool; 4],
+    /// The axes its scroll container rests snapped to it in.
+    pub snapped: [bool; 2],
 }
 
 /// What a cascade read of one container: its content box and its scroll
@@ -116,8 +130,8 @@ fn idents(tokens: &[Token]) -> Option<Vec<&str>> {
         .collect()
 }
 
-/// `container-type`: `normal`, or `size` or `inline-size` and
-/// `scroll-state`, each once, in any order.
+/// `container-type`: `normal`, or `size` or `inline-size`, `scroll-state`
+/// and `anchored`, each once, in any order.
 pub(crate) fn parse_container_type(tokens: &[Token]) -> Option<ContainerType> {
     let words = idents(tokens)?;
     if let [word] = words[..]
@@ -138,6 +152,7 @@ pub(crate) fn parse_container_type(tokens: &[Token]) -> Option<ContainerType> {
                 sized = true;
             }
             "scroll-state" if !kind.scroll_state => kind.scroll_state = true,
+            "anchored" if !kind.anchored => kind.anchored = true,
             _ => return None,
         }
     }
@@ -205,6 +220,7 @@ pub(crate) fn container_type_text(kind: ContainerType) -> String {
     let words: Vec<&str> = size
         .into_iter()
         .chain(kind.scroll_state.then_some("scroll-state"))
+        .chain(kind.anchored.then_some("anchored"))
         .collect();
     if words.is_empty() {
         "normal".to_owned()
@@ -293,8 +309,257 @@ enum Condition {
     Style(Box<StyleCondition>),
     /// `scroll-state()`.
     ScrollState(Box<ScrollCondition>),
+    /// `anchored()`.
+    Anchored(Box<AnchoredCondition>),
     /// `<general-enclosed>`: unknown, with its text.
     Unknown(String),
+}
+
+/// An anchored query's condition (CSS Anchor Positioning 2): of the
+/// position fallback its container, an anchor-positioned box, is laid
+/// out with.
+#[derive(Debug, Clone, PartialEq)]
+enum AnchoredCondition {
+    Not(Box<AnchoredCondition>),
+    And(Vec<AnchoredCondition>),
+    Or(Vec<AnchoredCondition>),
+    Parens(Box<AnchoredCondition>),
+    /// `fallback`, and the value it is compared with, as it serializes,
+    /// if any.
+    Fallback(Option<String>),
+}
+
+/// The try tactics a `fallback` value may name.
+const TRY_TACTICS: [&str; 5] = [
+    "flip-block",
+    "flip-inline",
+    "flip-start",
+    "flip-x",
+    "flip-y",
+];
+
+/// The axis a `<position-area>` keyword is of, by the groups its grammar
+/// pairs: 0 and 1 the physical (or `x-`, `y-`) ones across and down, 2
+/// and 3 the logical block and inline ones, 4 and 5 their `self-` forms,
+/// 6 the ones of either logical axis, 7 their `self-` forms; `None` for
+/// `center` and `span-all`, which are of any, and for a word not one.
+fn area_axis(word: &str) -> Option<Option<u8>> {
+    let bare = word.strip_prefix("span-").unwrap_or(word);
+    Some(Some(match bare {
+        "all" if word == "span-all" => return Some(None),
+        "center" if word == "center" => return Some(None),
+        "left" | "right" | "x-start" | "x-end" | "self-x-start" | "self-x-end" => 0,
+        "top" | "bottom" | "y-start" | "y-end" | "self-y-start" | "self-y-end" => 1,
+        "block-start" | "block-end" => 2,
+        "inline-start" | "inline-end" => 3,
+        "self-block-start" | "self-block-end" => 4,
+        "self-inline-start" | "self-inline-end" => 5,
+        "start" | "end" => 6,
+        "self-start" | "self-end" => 7,
+        _ => return None,
+    }))
+}
+
+/// A `fallback` feature's value as it serializes: `none`, a
+/// `<dashed-ident>` and try tactics (the name first), or a
+/// `<position-area>` (the axis across or the block axis first); `None`
+/// for one not valid, which leaves the query `<general-enclosed>`.
+fn fallback_value(tokens: &[Token]) -> Option<String> {
+    let words = idents(tokens)?;
+    let lower: Vec<String> = words
+        .iter()
+        .map(|w| {
+            if w.starts_with("--") {
+                (*w).to_owned()
+            } else {
+                w.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    match &lower[..] {
+        [] => return None,
+        [one] if one == "none" => return Some("none".to_owned()),
+        _ => {}
+    }
+    // `<dashed-ident> || <try-tactic>`, each tactic once.
+    let names: Vec<&String> = lower.iter().filter(|w| w.starts_with("--")).collect();
+    let tactics: Vec<&String> = lower
+        .iter()
+        .filter(|w| TRY_TACTICS.contains(&w.as_str()))
+        .collect();
+    if names.len() + tactics.len() == lower.len() {
+        let distinct = tactics
+            .iter()
+            .enumerate()
+            .all(|(i, t)| !tactics[..i].contains(t));
+        if names.len() > 1 || !distinct {
+            return None;
+        }
+        return Some(
+            names
+                .into_iter()
+                .chain(tactics)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    // `<position-area>`: one keyword, or two of the axes its grammar
+    // pairs, the second dropped when it says the first again.
+    let axes: Option<Vec<Option<u8>>> = lower.iter().map(|w| area_axis(w)).collect();
+    match (&lower[..], &axes?[..]) {
+        ([one], [_]) => Some(one.clone()),
+        ([a, b], [x, y]) => {
+            let pair = |first: u8, second: u8| -> Option<bool> {
+                // Whether `a` goes first, for a pair of `first` and
+                // `second`, either ambiguous.
+                match (*x, *y) {
+                    (Some(p), Some(q)) if p == first && q == second => Some(true),
+                    (Some(p), Some(q)) if p == second && q == first => Some(false),
+                    (Some(p), None) if p == first => Some(true),
+                    (Some(p), None) if p == second => Some(false),
+                    (None, Some(q)) if q == second => Some(true),
+                    (None, Some(q)) if q == first => Some(false),
+                    _ => None,
+                }
+            };
+            let order = match (*x, *y) {
+                (None, None) => Some(true),
+                (Some(6), Some(6) | None) | (None, Some(6)) => Some(true),
+                (Some(7), Some(7) | None) | (None, Some(7)) => Some(true),
+                _ => pair(0, 1).or_else(|| pair(2, 3)).or_else(|| pair(4, 5)),
+            }?;
+            let (first, second) = if order { (a, b) } else { (b, a) };
+            if first == second {
+                Some(first.clone())
+            } else {
+                Some(format!("{first} {second}"))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Parses an anchored query's condition at `at`, as a scroll-state
+/// query's is parsed.
+fn parse_anchored_condition(
+    tokens: &[Token],
+    at: &mut usize,
+    depth: usize,
+) -> Option<AnchoredCondition> {
+    skip_ws(tokens, at);
+    if depth > MAX_NESTING {
+        return None;
+    }
+    let first = tokens.get(*at);
+    if !matches!(first, Some(Token::OpenParen))
+        && !matches!(first, Some(Token::Ident(w)) if w.eq_ignore_ascii_case("not"))
+    {
+        let feature = parse_anchored_feature(&tokens[*at..])?;
+        *at = tokens.len();
+        return Some(feature);
+    }
+    if let Some(Token::Ident(word)) = first
+        && word.eq_ignore_ascii_case("not")
+    {
+        *at += 1;
+        skip_ws(tokens, at);
+        let inner = parse_anchored_in_parens(tokens, at, depth)?;
+        skip_ws(tokens, at);
+        return Some(AnchoredCondition::Not(Box::new(inner)));
+    }
+    let mut joined = vec![parse_anchored_in_parens(tokens, at, depth)?];
+    let mut joiner: Option<bool> = None;
+    loop {
+        skip_ws(tokens, at);
+        let Some(Token::Ident(word)) = tokens.get(*at) else {
+            break;
+        };
+        let and = match word.to_ascii_lowercase().as_str() {
+            "and" => true,
+            "or" => false,
+            _ => return None,
+        };
+        if joiner.is_some_and(|was| was != and) {
+            return None;
+        }
+        joiner = Some(and);
+        *at += 1;
+        skip_ws(tokens, at);
+        joined.push(parse_anchored_in_parens(tokens, at, depth)?);
+    }
+    Some(match joiner {
+        None => joined.pop().expect("one condition"),
+        Some(true) => AnchoredCondition::And(joined),
+        Some(false) => AnchoredCondition::Or(joined),
+    })
+}
+
+/// An anchored condition in parentheses.
+fn parse_anchored_in_parens(
+    tokens: &[Token],
+    at: &mut usize,
+    depth: usize,
+) -> Option<AnchoredCondition> {
+    let rest = &tokens[*at..];
+    if !matches!(rest.first(), Some(Token::OpenParen)) {
+        return None;
+    }
+    let (inside, after) = block(rest)?;
+    *at += rest.len() - after.len();
+    let inside = trim(inside);
+    let mut pos = 0;
+    let inner = parse_anchored_condition(inside, &mut pos, depth + 1)?;
+    (pos == inside.len()).then(|| AnchoredCondition::Parens(Box::new(inner)))
+}
+
+/// The `fallback` feature, with a value after a colon or not.
+fn parse_anchored_feature(tokens: &[Token]) -> Option<AnchoredCondition> {
+    let tokens = trim(tokens);
+    let Some(Token::Ident(name)) = tokens.first() else {
+        return None;
+    };
+    if !name.eq_ignore_ascii_case("fallback") {
+        return None;
+    }
+    match trim(&tokens[1..]) {
+        [] => Some(AnchoredCondition::Fallback(None)),
+        [Token::Colon, value @ ..] => Some(AnchoredCondition::Fallback(Some(fallback_value(
+            trim(value),
+        )?))),
+        _ => None,
+    }
+}
+
+impl AnchoredCondition {
+    fn text(&self) -> String {
+        match self {
+            AnchoredCondition::Not(inner) => format!("not {}", inner.text()),
+            AnchoredCondition::And(items) => {
+                join(items.iter().map(AnchoredCondition::text), " and ")
+            }
+            AnchoredCondition::Or(items) => join(items.iter().map(AnchoredCondition::text), " or "),
+            AnchoredCondition::Parens(inner) => format!("({})", inner.text()),
+            AnchoredCondition::Fallback(None) => "fallback".to_owned(),
+            AnchoredCondition::Fallback(Some(value)) => format!("fallback: {value}"),
+        }
+    }
+
+    /// Its answer for an anchored container. This engine has no anchor
+    /// positioning (`position-anchor`, `position-area` and
+    /// `position-try` are not properties here): no box is laid out with
+    /// a position fallback, so `fallback: none` holds and every other
+    /// fallback, and `fallback` alone, does not, as the reference
+    /// browser answers for a container that is not anchor-positioned.
+    fn evaluate(&self) -> Truth {
+        match self {
+            AnchoredCondition::Not(inner) => inner.evaluate().not(),
+            AnchoredCondition::And(items) => Truth::and(items.iter().map(Self::evaluate)),
+            AnchoredCondition::Or(items) => Truth::or(items.iter().map(Self::evaluate)),
+            AnchoredCondition::Parens(inner) => inner.evaluate(),
+            AnchoredCondition::Fallback(value) => Truth::of(value.as_deref() == Some("none")),
+        }
+    }
 }
 
 /// A scroll-state query's condition (section 7.4.4).
@@ -556,11 +821,16 @@ impl ScrollCondition {
             ScrollCondition::Parens(inner) => inner.evaluate(node, style, c),
             ScrollCondition::Feature(feature, value) => {
                 let state = c.state_of(node).1.unwrap_or_default();
-                // The sides it is in the state of: only scrollable ones
-                // are known (see [`ScrollState`]).
+                // The sides it is in the state of, an axis snapped as its
+                // two sides.
                 let held = match feature {
                     ScrollFeature::Scrollable => state.scrollable,
-                    _ => [false; 4],
+                    ScrollFeature::Scrolled => state.scrolled,
+                    ScrollFeature::Stuck => state.stuck,
+                    ScrollFeature::Snapped => {
+                        let [across, down] = state.snapped;
+                        [down, across, down, across]
+                    }
                 };
                 let rtl = style.direction == crate::computed::Direction::Rtl;
                 Truth::of(match value {
@@ -836,7 +1106,7 @@ impl Query {
         let mut at = from;
         while let Some(node) = at {
             at = document.flat_parent_element(node);
-            let Some(style) = containers.styles.get(node) else {
+            let Some(style) = containers.style(node) else {
                 continue;
             };
             let named = self.name.as_deref().is_none_or(|name| {
@@ -851,7 +1121,11 @@ impl Query {
                 Some(false) => kind.is_size(),
                 Some(true) => kind.size == ContainerSize::Both,
             };
-            if !named || !sized || (needs.scroll_state && !kind.scroll_state) {
+            if !named
+                || !sized
+                || (needs.scroll_state && !kind.scroll_state)
+                || (needs.anchored && !kind.anchored)
+            {
                 continue;
             }
             return match &self.condition {
@@ -869,6 +1143,7 @@ struct Needs {
     /// A size: `Some(true)` of the block axis too.
     size: Option<bool>,
     scroll_state: bool,
+    anchored: bool,
 }
 
 /// Parses a condition at `at`: `not` and a query in parentheses, or one
@@ -953,6 +1228,16 @@ fn parse_in_parens(tokens: &[Token], at: &mut usize, depth: usize) -> Option<Con
             match parse_scroll_condition(inside, &mut pos, depth + 1) {
                 Some(condition) if pos == inside.len() => {
                     Some(Condition::ScrollState(Box::new(condition)))
+                }
+                _ => Some(unknown()),
+            }
+        }
+        Token::Function(name) if name.eq_ignore_ascii_case("anchored") => {
+            let inside = trim(inside);
+            let mut pos = 0;
+            match parse_anchored_condition(inside, &mut pos, depth + 1) {
+                Some(condition) if pos == inside.len() => {
+                    Some(Condition::Anchored(Box::new(condition)))
                 }
                 _ => Some(unknown()),
             }
@@ -1314,6 +1599,7 @@ impl Condition {
             Condition::Size(feature) => feature.text(),
             Condition::Style(inner) => format!("style({})", inner.text()),
             Condition::ScrollState(inner) => format!("scroll-state({})", inner.text()),
+            Condition::Anchored(inner) => format!("anchored({})", inner.text()),
             Condition::Unknown(text) => text.clone(),
         }
     }
@@ -1327,7 +1613,7 @@ impl Condition {
             }
             Condition::Style(inner) => inner.encloses_unknown(),
             Condition::Unknown(_) => true,
-            Condition::Size(_) | Condition::ScrollState(_) => false,
+            Condition::Size(_) | Condition::ScrollState(_) | Condition::Anchored(_) => false,
         }
     }
 
@@ -1344,6 +1630,7 @@ impl Condition {
                 needs.size = Some(needs.size.unwrap_or(false) || block);
             }
             Condition::ScrollState(_) => needs.scroll_state = true,
+            Condition::Anchored(_) => needs.anchored = true,
             Condition::Style(_) | Condition::Unknown(_) => {}
         }
     }
@@ -1357,6 +1644,7 @@ impl Condition {
             Condition::Size(feature) => feature.evaluate(node, style, c),
             Condition::Style(inner) => inner.evaluate(node, style, c),
             Condition::ScrollState(inner) => inner.evaluate(node, style, c),
+            Condition::Anchored(inner) => inner.evaluate(),
             Condition::Unknown(_) => Truth::Unknown,
         }
     }
@@ -1485,14 +1773,23 @@ impl SizeFeature {
 }
 
 /// Whether size containment applies to a box of `style`, which a size
-/// query asks: one that makes a principal box that is not an inline box
-/// or a table's inner part (CSS Contain 2 section 3.1).
+/// query asks: one that makes a principal box whose inner display type
+/// is not `table`, and that is not an internal table or ruby box nor an
+/// inline box that is not atomic (CSS Contain 2 section 3.2). A table
+/// and its cells so take their sizes from their content, and a query of
+/// one is unknown, as in the reference browser.
 pub fn eligible(style: &ComputedStyle) -> bool {
+    if style.display == Display::InlineListItem {
+        return style.flow_root;
+    }
     !matches!(
         style.display,
         Display::None
             | Display::Contents
             | Display::Inline
+            | Display::Ruby
+            | Display::Table
+            | Display::InlineTable
             | Display::TableRowGroup
             | Display::TableHeaderGroup
             | Display::TableFooterGroup
@@ -1594,9 +1891,14 @@ impl StyleCondition {
 /// computed styles, which an element's ancestors already have when the
 /// element is styled, the containers' sizes as laid out, and where the
 /// containers asked about are recorded.
+#[derive(Clone, Copy)]
 pub(crate) struct Containers<'a> {
     pub(crate) document: &'a Document,
     pub(crate) styles: &'a Styles,
+    /// An element whose style is being computed, with that style, which
+    /// `styles` do not have yet: what its pseudo-elements' queries read
+    /// of it, their first query container.
+    pub(crate) own: Option<(NodeId, &'a ComputedStyle)>,
     pub(crate) sizes: &'a ContainerSizes,
     pub(crate) queried: &'a RefCell<Queried>,
     /// The substitution of `var()` in a style query's value.
@@ -1612,6 +1914,14 @@ pub(crate) struct Containers<'a> {
 }
 
 impl Containers<'_> {
+    /// `node`'s computed style: [`Containers::own`]'s for its element.
+    fn style(&self, node: NodeId) -> Option<&ComputedStyle> {
+        match self.own {
+            Some((own, style)) if own == node => Some(style),
+            _ => self.styles.get(node),
+        }
+    }
+
     /// `node`'s content box as laid out, recorded as asked about.
     fn size_of(&self, node: NodeId) -> Option<(f32, f32)> {
         self.state_of(node).0
@@ -1638,7 +1948,7 @@ impl Containers<'_> {
             if width.is_some() && height.is_some() {
                 break;
             }
-            let Some(style) = self.styles.get(node) else {
+            let Some(style) = self.style(node) else {
                 continue;
             };
             let kind = style.container_type.size;
@@ -1722,7 +2032,7 @@ impl Containers<'_> {
             let inherited = || {
                 self.document
                     .flat_parent_element(node)
-                    .and_then(|parent| self.styles.get(parent))
+                    .and_then(|parent| self.style(parent))
                     .and_then(|parent| parent.custom_property(name))
             };
             let wanted = match keyword {
@@ -1966,6 +2276,15 @@ mod tests {
     /// `css`, its container `#c` laid out at `size` and able to scroll
     /// towards `scroll`'s sides.
     fn holds(html: &str, css: &str, query: &str, size: (f32, f32), scroll: [bool; 4]) -> bool {
+        let state = ScrollState {
+            scrollable: scroll,
+            ..ScrollState::default()
+        };
+        holds_in(html, css, query, size, state)
+    }
+
+    /// [`holds`] with the container in the scroll `state`.
+    fn holds_in(html: &str, css: &str, query: &str, size: (f32, f32), state: ScrollState) -> bool {
         let document = dom::Document::from_node(&html::parse_document(html).unwrap());
         let node = |id: &str| {
             document
@@ -1979,7 +2298,7 @@ mod tests {
         let mut styles = sheets.cascade(&document, &context);
         let mut sizes = ContainerSizes::new();
         sizes.insert(node("c"), size.0, size.1);
-        sizes.insert_scroll(node("c"), ScrollState { scrollable: scroll });
+        sizes.insert_scroll(node("c"), state);
         sheets.restyle_containers(&document, &context, &mut styles, &sizes);
         styles
             .get(node("t"))
@@ -2045,11 +2364,196 @@ mod tests {
             (0.0, 0.0),
             down
         ));
-        // Never stuck, snapped or scrolled.
+        // Stuck, snapped and scrolled as the state says, each apart.
         assert!(at(
             "scroll-state(stuck: none) and scroll-state(snapped: none)",
             down
         ));
         assert!(!at("scroll-state(scrolled: top)", down));
+        let state = |f: &dyn Fn(&mut ScrollState)| {
+            let mut state = ScrollState::default();
+            f(&mut state);
+            state
+        };
+        let in_state =
+            |query: &str, state: ScrollState| holds_in(html, css, query, (0.0, 0.0), state);
+        let scrolled = state(&|s| s.scrolled = [true, false, false, true]);
+        for (query, wanted) in [
+            ("scroll-state(scrolled)", true),
+            ("scroll-state(scrolled: top)", true),
+            ("scroll-state(scrolled: y)", true),
+            ("scroll-state(scrolled: left)", true),
+            ("scroll-state(scrolled: inline-start)", true),
+            ("scroll-state(scrolled: bottom)", false),
+            ("scroll-state(scrolled: right)", false),
+            ("scroll-state(scrolled: none)", false),
+            ("scroll-state(scrollable)", false),
+            ("scroll-state(stuck)", false),
+        ] {
+            assert_eq!(in_state(query, scrolled), wanted, "{query}");
+        }
+        let stuck = state(&|s| s.stuck = [false, false, true, false]);
+        for (query, wanted) in [
+            ("scroll-state(stuck: bottom)", true),
+            ("scroll-state(stuck: block-end)", true),
+            ("scroll-state(stuck: top)", false),
+            ("scroll-state(stuck: none)", false),
+            ("scroll-state(scrolled)", false),
+        ] {
+            assert_eq!(in_state(query, stuck), wanted, "{query}");
+        }
+        let down_only = state(&|s| s.snapped = [false, true]);
+        let both = state(&|s| s.snapped = [true, true]);
+        for (query, snapped, wanted) in [
+            ("scroll-state(snapped: y)", down_only, true),
+            ("scroll-state(snapped: block)", down_only, true),
+            ("scroll-state(snapped: x)", down_only, false),
+            ("scroll-state(snapped: inline)", down_only, false),
+            ("scroll-state(snapped: both)", down_only, false),
+            ("scroll-state(snapped: both)", both, true),
+            ("scroll-state(snapped)", down_only, true),
+            ("scroll-state(snapped: none)", down_only, false),
+            ("scroll-state(snapped: none)", ScrollState::default(), true),
+        ] {
+            assert_eq!(in_state(query, snapped), wanted, "{query}");
+        }
+    }
+
+    #[test]
+    fn a_pseudo_element_queries_its_own_element_first() {
+        let document = dom::Document::from_node(
+            &html::parse_document("<div id=o><div id=t>x</div></div>").unwrap(),
+        );
+        let t = document
+            .subtree(document.root())
+            .find(|&n| document.attr(n, "id") == Some("t"))
+            .unwrap();
+        let sheet = "#t { container-type: inline-size; --c: x }
+            #t::before { color: red; content: 'b' }
+            @container (width >= 300px) { #t::before { color: green } }
+            @container style(--c: x) { #t::after { content: 'a'; color: blue } }";
+        let sheets = Stylesheets::new(vec![css::parse_stylesheet(sheet).unwrap()]);
+        let context = CascadeContext::default();
+        let mut styles = sheets.cascade(&document, &context);
+        let color = |styles: &Styles, pseudo| {
+            styles
+                .pseudo(t, pseudo)
+                .map(|style: &ComputedStyle| style.color)
+        };
+        use crate::selector_matching::PseudoElement;
+        let red = crate::computed::Color::rgb8(255, 0, 0);
+        let green = crate::computed::Color::rgb8(0, 128, 0);
+        let blue = crate::computed::Color::rgb8(0, 0, 255);
+        // A style query of the element itself holds before any layout.
+        assert_eq!(color(&styles, PseudoElement::After), Some(blue));
+        let mut sizes = ContainerSizes::new();
+        sizes.insert(t, 200.0, 20.0);
+        sheets.restyle_containers(&document, &context, &mut styles, &sizes);
+        assert_eq!(color(&styles, PseudoElement::Before), Some(red));
+        sizes.insert(t, 300.0, 20.0);
+        sheets.restyle_containers(&document, &context, &mut styles, &sizes);
+        assert_eq!(color(&styles, PseudoElement::Before), Some(green));
+    }
+
+    #[test]
+    fn a_table_and_its_parts_and_inline_boxes_take_no_size_containment() {
+        let html = "<div id=c><p id=t>x</p></div>";
+        let at = |display: &str| {
+            holds(
+                html,
+                &format!("#c {{ container-type: size; display: {display} }}"),
+                "(width > 0)",
+                (100.0, 50.0),
+                [false; 4],
+            )
+        };
+        for display in [
+            "block",
+            "inline-block",
+            "flow-root",
+            "flex",
+            "table-caption",
+            "list-item",
+        ] {
+            assert!(at(display), "{display}");
+        }
+        for display in [
+            "table",
+            "inline-table",
+            "table-cell",
+            "table-row",
+            "inline",
+            "ruby",
+            "inline list-item",
+            "contents",
+        ] {
+            assert!(!at(display), "{display}");
+        }
+        assert!(at("inline flow-root list-item"));
+    }
+
+    #[test]
+    fn anchored_queries_parse_as_the_reference_browser_and_answer_unfallen() {
+        let text = |t: &str| prelude(t).map(|(text, _)| text);
+        for (written, serialized) in [
+            (
+                "anchored(fallback: FLIP-BLOCK)",
+                "anchored(fallback: flip-block)",
+            ),
+            ("ANCHORED(fallback)", "anchored(fallback)"),
+            ("anchored( fallback : NONE )", "anchored(fallback: none)"),
+            (
+                "anchored(fallback: flip-block --a)",
+                "anchored(fallback: --a flip-block)",
+            ),
+            (
+                "anchored(fallback: top left)",
+                "anchored(fallback: left top)",
+            ),
+            (
+                "anchored(fallback: top span-all)",
+                "anchored(fallback: span-all top)",
+            ),
+            (
+                "anchored(fallback: inline-start block-end)",
+                "anchored(fallback: block-end inline-start)",
+            ),
+            (
+                "anchored(not (fallback: none))",
+                "anchored(not (fallback: none))",
+            ),
+            // Not valid, so kept as written.
+            ("anchored(fallback: 1px)", "anchored(fallback: 1px)"),
+            (
+                "anchored(fallback: --a, --b)",
+                "anchored(fallback: --a, --b)",
+            ),
+            (
+                "anchored(fallback: flip-block flip-block)",
+                "anchored(fallback: flip-block flip-block)",
+            ),
+            (
+                "anchored(fallback: left right)",
+                "anchored(fallback: left right)",
+            ),
+            ("anchored(foo: none)", "anchored(foo: none)"),
+        ] {
+            assert_eq!(text(written).as_deref(), Some(serialized), "{written}");
+        }
+        let html = "<div id=c><p id=t>x</p></div>";
+        let at = |css: &str, query: &str| holds(html, css, query, (0.0, 0.0), [false; 4]);
+        let anchored = "#c { container-type: anchored }";
+        assert!(at(anchored, "anchored(fallback: none)"));
+        assert!(at(anchored, "not anchored(fallback)"));
+        assert!(!at(anchored, "anchored(fallback: flip-block)"));
+        assert!(!at(anchored, "anchored(fallback)"));
+        // Of no anchored container: unknown.
+        assert!(!at(
+            "#c { container-type: size }",
+            "anchored(fallback: none)"
+        ));
+        assert!(!at("#c { container-type: size }", "not anchored(fallback)"));
+        // A malformed value is `<general-enclosed>`.
+        assert!(!at(anchored, "not anchored(fallback: 1px)"));
     }
 }

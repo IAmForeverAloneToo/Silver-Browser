@@ -410,46 +410,10 @@ impl DocumentLayout {
     /// border box less its borders and its padding, a percentage of
     /// which is of the content width of the box its fragment is in, the
     /// initial containing block's for a root's. What container queries
-    /// and units read after this layout.
-    ///
-    /// A scroll-state container that is a scroll container gets its
-    /// scroll state too: the sides it can be scrolled towards, from its
-    /// scroll offset across and down, which `offsets` gives.
-    pub fn container_sizes(
-        &self,
-        viewport_width: f32,
-        offsets: &dyn Fn(NodeId) -> (f32, f32),
-    ) -> style::container::ContainerSizes {
+    /// and units read after this layout; the scroll states the engine
+    /// adds, which the scroll offsets give.
+    pub fn container_sizes(&self, viewport_width: f32) -> style::container::ContainerSizes {
         let mut sizes = style::container::ContainerSizes::new();
-        for f in self.iter() {
-            if f.generated.is_some()
-                || !f.style.container_type.scroll_state
-                || !f.style.overflow().scrolls()
-            {
-                continue;
-            }
-            let (x, y) = offsets(f.node);
-            let [_, right, _, left] = f.style.used_border_width();
-            let padding_width = f.w - left - right;
-            // How far the content reaches across, inside the boxes that
-            // do not clip.
-            let mut reach = 0.0f32;
-            let mut stack: Vec<(f32, &Fragment)> = f.children.iter().map(|c| (0.0, c)).collect();
-            while let Some((dx, c)) = stack.pop() {
-                reach = reach.max(dx + c.x + c.w - left);
-                if !c.clips() {
-                    stack.extend(c.children.iter().map(|g| (dx + c.x, g)));
-                }
-            }
-            let max_x = (reach - padding_width).max(0.0);
-            let max_y = f.max_scroll();
-            sizes.insert_scroll(
-                f.node,
-                style::container::ScrollState {
-                    scrollable: [y > 0.0, x < max_x, y < max_y, x > 0.0],
-                },
-            );
-        }
         let mut stack: Vec<(&Fragment, f32)> =
             self.roots.iter().map(|f| (f, viewport_width)).collect();
         while let Some((f, cb_width)) = stack.pop() {
@@ -1025,12 +989,16 @@ fn tentative_width(
             };
             (w, left, remaining - left)
         }
-        _ => {
-            // Over-constrained (both specified, or overflowing): per the
-            // ltr rule, margin-right is recomputed regardless of its
-            // specified value, as if it alone were auto.
-            (w, fixed_left, remaining - fixed_left)
-        }
+        // A box wider than its containing block overflows it towards the
+        // end of the containing block's inline axis (CSS2 section
+        // 10.3.3): to the left right to left, its margin-left
+        // recomputed, so that a right to left scroll container's content
+        // reaches past its scroll origin, its right edge.
+        _ if overflows && style.placed_rtl => (w, remaining - fixed_right, fixed_right),
+        // Over-constrained otherwise (both specified): per the ltr rule,
+        // margin-right is recomputed regardless of its specified value,
+        // as if it alone were auto.
+        _ => (w, fixed_left, remaining - fixed_left),
     }
 }
 
@@ -3384,7 +3352,7 @@ mod tests {
         let s = frame("s");
         assert_eq!(s.h, 80.0, "its padding alone, 5% of 800 at each end");
         assert_eq!(frame("i").w, 0.0, "a float of no content's width");
-        let sizes = laid.layout.container_sizes(VIEWPORT, &|_| (0.0, 0.0));
+        let sizes = laid.layout.container_sizes(VIEWPORT);
         assert_eq!(sizes.get(node("s")), Some((720.0, 0.0)));
         // Its own formatting context, beside the 30px float rather than
         // under it.

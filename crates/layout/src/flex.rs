@@ -269,9 +269,17 @@ impl<'a> Item<'a> {
                     }
                     None => item.column_width(c, stretched, pass),
                 };
-                item.measure_in(c, width, None, None, pass, |layout| {
+                let content = item.measure_in(c, width, None, None, pass, |layout| {
                     layout.auto_content_height
-                })
+                });
+                // A box of a preferred aspect ratio is as tall as the ratio
+                // makes its width, its content making it taller (css-sizing-4
+                // section 5.1): a size container's content none, as size
+                // containment has it.
+                match crate::block::preferred_ratio(style).filter(|_| b.replaced.is_none()) {
+                    Some(ratio) if ratio > 0.0 => (width / ratio).max(content),
+                    _ => content,
+                }
             })
         };
         // A row item with a ratio and a definite cross size, its own
@@ -1546,6 +1554,21 @@ mod tests {
         assert_eq!(rect(&l, "a").3, 10.0);
         assert_eq!(rect(&l, "b"), (0.0, 10.0, 100.0, 90.0));
         assert_eq!(rect(&l, "i").3, 90.0, "laid out at its flexed height");
+    }
+
+    #[test]
+    fn a_column_item_of_a_ratio_is_as_tall_as_its_width_makes_it() {
+        // flex-basis-with-container-type: a stretched column item of
+        // `aspect-ratio: 1`, a size container whose content counts for
+        // nothing, as tall as it is wide; content taller than that makes
+        // it taller.
+        let html = "<div id=c><div id=a><p></p></div></div>";
+        let css = "#c { display: flex; flex-direction: column; width: 100px }
+                   #a { aspect-ratio: 1 } p { margin: 0; height: 150px }";
+        let height = |extra: &str| rect(&laid(html, &format!("{css} {extra}")), "a").3;
+        assert_eq!(height("#a { container-type: size }"), 100.0);
+        assert_eq!(height(""), 150.0);
+        assert_eq!(height("p { height: 20px }"), 100.0);
     }
 
     #[test]

@@ -983,14 +983,20 @@ enum Item {
 }
 
 /// Which of an element's generated boxes an [`Item`] is: a list item's
-/// marker (M21.6), or its `::before` or `::after`; or the `::backdrop`
-/// of an element in the top layer (gap batch H), which holds nothing.
+/// marker (M21.6), or its `::before` or `::after`; the `::backdrop` of
+/// an element in the top layer (gap batch H), which holds nothing; or a
+/// `details` element's `::details-content` (CSS Pseudo-Elements 4
+/// section 5.1), which holds the element's content but its summary, or
+/// that one's `::before` or `::after`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Side {
     Marker,
     Before,
     After,
     Backdrop,
+    Content,
+    ContentBefore,
+    ContentAfter,
 }
 
 impl Side {
@@ -1000,6 +1006,9 @@ impl Side {
             Side::Before => PseudoElement::Before,
             Side::After => PseudoElement::After,
             Side::Backdrop => PseudoElement::Backdrop,
+            Side::Content => PseudoElement::DetailsContent,
+            Side::ContentBefore => PseudoElement::DetailsContentBefore,
+            Side::ContentAfter => PseudoElement::DetailsContentAfter,
         }
     }
 }
@@ -1022,6 +1031,16 @@ impl Item {
         match self {
             Item::Node(_) | Item::ControlText(_) | Item::ControlArrow(_) => None,
             Item::Generated(_, side) | Item::GeneratedText(_, side) => Some(side.pseudo_element()),
+        }
+    }
+
+    /// The pseudo-element a text directly in the item is of: none in a
+    /// `details` element's `::details-content`, whose text is the
+    /// element's own.
+    fn text_generated(self) -> Option<PseudoElement> {
+        match self {
+            Item::Generated(_, Side::Content) => None,
+            _ => self.generated(),
         }
     }
 }
@@ -1144,6 +1163,18 @@ impl<'a> Styled<'a> {
                     self.generates(node, side)
                         .then_some(Item::Generated(node, side))
                 };
+                // A `details` element's first summary, then the rest of
+                // its content in its `::details-content` (HTML section
+                // 15.5.1).
+                if let Some(content) = generated(Side::Content) {
+                    return generated(Side::Marker)
+                        .into_iter()
+                        .chain(generated(Side::Before))
+                        .chain(self.summary(node).map(Item::Node))
+                        .chain(Some(content))
+                        .chain(generated(Side::After))
+                        .collect();
+                }
                 generated(Side::Marker)
                     .into_iter()
                     .chain(generated(Side::Before))
@@ -1152,9 +1183,33 @@ impl<'a> Styled<'a> {
                     .collect()
             }
             Item::Generated(_, Side::Backdrop) => Vec::new(),
+            Item::Generated(element, Side::Content) => {
+                let generated = |side| {
+                    self.generates(element, side)
+                        .then_some(Item::Generated(element, side))
+                };
+                let summary = self.summary(element);
+                generated(Side::ContentBefore)
+                    .into_iter()
+                    .chain(
+                        self.boxed_children(element)
+                            .filter(|&child| Some(child) != summary)
+                            .map(Item::Node),
+                    )
+                    .chain(generated(Side::ContentAfter))
+                    .collect()
+            }
             Item::Generated(element, side) => vec![Item::GeneratedText(element, side)],
             Item::GeneratedText(..) | Item::ControlText(_) | Item::ControlArrow(_) => Vec::new(),
         }
+    }
+
+    /// A `details` element's summary: its first child that is a
+    /// `summary` element (HTML section 4.11.1), which shows whether or not
+    /// the element is open.
+    fn summary(&self, details: NodeId) -> Option<NodeId> {
+        self.boxed_children(details)
+            .find(|&child| self.document.tag(child) == Some("summary"))
     }
 
     /// The children of `node` that may make boxes: its elements and
@@ -1259,6 +1314,21 @@ impl<'a> Styled<'a> {
         let Some(style) = self.styles.pseudo(node, side.pseudo_element()) else {
             return false;
         };
+        // A `details` element's `::details-content` holds its content,
+        // whatever its own `content` says.
+        if side == Side::Content {
+            return true;
+        }
+        // A marker is a list item's alone (Lists 3 section 3), whatever
+        // styles it.
+        if side == Side::Marker
+            && !self
+                .styles
+                .get(node)
+                .is_some_and(|element| element.display.is_list_item())
+        {
+            return false;
+        }
         match &style.content {
             Content::Items(_) => true,
             Content::Normal if side == Side::Marker => {
@@ -2114,7 +2184,7 @@ impl BlockContainer<'_> {
                 children: Default::default(),
                 node: parent.node(),
                 anonymous: true,
-                generated: parent.generated(),
+                generated: parent.text_generated(),
                 generated_text: 0,
                 decorations,
                 styled_by_ancestor: false,
@@ -4738,6 +4808,154 @@ mod tests {
                  #c::before { content: counter(n) ',' counter(m) ',' counter(new) }",
             ),
             ["8", "9", "4,-3,0"]
+        );
+    }
+
+    #[test]
+    fn a_details_element_shows_its_summary_and_its_content_when_open() {
+        let css = "details::details-content::before { content: '<' }
+            details::details-content::after { content: '>' }";
+        // Closed: the summary alone, a list item with the closed
+        // disclosure triangle inside it.
+        let html = "<details><p>a</p><summary>S</summary>t<summary>T</summary></details>";
+        let tree = tree_of(html, css);
+        assert_eq!(tree.texts(&tree.body().children), ["\u{25b8} ", "S"]);
+        // Open: the content but the first summary, in the order it has,
+        // inside the `::details-content` box, its `::before` and
+        // `::after` around it; the triangle open. A summary after the
+        // first is a block, with none.
+        let open = html.replace("<details>", "<details open>");
+        let tree = tree_of(&open, css);
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["\u{25be} ", "S", "<", "a", "t", "T", ">"]
+        );
+        let details = &tree.body().children[0];
+        let content = details
+            .children
+            .iter()
+            .find(|b| b.generated == Some(PseudoElement::DetailsContent))
+            .expect("the content's box");
+        assert_eq!(content.style.display, Display::Block);
+        // The text in it is the element's own, not generated.
+        let text = content
+            .children
+            .iter()
+            .flat_map(|b| b.children.iter())
+            .find(|b| matches!(&b.kind, BoxKind::Text(t) if t == "t"))
+            .expect("the text's box");
+        assert_eq!(text.generated, None);
+        // An author's display for it, and none of a closed one's.
+        let styled = "details::details-content { display: flex }";
+        let tree = tree_of(&open, styled);
+        assert_eq!(
+            tree.texts(&tree.body().children),
+            ["\u{25be} ", "S", "a", "t", "T"]
+        );
+        let tree = tree_of(html, styled);
+        assert_eq!(tree.texts(&tree.body().children), ["\u{25b8} ", "S"]);
+    }
+
+    #[test]
+    fn a_size_container_keeps_its_counters_and_quotes_inside() {
+        // Each case as the reference browser writes it. An increment
+        // inside instantiates a counter of its own, nested in the one
+        // outside, which the sibling after the container still has.
+        let use_ = ".c::before { content: counters(foo, '.') } div { counter-reset: foo 5 }";
+        for kind in ["inline-size", "size"] {
+            assert_eq!(
+                texts_of(
+                    &format!(
+                        "<div><section style='container-type: {kind}'>\
+                         <span style='counter-increment: foo 3'></span><b class=c></b>\
+                         <i style='counter-set: foo 1'></i><b class=c></b></section>\
+                         <b class=c></b></div>"
+                    ),
+                    use_,
+                ),
+                ["5.3", "5.1", "5"],
+                "{kind}"
+            );
+        }
+        // A scroll-state container has no style containment, nor has an
+        // element of no container type.
+        for kind in ["scroll-state", "normal"] {
+            assert_eq!(
+                texts_of(
+                    &format!(
+                        "<div><section style='container-type: {kind}'>\
+                         <span style='counter-increment: foo 3'></span></section>\
+                         <b class=c></b></div>"
+                    ),
+                    use_,
+                ),
+                ["8"],
+                "{kind}"
+            );
+        }
+        // The container's own increments and sets reach the counter
+        // outside, and its following siblings, as anyone's; its own
+        // reset ends with it, a descendant's increment nesting a counter
+        // inside that one too; its `::before` is inside it.
+        assert_eq!(
+            texts_of(
+                "<div><section style='container-type: inline-size; counter-increment: foo 2'>\
+                 <b class=c></b></section><b class=c></b></div>\
+                 <div><section style='container-type: inline-size; counter-increment: bar 4'>\
+                 </section><b class=b></b></div>\
+                 <div><section style='container-type: inline-size; counter-reset: foo 2'>\
+                 <span style='counter-increment: foo 3'></span><b class=c></b></section>\
+                 <b class=c></b></div>\
+                 <div><section class=before style='container-type: inline-size'>\
+                 <b class=c></b></section><b class=c></b></div>",
+                &format!(
+                    "{use_} .b::before {{ content: counter(bar) }}
+                     .before::before {{ content: ''; counter-increment: foo 3 }}"
+                ),
+            ),
+            ["7", "7", "4", "5.2.3", "5", "5.3", "5"]
+        );
+        // The reset of a container that replaced a preceding sibling's
+        // counter gives that one back after it, as the reference browser
+        // does; without containment, the replacing one passes on.
+        let sibling = |kind: &str| {
+            texts_of(
+                &format!(
+                    "<div><i style='counter-reset: foo 5'></i>\
+                     <section style='container-type: {kind}; counter-reset: foo 2'></section>\
+                     <b class=c></b></div>"
+                ),
+                ".c::before { content: counters(foo, '.') }",
+            )
+        };
+        assert_eq!(sibling("inline-size"), ["5"]);
+        assert_eq!(sibling("normal"), ["2"]);
+        // Nested containers: each increment nests one more, and the one a
+        // sibling inside instantiated is passed on inside.
+        assert_eq!(
+            texts_of(
+                "<div><section style='container-type: inline-size'>\
+                 <span style='counter-increment: foo 3'></span>\
+                 <section style='container-type: inline-size'>\
+                 <span style='counter-increment: foo 4'></span><b class=c></b></section>\
+                 <p style='counter-increment: foo 2'><b class=c></b></p></section>\
+                 <b class=c></b></div>",
+                use_,
+            ),
+            ["5.3.4", "5.5", "5"]
+        );
+        // The quote depth after a container, what its `::before` and
+        // `::after` do among what is inside it, is the one before it.
+        assert_eq!(
+            texts_of(
+                "<p><em class=q></em><span class=s><em class=q></em><em class=q></em></span>\
+                 <em class=q></em><span class=s><em class=e></em><em class=e></em></span>\
+                 <em class=q></em><span class='s a'></span><em class=q></em></p>",
+                "* { quotes: 'a' 'b' 'c' 'd' 'e' 'f' 'g' 'h' }
+                 .s { container-type: inline-size }
+                 .q::before, .a::after { content: open-quote } .e::before { content: close-quote }",
+            ),
+            ["a", "c", "e", "c", "d", "b", "e", "g", "g"]
         );
     }
 

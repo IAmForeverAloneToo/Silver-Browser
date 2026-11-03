@@ -167,9 +167,13 @@ pub enum PseudoElement {
     /// `::selection`: recognised; there is no selection yet (M26).
     Selection,
     /// `::details-content` (CSS Pseudo-Elements 4 section 5.1, D74): a
-    /// `details` element's content but its summary; recognised, no box
-    /// of it drawn.
+    /// `details` element's content but its summary, in a box of its own.
     DetailsContent,
+    /// `::details-content::before` and `::details-content::after`: the
+    /// boxes generated at the start and the end of that box, as the
+    /// reference browser takes them.
+    DetailsContentBefore,
+    DetailsContentAfter,
     /// `::file-selector-button`: a file input's button; recognised, the
     /// control drawn whole.
     FileSelectorButton,
@@ -179,9 +183,6 @@ pub enum PseudoElement {
     Picker,
     PickerIcon,
     Checkmark,
-    /// A pseudo-element of a pseudo-element (`::details-content::before`):
-    /// valid where the reference browser takes it, matching nothing.
-    Nested,
     /// `::backdrop` (CSS Position 4 section 4.1, gap batch H): the box
     /// beneath an element in the top layer, as big as the viewport,
     /// inheriting from its element.

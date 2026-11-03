@@ -137,6 +137,7 @@ mod sandbox;
 #[cfg(test)]
 mod sanitizer_tests;
 mod scripts;
+mod scroll_state;
 mod select;
 pub mod service;
 pub mod service_worker;
@@ -616,6 +617,14 @@ struct Shown {
     /// Each scroll container's offset (M10.5), by its element's id; one
     /// never scrolled has no entry, and one freed loses its entry.
     element_scroll: HashMap<NodeId, ElementScroll>,
+    /// The direction of each scroll container's last relative scroll
+    /// that moved it, what `scroll-state(scrolled)` reads (D72).
+    scrolled: scroll_state::Scrolled,
+    /// What each snapping scroll container is snapped to (CSS Scroll
+    /// Snap 1), and the direction of the relative scrolls since it was,
+    /// which its next snap goes in.
+    snaps: scroll_state::Snaps,
+    snap_direction: scroll_state::Scrolled,
     /// The initial `about:blank` of a new engine, which the first
     /// navigation replaces (HTML's "is initial about:blank").
     initial: bool,
@@ -730,6 +739,26 @@ struct Rendered {
 }
 
 impl Shown {
+    /// The sizes and scroll states of `layout`'s containers (D72), for a
+    /// viewport of `viewport`'s size, at the offsets shown.
+    fn container_states(
+        &self,
+        layout: &DocumentLayout,
+        viewport: (f32, f32),
+    ) -> style::container::ContainerSizes {
+        let scrolled = &self.element_scroll;
+        scroll_state::container_states(
+            layout,
+            &scroll_state::Inputs {
+                viewport,
+                viewport_scroll: (self.scroll_x, self.scroll_y),
+                offsets: &|node| scrolled.get(&node).map_or((0.0, 0.0), |s| (s.x, s.y)),
+                scrolled: &self.scrolled,
+                snaps: &self.snaps,
+            },
+        )
+    }
+
     /// `document` with `page` its stylesheets, nothing made from it yet,
     /// at the top.
     fn new(mut document: Document, page: Page) -> Shown {
@@ -753,6 +782,9 @@ impl Shown {
             scroll_x: 0.0,
             scroll_target_x: 0.0,
             element_scroll: HashMap::new(),
+            scrolled: HashMap::new(),
+            snaps: HashMap::new(),
+            snap_direction: HashMap::new(),
             initial: false,
             salvageable: true,
             failure: None,
@@ -2248,6 +2280,8 @@ impl Engine {
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
             scrolling: self.animating(),
+            scrolled: Arc::new(self.shown.scrolled.clone()),
+            snaps: Arc::new(self.shown.snaps.clone()),
             compat: self.compat_user_agent,
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
@@ -3061,8 +3095,7 @@ impl Engine {
                 } else {
                     SCROLL_STEP
                 };
-                let target = self.shown.scroll_target_x + step;
-                self.scroll_to_x(target, false);
+                self.scroll_across_by(step);
                 KeyOutcome::Taken
             }
             "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp" | " " | "Home" | "End"
@@ -6563,6 +6596,7 @@ impl Engine {
         // or animated over the frames to come when smooth.
         for scroll in self.shown.scripts.take_scrolls() {
             let instant = !scroll.smooth;
+            let before = self.scroll_targets(scroll.node);
             match scroll.node {
                 None => {
                     if let Some(y) = scroll.y {
@@ -6588,6 +6622,9 @@ impl Engine {
                         self.scroll_element_to_x(node, x, instant);
                     }
                 }
+            }
+            if scroll.relative {
+                self.note_relative_scroll(scroll.node, before);
             }
         }
         if let Some(notice) = self.shown.scripts.take_notice() {
@@ -7864,10 +7901,9 @@ impl Engine {
             let (laid_out, reused) = self.shown.layout_cache.counts();
             self.boxes_laid_out += laid_out as u64;
             self.boxes_reused += reused as u64;
-            let scrolled = &self.shown.element_scroll;
-            let sizes = layout.container_sizes(viewport_width, &|node| {
-                scrolled.get(&node).map_or((0.0, 0.0), |s| (s.x, s.y))
-            });
+            let sizes = self
+                .shown
+                .container_states(&layout, (viewport_width, viewport_height));
             self.shown.layout = Some(CachedLayout {
                 width: viewport_width,
                 height: viewport_height,
@@ -8298,9 +8334,9 @@ impl Engine {
                 scroll.target = scroll.target.clamp(0.0, max);
                 scroll.y = scroll.y.clamp(0.0, max);
                 if scroll.x != 0.0 || scroll.target_x != 0.0 {
-                    let max = fragment.map_or(0.0, geometry::max_scroll_x);
-                    scroll.target_x = scroll.target_x.clamp(0.0, max);
-                    scroll.x = scroll.x.clamp(0.0, max);
+                    let (min, max) = fragment.map_or((0.0, 0.0), geometry::scroll_range_x);
+                    scroll.target_x = scroll.target_x.clamp(min, max);
+                    scroll.x = scroll.x.clamp(min, max);
                 }
             }
         }
@@ -8315,6 +8351,10 @@ impl Engine {
                 self.goal = None;
             }
         }
+        // The scroll containers that snap rest on their snap positions,
+        // and the scroll-state queries answer as the offsets now stand.
+        self.snap_scrolls(width as f32);
+        self.settle_scroll_states(width as f32);
         let (scroll_y, offsets) = self.drawn_offsets();
         let stage = Instant::now();
         let viewport = Viewport {
@@ -8467,8 +8507,10 @@ impl Engine {
     /// ticks, or at once under reduced motion (M22.5); the target is
     /// clamped to the document.
     pub fn scroll_by(&mut self, dy: f32) {
+        let before = self.scroll_targets(None);
         let target = self.shown.scroll_target + dy;
         self.scroll_to(target);
+        self.note_relative_scroll(None, before);
     }
 
     /// Scrolls to offset `y`, animated over the next ticks, or at once
@@ -8483,6 +8525,141 @@ impl Engine {
         let max = self.max_scroll();
         self.shown.scroll_target = y.clamp(0.0, max);
         self.settle_scrolls();
+    }
+
+    /// Puts each snapping scroll container's offset, the viewport's among
+    /// them, on its snap positions (CSS Scroll Snap 1, see
+    /// [`scroll_state`]): after a scroll since the last frame, where the
+    /// scroll was going, in its direction for a relative one; else back
+    /// on the areas it was snapped to, which a layout may have moved. A
+    /// container that was at rest is put there at once, or smoothly when
+    /// its `scroll-behavior` says so and the snap is not a scroll's own;
+    /// one moving to a target has its target moved.
+    fn snap_scrolls(&mut self, width: f32) {
+        let viewport = (width, self.viewport.1 as f32);
+        let containers = scroll_state::snap_containers(self.layout(width), viewport);
+        let mut snaps = HashMap::new();
+        for container in containers {
+            let scroller = container.scroller;
+            let target = self.scroll_targets(scroller);
+            let direction = self
+                .shown
+                .snap_direction
+                .remove(&scroller)
+                .unwrap_or_default();
+            let (at, areas) =
+                container.settle(self.shown.snaps.get(&scroller).copied(), target, direction);
+            if at != target {
+                let smooth =
+                    container.smooth && direction == [0, 0] && !self.preferences.reduced_motion;
+                self.move_scroll_target(scroller, at, smooth);
+            }
+            snaps.insert(
+                scroller,
+                scroll_state::Snap {
+                    areas,
+                    at: self.scroll_targets(scroller),
+                },
+            );
+        }
+        self.shown.snaps = snaps;
+        self.shown.snap_direction.clear();
+    }
+
+    /// Moves the target of the viewport (`None`) or a scroll container to
+    /// `to`, across and down, and the offset shown with it when it was at
+    /// its target and the move is not `smooth`, which the frames to come
+    /// animate.
+    fn move_scroll_target(&mut self, scroller: Option<NodeId>, to: (f32, f32), smooth: bool) {
+        self.changed = true;
+        let shown = &mut self.shown;
+        match scroller {
+            None => {
+                if shown.scroll_x == shown.scroll_target_x && !smooth {
+                    shown.scroll_x = to.0;
+                }
+                if shown.scroll_y == shown.scroll_target && !smooth {
+                    shown.scroll_y = to.1;
+                }
+                shown.scroll_target_x = to.0;
+                shown.scroll_target = to.1;
+            }
+            Some(node) => {
+                let scroll = shown.element_scroll.entry(node).or_default();
+                if scroll.x == scroll.target_x && !smooth {
+                    scroll.x = to.0;
+                }
+                if scroll.y == scroll.target && !smooth {
+                    scroll.y = to.1;
+                }
+                scroll.target_x = to.0;
+                scroll.target = to.1;
+            }
+        }
+    }
+
+    /// Restyles the containers whose scroll states (D72) are no longer
+    /// those their queries were answered with, the offsets having moved,
+    /// a scroll gone another way or a snap moved since, and lays the
+    /// document out again for them: a scroll changes no layout itself,
+    /// so the layout's own passes would not see it.
+    fn settle_scroll_states(&mut self, width: f32) {
+        let Some(styled) = self.shown.styled.as_ref() else {
+            return;
+        };
+        let asks = styled.styles.queried_containers().any(|node| {
+            styled
+                .styles
+                .get(node)
+                .is_some_and(|style| style.container_type.scroll_state)
+        });
+        if !asks {
+            return;
+        }
+        let viewport = (width, self.viewport.1 as f32);
+        self.layout(width);
+        let Some(cached) = self.shown.layout.as_ref() else {
+            return;
+        };
+        let sizes = self.shown.container_states(&cached.layout, viewport);
+        let styled = self.shown.styled.as_ref().expect("styled above");
+        if styled.styles.containers_changed(&sizes).is_empty() {
+            return;
+        }
+        let fonts = FontMeasurer(crate::web_fonts::fonts_of(
+            self.shown.web_fonts.as_ref(),
+            &self.layout_fonts,
+        ));
+        let context = cascade_context(
+            self.viewport,
+            &fonts,
+            &self.shown.page,
+            self.media(self.viewport),
+            &self.shown.animations,
+            self.frame_margins,
+        );
+        let styled = self.shown.styled.as_mut().expect("styled above");
+        let Some(restyle) = self.shown.stylesheets.restyle_containers(
+            &self.shown.document,
+            &context,
+            &mut styled.styles,
+            &sizes,
+        ) else {
+            return;
+        };
+        if restyle.full {
+            self.style_runs += 1;
+            self.shown.layout_cache.clear();
+        } else {
+            self.restyled_elements += restyle.computed as u64;
+            let mut restyled = restyle.changed;
+            restyled.extend(restyle.composited.iter().map(|c| c.node));
+            self.shown
+                .layout_cache
+                .invalidate(&self.shown.document, &[], &restyled);
+        }
+        self.shown.layout = None;
+        self.layout(width);
     }
 
     /// Under reduced motion, puts every scroll offset, the document's
@@ -8612,8 +8789,10 @@ impl Engine {
     /// Scrolls across by `dx` px (right when positive), animated as
     /// [`Engine::scroll_by`] is.
     pub fn scroll_across_by(&mut self, dx: f32) {
+        let before = self.scroll_targets(None);
         let target = self.shown.scroll_target_x + dx;
         self.scroll_to_x(target, false);
+        self.note_relative_scroll(None, before);
     }
 
     /// Jumps across to the fraction `f` of the range (0 the left edge, 1
@@ -8691,8 +8870,63 @@ impl Engine {
     /// Scrolls the element's content by `dy` px (down when positive),
     /// animated over the next ticks, or at once under reduced motion.
     pub fn scroll_element_by(&mut self, node: NodeId, dy: f32) {
+        let before = self.scroll_targets(Some(node));
         let target = self.element_scroll_target(node) + dy;
         self.scroll_element_to(node, target);
+        self.note_relative_scroll(Some(node), before);
+    }
+
+    /// Scrolls the element's content across by `dx` px (right when
+    /// positive), animated as [`Engine::scroll_element_by`] is.
+    pub fn scroll_element_across_by(&mut self, node: NodeId, dx: f32) {
+        let before = self.scroll_targets(Some(node));
+        self.scroll_element_to_x(node, before.0 + dx, false);
+        self.note_relative_scroll(Some(node), before);
+    }
+
+    /// The offsets, across and down, the viewport (`None`) or a scroll
+    /// container is approaching.
+    fn scroll_targets(&self, scroller: Option<NodeId>) -> (f32, f32) {
+        match scroller {
+            None => (self.shown.scroll_target_x, self.shown.scroll_target),
+            Some(node) => self
+                .shown
+                .element_scroll
+                .get(&node)
+                .map_or((0.0, 0.0), |s| (s.target_x, s.target)),
+        }
+    }
+
+    /// Records that a relative scroll (a `scrollBy()`, a wheel, a key)
+    /// of the viewport (`None`) or a scroll container moved it from
+    /// `before`, across and down, to where it now goes: the direction of
+    /// each axis it moved in, which `scroll-state(scrolled)` reads (CSS
+    /// Conditional 5 section 7.4.4, D72) and its next snap goes in. A
+    /// scroll that moved nothing changes nothing.
+    fn note_relative_scroll(&mut self, scroller: Option<NodeId>, before: (f32, f32)) {
+        let after = self.scroll_targets(scroller);
+        let sign = |from: f32, to: f32| match to.partial_cmp(&from) {
+            Some(std::cmp::Ordering::Greater) => 1,
+            Some(std::cmp::Ordering::Less) => -1,
+            _ => 0,
+        };
+        let moved = [sign(before.0, after.0), sign(before.1, after.1)];
+        if moved == [0, 0] {
+            return;
+        }
+        let scrolled = self.shown.scrolled.entry(scroller).or_default();
+        for (axis, &way) in moved.iter().enumerate() {
+            if way != 0 {
+                scrolled[axis] = way;
+            }
+        }
+        let pending = self.shown.snap_direction.entry(scroller).or_default();
+        for (axis, &way) in moved.iter().enumerate() {
+            if way != 0 {
+                pending[axis] = way;
+            }
+        }
+        self.changed = true;
     }
 
     /// Jumps the element's content to offset `y` at once, no animation.
@@ -8713,11 +8947,19 @@ impl Engine {
     /// frame's layout: its scrollable width past its padding box; zero
     /// for an element that is not a scroll container.
     pub fn element_max_scroll_x(&mut self, node: NodeId) -> f32 {
+        self.element_scroll_range_x(node).1
+    }
+
+    /// The least and the most the element's content can scroll across:
+    /// from 0 left to right, to 0 right to left, where the scroll origin
+    /// is its right edge ([`geometry::scroll_range_x`]).
+    fn element_scroll_range_x(&mut self, node: NodeId) -> (f32, f32) {
         let (width, _) = self.viewport;
         if width == 0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
-        fragment_of(&self.layout(width as f32).roots, node).map_or(0.0, geometry::max_scroll_x)
+        fragment_of(&self.layout(width as f32).roots, node)
+            .map_or((0.0, 0.0), geometry::scroll_range_x)
     }
 
     /// Scrolls the element's content across to `x`, animated as
@@ -8727,9 +8969,9 @@ impl Engine {
             return;
         }
         self.goal = None;
-        let max = self.element_max_scroll_x(node);
+        let (min, max) = self.element_scroll_range_x(node);
         let scroll = self.shown.element_scroll.entry(node).or_default();
-        scroll.target_x = x.clamp(0.0, max);
+        scroll.target_x = x.clamp(min, max);
         if instant {
             self.changed |= scroll.x != scroll.target_x;
             scroll.x = scroll.target_x;
@@ -8770,20 +9012,19 @@ impl Engine {
             }
         }
         for node in self.scroll_chain_at(x, y).into_iter().rev() {
-            let max = self.element_max_scroll_x(node);
+            let (min, max) = self.element_scroll_range_x(node);
             let target = self
                 .shown
                 .element_scroll
                 .get(&node)
                 .map_or(0.0, |s| s.target_x);
-            if (dx > 0.0 && target < max) || (dx < 0.0 && target > 0.0) {
-                self.scroll_element_to_x(node, target + dx, false);
+            if (dx > 0.0 && target < max) || (dx < 0.0 && target > min) {
+                self.scroll_element_across_by(node, dx);
                 return;
             }
         }
         if self.viewport_takes_user_scrolls() {
-            let target = self.shown.scroll_target_x + dx;
-            self.scroll_to_x(target, false);
+            self.scroll_across_by(dx);
         }
     }
 
@@ -11092,6 +11333,140 @@ mod tests {
             .subtree(document.root())
             .find(|&node| document.attr(node, "id") == Some(id))
             .unwrap_or_else(|| panic!("an element with id {id}"))
+    }
+
+    /// The colour of the element `id`, as a word: red, green or black.
+    fn shade(engine: &mut Engine, id: &str) -> &'static str {
+        match crate::testing::color(engine, id) {
+            (r, _, _) if r > 0.5 => "red",
+            (_, g, _) if g > 0.2 => "green",
+            _ => "black",
+        }
+    }
+
+    #[test]
+    fn the_viewport_snaps_and_its_snap_target_answers_snapped() {
+        // Scroll Snap 1 and `scroll-state(snapped)` (D72): areas at 0,
+        // 200 and 400. A scroll at once goes to the nearest, a relative
+        // one to the next in its direction, and a layout that moves the
+        // area snapped to takes the viewport with it.
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(
+            "<style>:root { scroll-snap-type: y mandatory } body { margin: 0 }
+                    .a { height: 100px; margin-bottom: 100px; scroll-snap-align: start;
+                         container-type: scroll-state }
+                    p { margin: 0 }
+                    @container scroll-state(snapped: y) { p { color: #f00 } }
+                    #fill { height: 2000px }</style>\
+             <div class=a id=first><p id=one>1</p></div><div class=a><p id=two>2</p></div>\
+             <div class=a><p id=three>3</p></div><div id=fill></div>",
+        );
+        engine.frame(200, 100);
+        assert_eq!(engine.scroll_y(), 0.0);
+        assert_eq!(
+            (shade(&mut engine, "one"), shade(&mut engine, "two")),
+            ("red", "black")
+        );
+        engine.set_scroll(290.0);
+        engine.frame(200, 100);
+        assert_eq!(engine.scroll_y(), 200.0);
+        assert_eq!(
+            (shade(&mut engine, "one"), shade(&mut engine, "two")),
+            ("black", "red")
+        );
+        engine.scroll_by(30.0);
+        engine.frame(200, 100);
+        assert_eq!(engine.scroll_y(), 400.0);
+        assert_eq!(shade(&mut engine, "three"), "red");
+        let first = node_by_id(&engine, "first");
+        engine
+            .mutate(|document| document.set_attribute(first, "style", "height: 50px"))
+            .expect("the attribute is set");
+        engine.frame(200, 100);
+        assert_eq!(engine.scroll_y(), 350.0);
+        assert_eq!(shade(&mut engine, "three"), "red");
+    }
+
+    #[test]
+    fn a_proximity_snap_takes_only_a_near_area() {
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(
+            "<style>body { margin: 0 } #s { overflow: auto; height: 100px;
+                       scroll-snap-type: y proximity }
+                    .a { height: 50px; margin-bottom: 250px; scroll-snap-align: start }
+                    #fill { height: 1000px }</style>\
+             <div id=s><div class=a></div><div class=a></div><div id=fill></div></div>",
+        );
+        engine.frame(200, 100);
+        let s = node_by_id(&engine, "s");
+        // 20px from the area at 300: snapped there; 150 from both: not.
+        engine.set_element_scroll(s, 280.0);
+        engine.frame(200, 100);
+        assert_eq!(engine.element_scroll(s), 300.0);
+        engine.set_element_scroll(s, 150.0);
+        engine.frame(200, 100);
+        assert_eq!(engine.element_scroll(s), 150.0);
+    }
+
+    #[test]
+    fn scroll_state_queries_follow_the_scrolls_stuck_boxes_and_rtl_origins() {
+        // `scrolled` (the last relative scroll's direction, each axis
+        // its own, an absolute scroll leaving it), `stuck` (a sticky box
+        // held off its scrollport's bottom) and `scrollable` from a right
+        // to left scroll container's origin at its right edge (D72).
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(
+            "<style>body { margin: 0 } p { margin: 0 }
+                    .s { overflow: auto; width: 100px; height: 100px; container-type: scroll-state }
+                    .wide { width: 300px; height: 300px }
+                    @container scroll-state(scrolled: bottom) { #down { color: #f00 } }
+                    @container scroll-state(scrolled: left) { #down { color: #0f0 } }
+                    #sticky { position: sticky; bottom: 0; container-type: scroll-state }
+                    @container scroll-state(stuck: bottom) { #held { color: #f00 } }
+                    #rtl { direction: rtl }
+                    @container scroll-state(scrollable: left) { #r { color: #f00 } }
+                    @container scroll-state(scrollable: right) { #r { color: #0f0 } }</style>\
+             <div class=s id=one><div class=wide><p id=down>d</p></div></div>\
+             <div class=s><div style='height: 300px'></div><div id=sticky><p id=held>h</p></div></div>\
+             <div class=s id=rtl><div class=wide><p id=r>r</p></div></div>",
+        );
+        engine.frame(200, 400);
+        let one = node_by_id(&engine, "one");
+        assert_eq!(shade(&mut engine, "down"), "black");
+        engine.scroll_element_by(one, 40.0);
+        engine.frame(200, 400);
+        assert_eq!(shade(&mut engine, "down"), "red");
+        // An absolute scroll back leaves it; a relative one left adds
+        // the other axis's.
+        engine.set_element_scroll(one, 0.0);
+        engine.frame(200, 400);
+        assert_eq!(shade(&mut engine, "down"), "red");
+        engine.scroll_element_to_x(one, 50.0, true);
+        engine.scroll_element_across_by(one, -10.0);
+        engine.frame(200, 400);
+        assert_eq!(shade(&mut engine, "down"), "green");
+        // Stuck at the bottom until scrolled to where it sits.
+        assert_eq!(shade(&mut engine, "held"), "red");
+        let sticky = engine
+            .document()
+            .parent(node_by_id(&engine, "sticky"))
+            .expect("its box");
+        engine.set_element_scroll(sticky, 300.0);
+        engine.frame(200, 400);
+        assert_eq!(shade(&mut engine, "held"), "black");
+        // Right to left: at its origin, it scrolls to the left alone, and
+        // its offsets across run from -200 to 0.
+        let rtl = node_by_id(&engine, "rtl");
+        assert_eq!(shade(&mut engine, "r"), "red");
+        engine.scroll_element_to_x(rtl, -500.0, true);
+        assert_eq!(engine.element_scroll_x(rtl), -200.0);
+        engine.frame(200, 400);
+        assert_eq!(shade(&mut engine, "r"), "green");
+        engine.scroll_element_to_x(rtl, 50.0, true);
+        assert_eq!(engine.element_scroll_x(rtl), 0.0);
     }
 
     #[test]

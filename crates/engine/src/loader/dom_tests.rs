@@ -2632,6 +2632,66 @@ fn container_queries_are_answered_after_layout_for_scripts_and_frames() {
 }
 
 #[test]
+fn a_containers_pseudo_elements_query_it_and_one_unstyled_inherits() {
+    // D72: a pseudo-element's first query container is its element; one
+    // no rule styles has the style its element passes on.
+    let page: &'static str = "<style>#t { container-type: inline-size; --v: x }\
+         #t::before, #t::first-line { color: #f00 }\
+         @container (width >= 300px) { #t::before { color: #0f0 } }\
+         </style><div id=o style='width: 200px'><div id=t></div></div>\
+         <script>var t = document.getElementById('t');\
+         var cs = (p, n) => getComputedStyle(t, p).getPropertyValue(n);\
+         console.log(cs('::before', 'color'), \
+         cs('::first-line', 'color'), cs('::after', '--v'), cs('::after', 'content'), \
+         cs('::after', 'color')); \
+         document.getElementById('o').style.width = '300px'; \
+         console.log(cs('::before', 'color'));</script>";
+    let server = serve(move |path| (path == "/page.html").then(|| html(page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(
+        console,
+        [
+            "rgb(255, 0, 0) rgb(255, 0, 0) x none rgb(0, 0, 0)",
+            "rgb(0, 255, 0)",
+        ]
+    );
+}
+
+#[test]
+fn an_anonymous_table_inside_an_element_is_not_measured_as_its_box() {
+    // A cell inside a size container's block is wrapped in an anonymous
+    // table named after the block, which overflows it: the block's own
+    // box alone is what `clientWidth` and `offsetWidth` measure, as the
+    // reference browser has it (nested-query-containers.html).
+    let page: &'static str = "<style>section { width: 500px }\
+         .c { display: table-cell } div { container-type: size; border: solid 1px }\
+         </style><section><div class=c><div><div class=c><div></div></div></div></div></section>\
+         <script>var out = []; for (const d of document.querySelectorAll('div')) \
+         out.push(d.clientWidth + 'x' + d.clientHeight + '/' + d.offsetWidth); console.log(out.join(' '));</script>";
+    let server = serve(move |path| (path == "/page.html").then(|| html(page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["2x2/4 0x0/2 2x2/4 0x0/2"]);
+}
+
+#[test]
 fn nested_containers_settle_a_level_a_pass_up_to_the_bound() {
     // D72: each pass settles one more level of nested containers, each
     // a pixel narrower than the one around it by a query of its width;

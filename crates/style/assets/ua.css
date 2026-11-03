@@ -138,6 +138,20 @@ listing, main, menu, nav, plaintext, search, section, summary, xmp {
   display: block;
 }
 
+/* The details element (HTML section 15.5.1), as the reference browser's
+ * sheet has it: its summary a list item with a disclosure triangle, the
+ * rest of its content in its `::details-content` (CSS Pseudo-Elements 4
+ * section 5.1). The summary's display and the triangle's place are the
+ * cascade's hints for its first `summary` child, which a structural
+ * selector here would make every insertion restyle more for. The
+ * reference browser hides the content of a closed one by
+ * `content-visibility: hidden`, which is not a property here: it is not
+ * displayed, whatever an author's sheet says. */
+details > summary { list-style-type: disclosure-closed; }
+details[open] > summary { list-style-type: disclosure-open; }
+details::details-content { display: block; }
+details:not([open])::details-content { display: none !important; }
+
 /* Fieldsets and their legends (HTML section 15.3.13), as the reference
  * browser's sheet has them; layout places a fieldset's rendered legend
  * over its top border. */

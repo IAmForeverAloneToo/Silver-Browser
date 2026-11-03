@@ -44,6 +44,23 @@ pub(crate) fn natively_focusable(document: &Document, element: NodeId) -> bool {
     }
 }
 
+/// Whether `element` is in the content of a `details` element that is
+/// not open, its summary aside, which is not rendered (HTML section
+/// 15.5.1).
+fn in_closed_details(document: &Document, element: NodeId) -> bool {
+    let mut at = element;
+    while let Some(parent) = document.parent(at) {
+        if document.tag(parent) == Some("details")
+            && document.attr(parent, "open").is_none()
+            && document.summary_details(at) != Some(parent)
+        {
+            return true;
+        }
+        at = parent;
+    }
+    false
+}
+
 /// Whether the element is a focusable area (HTML section 6.6.2): one
 /// that can take the focus as it is, or has a `tabindex`, and is being
 /// rendered, by `styles`, which say it is when they are not given; a
@@ -100,7 +117,7 @@ pub(crate) fn delegates_focus(document: &Document, element: NodeId) -> bool {
 /// (D68), it and every ancestor there with a style other than
 /// `display: none`.
 fn rendered(document: &Document, styles: Option<&Styles>, element: NodeId) -> bool {
-    if !document.in_flat_tree(element) {
+    if !document.in_flat_tree(element) || in_closed_details(document, element) {
         return false;
     }
     let Some(styles) = styles else {

@@ -135,7 +135,7 @@ pub use cascade::{
     RuleOrigin, ShadowTreeSheets, Styles, Stylesheets, VARIANT_LONGHANDS, all_longhands,
     cascade_document, font_longhands, font_palette_specified, font_shorthand_families,
     logical_longhands, palette_values_name, parse_color_text, parse_variant, physical_name,
-    property_name, stretch_name, supports, write_font_variant,
+    property_name, scroll_snap_value, stretch_name, supports, write_font_variant,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;
