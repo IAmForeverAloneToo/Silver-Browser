@@ -126,10 +126,10 @@ pub use selector_matching::{matches_selector, matches_selector_list, parse_selec
 
 pub use cascade::{
     CascadeContext, Composited, FontMeasure, FontUnits, FrameMargins, InlineStyles,
-    MatchedDeclaration, MatchedRule, PseudoStyles, Recascade, Recascader, Restyle, RuleOrigin,
-    Styles, Stylesheets, VARIANT_LONGHANDS, all_longhands, cascade_document, font_longhands,
-    font_shorthand_families, parse_color_text, parse_variant, property_name, stretch_name,
-    supports, write_font_variant,
+    MatchedDeclaration, MatchedRule, PaletteValues, PseudoStyles, Recascade, Recascader, Restyle,
+    RuleOrigin, Styles, Stylesheets, VARIANT_LONGHANDS, all_longhands, cascade_document,
+    font_longhands, font_palette_specified, font_shorthand_families, palette_values_name,
+    parse_color_text, parse_variant, property_name, stretch_name, supports, write_font_variant,
 };
 pub use computed::ComputedStyle;
 pub use conditions::supports_condition;

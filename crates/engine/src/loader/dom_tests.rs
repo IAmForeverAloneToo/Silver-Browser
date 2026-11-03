@@ -2217,6 +2217,43 @@ fn a_selections_string_is_its_rendered_text() {
 }
 
 #[test]
+fn font_palette_values_rules_and_font_palette_as_the_reference_has_them() {
+    // Chrome 156, probed: a CSSFontPaletteValuesRule of type 0, its name
+    // read only, its descriptors "" where the rule has none; the feature
+    // values rule after it in the list; font-palette inherited and
+    // written as the reference writes it.
+    let page = "<style id=s>@font-palette-values --A { font-family: a; base-palette: 3; \
+                base-palette: random(10, 30); override-colors: 0 #00ff0080 } \
+                @font-feature-values f { @swash { x: random(1, 3) } }</style>\
+                <div id=d style=\"font-palette: palette-mix(in hsl longer hue, light, dark 20%)\">\
+                <i id=i></i></div><script>\
+                var r = document.getElementById('s').sheet.cssRules; \
+                console.log(r.length, r[0].constructor.name, r[0].type, r[0].name, r[0].fontFamily, \
+                r[0].basePalette, r[0].overrideColors); \
+                r[0].name = '--B'; console.log(r[0].name, r[1].type, r[1].swash.size); \
+                var d = document.getElementById('d'), i = document.getElementById('i'); \
+                console.log(d.style.fontPalette, getComputedStyle(i).fontPalette); \
+                </script><style>@keyframes k { to { font-palette: --custom } } \
+                #m { animation: k 1s linear -0.25s paused } \
+                #n { animation: k 1s linear -2s forwards }</style>\
+                <p id=m></p><p id=n></p><script>\
+                console.log(getComputedStyle(document.getElementById('m')).fontPalette, \
+                getComputedStyle(document.getElementById('n')).fontPalette);</script>";
+    let (tab, console) = scripted(page, true);
+    assert_eq!(
+        console,
+        [
+            "2 CSSFontPaletteValuesRule 0 --A a 3 0 rgba(0, 255, 0, 0.5)",
+            "--A 14 0",
+            "palette-mix(in hsl longer hue, light 80%, dark 20%) \
+             palette-mix(in hsl longer hue, light 80%, dark 20%)",
+            "palette-mix(in oklab, normal 75%, --custom 25%) --custom",
+        ]
+    );
+    drop(tab);
+}
+
+#[test]
 fn style_sheets_and_their_rules_as_the_reference_browser_has_them() {
     // D66: document.styleSheets, a sheet's rules read and changed, the
     // cascade following; a new text a new sheet.

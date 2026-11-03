@@ -23,6 +23,14 @@
 //! inline box), so a line of small text or of inline-blocks alone is
 //! laid out the height the container's font implies, as in browsers.
 //!
+//! `vertical-align` (CSS2 section 10.8.1, gap batch H) moves an atomic
+//! inline's or an inline element's baseline from its parent's: `sub`,
+//! `super`, `text-top`, `text-bottom`, `middle`, a length or a
+//! percentage of its line height, the element's content moved with it;
+//! `top` and `bottom` align the subtree it roots with the line's top or
+//! bottom once the rest of the line is laid out, the line grown to it
+//! when it is taller, as the reference browser grows it.
+//!
 //! White space (css-text-3 §4.1.1): collapsible white space between
 //! two words, within a text node or across the boxes of a run, is one
 //! gap of a space's width and a soft wrap opportunity; where there was
@@ -91,8 +99,8 @@
 //!   space, tab, newline, carriage return and form feed. A no-break
 //!   space is a character of the word it is in, measured and drawn
 //!   with it, never a break opportunity.
-//! * `line-height` and `vertical-align` other than the baseline are
-//!   M8/M42 territory.
+//! * An inline element's own `line-height` does not make its line
+//!   taller: its text's does, and the strut's.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -596,6 +604,7 @@ fn layout_run<'a>(
 ) -> (InlineLayout<'a>, Vec<Paragraph>) {
     let flat = collect_inline_items(items, pass.fonts);
     let strut = font::line(pass.fonts, " ", container);
+    let root = Parent::of(pass.fonts, container);
     // The items as on the first line, as far as it can reach; the run's
     // own when nothing in it is restyled there.
     let first_items = first_line
@@ -608,6 +617,7 @@ fn layout_run<'a>(
             items,
             chain: &line.chain,
             strut_after: strut,
+            root_after: root,
         });
     let mut lines = Lines {
         cb_width,
@@ -628,6 +638,10 @@ fn layout_run<'a>(
         strut: match (&first, first_line) {
             (Some(_), Some(line)) => font::line(pass.fonts, " ", &line.style),
             _ => strut,
+        },
+        root: match (&first, first_line) {
+            (Some(_), Some(line)) => Parent::of(pass.fonts, &line.style),
+            _ => root,
         },
         pass,
         items: &flat,
@@ -797,6 +811,9 @@ struct FirstLineRun<'a, 'i> {
     chain: &'a [LayoutBox],
     /// The strut after the first line: the run's own.
     strut_after: FontMetrics,
+    /// What the root inline box aligns its content by after the first
+    /// line: the run's own.
+    root_after: Parent,
 }
 
 /// The lines of one run as they are built: the line in progress and
@@ -833,6 +850,9 @@ struct Lines<'a, 'i, 'f, 'c> {
     /// The containing block's own font metrics, the least any line is:
     /// on the first line, the innermost `::first-line`'s (M16).
     strut: FontMetrics,
+    /// What the root inline box aligns its content by (CSS2 section
+    /// 10.8.1): the containing block's font, as the strut is.
+    root: Parent,
     /// The pass the run is laid out in (M17), and its fonts.
     pass: &'f Pass<'a>,
     /// The run's items, and while the first line is being filled the
@@ -946,6 +966,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     fn end_first_line(&mut self) {
         if let Some(first) = self.first.take() {
             self.strut = first.strut_after;
+            self.root = first.root_after;
         }
     }
 
@@ -1247,7 +1268,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             self.line_width,
             self.line_left,
             placement,
-            &self.strut,
+            (&self.strut, self.root),
             self.pass.fonts,
             (self.cb_width, self.cb_height),
             &mut self.y,
@@ -1822,7 +1843,10 @@ impl<'a> Collector<'a, '_> {
     /// The word `text`, with the opportunities `breaks` in it: in pieces
     /// where `text-autospace` puts space between an ideograph and a
     /// letter or digit (CSS Text 4 section 8.1), each but the first led
-    /// by an eighth of an em.
+    /// by an eighth of an em; the first too where the text it is glued
+    /// to, in another element, ends with a character that the space
+    /// goes after, element boundaries being no boundaries to it
+    /// (section 1.5), where both elements' `text-autospace` puts it.
     fn word(
         &mut self,
         b: &'a LayoutBox,
@@ -1833,7 +1857,13 @@ impl<'a> Collector<'a, '_> {
         breaks: Vec<usize>,
     ) {
         let spaced = autospaced(text, style);
-        if spaced.is_empty() {
+        let boundary = match (self.glued.chars().next_back(), text.chars().next()) {
+            (Some(before), Some(after)) => self.glued_style.is_some_and(|glued| {
+                autospaced_pair(before, after, glued) && autospaced_pair(before, after, style)
+            }),
+            _ => false,
+        };
+        if spaced.is_empty() && !boundary {
             self.word_piece(b, style, text, no_wrap, gap_before, breaks, 0.0);
             return;
         }
@@ -1845,7 +1875,7 @@ impl<'a> Collector<'a, '_> {
                 .filter(|&&at| at > start && at < end)
                 .map(|at| at - start)
                 .collect();
-            let lead = if n > 0 { space } else { 0.0 };
+            let lead = if n > 0 || boundary { space } else { 0.0 };
             let gap = gap_before && n == 0;
             self.word_piece(b, style, &text[start..end], no_wrap, gap, within, lead);
             if self.done {
@@ -2221,37 +2251,53 @@ pub(crate) fn run_intrinsic_widths_indented<'a>(
 /// `normal`, the initial value, has it, which the reference browser
 /// ships; none for ASCII text, the common case.
 fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
-    use style::computed::TextAutospace;
-    if text.is_ascii() {
+    if text.is_ascii() || autospace_classes(style).is_none() {
         return Vec::new();
     }
-    let (alpha, numeric) = match style.text().text_autospace {
-        TextAutospace::Normal | TextAutospace::Auto => (true, true),
-        TextAutospace::NoAutospace => return Vec::new(),
-        TextAutospace::Spaces {
-            ideograph_alpha,
-            ideograph_numeric,
-            ..
-        } => (ideograph_alpha, ideograph_numeric),
-    };
-    let ideograph = is_ideograph;
-    // A letter or a digit of no ideographic script, and not fullwidth.
-    let other = |c: char| {
-        !ideograph(c)
-            && !matches!(c, '\u{1100}'..='\u{11ff}' | '\u{ac00}'..='\u{d7af}' | '\u{ff00}'..='\u{ffef}')
-            && ((alpha && c.is_alphabetic()) || (numeric && c.is_numeric()))
-    };
     let mut out = Vec::new();
     let mut previous: Option<char> = None;
     for (i, c) in text.char_indices() {
         if let Some(p) = previous
-            && ((ideograph(p) && other(c)) || (other(p) && ideograph(c)))
+            && autospaced_pair(p, c, style)
         {
             out.push(i);
         }
         previous = Some(c);
     }
     out
+}
+
+/// Whether `style`'s `text-autospace` puts space between ideographs and
+/// letters, and between ideographs and digits; `None` for neither.
+fn autospace_classes(style: &ComputedStyle) -> Option<(bool, bool)> {
+    use style::computed::TextAutospace;
+    match style.text().text_autospace {
+        TextAutospace::Normal | TextAutospace::Auto => Some((true, true)),
+        TextAutospace::NoAutospace => None,
+        TextAutospace::Spaces {
+            ideograph_alpha,
+            ideograph_numeric,
+            ..
+        } => (ideograph_alpha || ideograph_numeric).then_some((ideograph_alpha, ideograph_numeric)),
+    }
+}
+
+/// Whether `style`'s `text-autospace` puts space between `before` and
+/// `after`: an ideograph and a letter or a digit of no ideographic
+/// script, and not fullwidth, either way round.
+fn autospaced_pair(before: char, after: char, style: &ComputedStyle) -> bool {
+    if before.is_ascii() && after.is_ascii() {
+        return false;
+    }
+    let Some((alpha, numeric)) = autospace_classes(style) else {
+        return false;
+    };
+    let other = |c: char| {
+        !is_ideograph(c)
+            && !matches!(c, '\u{1100}'..='\u{11ff}' | '\u{ac00}'..='\u{d7af}' | '\u{ff00}'..='\u{ffef}')
+            && ((alpha && c.is_alphabetic()) || (numeric && c.is_numeric()))
+    };
+    (is_ideograph(before) && other(after)) || (other(before) && is_ideograph(after))
 }
 
 /// Whether a line may break before a word: at the white space before
@@ -2719,7 +2765,7 @@ fn flush_line<'a>(
     line_width: f32,
     line_left: f32,
     placement: Placement,
-    strut: &FontMetrics,
+    (strut, root): (&FontMetrics, Parent),
     fonts: &FontCollection,
     cb: (f32, Option<f32>),
     y: &mut f32,
@@ -2735,47 +2781,113 @@ fn flush_line<'a>(
     let makes_line = line_width > 0.0 || line.iter().any(|p| p.item.is_content());
 
     // Above the baseline: the tallest ascent. Below it: the deepest
-    // extent — a text's descent and its line gap under it (the gap is
+    // extent: a text's descent and its line gap under it (the gap is
     // all below the baseline in this engine's `line-height: normal`,
     // not split as half-leading), an inline-block's margin box past its
-    // baseline — which is where an inline-block's own last line gap
+    // baseline, which is where an inline-block's own last line gap
     // already is, so it is not added again under it. An inline box's
     // edges add nothing: its vertical padding and border are drawn
-    // without changing the line's height (CSS2 §10.8).
+    // without changing the line's height (CSS2 section 10.8). Each item
+    // is where `vertical-align` puts it (section 10.8.1): its baseline
+    // shifted from its parent inline box's, the root inline box's or,
+    // in a subtree aligned to the line's top or bottom, that subtree's
+    // root's, which is placed once the line's height is known.
     let mut memo = LineMemo::default();
-    let mut max_ascent = strut.ascent;
     let mut max_descent = strut.descent;
-    let mut max_below = strut.descent + strut.line_gap;
+    let mut extents = Extents {
+        root: (strut.ascent, strut.descent + strut.line_gap),
+        groups: Vec::new(),
+    };
+    let mut frames = vec![Aligned {
+        at: (None, 0.0),
+        parent: root,
+    }];
+    // The places of the open inline elements that decorate their text,
+    // outermost first, and whether each open one is among them: a text's
+    // lines are drawn where its decorating boxes are (CSS Text Decoration
+    // 3 section 2.1), not where `vertical-align` moved the text.
+    let mut decorating = Decorators::default();
+    // The inline elements continued from the line before, as they are
+    // placed again on this one.
+    let mut continued = Vec::with_capacity(open.len());
+    for b in open.iter() {
+        let style = match &b.first_line {
+            Some(line) if first_line.is_some() => &line.style,
+            _ => &b.style,
+        };
+        let frame = extents.enter(style, frames[frames.len() - 1], fonts);
+        continued.push(frame.at);
+        frames.push(frame);
+        decorating.open(style, frame.at);
+    }
+    // Each item's place: its subtree and its baseline's shift in it; and
+    // a word's decorating boxes' places.
+    let mut places = Vec::with_capacity(line.len());
+    let mut decorated_at = Vec::with_capacity(line.len());
     for placed in line.iter() {
-        match &placed.item {
+        let frame = frames[frames.len() - 1];
+        decorated_at.push(match &placed.item {
+            LineItem::Word(_) => decorating.places(),
+            _ => None,
+        });
+        let at = match &placed.item {
             LineItem::Word(word) => {
                 // Per-word, not just per-size (M8.1): a word's own
                 // script may resolve to a different fallback font than
                 // another word on the same line, with its own vertical
-                // metrics — folding in `metrics_for_text` (keyed off
+                // metrics; folding in `metrics_for_text` (keyed off
                 // this word's actual text, not just its `font_size_px`)
                 // extends the existing "shared baseline sits at the
                 // tallest metrics present" rule (M7.4) to cover that,
                 // not just mixed sizes.
                 let m = memo.metrics(fonts, word.text, word.style);
-                max_ascent = max_ascent.max(m.ascent);
                 max_descent = max_descent.max(m.descent);
-                max_below = max_below.max(m.descent + m.line_gap);
+                extents.extend(frame.at, m.ascent, m.descent + m.line_gap);
+                frame.at
             }
             LineItem::Atomic(a) => {
-                max_ascent = max_ascent.max(a.ascent);
-                max_below = max_below.max(a.height - a.ascent);
+                let (above, below) = (a.ascent, a.height - a.ascent);
+                let at = extents.align(&a.root.style, above, below, frame, fonts);
+                extents.extend(at, above, below);
+                at
             }
             // A marker is on the line as an inline box of its font is.
             LineItem::Marker(m) => {
-                max_ascent = max_ascent.max(m.metrics.ascent);
                 max_descent = max_descent.max(m.metrics.descent);
-                max_below = max_below.max(m.metrics.descent + m.metrics.line_gap);
+                extents.extend(
+                    frame.at,
+                    m.metrics.ascent,
+                    m.metrics.descent + m.metrics.line_gap,
+                );
+                frame.at
             }
-            LineItem::Open(..) | LineItem::Close(..) | LineItem::Absolute(_) => {}
-        }
+            LineItem::Open(_, style, _) => {
+                let inner = extents.enter(style, frame, fonts);
+                frames.push(inner);
+                decorating.open(style, inner.at);
+                inner.at
+            }
+            LineItem::Close(..) => {
+                if frames.len() > 1 {
+                    frames.pop();
+                    decorating.close();
+                }
+                frame.at
+            }
+            LineItem::Absolute(_) => frame.at,
+        };
+        places.push(at);
     }
+    let (max_ascent, height, tops) = extents.settle();
     let baseline_y = *y + max_ascent;
+    let line_top = *y;
+    let baseline_of = |(group, shift): Place| -> f32 {
+        let base = match group {
+            None => baseline_y,
+            Some(g) => line_top + tops[g],
+        };
+        base + shift
+    };
 
     let mut x = line_left + placement.offset;
     if !makes_line {
@@ -2809,17 +2921,19 @@ fn flush_line<'a>(
             b,
             style: &b.style,
             x,
+            baseline: baseline_y,
             starts: true,
             children: Default::default(),
             absolutes_from: absolutes.len(),
         });
-    let continued = open.iter().map(|b| OpenInline {
+    let continued = open.iter().zip(continued).map(|(b, at)| OpenInline {
         b,
         style: match &b.first_line {
             Some(line) if first_line.is_some() => &line.style,
             _ => &b.style,
         },
         x,
+        baseline: baseline_of(at),
         starts: false,
         children: Default::default(),
         absolutes_from: absolutes.len(),
@@ -2838,10 +2952,17 @@ fn flush_line<'a>(
         if i > 0 {
             x += placed.lead;
         }
+        let baseline = baseline_of(places[i]);
         match placed.item {
             LineItem::Word(word) if word.tab => x += word.width,
             LineItem::Word(word) => {
-                let lines = word.decorations.map(|d| drawn.of(d, fonts));
+                let lines = word.decorations.map(|d| match &decorated_at[i] {
+                    Some(boxes) => {
+                        let at = |place: Place| baseline_of(place) - baseline;
+                        drawn.moved(d, boxes, at, fonts)
+                    }
+                    None => drawn.of(d, fonts),
+                });
                 let into = innermost(&mut stack, fragments);
                 let between = if placement.ideographs_only && !of_ideographs(word.text) {
                     0.0
@@ -2860,7 +2981,7 @@ fn flush_line<'a>(
                         into,
                         &word,
                         &mut x,
-                        (baseline_y, max_ascent, max_descent),
+                        (baseline, max_ascent, max_descent),
                         between,
                         lines.map(|lines| (lines, reach[i])),
                         fonts,
@@ -2875,7 +2996,7 @@ fn flush_line<'a>(
                         into,
                         &word,
                         &mut x,
-                        (baseline_y, max_ascent, max_descent),
+                        (baseline, max_ascent, max_descent),
                         (placement.gap, spaced),
                         lines.map(|lines| (lines, reach[i])),
                         fonts,
@@ -2891,7 +3012,7 @@ fn flush_line<'a>(
                 });
                 into.push(text_fragment(
                     x,
-                    baseline_y,
+                    baseline,
                     &word,
                     max_ascent,
                     max_descent,
@@ -2903,7 +3024,7 @@ fn flush_line<'a>(
             LineItem::Atomic(a) => {
                 // The margin box's top sits `ascent` above the baseline;
                 // the border box is a margin inside it.
-                let top = baseline_y - a.ascent;
+                let top = baseline - a.ascent;
                 let width = a.width;
                 // The border box is a margin inside the margin box, and
                 // a relatively positioned box is moved from there (M11);
@@ -2925,6 +3046,7 @@ fn flush_line<'a>(
                     b,
                     style,
                     x,
+                    baseline,
                     starts: true,
                     children: Default::default(),
                     absolutes_from: absolutes.len(),
@@ -2941,7 +3063,7 @@ fn flush_line<'a>(
                     continue;
                 }
                 let inline = stack.pop().expect("an element open above the floor");
-                let fragment = close_inline(inline, x, true, baseline_y, fonts, cb, absolutes);
+                let fragment = close_inline(inline, x, true, fonts, cb, absolutes);
                 innermost(&mut stack, fragments).push(fragment);
             }
             LineItem::Absolute(b) => {
@@ -2949,7 +3071,7 @@ fn flush_line<'a>(
             }
             LineItem::Marker(m) => {
                 let into = innermost(&mut stack, fragments);
-                into.extend(m.fragments(x, baseline_y, max_ascent, max_descent, fonts));
+                into.extend(m.fragments(x, baseline, max_ascent, max_descent, fonts));
                 x += m.advance;
             }
         }
@@ -2958,12 +3080,161 @@ fn flush_line<'a>(
     // end edge on this line. (The `::first-line`s, which end there, have
     // none: neither margins nor borders apply to them.)
     while let Some(inline) = stack.pop() {
-        let fragment = close_inline(inline, x, false, baseline_y, fonts, cb, absolutes);
+        let fragment = close_inline(inline, x, false, fonts, cb, absolutes);
         innermost(&mut stack, fragments).push(fragment);
     }
     *open = next_open;
-    *y += max_ascent + max_below;
+    *y += height;
     Some(baseline_y)
+}
+
+/// What an inline box aligns its content by (CSS2 section 10.8.1,
+/// `vertical-align`): its font's size, its content area above and
+/// below its baseline, and its x-height.
+#[derive(Debug, Clone, Copy)]
+struct Parent {
+    font_size: f32,
+    ascent: f32,
+    descent: f32,
+    x_height: f32,
+}
+
+impl Parent {
+    fn of(fonts: &FontCollection, style: &ComputedStyle) -> Parent {
+        let m = font::content(fonts, " ", style);
+        let face = fonts.face(font::font_of(fonts, style).face);
+        Parent {
+            font_size: style.font_size_px,
+            ascent: m.ascent,
+            descent: m.descent,
+            x_height: face.x_height(style.font_size_px),
+        }
+    }
+}
+
+/// Where a box's baseline is on a line: in the subtree aligned to the
+/// line's top or bottom it is in, `None` for the root inline box's, and
+/// how far below that subtree's root's baseline.
+type Place = (Option<usize>, f32);
+
+/// An inline box on the line as its content is aligned in it: where its
+/// baseline is, and what it aligns its children by.
+#[derive(Debug, Clone, Copy)]
+struct Aligned {
+    at: Place,
+    parent: Parent,
+}
+
+/// A line's extents above and below the root inline box's baseline,
+/// and those of each subtree `vertical-align: top` or `bottom` roots
+/// (CSS2 section 10.8.1), with whether it is aligned to the top.
+struct Extents {
+    root: (f32, f32),
+    groups: Vec<(bool, f32, f32)>,
+}
+
+impl Extents {
+    /// An item `above` and `below` its baseline at `at` reaches that far.
+    fn extend(&mut self, (group, shift): Place, above: f32, below: f32) {
+        let (a, b) = match group {
+            None => (&mut self.root.0, &mut self.root.1),
+            Some(g) => {
+                let (_, a, b) = &mut self.groups[g];
+                (a, b)
+            }
+        };
+        *a = a.max(above - shift);
+        *b = b.max(below + shift);
+    }
+
+    /// Where a box styled `style`, `above` and `below` its baseline, is
+    /// put in `parent` by its `vertical-align`: a subtree of its own at
+    /// the line's top or bottom, or its parent's baseline shifted.
+    fn align(
+        &mut self,
+        style: &ComputedStyle,
+        above: f32,
+        below: f32,
+        parent: Aligned,
+        fonts: &FontCollection,
+    ) -> Place {
+        use style::computed::VerticalAlign;
+        match style.vertical_align {
+            VerticalAlign::Top | VerticalAlign::Bottom => {
+                let top = style.vertical_align == VerticalAlign::Top;
+                self.groups.push((top, above, below));
+                (Some(self.groups.len() - 1), 0.0)
+            }
+            _ => {
+                let (group, shift) = parent.at;
+                let own = baseline_shift(style, above, below, &parent.parent, fonts);
+                (group, shift + own)
+            }
+        }
+    }
+
+    /// The inline box styled `style` opened in `parent`: aligned by its
+    /// line-height box, its font's metrics with its leading.
+    fn enter(&mut self, style: &ComputedStyle, parent: Aligned, fonts: &FontCollection) -> Aligned {
+        let m = font::line(fonts, " ", style);
+        Aligned {
+            at: self.align(style, m.ascent, m.descent + m.line_gap, parent, fonts),
+            parent: Parent::of(fonts, style),
+        }
+    }
+
+    /// The line's ascent above the root inline box's baseline, its
+    /// height, and the top of each subtree's root's baseline below the
+    /// line's top: the line as tall as its tallest subtree, a taller
+    /// top-aligned one hanging below the rest, a taller bottom-aligned
+    /// one standing above it, as the reference browser grows the line.
+    fn settle(&self) -> (f32, f32, Vec<f32>) {
+        let (mut ascent, mut below) = self.root;
+        for &(top, a, b) in &self.groups {
+            let short = a + b - (ascent + below);
+            if short > 0.0 {
+                if top {
+                    below += short;
+                } else {
+                    ascent += short;
+                }
+            }
+        }
+        let height = ascent + below;
+        let tops = self
+            .groups
+            .iter()
+            .map(|&(top, a, b)| if top { a } else { height - b })
+            .collect();
+        (ascent, height, tops)
+    }
+}
+
+/// How far below its parent's baseline `vertical-align` puts the
+/// baseline of a box styled `style`, `above` and `below` it (CSS2
+/// section 10.8.1), by the reference browser's figures for `sub` and
+/// `super` (a fifth of the parent's font size and a pixel down, a third
+/// and a pixel up); a percentage is of the box's own line height.
+fn baseline_shift(
+    style: &ComputedStyle,
+    above: f32,
+    below: f32,
+    parent: &Parent,
+    fonts: &FontCollection,
+) -> f32 {
+    use style::computed::VerticalAlign;
+    let line_height = || font::line(fonts, " ", style).line_height();
+    match &style.vertical_align {
+        VerticalAlign::Baseline | VerticalAlign::Top | VerticalAlign::Bottom => 0.0,
+        VerticalAlign::Sub => parent.font_size / 5.0 + 1.0,
+        VerticalAlign::Super => -(parent.font_size / 3.0 + 1.0),
+        VerticalAlign::TextTop => above - parent.ascent,
+        VerticalAlign::TextBottom => parent.descent - below,
+        VerticalAlign::Middle => (above - below - parent.x_height) / 2.0,
+        VerticalAlign::Length(px) => -px,
+        VerticalAlign::Percent(p) => -p / 100.0 * line_height(),
+        VerticalAlign::Calc(calc) => -calc.resolve(line_height()),
+    }
 }
 
 /// An absolutely positioned box met inside the inline elements `open`,
@@ -2986,6 +3257,8 @@ struct OpenInline<'a> {
     /// Where it starts on the line: before its start edge when it
     /// starts here, else the line's start.
     x: f32,
+    /// Its baseline, where `vertical-align` puts it on the line.
+    baseline: f32,
     /// Whether the element starts on this line, with its start edge;
     /// else it continues from the line before, sliced.
     starts: bool,
@@ -3025,7 +3298,6 @@ fn close_inline<'a>(
     inline: OpenInline<'a>,
     x: f32,
     ends: bool,
-    baseline_y: f32,
     fonts: &FontCollection,
     (cb_width, cb_height): (f32, Option<f32>),
     absolutes: &mut [Deferred<'a>],
@@ -3040,7 +3312,7 @@ fn close_inline<'a>(
         inline.x
     };
     let right = if ends { x - margin(RIGHT) } else { x };
-    let top = baseline_y - m.ascent - edges.padding[TOP] - edges.border[TOP];
+    let top = inline.baseline - m.ascent - edges.padding[TOP] - edges.border[TOP];
     let height = edges.border[TOP]
         + edges.padding[TOP]
         + m.ascent
@@ -3301,6 +3573,83 @@ impl DrawnLines {
             .entry(decorations.as_ptr())
             .or_insert_with(|| Arc::from(decoration::lines(decorations, fonts)))
             .clone()
+    }
+
+    /// The lines of `decorations` for a text whose innermost decorating
+    /// boxes on the line are at `boxes`, outermost first, each line
+    /// moved by `by` of its box's place (how far below the text's
+    /// baseline that box's is); the decorations before them are the
+    /// block's, at the root inline box's baseline.
+    fn moved(
+        &mut self,
+        decorations: &Arc<[Decorating]>,
+        boxes: &[Place],
+        by: impl Fn(Place) -> f32,
+        fonts: &FontCollection,
+    ) -> Arc<[DrawnLine]> {
+        let from = decorations.len().saturating_sub(boxes.len());
+        let skipped = boxes.len().saturating_sub(decorations.len());
+        let moves: Vec<f32> = (0..decorations.len())
+            .map(|n| match n.checked_sub(from) {
+                Some(k) => by(boxes[skipped + k]),
+                None => by((None, 0.0)),
+            })
+            .collect();
+        if moves.iter().all(|&dy| dy == 0.0) {
+            return self.of(decorations, fonts);
+        }
+        let mut out = Vec::new();
+        for (decoration, dy) in decorations.iter().zip(moves) {
+            for mut line in decoration::lines(std::slice::from_ref(decoration), fonts) {
+                line.top += dy;
+                line.second = line.second.map(|second| second + dy);
+                out.push(line);
+            }
+        }
+        Arc::from(out)
+    }
+}
+
+/// The open inline elements that decorate their text, as a line's items
+/// open and close them: each one's place, and for every open element
+/// whether it is one of them.
+#[derive(Default)]
+struct Decorators {
+    places: Vec<Place>,
+    open: Vec<bool>,
+    /// The places as the words take them, made once while no element
+    /// opens or closes.
+    shared: Option<Arc<[Place]>>,
+}
+
+impl Decorators {
+    fn open(&mut self, style: &ComputedStyle, at: Place) {
+        let decorates = Decorating::of(style).is_some();
+        self.open.push(decorates);
+        if decorates {
+            self.places.push(at);
+            self.shared = None;
+        }
+    }
+
+    fn close(&mut self) {
+        if self.open.pop() == Some(true) {
+            self.places.pop();
+            self.shared = None;
+        }
+    }
+
+    /// The places a word in the innermost open element takes; `None`
+    /// when no decorating element is open.
+    fn places(&mut self) -> Option<Arc<[Place]>> {
+        if self.places.is_empty() {
+            return None;
+        }
+        Some(
+            self.shared
+                .get_or_insert_with(|| Arc::from(self.places.as_slice()))
+                .clone(),
+        )
     }
 }
 
@@ -3760,6 +4109,150 @@ mod tests {
         assert_eq!(fragments[0].h, strut.ascent + strut.descent);
     }
 
+    /// An empty inline-block `height` pixels tall, aligned by `align`.
+    fn aligned_block(height: f32, align: style::computed::VerticalAlign) -> LayoutBox {
+        LayoutBox {
+            style: ComputedStyle {
+                display: style::computed::Display::InlineBlock,
+                width: style::computed::Size::Px(10.0),
+                height: style::computed::Size::Px(height),
+                vertical_align: align,
+                ..ComputedStyle::default()
+            }
+            .into(),
+            kind: BoxKind::InlineBlock,
+            ..inline_box(Vec::new())
+        }
+    }
+
+    /// The y of each box fragment's top among `fragments`.
+    fn box_tops(fragments: &[Fragment]) -> Vec<f32> {
+        fragments
+            .iter()
+            .filter(|f| matches!(f.kind, FragmentKind::Box))
+            .map(|f| f.y)
+            .collect()
+    }
+
+    #[test]
+    fn vertical_align_top_and_bottom_place_a_box_at_the_lines_edges() {
+        // WPT's background-origin references: inline-blocks aligned to
+        // the line's bottom make it as tall as they are, the strut's
+        // descent no longer under them.
+        use style::computed::VerticalAlign;
+        let fonts = test_fonts();
+        let strut = fonts.primary().metrics(16.0);
+        let (fragments, height) = lay(
+            &[
+                aligned_block(100.0, VerticalAlign::Bottom),
+                aligned_block(40.0, VerticalAlign::Bottom),
+            ],
+            1000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(height, 100.0);
+        assert_eq!(box_tops(&fragments), [0.0, 60.0]);
+        let (baseline, _) = lay(
+            &[aligned_block(100.0, VerticalAlign::Baseline)],
+            1000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(baseline[0].y, 0.0);
+        // A top-aligned box hangs from the line's top, below the text;
+        // the text's baseline is where the strut puts it.
+        let (fragments, height) = lay(
+            &[
+                text_box("a", 16.0),
+                aligned_block(100.0, VerticalAlign::Top),
+                aligned_block(10.0, VerticalAlign::Bottom),
+            ],
+            1000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(height, 100.0);
+        assert_eq!(box_tops(&fragments), [0.0, 90.0]);
+        assert_eq!(texts(&fragments)[0].y, strut.ascent);
+        // A bottom-aligned one taller than the line stands above it:
+        // the text is at the line's bottom.
+        let (fragments, height) = lay(
+            &[
+                text_box("a", 16.0),
+                aligned_block(100.0, VerticalAlign::Bottom),
+            ],
+            1000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        assert_eq!(height, 100.0);
+        assert_eq!(
+            texts(&fragments)[0].y,
+            100.0 - strut.descent - strut.line_gap
+        );
+    }
+
+    #[test]
+    fn vertical_align_shifts_a_box_from_its_parents_baseline() {
+        use style::computed::VerticalAlign;
+        let fonts = test_fonts();
+        let strut = fonts.primary().metrics(16.0);
+        let x_height = fonts.x_height(16.0);
+        let top_of = |align: VerticalAlign| {
+            let (fragments, _) = lay(
+                &[text_box("a", 16.0), aligned_block(10.0, align)],
+                1000.0,
+                TextAlign::Left,
+                &fonts,
+            );
+            let baseline = texts(&fragments)[0].y;
+            box_tops(&fragments)[0] - baseline
+        };
+        let near = |got: f32, want: f32| assert!((got - want).abs() < 1e-3, "{got} for {want}");
+        // From the text's baseline to the box's top: a box on the
+        // baseline is all above it.
+        near(top_of(VerticalAlign::Baseline), -10.0);
+        near(top_of(VerticalAlign::Length(4.0)), -14.0);
+        near(top_of(VerticalAlign::Length(-4.0)), -6.0);
+        // A fifth of the parent's font size and a pixel down; a third
+        // and a pixel up.
+        near(top_of(VerticalAlign::Sub), -10.0 + 16.0 / 5.0 + 1.0);
+        near(top_of(VerticalAlign::Super), -10.0 - 16.0 / 3.0 - 1.0);
+        near(top_of(VerticalAlign::Middle), -x_height / 2.0 - 5.0);
+        near(top_of(VerticalAlign::TextTop), -strut.ascent);
+        near(top_of(VerticalAlign::TextBottom), strut.descent - 10.0);
+        let line = strut.line_height();
+        near(top_of(VerticalAlign::Percent(50.0)), -10.0 - line / 2.0);
+        // A `sub` element's text is lowered with it, and an element in
+        // it from there.
+        let sub = ComputedStyle {
+            vertical_align: VerticalAlign::Sub,
+            ..ComputedStyle::default()
+        };
+        let lowered = LayoutBox {
+            style: sub.clone().into(),
+            ..inline_box(vec![
+                text_box("b", 16.0),
+                LayoutBox {
+                    style: sub.into(),
+                    ..inline_box(vec![text_box("c", 16.0)])
+                },
+            ])
+        };
+        let (fragments, _) = lay(
+            &[text_box("a", 16.0), lowered],
+            1000.0,
+            TextAlign::Left,
+            &fonts,
+        );
+        let ys: Vec<f32> = texts(&fragments).iter().map(|f| f.y).collect();
+        let step = 16.0 / 5.0 + 1.0;
+        assert_eq!(ys.len(), 3);
+        near(ys[1] - ys[0], step);
+        near(ys[2] - ys[0], 2.0 * step);
+    }
+
     #[test]
     fn text_align_left_right_and_center() {
         let fonts = test_fonts();
@@ -3906,6 +4399,48 @@ mod tests {
             lay_styled("\u{65e5}\u{3005}", 400.0, ComputedStyle::default()).len(),
             1
         );
+    }
+
+    #[test]
+    fn text_autospace_puts_its_space_across_element_boundaries() {
+        // WPT's text-autospace-elements-005.html: an ideograph in one
+        // element and a letter in the next, either way round, and in
+        // elements nested deeper; none where either side's
+        // `text-autospace` is `no-autospace`, nor after white space.
+        let fonts = test_fonts();
+        let style = || ComputedStyle {
+            font_size_px: 16.0,
+            ..ComputedStyle::default()
+        };
+        let xs = |run: &[LayoutBox]| -> Vec<f32> {
+            let (fragments, _) = lay(run, 400.0, TextAlign::Left, &fonts);
+            texts(&fragments).iter().map(|f| f.x).collect()
+        };
+        let ideograph = fonts.measure("\u{6c38}", 16.0);
+        let abc = fonts.measure("abc", 16.0);
+        let run = [
+            inline_box(vec![inline_box(vec![styled_text_box("\u{6c38}", style())])]),
+            styled_text_box("abc", style()),
+            inline_box(vec![styled_text_box("\u{6c38}", style())]),
+        ];
+        assert_eq!(
+            xs(&run),
+            [0.0, ideograph + 2.0, ideograph + 2.0 + abc + 2.0]
+        );
+        let mut off = style();
+        off.text_mut().text_autospace = style::computed::TextAutospace::NoAutospace;
+        let run = [
+            styled_text_box("\u{6c38}", off.clone()),
+            styled_text_box("abc", style()),
+            styled_text_box("\u{6c38}", off),
+        ];
+        assert_eq!(xs(&run), [0.0, ideograph, ideograph + abc]);
+        let run = [
+            styled_text_box("\u{6c38} ", style()),
+            styled_text_box("abc", style()),
+        ];
+        let space = fonts.measure(" ", 16.0);
+        assert_eq!(xs(&run), [0.0, ideograph + space]);
     }
 
     #[test]

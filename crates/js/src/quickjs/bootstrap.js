@@ -12679,6 +12679,7 @@
     container: 0,
     "counter-style": 11,
     "font-feature-values": 14,
+    "font-palette-values": 0,
     "nested-declarations": 0,
     scope: 0,
     property: 0,
@@ -13147,6 +13148,33 @@
     }
   }
 
+  // `@font-palette-values` (Fonts 4 section 9.1): its name and its
+  // descriptors as the rule keeps them, each "" where it has none.
+  class CSSFontPaletteValuesRule extends CSSRule {
+    get name() {
+      return ruleData(ruleState(this))[2];
+    }
+
+    get fontFamily() {
+      return paletteDescriptor(this, 0);
+    }
+
+    get basePalette() {
+      return paletteDescriptor(this, 1);
+    }
+
+    get overrideColors() {
+      return paletteDescriptor(this, 2);
+    }
+  }
+
+  // The descriptor at `at` of a palette values rule, parted and flagged
+  // as an import rule's conditions are; "" when there is none.
+  function paletteDescriptor(rule, at) {
+    const part = importCondition(rule, at);
+    return part === null ? "" : part;
+  }
+
   class CSSLayerBlockRule extends CSSGroupingRule {
     get name() {
       return ruleData(ruleState(this))[2];
@@ -13315,6 +13343,7 @@
   RULE_CLASSES.container = CSSContainerRule;
   RULE_CLASSES["counter-style"] = CSSCounterStyleRule;
   RULE_CLASSES["font-feature-values"] = CSSFontFeatureValuesRule;
+  RULE_CLASSES["font-palette-values"] = CSSFontPaletteValuesRule;
   RULE_CLASSES["nested-declarations"] = CSSNestedDeclarations;
   RULE_CLASSES.scope = CSSScopeRule;
   RULE_CLASSES.property = CSSPropertyRule;
@@ -13870,6 +13899,7 @@
   expose(CSSContainerRule, "CSSContainerRule");
   expose(CSSCounterStyleRule, "CSSCounterStyleRule");
   expose(CSSFontFeatureValuesRule, "CSSFontFeatureValuesRule");
+  expose(CSSFontPaletteValuesRule, "CSSFontPaletteValuesRule");
   expose(CSSNestedDeclarations, "CSSNestedDeclarations");
   expose(CSSScopeRule, "CSSScopeRule");
   expose(CSSPropertyRule, "CSSPropertyRule");
@@ -16265,6 +16295,21 @@
     return digits === 0 ? null : sign * value;
   }
 
+  // `value` parsed against the base URL of the document of the node
+  // `handle`: the page's, or a document's beside it its own (D67), so
+  // that a relative URL in one at `about:blank` does not parse; null
+  // when it does not.
+  function resolveFor(handle, value) {
+    if (otherDocuments) {
+      const owner = native.ownerDocument(handle);
+      if (owner !== native.document()) {
+        const parts = native.urlParse(value, native.documentInfo(owner)[5]);
+        return parts === null ? null : parts[0];
+      }
+    }
+    return native.resolveUrl(value);
+  }
+
   // Defines `property` on `prototype` reflecting the content attribute
   // `attribute`, of `kind`: a string, a URL resolved against the base
   // URL (against the document's own for a `<base>`'s, `fallback` of
@@ -16287,7 +16332,7 @@
             }
             const url = fallback === "fallback base"
               ? native.resolveUrlFromDocument(value)
-              : native.resolveUrl(value);
+              : resolveFor(self(this), value);
             return url === null ? value : url;
           }
           case "unsigned":
@@ -16566,7 +16611,7 @@
     if (value === null) {
       return null;
     }
-    const resolved = native.resolveUrl(value);
+    const resolved = resolveFor(handle, value);
     return resolved === null ? null : native.urlParse(resolved, null);
   }
   function linkPart(prototype, part, at) {
@@ -25176,6 +25221,9 @@
         } else {
           settle.reject(new $DOMException(action.message, action.name));
         }
+        // Its reactions run before the next event, which the reference
+        // fires in a task of its own.
+        yield;
         continue;
       }
       const target = wrap(action.node);

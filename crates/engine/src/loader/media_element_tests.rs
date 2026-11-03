@@ -1071,3 +1071,96 @@ log('ready');
     let lines = run(&page, true);
     assert_eq!(lines, ["true -1"]);
 }
+
+#[test]
+fn an_element_of_a_document_without_a_browsing_context_loads_nothing_as_the_reference() {
+    // Chrome 156, probed: an element of a document beside the page's
+    // (D67) fails its load after the task that asked for it, "rejected
+    // by URL safety check", and one playing is then paused, as any
+    // element whose load fails is; a relative URL reflects against that
+    // document's own base URL; a `<source>` of one is passed over.
+    let page = server(
+        r#"
+const seen = [];
+const watch = (m, label) => {
+  for (const e of ['loadstart', 'play', 'waiting', 'error', 'timeupdate', 'pause'])
+    m.addEventListener(e, () => seen.push(label + ' ' + e + '(' + m.paused + ',' + m.networkState + ')'));
+};
+const other = document.implementation.createHTMLDocument('');
+const v = other.createElement('video');
+other.body.appendChild(v);
+v.muted = true;
+v.src = location.origin + '/media/clip.webm';
+watch(v, 'v');
+v.play().then(() => seen.push('v resolved'), e => seen.push('v rejected ' + e.name));
+const relative = other.createElement('video');
+relative.src = 'clip.webm';
+seen.push('relative ' + relative.src);
+const parsed = new DOMParser().parseFromString('<body>', 'text/html');
+const a = parsed.createElement('audio');
+const source = parsed.createElement('source');
+source.src = '/media/tone.wav';
+a.appendChild(source);
+source.addEventListener('error', () => seen.push('source error'));
+watch(a, 'a');
+parsed.body.appendChild(a);
+const page = document.createElement('video');
+page.muted = true;
+page.src = '/media/missing.webm';
+watch(page, 'page');
+page.play().then(() => seen.push('page resolved'), e => seen.push('page rejected ' + e.name));
+setTimeout(() => {
+  seen.push('error ' + v.error.code + ' ' + v.error.message + ' currentSrc "' + v.currentSrc + '" a ' + a.networkState + ' ' + a.error);
+  document.body.appendChild(v);
+  v.play().then(() => seen.push('adopted resolved'), e => seen.push('adopted rejected ' + e.name));
+  setTimeout(() => { for (const line of seen) log(line); log('done'); }, 200);
+}, 800);
+log('ready');
+"#,
+    );
+    let lines = run(&page, false);
+    // Each element's in its order; the elements' tasks interleave as
+    // their loads go.
+    let of = |label: &str| -> Vec<&str> {
+        lines
+            .iter()
+            .map(String::as_str)
+            .filter(|l| l.starts_with(label))
+            .collect()
+    };
+    assert_eq!(
+        of("v "),
+        [
+            "v play(true,3)",
+            "v waiting(true,3)",
+            "v loadstart(true,3)",
+            "v error(true,3)",
+            "v rejected NotSupportedError",
+            "v timeupdate(true,3)",
+            "v pause(true,3)",
+        ]
+    );
+    assert_eq!(
+        of("page "),
+        [
+            "page play(false,2)",
+            "page waiting(false,2)",
+            "page loadstart(false,2)",
+            "page error(true,3)",
+            "page rejected NotSupportedError",
+            "page timeupdate(true,3)",
+            "page pause(true,3)",
+        ]
+    );
+    let a = lines.iter().position(|l| l == "a loadstart(true,3)");
+    let source = lines.iter().position(|l| l == "source error");
+    assert!(a.is_some() && source > a, "{lines:?}");
+    assert_eq!(of("relative"), ["relative clip.webm"]);
+    assert_eq!(
+        of("error"),
+        [
+            "error 4 MEDIA_ELEMENT_ERROR: Media load rejected by URL safety check currentSrc \"\" a 3 null"
+        ]
+    );
+    assert_eq!(of("adopted"), ["adopted rejected NotSupportedError"]);
+}

@@ -525,6 +525,9 @@ fn written(name: &str, value: &str) -> String {
         "font-stretch" | "font-weight" | "font-style" => {
             Some(style::serialize::tokens(&tokens).to_ascii_lowercase())
         }
+        // Its keywords lowercase, a mix's percentages written as the
+        // reference browser writes them (CSS Fonts 4 section 9.2).
+        "font-palette" => style::font_palette_specified(&tokens),
         // Its shortest form (css-display-3 section 2, D77): `block flow`
         // is `block`, `list-item inline` `inline list-item`.
         "display" => style::cascade::parse_display_value(&tokens)

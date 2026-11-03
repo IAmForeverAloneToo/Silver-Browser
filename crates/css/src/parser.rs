@@ -10,7 +10,9 @@
 //!   `@layer`, `@container`, `@scope`, and `@keyframes` with the
 //!   Compatibility Standard's `@-webkit-keyframes`, whose rules'
 //!   preludes are keyframe selectors) or declaration blocks
-//!   (`@font-face`, `@page`, `@property`, `@counter-style`).
+//!   (`@font-face`, `@page`, `@property`, `@counter-style`,
+//!   `@font-palette-values`, and `@font-feature-values`' blocks, which
+//!   it holds as its nested rules).
 //! * Declarations missing their colon are skipped to the next `;`.
 //! * Unclosed blocks at EOF close gracefully.
 //!
@@ -180,7 +182,7 @@ pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
 /// Parses a `style` attribute's contents (declaration list only).
 pub fn parse_style_attribute(input: &str) -> Result<Vec<Declaration>, crate::ParseError> {
     let mut stream = TokenStream::new(input);
-    Ok(parse_declarations(&mut stream, 0, false))
+    Ok(parse_declarations(&mut stream, 0, false, false))
 }
 
 /// Parses `input` as a style rule's block contents are read (CSS Syntax
@@ -201,14 +203,16 @@ pub fn parse_block_contents(input: &str) -> Vec<Rule> {
 
 /// At-rule names whose blocks contain nested rules: a keyframes rule's
 /// are its keyframes, a selector list of offsets and a block of
-/// declarations each (CSS Animations 1 §3, M22).
-const NESTED_RULE_AT: [&str; 6] = [
+/// declarations each (CSS Animations 1 section 3, M22); a feature values
+/// rule's are its feature value blocks (CSS Fonts 4 section 6.10).
+const NESTED_RULE_AT: [&str; 7] = [
     "media",
     "supports",
     "layer",
     "container",
     "keyframes",
     "-webkit-keyframes",
+    "font-feature-values",
 ];
 
 /// At-rule names that may be nested in a style rule (CSS Nesting 1
@@ -218,7 +222,25 @@ const NESTED_RULE_AT: [&str; 6] = [
 const NESTED_GROUP_AT: [&str; 5] = ["media", "supports", "layer", "container", "scope"];
 
 /// At-rule names whose blocks contain declarations.
-const DECLARATION_AT: [&str; 4] = ["font-face", "page", "property", "counter-style"];
+const DECLARATION_AT: [&str; 5] = [
+    "font-face",
+    "page",
+    "property",
+    "counter-style",
+    "font-palette-values",
+];
+
+/// The feature value blocks of `@font-feature-values` (CSS Fonts 4
+/// section 6.10.1), whose blocks contain declarations too.
+const FEATURE_VALUE_BLOCKS: [&str; 7] = [
+    "stylistic",
+    "historical-forms",
+    "styleset",
+    "character-variant",
+    "swash",
+    "ornaments",
+    "annotation",
+];
 
 /// How deep blocks may nest before a block is kept raw rather than
 /// parsed. Real sheets nest a handful of levels; the parser recurses
@@ -275,7 +297,13 @@ fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize, keyframes: boo
                 return rules;
             }
             Some(Token::AtKeyword(name)) => {
-                rules.push(Rule::At(parse_at_rule(stream, name, depth, Context::Top)));
+                rules.push(Rule::At(parse_at_rule(
+                    stream,
+                    name,
+                    depth,
+                    Context::Top,
+                    !top,
+                )));
             }
             Some(first) => {
                 if let Some(rule) = parse_qualified_rule(stream, first, !top, depth, body, false) {
@@ -287,9 +315,16 @@ fn parse_rules(stream: &mut TokenStream, top: bool, depth: usize, keyframes: boo
 }
 
 /// Parses one at-rule; the name has been consumed. `context` says where
-/// its block is.
-fn parse_at_rule(stream: &mut TokenStream, name: String, depth: usize, context: Context) -> AtRule {
-    let nested = context != Context::Top;
+/// its block is; `nested`, that the at-rule is in a block, whose `}`
+/// ends it (CSS Syntax 3 section 5.5.2): a group rule's rule list, a
+/// style rule's block.
+fn parse_at_rule(
+    stream: &mut TokenStream,
+    name: String,
+    depth: usize,
+    context: Context,
+    nested: bool,
+) -> AtRule {
     let mut prelude = Vec::new();
     let mut block = None;
     let mut paren_depth = 0i32;
@@ -347,10 +382,19 @@ fn parse_at_block(stream: &mut TokenStream, name: &str, depth: usize, context: C
         let rules = parse_rules(stream, false, depth + 1, keyframes);
         consume_close_curly(stream);
         Block::Rules(rules)
-    } else if DECLARATION_AT.contains(&lname.as_str()) {
+    } else if DECLARATION_AT.contains(&lname.as_str())
+        || FEATURE_VALUE_BLOCKS.contains(&lname.as_str())
+    {
         // An `@property` rule's `initial-value` is any value, as a custom
-        // property's is (Properties and Values API section 4).
-        let declarations = parse_declarations(stream, depth + 1, lname == "property");
+        // property's is (Properties and Values API section 4); a feature
+        // value block's names are the author's, their case kept (CSS Fonts
+        // 4 section 6.10.1).
+        let declarations = parse_declarations(
+            stream,
+            depth + 1,
+            lname == "property",
+            FEATURE_VALUE_BLOCKS.contains(&lname.as_str()),
+        );
         consume_close_curly(stream);
         Block::Declarations(declarations)
     } else {
@@ -402,7 +446,10 @@ fn parse_qualified_rule(
     }
     trim_ws(&mut prelude);
     let (declarations, rules) = match body {
-        Body::Keyframe => (parse_declarations(stream, depth + 1, false), Vec::new()),
+        Body::Keyframe => (
+            parse_declarations(stream, depth + 1, false, false),
+            Vec::new(),
+        ),
         Body::Style if depth + 1 >= MAX_NESTING => {
             let _ = take_raw_block(stream);
             return Some(QualifiedRule {
@@ -455,7 +502,7 @@ fn parse_contents(stream: &mut TokenStream, depth: usize, context: Context) -> V
             | Some(Token::Cdc) => {}
             Some(Token::AtKeyword(name)) => {
                 end_run(&mut rules, &mut run);
-                let at = parse_at_rule(stream, name, depth, context);
+                let at = parse_at_rule(stream, name, depth, context, context != Context::Top);
                 // A statement, `@layer a;` among them, is no group rule.
                 if context != Context::Rule
                     || (NESTED_GROUP_AT.contains(&at.name.to_ascii_lowercase().as_str())
@@ -506,8 +553,14 @@ fn nested_rule(
 
 /// Parses declarations until `}` (reconsumed for the caller) or EOF.
 /// `depth` is the nesting of the block the declarations are in; `blocks`
-/// says a value may hold a `{}` block, as a custom property's always may.
-fn parse_declarations(stream: &mut TokenStream, depth: usize, blocks: bool) -> Vec<Declaration> {
+/// says a value may hold a `{}` block, as a custom property's always may;
+/// `keep_case`, that the names are kept as written.
+fn parse_declarations(
+    stream: &mut TokenStream,
+    depth: usize,
+    blocks: bool,
+    keep_case: bool,
+) -> Vec<Declaration> {
     let mut declarations = Vec::new();
     loop {
         match stream.next() {
@@ -525,12 +578,16 @@ fn parse_declarations(stream: &mut TokenStream, depth: usize, blocks: bool) -> V
             Some(Token::AtKeyword(name)) => {
                 // At-rules inside declaration blocks are consumed and
                 // ignored for now.
-                let _ = parse_at_rule(stream, name, depth, Context::Rule);
+                let _ = parse_at_rule(stream, name, depth, Context::Rule, true);
             }
             Some(Token::Ident(name)) => {
-                if let Attempt::Declaration(declaration) =
+                let written = keep_case.then(|| name.clone());
+                if let Attempt::Declaration(mut declaration) =
                     parse_declaration(stream, name, false, blocks)
                 {
+                    if let Some(written) = written {
+                        declaration.name = written;
+                    }
                     declarations.push(declaration);
                 }
             }
@@ -959,6 +1016,43 @@ mod tests {
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].name, "font-family");
         assert_eq!(decls[1].name, "src");
+        // `@font-palette-values` holds descriptors too (CSS Fonts 4
+        // section 9.1).
+        let sheet = parse_stylesheet("@font-palette-values --p { base-palette: 1; x: y }").unwrap();
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("expected an at-rule");
+        };
+        let Some(Block::Declarations(decls)) = &at.block else {
+            panic!("expected a declarations block");
+        };
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].name, "base-palette");
+        // `@font-feature-values` holds its feature value blocks, each of
+        // declarations (section 6.10).
+        let sheet =
+            parse_stylesheet("@font-feature-values f { @swash { Ab: 1; b: 2 } @x { c: 3 } }")
+                .unwrap();
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("expected an at-rule");
+        };
+        let Some(Block::Rules(blocks)) = &at.block else {
+            panic!("expected its rules");
+        };
+        let [Rule::At(swash), Rule::At(other)] = blocks.as_slice() else {
+            panic!("expected two blocks");
+        };
+        assert!(
+            matches!(&swash.block, Some(Block::Declarations(d)) if d.len() == 2 && d[0].name == "Ab")
+        );
+        assert!(matches!(&other.block, Some(Block::Raw(_))));
+        // In a block's rule list, a `}` ends an at-rule with it (CSS
+        // Syntax 3 section 5.5.2).
+        let sheet = parse_stylesheet("@font-feature-values f { @x } @swash { a: 1 } }").unwrap();
+        assert_eq!(sheet.rules.len(), 2);
+        let Rule::At(at) = &sheet.rules[0] else {
+            panic!("expected an at-rule");
+        };
+        assert!(matches!(&at.block, Some(Block::Rules(inner)) if inner.len() == 1));
     }
 
     #[test]

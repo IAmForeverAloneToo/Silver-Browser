@@ -19,9 +19,10 @@ use crate::easing::Easing;
 
 mod text;
 pub use text::{
-    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LineBreak, MathStyle, RubyAlign,
-    RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind, TextFitMethod, TextGroupAlign,
-    TextIndent, TextProps, TextSpacingTrim, TextWrapStyle, TransformExtra, WordSpaceTransform,
+    AutospaceMode, FontPalette, HangingEnd, HangingPunctuation, Hyphens, LineBreak, MathStyle,
+    PaletteMix, RubyAlign, RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind,
+    TextFitMethod, TextGroupAlign, TextIndent, TextProps, TextSpacingTrim, TextWrapStyle,
+    TransformExtra, WordSpaceTransform,
 };
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit

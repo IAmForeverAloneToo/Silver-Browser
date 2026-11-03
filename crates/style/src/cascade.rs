@@ -154,6 +154,11 @@ mod images;
 mod lists;
 mod motion;
 mod page;
+mod palette;
+pub use palette::{
+    PaletteValues, font_palette_specified, font_palette_text, interpolate_font_palette,
+    palette_values_name,
+};
 mod presentational;
 mod registered;
 mod revert;
@@ -4891,6 +4896,9 @@ fn apply_declaration(
         "text-autospace" => set_text(style, text::parse_text_autospace(value), |t, v| {
             t.text_autospace = v
         }),
+        "font-palette" => set_text(style, palette::parse_font_palette(value, bases), |t, v| {
+            t.font_palette = v
+        }),
         "text-spacing-trim" => set_text(style, text::parse_text_spacing_trim(value), |t, v| {
             t.text_spacing_trim = v
         }),
@@ -5999,6 +6007,7 @@ fn is_inherited(name: &str) -> bool {
             | "hyphenate-limit-chars"
             | "hyphenate-limit-lines"
             | "text-autospace"
+            | "font-palette"
             | "text-spacing-trim"
             | "ruby-position"
             | "ruby-align"
@@ -6186,6 +6195,7 @@ fn apply_css_wide(
             t.hyphenate_limit_lines = s.hyphenate_limit_lines
         }),
         "text-autospace" => copy_text(style, src, |t, s| t.text_autospace = s.text_autospace),
+        "font-palette" => copy_text(style, src, |t, s| t.font_palette = s.font_palette.clone()),
         "text-spacing-trim" => {
             copy_text(style, src, |t, s| t.text_spacing_trim = s.text_spacing_trim)
         }

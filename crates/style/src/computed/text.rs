@@ -58,12 +58,41 @@ pub struct TextProps {
     /// `math-style` (MathML Core section 2.1.1, D77): whether a formula
     /// is set in display style, `normal`, or `compact`.
     pub math_style: MathStyle,
+    /// `font-palette` (CSS Fonts 4 section 9.2): kept here, with the
+    /// inherited properties the `font` shorthand leaves, as it leaves
+    /// this one (the reference browser's, and WPT's
+    /// font-palette-vs-shorthand.html).
+    pub font_palette: FontPalette,
     /// Not a property, nor inherited: which of MathML Core's layouts the
     /// element's box takes when its `display` is `math` (D77), with what
     /// its attributes say for it; [`MathElement::None`] for an element
     /// that is not MathML's. Kept here, behind the pointer, as few
     /// elements are MathML's.
     pub math: MathElement,
+}
+
+/// `font-palette`'s computed value (CSS Fonts 4 section 9.2): a font's
+/// palette by its keyword or by an `@font-palette-values` rule's name,
+/// or a mix of two.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum FontPalette {
+    #[default]
+    Normal,
+    Light,
+    Dark,
+    /// A `<dashed-ident>`, as written.
+    Named(Arc<str>),
+    /// `palette-mix()`.
+    Mix(Arc<PaletteMix>),
+}
+
+/// `palette-mix()`: its interpolation method as it is written (`in`
+/// and its space, the hue method after a polar one), and its two
+/// palettes, each with its percentage when it has one, resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaletteMix {
+    pub method: Arc<str>,
+    pub parts: [(FontPalette, Option<f32>); 2],
 }
 
 /// `math-style`.

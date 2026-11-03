@@ -524,4 +524,49 @@ mod tests {
             [s("ab", 0.0, space)]
         );
     }
+
+    #[test]
+    fn a_line_stays_with_its_decorating_box_when_its_text_is_moved() {
+        // WPT's text-decoration-decorating-box-001.html: the text of a
+        // span lowered by `vertical-align` keeps its underline's line
+        // where the `u`'s other text has it; a span that decorates its
+        // own text draws its line with it.
+        let fonts = fonts();
+        let underlines = |html: &str| -> Vec<(String, f32)> {
+            let doc = html::parse_document(html).expect("never fails");
+            let (_, boxes) = boxes_of(&doc, &[sheet("")]);
+            let layout = layout_document(&boxes, 800.0, &fonts);
+            let mut out = Vec::new();
+            for placed in layout.placed() {
+                let f = placed.fragment;
+                if let (FragmentKind::Text(t), Some(d)) = (&f.kind, &f.decorated) {
+                    for line in d.lines.iter() {
+                        out.push((t.clone(), placed.y + line.top));
+                    }
+                }
+            }
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out
+        };
+        let lines =
+            underlines("<div>abc <u><span style='vertical-align: -10px'>x</span> def</u></div>");
+        assert_eq!(lines.len(), 2);
+        assert!((lines[0].1 - lines[1].1).abs() < 0.01, "{lines:?}");
+        let lines = underlines(
+            "<div><u>def <span style='vertical-align: -10px; text-decoration: \
+             underline'>x</span></u></div>",
+        );
+        // `x` has the `u`'s line and its own, 10px lower.
+        let x: Vec<f32> = lines
+            .iter()
+            .filter(|(t, _)| t == "x")
+            .map(|l| l.1)
+            .collect();
+        let def = lines.iter().find(|(t, _)| t == "def").expect("def's").1;
+        assert_eq!(x.len(), 2);
+        assert!(
+            (x[0] - def).abs() < 0.01 && (x[1] - def - 10.0).abs() < 0.01,
+            "{lines:?}"
+        );
+    }
 }

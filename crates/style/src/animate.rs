@@ -107,6 +107,7 @@ longhands! {
     FontVariantEmoji = "font-variant-emoji": Discrete,
     FontFeatureSettings = "font-feature-settings": Discrete,
     FontKerning = "font-kerning": Discrete,
+    FontPalette = "font-palette": ByComputedValue,
     LineHeight = "line-height": ByComputedValue,
     Display = "display": Discrete,
     TextAlignAll = "text-align-all": Discrete,
@@ -562,6 +563,11 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         HyphenateLimitChars => copy_group!(to, from, text, text, text_mut, hyphenate_limit_chars),
         HyphenateLimitLines => copy_group!(to, from, text, text, text_mut, hyphenate_limit_lines),
         TextAutospace => copy_group!(to, from, text, text, text_mut, text_autospace),
+        FontPalette => {
+            if to.text().font_palette != from.text().font_palette {
+                to.text_mut().font_palette = from.text().font_palette.clone();
+            }
+        }
         TextSpacingTrim => copy_group!(to, from, text, text, text_mut, text_spacing_trim),
         RubyPosition => copy_group!(to, from, text, text, text_mut, ruby_position),
         RubyAlign => copy_group!(to, from, text, text, text_mut, ruby_align),
@@ -977,6 +983,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         HyphenateLimitChars => a.text().hyphenate_limit_chars == b.text().hyphenate_limit_chars,
         HyphenateLimitLines => a.text().hyphenate_limit_lines == b.text().hyphenate_limit_lines,
         TextAutospace => a.text().text_autospace == b.text().text_autospace,
+        FontPalette => a.text().font_palette == b.text().font_palette,
         TextSpacingTrim => a.text().text_spacing_trim == b.text().text_spacing_trim,
         RubyPosition => a.text().ruby_position == b.text().ruby_position,
         RubyAlign => a.text().ruby_align == b.text().ruby_align,
@@ -1690,6 +1697,18 @@ pub fn interpolate(
             };
             if indent != to.text().text_indent {
                 to.text_mut().text_indent = indent;
+            }
+            true
+        }
+        // A mix of the two in Oklab (CSS Fonts 4 section 9.2).
+        FontPalette => {
+            let value = crate::cascade::interpolate_font_palette(
+                &a.text().font_palette,
+                &b.text().font_palette,
+                p,
+            );
+            if value != to.text().font_palette {
+                to.text_mut().font_palette = value;
             }
             true
         }

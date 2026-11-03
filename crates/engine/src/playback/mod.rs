@@ -145,6 +145,11 @@ struct Player {
     /// The request a load made, which the engine starts (its network's
     /// policies on it), and what its URL says the resource is.
     pending_fetch: Option<(Request, media::Hint)>,
+    /// A load of an element of a document without a browsing context,
+    /// which fails where a fetch would start: after the task that asked
+    /// for it, as the reference's resource selection awaits a stable
+    /// state before it looks at the URL.
+    refused: bool,
     /// The load's number: a report of an older one is dropped.
     generation: u64,
     seek_id: u64,
@@ -191,6 +196,7 @@ impl Player {
                 sound
             },
             pending_fetch: None,
+            refused: false,
             generation: 0,
             seek_id: 0,
             candidates: Vec::new(),
@@ -255,6 +261,7 @@ impl Player {
 
     fn drop_pipeline(&mut self) {
         self.pending_fetch = None;
+        self.refused = false;
         if self.pipeline.take().is_some() {
             PIPELINES.fetch_sub(1, Ordering::Relaxed);
         }
@@ -350,20 +357,32 @@ pub(crate) struct Players {
 }
 
 impl Players {
-    /// Whether a load asked for a fetch not yet started.
+    /// Whether a load asked for a fetch not yet started, or was refused
+    /// and has not yet failed.
     pub(crate) fn fetch_pending(&self) -> bool {
-        self.players.values().any(|p| p.pending_fetch.is_some())
+        self.players
+            .values()
+            .any(|p| p.pending_fetch.is_some() || p.refused)
     }
 
     /// Starts the fetches the loads asked for, each with `start` (the
     /// engine's network, its page's policies on the request), and their
-    /// pipelines, which tell through `inbox`.
+    /// pipelines, which tell through `inbox`; fails the loads refused.
     pub(crate) fn start_pending(
         &mut self,
         mut start: impl FnMut(Request) -> MediaResource,
         inbox: Option<&Inbox>,
     ) {
         for player in self.players.values_mut() {
+            if player.refused {
+                player.refused = false;
+                let mut out = vec![Action::Event(player.node, "loadstart")];
+                fail(player, unsafe_url(), &mut out);
+                if let Some(inbox) = inbox {
+                    send(inbox, &out);
+                }
+                continue;
+            }
             let Some((request, hint)) = player.pending_fetch.take() else {
                 continue;
             };
@@ -820,7 +839,8 @@ impl Players {
             }
         }
         for node in pauses {
-            let connected = document.is_inclusive_ancestor(document.root(), node);
+            // In a document's tree, the page's or another's.
+            let connected = document.is_document(document.root_of(node));
             if !connected
                 && let Some(player) = self.players.get_mut(&node)
                 && !player.paused
@@ -928,6 +948,10 @@ fn select(player: &mut Player, env: &Env<'_>, out: &mut Vec<Action>) {
             );
             return;
         }
+        if !in_browsing_context(document, node) {
+            player.refused = true;
+            return;
+        }
         let url = env.page.and_then(|page| page.resolve(document, src));
         match url {
             Some(url) => {
@@ -955,33 +979,36 @@ fn select(player: &mut Player, env: &Env<'_>, out: &mut Vec<Action>) {
 /// one whose `type` cannot be played, fails at once.
 fn next_source(player: &mut Player, env: &Env<'_>, out: &mut Vec<Action>, first: bool) {
     let document = env.document;
-    let mut first = first;
+    if first {
+        // HTML fires `loadstart` before it looks at the children, once,
+        // whichever of them is taken.
+        out.push(Action::Event(player.node, "loadstart"));
+    }
     while !player.candidates.is_empty() {
         let source = player.candidates.remove(0);
         let src = document.attr(source, "src").filter(|src| !src.is_empty());
         let playable = document
             .attr(source, "type")
             .is_none_or(|kind| media::can_play_type(kind) != media::CanPlay::No);
-        let url = src.and_then(|src| env.page.and_then(|page| page.resolve(document, src)));
+        // An element of a document without a browsing context passes
+        // over every one.
+        let url = src
+            .filter(|_| in_browsing_context(document, player.node))
+            .and_then(|src| env.page.and_then(|page| page.resolve(document, src)));
         match url {
             Some(url) if playable => {
                 player.trying = Some(source);
-                fetch(player, url, env, out, first);
+                fetch(player, url, env, out, false);
                 return;
             }
             _ => {
                 out.push(Action::Event(source, "error"));
             }
         }
-        first = false;
     }
     // None left: the element waits for another `<source>`.
     player.trying = None;
     player.network = NETWORK_NO_SOURCE;
-    if first {
-        // HTML fires `loadstart` before it looks at the children.
-        out.insert(0, Action::Event(player.node, "loadstart"));
-    }
 }
 
 /// HTML's resource fetch algorithm: `url` fetched into its buffer, by
@@ -1038,7 +1065,27 @@ fn fetch(
     player.pending_fetch = Some((request, hint));
 }
 
+/// Whether `node`'s document is the page's, which has a browsing
+/// context: a document beside it (D67), made by a parser or
+/// `createHTMLDocument`, has none, and the reference browser loads no
+/// media resource for its elements.
+fn in_browsing_context(document: &Document, node: NodeId) -> bool {
+    document.owner_document(node) == document.root()
+}
+
+/// The error of a load refused for an element of a document without a
+/// browsing context, as the reference browser reports it.
+fn unsafe_url() -> Failure {
+    Failure {
+        code: 4,
+        message: "MEDIA_ELEMENT_ERROR: Media load rejected by URL safety check".to_owned(),
+    }
+}
+
 /// The resource failed: the element's error, or the next `<source>`.
+/// HTML's dedicated media source failure steps, and then, as the
+/// reference browser does, the internal pause steps of an element that
+/// was playing (its `timeupdate` and `pause` after the `error`).
 fn fail(player: &mut Player, failure: Failure, out: &mut Vec<Action>) {
     player.drop_pipeline();
     if let Some(source) = player.trying.take() {
@@ -1049,6 +1096,9 @@ fn fail(player: &mut Player, failure: Failure, out: &mut Vec<Action>) {
     player.network = NETWORK_NO_SOURCE;
     out.push(Action::Event(player.node, "error"));
     player.reject_pending("NotSupportedError", NO_SOURCES, out);
+    if !player.paused {
+        internal_pause(player, out);
+    }
 }
 
 /// Whether `play()` may start sound now (the autoplay policy): with the
@@ -1070,9 +1120,7 @@ fn play(
         return Err(("NotSupportedError", NO_SOURCES.to_owned()));
     }
     player.pending.push(promise);
-    if player.network == NETWORK_EMPTY {
-        select(player, env, out);
-    }
+    let empty = player.network == NETWORK_EMPTY;
     let node = player.node;
     // At the end, from the start again.
     if player.ended
@@ -1098,6 +1146,12 @@ fn play(
         }
     } else if player.ready >= HAVE_ENOUGH_DATA {
         player.resolve_pending(out);
+    }
+    // Resource selection's events come after `play` and `waiting`: it
+    // awaits a stable state before it looks at the element's sources,
+    // as the reference's `loadstart` shows.
+    if empty {
+        select(player, env, out);
     }
     player.can_autoplay = false;
     Ok(())

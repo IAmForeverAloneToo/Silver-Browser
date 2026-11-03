@@ -40,6 +40,8 @@ pub(crate) enum Kind {
     CounterStyle,
     /// `@font-feature-values` (Fonts 4 section 6.10).
     FontFeatureValues,
+    /// `@font-palette-values` (Fonts 4 section 9.1), a valid one.
+    FontPaletteValues,
     /// A run of declarations among a style rule's nested rules, or in a
     /// group rule nested in one or in `@scope` (`CSSNestedDeclarations`,
     /// CSS Nesting 1 section 3.3).
@@ -68,6 +70,7 @@ impl Kind {
             Kind::Container => "container",
             Kind::CounterStyle => "counter-style",
             Kind::FontFeatureValues => "font-feature-values",
+            Kind::FontPaletteValues => "font-palette-values",
             Kind::NestedDeclarations => "nested-declarations",
             Kind::Scope => "scope",
             Kind::Property => "property",
@@ -184,6 +187,12 @@ fn kind(rule: &Rule, place: Place, ns: &Namespaces) -> Option<Kind> {
                     Some(Kind::CounterStyle)
                 }
                 "font-feature-values" if rules => Some(Kind::FontFeatureValues),
+                // Its name is a `<dashed-ident>`, else the rule is none.
+                "font-palette-values"
+                    if declarations && style::palette_values_name(&at.prelude).is_some() =>
+                {
+                    Some(Kind::FontPaletteValues)
+                }
                 "property" => match &at.block {
                     Some(Block::Declarations(list))
                         if style::property_rule(&at.prelude, list).is_some() =>
@@ -356,6 +365,22 @@ fn parts(rule: &Rule, kind: Kind, place: Place, ns: &Namespaces) -> (String, Str
         ),
         (Rule::At(at), Kind::FontFeatureValues) => {
             (selector(&at.prelude), feature_values(&at.block))
+        }
+        // The name; then the family, the base palette and the colours,
+        // each after a `1` when the rule has it, parted by NULs.
+        (Rule::At(at), Kind::FontPaletteValues) => {
+            let values = palette_values(&at.block);
+            let flagged =
+                |part: &Option<String>| part.as_ref().map_or_else(String::new, |p| format!("1{p}"));
+            (
+                style::palette_values_name(&at.prelude).unwrap_or_default(),
+                format!(
+                    "{}\u{0}{}\u{0}{}",
+                    flagged(&values.font_family),
+                    flagged(&values.base_palette),
+                    flagged(&values.override_colors)
+                ),
+            )
         }
         (Rule::At(at), Kind::FontFace | Kind::Page) => {
             let block = match &at.block {
@@ -1017,6 +1042,14 @@ pub(crate) fn raw_declarations(list: &[Declaration]) -> String {
     out
 }
 
+/// What an `@font-palette-values` rule's block declares.
+fn palette_values(block: &Option<Block>) -> style::PaletteValues {
+    match block {
+        Some(Block::Declarations(list)) => style::PaletteValues::of(list),
+        _ => style::PaletteValues::default(),
+    }
+}
+
 /// An `@font-face` rule's descriptors' text (CSS Fonts 4 section 4):
 /// `name: value;` each, those the rule takes written back as the
 /// reference browser does, a descriptor given again in its later place.
@@ -1164,6 +1197,17 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, place: Place, ns: &Namespaces
         (Rule::At(at), Kind::FontFeatureValues) => {
             let body = feature_values_text(&feature_values(&at.block));
             format!("@font-feature-values {} {{ {body}}}", selector(&at.prelude))
+        }
+        // Its descriptors in their order, as the reference browser
+        // writes them, whatever order they were given in.
+        (Rule::At(at), Kind::FontPaletteValues) => {
+            let name = style::palette_values_name(&at.prelude).unwrap_or_default();
+            let body = palette_values(&at.block).text();
+            if body.is_empty() {
+                format!("@font-palette-values {name} {{ }}")
+            } else {
+                format!("@font-palette-values {name} {{ {body} }}")
+            }
         }
         (Rule::At(at), Kind::FontFace | Kind::Page | Kind::CounterStyle) => {
             let prelude = selector(&at.prelude);
@@ -1575,7 +1619,15 @@ fn feature_values(block: &Option<Block>) -> String {
                     _ => None,
                 })
                 .collect();
-            let Some(numbers) = numbers.filter(|n| !n.is_empty()) else {
+            // As many numbers as the type takes (section 6.10.1): any of
+            // `styleset`, one or two of `character-variant`, one of the
+            // rest.
+            let most = match FEATURE_TYPES[order] {
+                "styleset" => usize::MAX,
+                "character-variant" => 2,
+                _ => 1,
+            };
+            let Some(numbers) = numbers.filter(|n| !n.is_empty() && n.len() <= most) else {
                 continue;
             };
             entries.retain(|(o, name, _)| !(*o == order && *name == declaration.name));
@@ -1699,6 +1751,73 @@ mod tests {
             ]
         );
         assert_eq!(rules(&s, &[3])[2], "0%");
+    }
+
+    #[test]
+    fn font_palette_values_rules_keep_their_descriptors_as_the_reference_does() {
+        // Chrome 156, probed: the last valid of each descriptor, in their
+        // order; a generic family, a negative or random() base palette
+        // and `currentcolor` refused; a name that is no `<dashed-ident>`
+        // no rule at all.
+        let s = sheet(
+            "@font-palette-values --A { override-colors: 0 red, 1 #00ff0080; \
+             base-palette: 3; font-family: foo, \"bar\"; color: red } \
+             @font-palette-values --B { base-palette: light; override-colors: 1 currentcolor; \
+             font-family: serif } \
+             @font-palette-values --C { base-palette: random(1, 2); base-palette: -1; \
+             base-palette: calc(2); override-colors: 2 hsl(120 100% 50%) } \
+             @font-palette-values E { } @font-palette-values --F --G { } \
+             @font-palette-values --H { }",
+        );
+        assert_eq!(
+            kinds(&s),
+            [
+                "font-palette-values",
+                "font-palette-values",
+                "font-palette-values",
+                "font-palette-values"
+            ]
+        );
+        let flat = rules(&s, &[]);
+        let rule = |n: usize| &flat[n * 4..n * 4 + 4];
+        assert_eq!(
+            rule(0),
+            [
+                "font-palette-values",
+                "@font-palette-values --A { font-family: foo, bar; base-palette: 3; \
+                 override-colors: 0 red, 1 rgba(0, 255, 0, 0.5); }",
+                "--A",
+                "1foo, bar\u{0}13\u{0}10 red, 1 rgba(0, 255, 0, 0.5)",
+            ]
+        );
+        assert_eq!(
+            rule(1)[1],
+            "@font-palette-values --B { base-palette: light; }"
+        );
+        assert_eq!(rule(1)[3], "\u{0}1light\u{0}");
+        assert_eq!(
+            rule(2)[1],
+            "@font-palette-values --C { base-palette: calc(2); \
+             override-colors: 2 rgb(0, 255, 0); }"
+        );
+        assert_eq!(rule(3)[1], "@font-palette-values --H { }");
+    }
+
+    #[test]
+    fn font_feature_values_rules_keep_the_values_their_types_take() {
+        // WPT's test_font_feature_values_parsing.html, as the reference
+        // browser passes it: one number for most types, two at most for
+        // `character-variant`, any for `styleset`; random() none.
+        let s = sheet(
+            "@font-feature-values bongo { @swash { a: 1 2; b: 3; c: random(1, 3) } \
+             @character-variant { d: 1 2; e: 1 2 3 } @styleset { f: 1 2 3 4 } @blah { g: 1 } }",
+        );
+        assert_eq!(kinds(&s), ["font-feature-values"]);
+        assert_eq!(
+            rules(&s, &[])[1],
+            "@font-feature-values bongo { @styleset { f: 1 2 3 4; } \
+             @character-variant { d: 1 2; } @swash { b: 3; } }"
+        );
     }
 
     #[test]
