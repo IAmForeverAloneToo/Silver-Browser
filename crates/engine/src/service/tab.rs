@@ -2552,6 +2552,13 @@ impl View for RemoteTab {
         });
     }
 
+    fn hold_scrollbar(&mut self, held: bool) {
+        self.send(|view| ToRenderer::Input {
+            view,
+            input: Input::HoldScrollbar { held },
+        });
+    }
+
     fn flush_profile(&mut self) -> Result<(), profile::Error> {
         let now = self.now();
         self.storage

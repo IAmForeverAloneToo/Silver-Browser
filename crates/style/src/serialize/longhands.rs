@@ -419,6 +419,7 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
                 SnapAxis::Block => "block",
                 SnapAxis::Inline => "inline",
                 SnapAxis::Both => "both",
+                SnapAxis::Pair => "pair",
             };
             match kind.strictness {
                 SnapStrictness::Proximity => axis.to_owned(),
@@ -443,6 +444,12 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             "always"
         } else {
             "normal"
+        }
+        .to_owned(),
+        "scroll-initial-target" => if style.effects().scroll_initial_target {
+            "nearest"
+        } else {
+            "none"
         }
         .to_owned(),
         "transition-property" => {

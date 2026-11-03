@@ -259,6 +259,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "ry",
     "scale",
     "scroll-behavior",
+    "scroll-initial-target",
     "scroll-margin-block-end",
     "scroll-margin-block-start",
     "scroll-margin-bottom",

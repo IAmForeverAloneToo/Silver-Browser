@@ -644,6 +644,7 @@ fn give(view: &mut View, input: Input) -> Option<fn(u32) -> ToBrowser> {
         Input::WheelAcross { x, y, dx } => engine.wheel_across(x, y, dx),
         Input::ScrollAcrossBy { dx } => engine.scroll_across_by(dx),
         Input::ScrollXToFraction { fraction } => engine.scroll_x_to_fraction(fraction),
+        Input::HoldScrollbar { held } => engine.hold_scrollbar(held),
     }
     None
 }

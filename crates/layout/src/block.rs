@@ -3190,10 +3190,12 @@ fn layout_children<'a>(
                 // Out of flow, waiting for its containing block: its
                 // static position is the flow position it is met at,
                 // after the margins resolved so far (as a self-collapsing
-                // box's top edge is), at the content box's left. A box
-                // of the top layer, at the top level, is at the initial
-                // containing block's top (CSS Position 4 section 4.1), as
-                // the reference browser has it.
+                // box's top edge is), at the content box's start: its
+                // left, or for a block-level box right to left its right,
+                // where the box's right edge goes (CSS2 section 10.3.7).
+                // A box of the top layer, at the top level, is at the
+                // initial containing block's top (CSS Position 4 section
+                // 4.1), as the reference browser has it.
                 let flow_y = if child.style.top_layer {
                     0.0
                 } else if still_leading {
@@ -3201,7 +3203,12 @@ fn layout_children<'a>(
                 } else {
                     y + pending.resolve()
                 };
-                absolutes.push(Deferred::at(child, 0.0, flow_y));
+                let mut deferred = Deferred::at(child, 0.0, flow_y);
+                if child.style.placed_rtl && !child.style.inline_out_of_flow {
+                    deferred.x = cb_width;
+                    deferred.align[0] = StaticAlign::End;
+                }
+                absolutes.push(deferred);
             }
             BoxKind::AnonymousBlock | BoxKind::Inline | BoxKind::InlineBlock | BoxKind::Text(_) => {
                 // One inline formatting context (M7): the anonymous
@@ -6241,6 +6248,21 @@ mod tests {
             at(&format!("{base} .a {{ position: absolute; top: 1px; }}")),
             (5.0, 1.0, fonts.measure("yy", 16.0)),
             "top from the padding box's top, left the static one"
+        );
+        // Right to left, the static position is the content box's right,
+        // where the box's right edge goes (CSS2 section 10.3.7).
+        let yy = fonts.measure("yy", 16.0);
+        assert_eq!(
+            at(&format!(
+                "{base} .c {{ direction: rtl }} .a {{ position: absolute; }}"
+            )),
+            (205.0 - yy, 5.0 + lh + 20.0, yy)
+        );
+        assert_eq!(
+            at(&format!(
+                "{base} .c {{ direction: rtl }} .a {{ position: absolute; width: 30px; }}"
+            )),
+            (175.0, 5.0 + lh + 20.0, 30.0)
         );
         // The margins around the box collapse as if it were not there:
         // z sits 20px below x, and the box's static top is after that

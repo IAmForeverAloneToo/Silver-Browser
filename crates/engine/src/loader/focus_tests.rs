@@ -684,8 +684,10 @@ fn a_scripts_focus_scrolls_to_the_element_unless_told_not_to() {
     assert_eq!(tab.engine.scroll_target(), 0.0);
     tab.engine
         .run_classic("document.getElementById('a').focus();");
+    // Centred, as the reference browser's focus centres an element that
+    // does not show.
     let at = tab.engine.scroll_target();
-    assert!((2000.0..=2100.0).contains(&at), "{at}");
+    assert!((1820.0..=1900.0).contains(&at), "{at}");
     // In view already: it stays.
     tab.engine
         .run_classic("document.getElementById('a').blur(); document.getElementById('a').focus();");
@@ -693,6 +695,25 @@ fn a_scripts_focus_scrolls_to_the_element_unless_told_not_to() {
     tab.engine
         .run_classic("document.getElementById('top').focus();");
     assert!(tab.engine.scroll_target() < 100.0);
+}
+
+#[test]
+fn a_popovers_autofocus_keeps_the_focus_though_the_last_frame_hid_it() {
+    // Shown by its invoker's Enter, its autofocus button takes the focus;
+    // the focus fixup of the next frame judges it by the styles as they
+    // now are, not the last frame's, in which the popover was hidden.
+    let mut tab = page(
+        "<button id=inv popovertarget=p popovertargetaction=show>show</button>         <div popover id=p><button id=hide autofocus>hide</button></div>",
+    );
+    tab.engine
+        .run_classic("document.getElementById('inv').focus();");
+    render(&mut tab);
+    tab.engine.key_down(&key("Enter", "Enter"));
+    tab.engine.key_up(&key("Enter", "Enter"));
+    assert_eq!(focused(&tab), "hide");
+    render(&mut tab);
+    render(&mut tab);
+    assert_eq!(focused(&tab), "hide");
 }
 
 #[test]

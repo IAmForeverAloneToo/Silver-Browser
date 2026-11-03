@@ -785,7 +785,7 @@ fn written(name: &str, value: &str) -> String {
         "container-type" => style::container::container_type_value(&tokens),
         // At their shortest, as the reference browser writes them (Scroll
         // Snap 1 section 5).
-        "scroll-snap-type" | "scroll-snap-align" | "scroll-snap-stop" => {
+        "scroll-snap-type" | "scroll-snap-align" | "scroll-snap-stop" | "scroll-initial-target" => {
             style::scroll_snap_value(name, &tokens)
         }
         // A length of 0 written with its unit.

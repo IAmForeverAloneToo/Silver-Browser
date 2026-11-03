@@ -299,6 +299,7 @@ wire_enum! {
         12 => WheelAcross { x: f32, y: f32, dx: f32 },
         13 => ScrollAcrossBy { dx: f32 },
         14 => ScrollXToFraction { fraction: f32 },
+        15 => HoldScrollbar { held: bool },
     }
 }
 

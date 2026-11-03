@@ -108,9 +108,18 @@ pub enum LengthUnit {
 }
 
 impl LengthUnit {
-    /// The unit of `name`, ASCII case-insensitively.
+    /// The unit of `name`, ASCII case-insensitively. The small, large
+    /// and dynamic viewport units (`svh`, `lvw`, `dvmin` and the rest,
+    /// Values 4 section 6.1.2) are the viewport's own here, a window
+    /// whose size no browser interface changes, as the reference
+    /// browser's are on a desktop.
     pub fn of(name: &str) -> Option<LengthUnit> {
-        Some(match name.to_ascii_lowercase().as_str() {
+        let name = name.to_ascii_lowercase();
+        let name = match name.strip_prefix(['s', 'l', 'd']) {
+            Some(rest @ ("vw" | "vh" | "vmin" | "vmax")) => rest,
+            _ => name.as_str(),
+        };
+        Some(match name {
             "px" => LengthUnit::Px,
             "in" => LengthUnit::In,
             "cm" => LengthUnit::Cm,
@@ -1419,6 +1428,21 @@ impl Calc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_small_large_and_dynamic_viewport_units_are_the_viewports() {
+        for (name, unit) in [
+            ("svh", LengthUnit::Vh),
+            ("LVW", LengthUnit::Vw),
+            ("dvmin", LengthUnit::Vmin),
+            ("svmax", LengthUnit::Vmax),
+            ("vh", LengthUnit::Vh),
+        ] {
+            assert_eq!(LengthUnit::of(name), Some(unit), "{name}");
+        }
+        assert_eq!(LengthUnit::of("sem"), None);
+        assert_eq!(LengthUnit::of("dpx"), None);
+    }
 
     /// Lengths with `em` 16 pixels and `vw` 8 (an 800-pixel viewport);
     /// the other relative units are not used here.

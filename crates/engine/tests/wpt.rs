@@ -567,7 +567,8 @@ add_completion_callback(function (tests, status) {
 /// for, as `bless`'s are; it settles in the task after the release. And
 /// `test_driver.action_sequence` for sequences of key, pointer and wheel
 /// actions and pauses (see [`key_actions`]), tick by tick, a pointer's
-/// points worked out as WebDriver works them out from their origins; it
+/// points worked out as WebDriver works them out from their origins, a
+/// touch's pointer a touch's, which pans what it goes down on; it
 /// settles once the window has seen the event of each key's press and
 /// release, each pointer move, press and release and each wheel turn, or
 /// a second of the page's time after.
@@ -660,6 +661,11 @@ const VENDOR: &str = r#"(function () {
     }
     return {x: x, y: y};
   }
+  // Whether an input source is a touch's pointer.
+  function touch(source) {
+    return source.type === "pointer" && source.parameters &&
+      source.parameters.pointerType === "touch";
+  }
   window.test_driver_internal.action_sequence = function (actions) {
     var ticks = 0;
     for (var i = 0; i < actions.length; i++) {
@@ -686,11 +692,15 @@ const VENDOR: &str = r#"(function () {
         } else if (action.type === "pointerMove") {
           var to = point(action.origin, action.x, action.y);
           pointer = to;
-          steps.push("m" + to.x + "," + to.y);
+          steps.push((touch(actions[j]) ? "tm" : "m") + to.x + "," + to.y);
           expect("pointermove");
         } else if (action.type === "pointerDown" || action.type === "pointerUp") {
           var down = action.type === "pointerDown";
-          steps.push((down ? "p" : "r") + (action.button || 0) + "," + pointer.x + "," + pointer.y);
+          if (touch(actions[j])) {
+            steps.push((down ? "td" : "tu") + pointer.x + "," + pointer.y);
+          } else {
+            steps.push((down ? "p" : "r") + (action.button || 0) + "," + pointer.x + "," + pointer.y);
+          }
           expect(down ? "pointerdown" : "pointerup");
         } else if (action.type === "scroll") {
           var at = point(action.origin, action.x, action.y);
@@ -1984,7 +1994,9 @@ fn send_keys(engine: &mut Engine, keys: &str) {
 /// code point, WebDriver's, in decimal; an `m` for a pointer move, then
 /// the point; a `p` for a pointer button's press or an `r` for its
 /// release, then WebDriver's button number and the point; a `w` for a
-/// wheel's turn, then the point and the amounts across and down. A
+/// wheel's turn, then the point and the amounts across and down; a `t`
+/// for a touch's, then `d` for its going down, `m` for its move or `u`
+/// for its lifting, then the point. A
 /// modifier key is held from its press to its release, and none past the
 /// sequence's end; a press where the last release of the same button
 /// was is the next of a run of quick ones, as a double click's second.
@@ -1992,6 +2004,9 @@ fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
     let mut modifiers = engine::Modifiers::default();
     let mut released: Option<(u32, f32, f32)> = None;
     let mut count = 1;
+    // Where the viewport's scrollbar thumb was taken, down from its top,
+    // while the primary button holds it, as the shell drags it.
+    let mut thumb: Option<f32> = None;
     for action in actions.split('\t') {
         let numbers = |rest: &str| -> Vec<f32> {
             rest.split(',')
@@ -2002,7 +2017,12 @@ fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
             Some(("m", rest)) => {
                 if let [x, y] = numbers(rest)[..] {
                     engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
-                    engine.pointer_move(x, y);
+                    match (thumb, engine.scrollbar()) {
+                        (Some(grab), Some(bar)) if bar.h > bar.thumb_h => {
+                            engine.scroll_to_fraction((y - grab) / (bar.h - bar.thumb_h));
+                        }
+                        _ => engine.pointer_move(x, y),
+                    }
                 }
                 continue;
             }
@@ -2017,6 +2037,22 @@ fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
                         _ => engine::Button::Primary,
                     };
                     engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    // The viewport's scrollbar is the browser's, not the
+                    // page's: a press on its thumb takes it, as the shell
+                    // takes it, and the release lets it go.
+                    if kind == "p"
+                        && number == 0
+                        && let Some(bar) = engine.scrollbar()
+                        && bar.thumb_contains(x, y)
+                    {
+                        thumb = Some(y - bar.thumb_y);
+                        engine.hold_scrollbar(true);
+                        continue;
+                    }
+                    if kind == "r" && number == 0 && thumb.take().is_some() {
+                        engine.hold_scrollbar(false);
+                        continue;
+                    }
                     if kind == "p" {
                         count = match released {
                             Some((b, rx, ry)) if b == number && rx == x && ry == y => count + 1,
@@ -2026,6 +2062,22 @@ fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
                     } else {
                         engine.pointer_up(x, y, button, count);
                         released = Some((number, x, y));
+                    }
+                }
+                continue;
+            }
+            // A touch's: it goes down, moves, panning what it is on,
+            // and is lifted.
+            Some(("t", rest)) => {
+                let Some((kind, rest)) = rest.split_at_checked(1) else {
+                    continue;
+                };
+                if let [x, y] = numbers(rest)[..] {
+                    engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    match kind {
+                        "d" => engine.touch_down(x, y),
+                        "m" => engine.touch_move(x, y),
+                        _ => engine.touch_up(x, y),
                     }
                 }
                 continue;

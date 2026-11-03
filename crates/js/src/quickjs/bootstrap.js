@@ -2306,6 +2306,38 @@
     }
   }
 
+  // SnapEvent (CSS Scroll Snap 2 section 4, as the reference browser
+  // ships it): a snap container's `scrollsnapchange` and
+  // `scrollsnapchanging`, naming the elements it snaps to in each axis.
+  // The reference browser makes it alone: a script's `new SnapEvent()`
+  // is an illegal constructor there, and so it is here.
+  const SNAP = 1 << 26;
+  const SNAP_INIT = members(EVENT_INIT, [
+    ["snapTargetBlock", "Node?", null],
+    ["snapTargetInline", "Node?", null],
+  ], "SnapEventInit");
+
+  class SnapEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      if (
+        typeof eventInitDict !== "object" || eventInitDict === null ||
+        !WeakSetHas(convertedDictionaries, eventInitDict)
+      ) {
+        throw illegalConstructor("SnapEvent");
+      }
+      super(type, eventInitDict);
+      eventState(this).kinds |= SNAP;
+    }
+
+    get snapTargetBlock() {
+      return snapTargetSeen(this, "snapTargetBlock");
+    }
+
+    get snapTargetInline() {
+      return snapTargetSeen(this, "snapTargetInline");
+    }
+  }
+
   // SecurityPolicyViolationEvent (CSP section 5.1, M33.1).
   const SECURITY = 131072;
   const SECURITY_INIT = members(EVENT_INIT, [
@@ -2513,6 +2545,7 @@
     ["ToggleEvent", ToggleEvent, TOGGLE_INIT],
     ["CommandEvent", CommandEvent, COMMAND_INIT],
     ["InterestEvent", InterestEvent, INTEREST_INIT],
+    ["SnapEvent", SnapEvent, SNAP_INIT],
     ["ErrorEvent", ErrorEvent, ERROR_INIT],
     ["PageTransitionEvent", PageTransitionEvent, PAGE_TRANSITION_INIT],
     ["PopStateEvent", PopStateEvent, POP_STATE_INIT],
@@ -2598,6 +2631,20 @@
       source = s.fields.submitter;
     }
     return source !== null && source !== undefined && isNode(source) ? source : null;
+  }
+
+  // A snap event's target in an axis as its listener sees it: retargeted
+  // as a `source` is, so that an area in a shadow tree is its host
+  // outside it, and one of a pseudo-element its element.
+  function snapTargetSeen(event, name) {
+    const s = eventOf(event, SNAP);
+    const target = s.fields[name];
+    if (target === null || target === undefined || !isNode(target)) {
+      return target === undefined ? null : target;
+    }
+    const at = s.currentTarget !== null && isNode(s.currentTarget) ? handleOf(s.currentTarget) :
+      s.dispatchedOnce === true ? native.ownerDocument(handleOf(target)) : null;
+    return at === null ? target : wrap(native.retarget(handleOf(target), at));
   }
 
   // An event's `source` as its listener sees it: retargeted against the
@@ -22174,7 +22221,7 @@
     "mouseenter", "mouseleave", "mousemove", "mouseout", "mouseover", "mouseup", "pause",
     "play", "playing", "pointercancel", "pointerdown", "pointerenter", "pointerleave",
     "pointermove", "pointerout", "pointerover", "pointerup", "progress", "ratechange", "reset",
-    "resize", "scroll", "scrollend", "securitypolicyviolation", "seeked", "seeking", "select",
+    "resize", "scroll", "scrollend", "scrollsnapchange", "scrollsnapchanging", "securitypolicyviolation", "seeked", "seeking", "select",
     "selectionchange", "selectstart", "slotchange", "stalled", "submit", "suspend",
     "timeupdate", "toggle", "transitioncancel", "transitionend", "transitionrun",
     "transitionstart", "volumechange", "waiting", "webkitanimationend",
@@ -31653,6 +31700,13 @@
       }
       if (typeof init.submitter === "number") {
         init.submitter = wrap(init.submitter);
+      }
+      // A snap event's targets, which the engine names (Scroll Snap 2).
+      if (typeof init.snapTargetBlock === "number") {
+        init.snapTargetBlock = wrap(init.snapTargetBlock);
+      }
+      if (typeof init.snapTargetInline === "number") {
+        init.snapTargetInline = wrap(init.snapTargetInline);
       }
       // A CSS animation's or transition's event names its animation by
       // its number (D75).

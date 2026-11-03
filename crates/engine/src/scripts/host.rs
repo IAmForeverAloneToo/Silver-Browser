@@ -61,7 +61,19 @@ pub(crate) struct ScriptScroll {
     pub(crate) y: Option<f32>,
     pub(crate) smooth: bool,
     pub(crate) relative: bool,
+    /// Whether it is a re-snap of the engine's own after a layout (CSS
+    /// Scroll Snap 1 section 5.2), no scroll of a script's: one leaves a
+    /// `scroll-initial-target` in force (Scroll Snap 2 section 3).
+    pub(crate) resnap: bool,
 }
+
+/// The snapping scroll containers of a layout, and where the scroll
+/// containers' `scroll-initial-target`s place them (CSS Scroll Snap 1
+/// and 2).
+type SnapLayout = (
+    Vec<crate::scroll_snap::SnapContainer>,
+    Vec<(Option<NodeId>, (f32, f32))>,
+);
 
 /// What a run leaves the engine to do: the console's lines and the count
 /// of errors among them, and the scripts to fetch.
@@ -78,10 +90,11 @@ pub(crate) struct Outputs {
     /// The events to fire at elements after the run (M26): a script
     /// element's `error` for a `src` that cannot be fetched.
     pub(crate) events: Vec<(NodeId, &'static str)>,
-    /// The element a script focused, to be scrolled into view (M26.6).
-    pub(crate) scroll_to: Option<NodeId>,
     /// The scroll offsets scripts set (D65), in order.
     pub(crate) scrolls: Vec<ScriptScroll>,
+    /// What each snapping scroll container the run scrolled or read is
+    /// snapped to (CSS Scroll Snap 1), for the engine to keep.
+    pub(crate) snapped: crate::scroll_snap::Snaps,
     /// A validation message reported, for the notice (M26.9b).
     pub(crate) notice: Option<String>,
     /// The drop-down whose list `showPicker()` asked to show (gap batch
@@ -355,12 +368,13 @@ pub(crate) struct DocumentHost {
     /// The layout scripts asked of (D65), by the document's version it
     /// is of; at most one a version.
     laid_out: Option<(u64, layout::DocumentLayout)>,
-    /// The snapping scroll containers of that layout (D72), found once a
-    /// version of it.
-    snap_containers: Option<(u64, Vec<crate::scroll_state::SnapContainer>)>,
+    /// The snapping scroll containers of that layout (D72), and where the
+    /// scroll containers' `scroll-initial-target`s place them, found once
+    /// a version of it.
+    snap_containers: Option<(u64, SnapLayout)>,
     /// What each snapping scroll container is snapped to as the run's
     /// scripts have read or scrolled it, over the frame's (D72).
-    snapped_in_run: crate::scroll_state::Snaps,
+    snapped_in_run: crate::scroll_snap::Snaps,
     /// The document's version the page's `<style>` sheets were last
     /// made again at in the run ([`Page::rescan_inline`]).
     inline_scanned: Option<u64>,
@@ -3114,8 +3128,12 @@ impl DocumentHost {
                 let visible = self.window.keyboard
                     || node.is_some_and(|node| forms::is_text_control(&self.document, node));
                 self.document.set_focus(node, visible);
-                if !prevent_scroll && node.is_some() {
-                    self.outputs.scroll_to = node;
+                // Scrolled into view at once, as the reference browser's
+                // focus scrolls (HTML section 6.6.4's "focusing steps"):
+                // centred where it does not show, to its nearer edge
+                // where it shows in part.
+                if !prevent_scroll && let Some(node) = node {
+                    self.scroll_into_view(node, "if-needed", "if-needed", "auto");
                 }
                 Ok(Answer::Nothing)
             }
@@ -4332,7 +4350,9 @@ impl DocumentHost {
         self.computed = None;
         self.svg_questions = None;
         self.laid_out = None;
-        self.snapped_in_run.clear();
+        // What the run's scrolls and reads snapped to is the engine's to
+        // keep (CSS Scroll Snap 1 section 5.2).
+        self.outputs.snapped = std::mem::take(&mut self.snapped_in_run);
         self.snap_containers = None;
         std::mem::take(&mut self.outputs)
     }
@@ -5484,15 +5504,13 @@ impl DocumentHost {
             y,
             smooth,
             relative,
+            resnap: false,
         });
     }
 
-    /// The snapping scroll container that is the viewport (`None`) or
-    /// `node`, in the layout as it stands, if it snaps.
-    fn snap_container(
-        &mut self,
-        node: Option<NodeId>,
-    ) -> Option<crate::scroll_state::SnapContainer> {
+    /// The snapping scroll containers and the `scroll-initial-target`
+    /// places of the layout as it stands.
+    fn snap_layout(&mut self) -> Option<&SnapLayout> {
         let version = self.document.version();
         if self
             .snap_containers
@@ -5500,15 +5518,58 @@ impl DocumentHost {
             .is_none_or(|(at, _)| *at != version)
         {
             let viewport = (self.window.viewport.0 as f32, self.window.viewport.1 as f32);
-            let found = crate::scroll_state::snap_containers(self.layout_now()?, viewport);
+            let layout = self.layout_now()?;
+            let found = (
+                crate::scroll_snap::snap_containers(layout, viewport),
+                crate::scroll_snap::initial_targets(layout, viewport),
+            );
             self.snap_containers = Some((version, found));
         }
-        self.snap_containers
-            .as_ref()?
-            .1
+        self.snap_containers.as_ref().map(|(_, found)| found)
+    }
+
+    /// The snapping scroll container that is the viewport (`None`) or
+    /// `node`, in the layout as it stands, if it snaps.
+    fn snap_container(
+        &mut self,
+        node: Option<NodeId>,
+    ) -> Option<crate::scroll_snap::SnapContainer> {
+        self.snap_layout()?
+            .0
             .iter()
             .find(|c| c.scroller == node)
             .cloned()
+    }
+
+    /// Where the `scroll-initial-target` of the viewport (`None`) or of
+    /// `node` places it, while neither the user nor a script has
+    /// scrolled it (Scroll Snap 2 section 3).
+    fn initial_target(&mut self, node: Option<NodeId>) -> Option<(f32, f32)> {
+        if self.window.moved.contains(&node)
+            || self
+                .outputs
+                .scrolls
+                .iter()
+                .any(|s| s.node == node && !s.resnap)
+        {
+            return None;
+        }
+        self.snap_layout()?
+            .1
+            .iter()
+            .find(|(scroller, _)| *scroller == node)
+            .map(|&(_, at)| at)
+    }
+
+    /// What snapping prefers among areas aligned together (CSS Scroll
+    /// Snap 1, [`crate::scroll_snap::Prefer`]): `target`, the element a
+    /// scroll into view is for, or else the document's target element,
+    /// and the element focused, each with its ancestors in the flat tree.
+    fn snap_chains(&self, target: Option<NodeId>) -> (Vec<NodeId>, Vec<NodeId>) {
+        (
+            crate::scroll_snap::chain(&self.document, target.or(self.window.target)),
+            crate::scroll_snap::chain(&self.document, self.document.focused()),
+        )
     }
 
     /// Puts the viewport (`None`) or `node` back on its snap positions
@@ -5521,39 +5582,63 @@ impl DocumentHost {
         if self.window.scrolling || self.outputs.scrolls.iter().any(|s| s.smooth) {
             return;
         }
-        let Some(container) = self.snap_container(node) else {
-            return;
-        };
         let (scroll_y, offsets) = self.scroll_state();
-        let at = match node {
+        let mut at = match node {
             None => (offsets.viewport_x, scroll_y),
             Some(node) => (
                 offsets.x.get(&node).copied().unwrap_or(0.0),
                 offsets.y.get(&node).copied().unwrap_or(0.0),
             ),
         };
+        // Where its `scroll-initial-target` places it, first.
+        if let Some(initial) = self.initial_target(node)
+            && ((initial.0 - at.0).abs() > 0.5 || (initial.1 - at.1).abs() > 0.5)
+        {
+            self.outputs.scrolls.push(ScriptScroll {
+                node,
+                x: Some(initial.0),
+                y: Some(initial.1),
+                smooth: false,
+                relative: false,
+                resnap: true,
+            });
+            at = initial;
+        }
+        let Some(container) = self.snap_container(node) else {
+            return;
+        };
         let snap = self
             .snapped_in_run
             .get(&node)
             .or_else(|| self.window.snaps.get(&node))
             .copied();
-        let (to, areas) = container.settle(snap, at, [0, 0]);
+        let (target, focus) = self.snap_chains(None);
+        let prefer = crate::scroll_snap::Prefer {
+            target: &target,
+            focus: &focus,
+        };
+        let (to, areas) = container.settle(snap, at, [0, 0], &prefer);
         self.snapped_in_run
-            .insert(node, crate::scroll_state::Snap { areas, at: to });
+            .insert(node, crate::scroll_snap::Snap { areas, at: to });
         if (to.0 - at.0).abs() > 0.5 || (to.1 - at.1).abs() > 0.5 {
+            // Following the areas it was snapped to is at once, as the
+            // reference browser follows them; a snap afresh moves as its
+            // `scroll-behavior` says.
+            let followed = snap.is_some_and(|snap| snap.at == at && snap.areas == areas);
             self.outputs.scrolls.push(ScriptScroll {
                 node,
                 x: Some(to.0),
                 y: Some(to.1),
-                smooth: container.smooth,
+                smooth: container.smooth && !followed,
                 relative: false,
+                resnap: true,
             });
         }
     }
 
     /// Where a script's scroll of the viewport (`None`) or of `node` from
     /// `from` to `to`, across and down (`None` where it stays), comes to
-    /// rest when that snaps (CSS Scroll Snap 1, [`crate::scroll_state`]):
+    /// rest when that snaps (CSS Scroll Snap 1, [`crate::scroll_snap`]):
     /// on its snap positions at once, as the reference browser has a
     /// script read them, one past where it was in its direction for a
     /// `relative` one. An axis the scroll left that snaps is snapped too.
@@ -5574,9 +5659,14 @@ impl DocumentHost {
             _ => 0,
         };
         let direction = [sign(from.0, wanted.0), sign(from.1, wanted.1)];
-        let (at, areas) = container.select(wanted, from, direction);
+        let (target, focus) = self.snap_chains(None);
+        let prefer = crate::scroll_snap::Prefer {
+            target: &target,
+            focus: &focus,
+        };
+        let (at, areas) = container.select(wanted, from, direction, &prefer);
         self.snapped_in_run
-            .insert(node, crate::scroll_state::Snap { areas, at });
+            .insert(node, crate::scroll_snap::Snap { areas, at });
         let axis =
             |given: Option<f32>, was: f32, now: f32| (given.is_some() || now != was).then_some(now);
         (axis(to.0, from.0, at.0), axis(to.1, from.1, at.1))
@@ -5588,7 +5678,12 @@ impl DocumentHost {
     /// `block` and `inline` (`start`, `center`, `end`, `nearest`) say in
     /// its scrollport, down and across; smoothly for `behavior` `smooth`,
     /// or `auto` and a container whose `scroll-behavior` is (the root's
-    /// for the viewport).
+    /// for the viewport). `if-needed`, a focus's alignment as the
+    /// reference browser has it, leaves a box that shows whole where it
+    /// is, centres one that does not show, and brings one that shows in
+    /// part to the nearer edge. A container that snaps comes to rest on
+    /// its snap positions, the areas of `node` and of what holds it
+    /// preferred there (CSS Scroll Snap 1).
     fn scroll_into_view(&mut self, node: NodeId, block: &str, inline: &str, behavior: &str) {
         let smooth_for = |host: &mut Self, container: Option<NodeId>| match behavior {
             "smooth" => true,
@@ -5606,16 +5701,13 @@ impl DocumentHost {
         if g.len() < 4 {
             return;
         }
-        // The target's box in viewport coordinates, grown by its
-        // `scroll-margin` (Scroll Snap 1 section 6.1), moved as each
-        // scroll moves it.
+        // The target's border box in viewport coordinates, moved as each
+        // scroll moves it and cut to the scrollport of each scroll
+        // container it is scrolled in, as the reference browser carries
+        // it outward; grown by its `scroll-margin` (Scroll Snap 1 section
+        // 6.1) in each container.
         let margin = self.scroll_sides(node).0;
-        let mut target = [
-            g[0] - margin[3],
-            g[1] - margin[0],
-            g[2] + margin[1] + margin[3],
-            g[3] + margin[0] + margin[2],
-        ];
+        let mut element = [g[0], g[1], g[2], g[3]];
         let containers: Vec<NodeId> = self
             .document
             .ancestors(node)
@@ -5625,21 +5717,28 @@ impl DocumentHost {
         if !laid_out {
             return;
         }
+        // A scroll container: a box of `overflow: clip` clips, but no
+        // scroll moves what is in it, nor cuts it to what it shows.
         let clips = |host: &mut Self, a: NodeId| {
             host.layout_now().is_some_and(|layout| {
-                layout
-                    .iter()
-                    .any(|f| f.node == a && f.generated.is_none() && f.clips())
+                layout.iter().any(|f| {
+                    f.node == a
+                        && f.generated.is_none()
+                        && f.clips()
+                        && f.style.overflow().scrolls()
+                })
             })
         };
         // The new offset along one axis: the box `[start, length]` in a
         // scrollport `[start, length]` scrolled to `at`.
         let wanted = |how: &str, at: f64, item: (f64, f64), port: (f64, f64)| -> f64 {
             let (start, end) = (item.0 - port.0, item.0 + item.1 - port.0 - port.1);
+            let hidden = item.0 + item.1 <= port.0 || item.0 >= port.0 + port.1;
             let delta = match how {
                 "start" => start,
                 "end" => end,
                 "center" => (start + end) / 2.0,
+                "if-needed" if hidden => (start + end) / 2.0,
                 // Nearest: no move when it is in, else the edge nearer.
                 _ if start >= 0.0 && end <= 0.0 => 0.0,
                 _ if start < 0.0 && item.1 <= port.1 => start,
@@ -5684,7 +5783,14 @@ impl DocumentHost {
         }
         let (width, height) = self.window.viewport;
         ports.push((None, [0.0, 0.0, f64::from(width), f64::from(height)]));
-        for (container, port) in ports {
+        for (container, scrollport) in ports {
+            let target = [
+                element[0] - margin[3],
+                element[1] - margin[0],
+                element[2] + margin[1] + margin[3],
+                element[3] + margin[0] + margin[2],
+            ];
+            let port = scrollport;
             // The scrollport less its `scroll-padding` (section 6.2), the
             // root's for the viewport.
             // A sticky box's own place is where it sticks: no padding
@@ -5720,12 +5826,52 @@ impl DocumentHost {
                 (port[3] - padding[0] - padding[2]).max(0.0),
             ];
             let now = self.scroll_offset(container);
-            let y = wanted(block, now[0], (target[1], target[3]), (port[1], port[3]))
-                .clamp(0.0, now[1]);
-            let x = wanted(inline, now[2], (target[0], target[2]), (port[0], port[2]))
-                .clamp(now[7], now[3]);
-            target[0] -= x - now[2];
-            target[1] -= y - now[0];
+            // On the reference browser's layout units, 1/64 px.
+            let unit = |v: f64| (v * 64.0).round() / 64.0;
+            let mut y = unit(wanted(
+                block,
+                now[0],
+                (target[1], target[3]),
+                (port[1], port[3]),
+            ))
+            .clamp(0.0, now[1]);
+            let mut x = unit(wanted(
+                inline,
+                now[2],
+                (target[0], target[2]),
+                (port[0], port[2]),
+            ))
+            .clamp(now[7], now[3]);
+            if let Some(snapping) = self.snap_container(container) {
+                let (prefer_target, focus) = self.snap_chains(Some(node));
+                let prefer = crate::scroll_snap::Prefer {
+                    target: &prefer_target,
+                    focus: &focus,
+                };
+                let ((sx, sy), areas) = snapping.select(
+                    (x as f32, y as f32),
+                    (now[2] as f32, now[0] as f32),
+                    [0, 0],
+                    &prefer,
+                );
+                (x, y) = (f64::from(sx), f64::from(sy));
+                self.snapped_in_run.insert(
+                    container,
+                    crate::scroll_snap::Snap {
+                        areas,
+                        at: (sx, sy),
+                    },
+                );
+            }
+            element[0] -= x - now[2];
+            element[1] -= y - now[0];
+            // What the container shows of it, which the containers around
+            // it bring into view.
+            let left = element[0].max(scrollport[0]);
+            let top = element[1].max(scrollport[1]);
+            let right = (element[0] + element[2]).min(scrollport[0] + scrollport[2]);
+            let bottom = (element[1] + element[3]).min(scrollport[1] + scrollport[3]);
+            element = [left, top, (right - left).max(0.0), (bottom - top).max(0.0)];
             if x != now[2] || y != now[0] {
                 let smooth = smooth_for(self, container);
                 self.outputs.scrolls.push(ScriptScroll {
@@ -5734,6 +5880,7 @@ impl DocumentHost {
                     y: Some(y as f32),
                     smooth,
                     relative: false,
+                    resnap: false,
                 });
             }
         }
@@ -7135,6 +7282,7 @@ impl DocumentHost {
                 y: Some(0.0),
                 smooth: false,
                 relative: false,
+                resnap: false,
             }),
             None => {}
         }

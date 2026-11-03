@@ -394,7 +394,13 @@ pub(crate) struct WindowEnv {
     /// The direction of each scroll container's last relative scroll,
     /// and what each snapping one is snapped to (D72).
     pub(crate) scrolled: Arc<crate::scroll_state::Scrolled>,
-    pub(crate) snaps: Arc<crate::scroll_state::Snaps>,
+    pub(crate) snaps: Arc<crate::scroll_snap::Snaps>,
+    /// The document's target element (`:target`), which snapping
+    /// prefers among areas aligned together (CSS Scroll Snap 1).
+    pub(crate) target: Option<NodeId>,
+    /// The scroll containers the user or a script scrolled, which a
+    /// `scroll-initial-target` no longer places (Scroll Snap 2).
+    pub(crate) moved: Arc<HashSet<crate::scroll_state::Scroller>>,
     pub(crate) compat: bool,
     /// The user's languages, the most wanted first (M37).
     pub(crate) languages: Vec<String>,
@@ -854,14 +860,15 @@ pub(crate) struct Scripts {
     /// apply, and the document's URL before they first changed it.
     history: Vec<HistoryOp>,
     history_base: Option<Url>,
-    /// The element a script focused, to be scrolled into view (M26.6).
-    scroll_to: Option<NodeId>,
     /// The scroll offsets scripts set (D65), the viewport's as `None`.
     scrolls: Vec<ScriptScroll>,
     /// The custom highlights its scripts registered (gap batch H).
     highlights: Vec<crate::highlights::Registered>,
     /// The live range of its selection, by its number, if it has one.
     selection: Option<u32>,
+    /// What the snapping scroll containers its scripts scrolled or read
+    /// were snapped to (CSS Scroll Snap 1), for the engine to keep.
+    snapped: crate::scroll_snap::Snaps,
     /// What a script's validation reported, for the notice (M26.9b).
     notice: Option<String>,
     /// The drop-down whose list a script asked to show (gap batch H).
@@ -938,7 +945,7 @@ impl Scripts {
             in_order: VecDeque::new(),
             events: VecDeque::new(),
             handlers: None,
-            scroll_to: None,
+            snapped: HashMap::new(),
             scrolls: Vec::new(),
             highlights: Vec::new(),
             selection: None,
@@ -1022,10 +1029,10 @@ impl Scripts {
         self.javascript_result.take()
     }
 
-    /// The element a script focused since this was last asked, to be
-    /// scrolled into view (M26.6).
-    pub(crate) fn take_scroll(&mut self) -> Option<NodeId> {
-        self.scroll_to.take()
+    /// What the snapping scroll containers scripts scrolled or read were
+    /// snapped to since this was last asked (CSS Scroll Snap 1).
+    pub(crate) fn take_snapped(&mut self) -> crate::scroll_snap::Snaps {
+        std::mem::take(&mut self.snapped)
     }
 
     /// The scroll offsets scripts set since this was last asked (D65).
@@ -2139,9 +2146,6 @@ impl Scripts {
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
-        if outputs.scroll_to.is_some() {
-            self.scroll_to = outputs.scroll_to;
-        }
         self.scrolls.extend(outputs.scrolls);
         if let Some(highlights) = outputs.highlights {
             self.highlights = highlights;
@@ -2149,6 +2153,7 @@ impl Scripts {
         if let Some(selection) = outputs.selection {
             self.selection = selection;
         }
+        self.snapped.extend(outputs.snapped);
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
@@ -2273,9 +2278,6 @@ impl Scripts {
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
-        if outputs.scroll_to.is_some() {
-            self.scroll_to = outputs.scroll_to;
-        }
         self.scrolls.extend(outputs.scrolls);
         if let Some(highlights) = outputs.highlights {
             self.highlights = highlights;
@@ -2283,6 +2285,7 @@ impl Scripts {
         if let Some(selection) = outputs.selection {
             self.selection = selection;
         }
+        self.snapped.extend(outputs.snapped);
         if outputs.notice.is_some() {
             self.notice = outputs.notice;
         }
@@ -3048,6 +3051,8 @@ const ELEMENT_HANDLERS: &[&str] = &[
     "resize",
     "scroll",
     "scrollend",
+    "scrollsnapchange",
+    "scrollsnapchanging",
     "securitypolicyviolation",
     "seeked",
     "seeking",

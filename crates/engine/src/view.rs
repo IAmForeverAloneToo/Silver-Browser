@@ -98,6 +98,9 @@ pub trait View {
     fn scrollbar_across(&mut self) -> Option<crate::ScrollbarAcross>;
     fn scroll_across_by(&mut self, dx: f32);
     fn scroll_x_to_fraction(&mut self, fraction: f32);
+    /// The scrollbar's thumb taken or let go (CSS Scroll Snap 1: the page
+    /// snaps once it is let go).
+    fn hold_scrollbar(&mut self, held: bool);
 
     fn flush_profile(&mut self) -> Result<(), profile::Error>;
     /// Keeps what the browsing keeps in `profile` from now on (M28).
@@ -399,6 +402,9 @@ impl View for Engine {
     }
     fn scroll_x_to_fraction(&mut self, fraction: f32) {
         Engine::scroll_x_to_fraction(self, fraction)
+    }
+    fn hold_scrollbar(&mut self, held: bool) {
+        Engine::hold_scrollbar(self, held)
     }
     fn flush_profile(&mut self) -> Result<(), profile::Error> {
         Engine::flush_profile(self)

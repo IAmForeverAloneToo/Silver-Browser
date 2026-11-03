@@ -139,6 +139,7 @@ mod sandbox;
 #[cfg(test)]
 mod sanitizer_tests;
 mod scripts;
+mod scroll_snap;
 mod scroll_state;
 mod select;
 pub mod service;
@@ -559,6 +560,9 @@ pub struct Engine {
     /// input was a key rather than the pointer (M26.6).
     window_focused: bool,
     keyboard: bool,
+    /// Whether the press or release under way is a touch's, whose
+    /// pointer events say so.
+    touching: bool,
     /// Where the engine is among its tab's frames (M33.2): the top, or a
     /// frame's document under another engine's.
     frame: frames::FrameContext,
@@ -625,8 +629,21 @@ struct Shown {
     /// What each snapping scroll container is snapped to (CSS Scroll
     /// Snap 1), and the direction of the relative scrolls since it was,
     /// which its next snap goes in.
-    snaps: scroll_state::Snaps,
+    snaps: scroll_snap::Snaps,
     snap_direction: scroll_state::Scrolled,
+    /// The snap targets each snap container's last `scrollsnapchange`
+    /// and `scrollsnapchanging` told (CSS Scroll Snap 2 section 4).
+    snap_told: HashMap<scroll_state::Scroller, scroll_snap::Targets>,
+    snap_telling: HashMap<scroll_state::Scroller, scroll_snap::Targets>,
+    /// The scroll containers the user or a script scrolled, which a
+    /// `scroll-initial-target` no longer places (Scroll Snap 2 section
+    /// 3).
+    moved: HashSet<scroll_state::Scroller>,
+    /// A touch's pan under way (see [`Engine::touch_down`]).
+    pan: Option<Pan>,
+    /// The scroll containers a pan moved whose scroll has not ended: their
+    /// `scrollend` waits for the touch to be lifted and their snap.
+    unended: HashSet<scroll_state::Scroller>,
     /// The initial `about:blank` of a new engine, which the first
     /// navigation replaces (HTML's "is initial about:blank").
     initial: bool,
@@ -749,6 +766,20 @@ struct Rendered {
 }
 
 impl Shown {
+    /// What a rendering of `size` would see of the offsets as they are.
+    fn rendered_now(&self, size: (u32, u32)) -> Rendered {
+        Rendered {
+            size,
+            scroll_y: self.scroll_y,
+            scroll_x: self.scroll_x,
+            element_scroll: self
+                .element_scroll
+                .iter()
+                .map(|(&node, scroll)| (node, (scroll.y, scroll.x)))
+                .collect(),
+        }
+    }
+
     /// The sizes and scroll states of `layout`'s containers (D72), for a
     /// viewport of `viewport`'s size, at the offsets shown.
     fn container_states(
@@ -795,6 +826,11 @@ impl Shown {
             scrolled: HashMap::new(),
             snaps: HashMap::new(),
             snap_direction: HashMap::new(),
+            snap_told: HashMap::new(),
+            snap_telling: HashMap::new(),
+            moved: HashSet::new(),
+            pan: None,
+            unended: HashSet::new(),
             initial: false,
             salvageable: true,
             failure: None,
@@ -1018,6 +1054,47 @@ enum ScrollGoal {
     Fragment(String),
 }
 
+/// How [`Engine::reveal`] brings an element into view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Reveal {
+    /// A fragment's indicated part: its top at the scrollport's top, and
+    /// across as near as it shows; smoothly, when its container's
+    /// `scroll-behavior` says so, for a navigation within the document.
+    Fragment(bool),
+    /// A focus's, a typed character's: left where it shows whole,
+    /// centred where it does not show, brought to the nearer edge where
+    /// it shows in part, as the reference browser reveals them.
+    IfNeeded,
+}
+
+/// Where a box goes in a scrollport along one axis, as CSSOM View's
+/// `ScrollLogicalPosition` says, and the reference browser's "if needed".
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Align {
+    Start,
+    Nearest,
+    IfNeeded,
+}
+
+impl Align {
+    /// How far a scrollport `[start, length]` moves to put a box `[start,
+    /// length]` where it says, along one axis.
+    fn delta(self, item: (f32, f32), port: (f32, f32)) -> f32 {
+        let (start, end) = (item.0 - port.0, item.0 + item.1 - port.0 - port.1);
+        let hidden = item.0 + item.1 <= port.0 || item.0 >= port.0 + port.1;
+        match self {
+            Align::Start => start,
+            Align::IfNeeded if hidden => (start + end) / 2.0,
+            // Nearest: no move when it is in, else the edge nearer.
+            _ if start >= 0.0 && end <= 0.0 => 0.0,
+            _ if start < 0.0 && item.1 <= port.1 => start,
+            _ if start < 0.0 => end.max(start),
+            _ if item.1 <= port.1 => end,
+            _ => start,
+        }
+    }
+}
+
 /// What a fragment indicates in a document (HTML's "indicated part").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Indicated {
@@ -1144,6 +1221,30 @@ impl Link {
             url,
         }
     }
+}
+
+/// A touch's pan under way (see [`Engine::touch_down`]): where the touch
+/// is, the scroll containers around where it went down, innermost last,
+/// and the offset, across and down, of each one (the viewport as `None`)
+/// it has moved, as it was when it began to.
+#[derive(Debug, Clone, Default)]
+struct Pan {
+    at: (f32, f32),
+    chain: Vec<NodeId>,
+    from: HashMap<scroll_state::Scroller, (f32, f32)>,
+    /// Whether the touch has moved: a pan's, no tap's.
+    panned: bool,
+}
+
+/// The direction, across and down, from `from` to `to`: -1 left or up,
+/// 1 right or down, 0 none.
+fn way(from: (f32, f32), to: (f32, f32)) -> [i8; 2] {
+    let sign = |a: f32, b: f32| match b.partial_cmp(&a) {
+        Some(std::cmp::Ordering::Greater) => 1,
+        Some(std::cmp::Ordering::Less) => -1,
+        _ => 0,
+    };
+    [sign(from.0, to.0), sign(from.1, to.1)]
 }
 
 /// A scroll container's offset shown, and the one being approached:
@@ -1604,6 +1705,7 @@ impl Engine {
             retry_asked: false,
             window_focused: true,
             keyboard: false,
+            touching: false,
             frame: frames::FrameContext::top(),
             drawing_at: None,
             panel: false,
@@ -1909,8 +2011,19 @@ impl Engine {
         let fragment = url.fragment().unwrap_or_default().to_owned();
         self.shown.page.set_url(url.clone());
         if scripted.is_none() {
-            self.goal = Some(ScrollGoal::Fragment(fragment));
-            self.scroll_now();
+            // An element indicated in the document shown is scrolled to
+            // as its containers' `scroll-behavior` says (HTML's "scroll to
+            // the fragment"), its scroll ending with `scrollend`.
+            match indicated_part(&self.shown.document, &fragment) {
+                Some(Indicated::Element(node)) if self.shown.layout.is_some() => {
+                    self.goal = None;
+                    self.reveal(node, Reveal::Fragment(true));
+                }
+                _ => {
+                    self.goal = Some(ScrollGoal::Fragment(fragment));
+                    self.scroll_now();
+                }
+            }
         }
         self.changed = true;
         self.update_target();
@@ -2292,9 +2405,13 @@ impl Engine {
             fonts: Some(self.layout_fonts.clone()),
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
-            scrolling: self.animating(),
+            // A touch's pan or the thumb held is a scroll on its way too,
+            // which the scripts' reads do not snap.
+            scrolling: self.animating() || self.shown.pan.is_some(),
             scrolled: Arc::new(self.shown.scrolled.clone()),
             snaps: Arc::new(self.shown.snaps.clone()),
+            target: self.shown.target,
+            moved: Arc::new(self.shown.moved.clone()),
             compat: self.compat_user_agent,
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
@@ -2811,23 +2928,15 @@ impl Engine {
         self.interest_changed();
     }
 
-    /// Scrolls an element given the focus into view (M26.6), unless the
-    /// top of its first box is in the viewport already and no scroll
-    /// container holds it, as the reference browser's focus does.
+    /// Scrolls an element given the focus into view (M26.6), as the
+    /// reference browser's focus does: where it does not show whole
+    /// ([`Reveal::IfNeeded`]).
     fn scroll_focus_into_view(&mut self, node: NodeId) {
         // The `content-visibility: auto` elements around it are relevant
         // to the user now (CSS Containment 2 section 4.3), its box drawn
         // to be scrolled to (gap batch H).
         self.relevant_around(node);
-        let height = self.viewport.1 as f32;
-        let at = self.shown.scroll_target;
-        if let Some((top, chain)) = self.locate(node)
-            && chain.is_empty()
-            && (at..at + height).contains(&top)
-        {
-            return;
-        }
-        self.scroll_into_view(node);
+        self.reveal(node, Reveal::IfNeeded);
     }
 
     /// A text control's edit committed (HTML section 4.10.5.5): `change`
@@ -3021,12 +3130,15 @@ impl Engine {
         }
         let outcome = self.key_default(key);
         let pressed = self.key_press(key);
-        // A key that types does so after its `keypress` (M26.8).
+        // A key that types does so after its `keypress` (M26.8), the
+        // control it types in brought into view, as the reference
+        // browser brings its caret.
         if pressed
             && outcome == KeyOutcome::Ignored
             && let Some(control) = self.text_control()
             && self.type_key(control, key)
         {
+            self.reveal(control, Reveal::IfNeeded);
             return KeyOutcome::Taken;
         }
         outcome
@@ -3118,33 +3230,124 @@ impl Engine {
                 KeyOutcome::Taken
             }
             _ if text_control => KeyOutcome::Ignored,
-            "ArrowLeft" | "ArrowRight" if plain && scrolls => {
-                let step = if key.key == "ArrowLeft" {
-                    -SCROLL_STEP
-                } else {
-                    SCROLL_STEP
-                };
-                self.scroll_across_by(step);
+            "ArrowLeft" | "ArrowRight" if plain => {
+                let way = if key.key == "ArrowLeft" { -1.0 } else { 1.0 };
+                match self.key_scroller(focused, 0, way) {
+                    Some(node) => self.scroll_element_across_by(node, way * SCROLL_STEP),
+                    None if scrolls => self.scroll_across_by(way * SCROLL_STEP),
+                    None => return KeyOutcome::Ignored,
+                }
                 KeyOutcome::Taken
             }
             "ArrowDown" | "ArrowUp" | "PageDown" | "PageUp" | " " | "Home" | "End"
-                if (plain || m.shift) && scrolls =>
+                if plain || m.shift =>
             {
-                let page = self.page_step();
-                match key.key.as_str() {
-                    "ArrowDown" => self.scroll_by(SCROLL_STEP),
-                    "ArrowUp" => self.scroll_by(-SCROLL_STEP),
-                    "PageDown" => self.scroll_by(page),
-                    "PageUp" => self.scroll_by(-page),
-                    " " if m.shift => self.scroll_by(-page),
-                    " " => self.scroll_by(page),
-                    "Home" => self.scroll_to(0.0),
-                    _ => self.scroll_to(f32::INFINITY),
+                let way = match key.key.as_str() {
+                    "ArrowUp" | "PageUp" | "Home" => -1.0,
+                    " " if m.shift => -1.0,
+                    _ => 1.0,
+                };
+                match self.key_scroller(focused, 1, way) {
+                    // A scroll container around the focus takes it (CSSOM
+                    // View section 13's keyboard scrolling, as the
+                    // reference browser scrolls), a page being seven
+                    // eighths of its height.
+                    Some(node) => {
+                        let page = self.element_client_height(node) * 0.875;
+                        match key.key.as_str() {
+                            "ArrowDown" | "ArrowUp" => {
+                                self.scroll_element_by(node, way * SCROLL_STEP);
+                            }
+                            "Home" | "End" => {
+                                let before = self.scroll_targets(Some(node));
+                                let to = if way < 0.0 { 0.0 } else { f32::INFINITY };
+                                self.scroll_element_to(node, to);
+                                self.note_relative_scroll(Some(node), before);
+                            }
+                            _ => {
+                                self.scroll_element_by(node, way * page.max(SCROLL_STEP));
+                                self.snap_way(Some(node), 3);
+                            }
+                        }
+                    }
+                    None if scrolls => {
+                        let page = self.page_step();
+                        match key.key.as_str() {
+                            "ArrowDown" | "ArrowUp" => self.scroll_by(way * SCROLL_STEP),
+                            "Home" | "End" => {
+                                let before = self.scroll_targets(None);
+                                self.scroll_to(if way < 0.0 { 0.0 } else { f32::INFINITY });
+                                self.note_relative_scroll(None, before);
+                            }
+                            _ => {
+                                self.scroll_by(way * page);
+                                self.snap_way(None, 3);
+                            }
+                        }
+                    }
+                    None => return KeyOutcome::Ignored,
                 }
                 KeyOutcome::Taken
             }
             _ => KeyOutcome::Ignored,
         }
+    }
+
+    /// The scroll container a key scrolls in `axis` (0 across, 1 down),
+    /// `way` its direction: the `focused` element, or the nearest element
+    /// around it in the flat tree, that the user can scroll in that axis
+    /// (`overflow` `auto` or `scroll` there) and that can still move that
+    /// way, as the reference browser picks it; `None` for the viewport.
+    fn key_scroller(&mut self, focused: Option<NodeId>, axis: usize, way: f32) -> Option<NodeId> {
+        let focused = focused?;
+        let document = &self.shown.document;
+        let around: Vec<NodeId> = std::iter::once(focused)
+            .chain(document.flat_ancestors(focused))
+            .filter(|&node| document.is_element(node))
+            .collect();
+        let width = self.viewport.0 as f32;
+        if width == 0.0 {
+            return None;
+        }
+        let layout = self.layout(width);
+        let scrollers: Vec<NodeId> = around
+            .into_iter()
+            .filter(|&node| {
+                fragment_of(&layout.roots, node).is_some_and(|f| {
+                    let overflow = if axis == 0 {
+                        f.style.overflow_x
+                    } else {
+                        f.style.overflow_y
+                    };
+                    !f.style.root
+                        && f.clips()
+                        && matches!(overflow, Overflow::Auto | Overflow::Scroll)
+                })
+            })
+            .collect();
+        scrollers.into_iter().find(|&node| {
+            let target = self.scroll_targets(Some(node));
+            let (min, max) = if axis == 0 {
+                self.element_scroll_range_x(node)
+            } else {
+                (0.0, self.element_max_scroll(node))
+            };
+            let at = [target.0, target.1][axis];
+            (way > 0.0 && at < max) || (way < 0.0 && at > min)
+        })
+    }
+
+    /// The height of the element's padding box, its scrollport's, as
+    /// laid out; 0 for one with no box.
+    fn element_client_height(&mut self, node: NodeId) -> f32 {
+        let width = self.viewport.0 as f32;
+        if width == 0.0 {
+            return 0.0;
+        }
+        fragment_of(&self.layout(width).roots, node).map_or(0.0, |f| {
+            let [top, _, bottom, _] = f.style.used_border_width();
+            (f.h - top - bottom).max(0.0)
+        })
     }
 
     /// A page's scroll by a key: the viewport's height less a line, so a
@@ -3499,9 +3702,14 @@ impl Engine {
             .with("metaKey", Bool(m.meta))
             .with("relatedTarget", Node(related.map(scripts::handle)));
         if pointer {
+            let (id, kind) = if self.touching {
+                (2.0, "touch")
+            } else {
+                (1.0, "mouse")
+            };
             event = event
-                .with("pointerId", Number(1.0))
-                .with("pointerType", Text("mouse".to_owned()))
+                .with("pointerId", Number(id))
+                .with("pointerType", Text(kind.to_owned()))
                 .with("isPrimary", Bool(true))
                 .with(
                     "pressure",
@@ -3798,6 +4006,13 @@ impl Engine {
         if focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
             return;
         }
+        // Not by the last frame's styles: by the styles as they now are,
+        // which an element a script inserted, or a popover shown, since
+        // has, before it loses the focus.
+        self.cached_styles();
+        let Some(styled) = &self.shown.styled else {
+            return;
+        };
         // A scroller keeps the focus while it can scroll (gap batch H).
         let laid = self
             .shown
@@ -3948,6 +4163,109 @@ impl Engine {
         );
     }
 
+    /// Whether the viewport (`None`) or a scroll container is at the
+    /// offset it was going to, no touch pans it, and, for one that snaps,
+    /// no snap its last scroll is due is still to be made.
+    fn at_rest(&self, scroller: scroll_state::Scroller) -> bool {
+        if self
+            .shown
+            .pan
+            .as_ref()
+            .is_some_and(|pan| pan.from.contains_key(&scroller))
+            || (self.shown.snaps.contains_key(&scroller)
+                && self.shown.snap_direction.contains_key(&scroller))
+        {
+            return false;
+        }
+        match scroller {
+            None => {
+                self.shown.scroll_y == self.shown.scroll_target
+                    && self.shown.scroll_x == self.shown.scroll_target_x
+            }
+            Some(node) => self
+                .shown
+                .element_scroll
+                .get(&node)
+                .is_none_or(|s| s.y == s.target && s.x == s.target_x),
+        }
+    }
+
+    /// The snap events the frame owes (CSS Scroll Snap 2 section 4), as
+    /// the reference browser sends them: a `scrollsnapchanging` for each
+    /// snap container whose areas it would come to rest on are not those
+    /// the last one told (none for one first seen), and a
+    /// `scrollsnapchange` for each at rest whose areas are not those the
+    /// last one told (none told before the first, nor after it stopped
+    /// snapping). Each with its areas, across and down.
+    fn snap_events(
+        &mut self,
+    ) -> (
+        Vec<(scroll_state::Scroller, scroll_snap::Targets)>,
+        HashMap<scroll_state::Scroller, scroll_snap::Targets>,
+    ) {
+        let mut scrollers: Vec<scroll_state::Scroller> = self
+            .shown
+            .snaps
+            .keys()
+            .chain(self.shown.snap_told.keys())
+            .copied()
+            .collect();
+        scrollers.sort_by_key(|scroller| scroller.map(|node| node.to_bits()));
+        scrollers.dedup();
+        let mut changing = Vec::new();
+        let mut change = HashMap::new();
+        for scroller in scrollers {
+            if scroller.is_some_and(|node| !self.shown.document.contains(node)) {
+                self.shown.snap_told.remove(&scroller);
+                self.shown.snap_telling.remove(&scroller);
+                continue;
+            }
+            let areas = self
+                .shown
+                .snaps
+                .get(&scroller)
+                .map_or([None, None], |snap| snap.areas);
+            match self.shown.snap_telling.insert(scroller, areas) {
+                Some(told) if told != areas => changing.push((scroller, areas)),
+                _ => {}
+            }
+            let told = self
+                .shown
+                .snap_told
+                .get(&scroller)
+                .copied()
+                .unwrap_or_default();
+            if told != areas && self.at_rest(scroller) {
+                self.shown.snap_told.insert(scroller, areas);
+                change.insert(scroller, areas);
+            }
+        }
+        (changing, change)
+    }
+
+    /// Fires the snap event `kind` at the viewport's document (`None`),
+    /// where it bubbles, or at a snap container, naming its `areas`,
+    /// across and down (CSS Scroll Snap 2 section 4).
+    fn fire_snap_event(
+        &mut self,
+        scroller: scroll_state::Scroller,
+        kind: &str,
+        [across, down]: scroll_snap::Targets,
+    ) {
+        let target = match scroller {
+            None => self.document_target(),
+            Some(node) => js::Target::Node(scripts::handle(node)),
+        };
+        let node = |area: Option<scroll_snap::SnapTarget>| {
+            js::Field::Node(area.map(|area| scripts::handle(area.node)))
+        };
+        let event = js::EventInit::new("SnapEvent", kind)
+            .with("bubbles", js::Field::Bool(scroller.is_none()))
+            .with("snapTargetBlock", node(down))
+            .with("snapTargetInline", node(across));
+        self.fire(target, event);
+    }
+
     /// HTML's "update the rendering" before a frame at `now` (section
     /// 8.1.7.3, M26), in its order: `resize` at the window when the size
     /// changed since the last frame, `scroll` at the document and at each
@@ -3965,18 +4283,18 @@ impl Engine {
         if !self.scripts_run() || self.shown.made {
             return;
         }
-        let rendered = Rendered {
-            size: (width, height),
-            scroll_y: self.shown.scroll_y,
-            scroll_x: self.shown.scroll_x,
-            element_scroll: self
-                .shown
-                .element_scroll
-                .iter()
-                .map(|(&node, scroll)| (node, (scroll.y, scroll.x)))
-                .collect(),
-        };
+        let rendered = self.shown.rendered_now((width, height));
         let last = self.shown.rendered.replace(rendered.clone());
+        // The snap events the frame owes (CSS Scroll Snap 2 section 4):
+        // `scrollsnapchanging` where what a scroll goes to rest on
+        // changed, `scrollsnapchange` where a container at rest is
+        // snapped to other areas, before its `scrollend`.
+        let (changing, mut change) = self.snap_events();
+        for (scroller, areas) in changing {
+            self.fire_snap_event(scroller, "scrollsnapchanging", areas);
+        }
+        // The scroll containers whose scroll ended in the frame.
+        let mut ended: HashSet<scroll_state::Scroller> = HashSet::new();
         if let Some(last) = last {
             if last.size != rendered.size {
                 self.fire(js::Target::Window, js::EventInit::new("Event", "resize"));
@@ -3989,14 +4307,8 @@ impl Engine {
                     document,
                     js::EventInit::new("Event", "scroll").with("bubbles", js::Field::Bool(true)),
                 );
-                if self.shown.scroll_y == self.shown.scroll_target
-                    && self.shown.scroll_x == self.shown.scroll_target_x
-                {
-                    self.fire(
-                        document,
-                        js::EventInit::new("Event", "scrollend")
-                            .with("bubbles", js::Field::Bool(true)),
-                    );
+                if self.at_rest(None) {
+                    ended.insert(None);
                 }
             }
             let mut scrolled: Vec<NodeId> = rendered
@@ -4007,26 +4319,70 @@ impl Engine {
                 })
                 .map(|(&node, _)| node)
                 .collect();
-            scrolled.sort_by_key(|node| node.to_bits());
+            // In the flat tree's order, as the reference browser sends
+            // them for the scrolls of one frame.
+            if scrolled.len() > 1 {
+                let document = &self.shown.document;
+                let order: HashMap<NodeId, usize> = document
+                    .flat_subtree(document.root())
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, node)| (node, i))
+                    .collect();
+                scrolled.sort_by_key(|node| (order.get(node).copied(), node.to_bits()));
+            }
             for node in scrolled {
                 if self.shown.document.contains(node) {
                     self.fire(
                         js::Target::Node(scripts::handle(node)),
                         js::EventInit::new("Event", "scroll"),
                     );
-                    let settled = self
-                        .shown
-                        .element_scroll
-                        .get(&node)
-                        .is_some_and(|s| s.y == s.target && s.x == s.target_x);
-                    if settled {
-                        self.fire(
-                            js::Target::Node(scripts::handle(node)),
-                            js::EventInit::new("Event", "scrollend"),
-                        );
+                    if self.at_rest(Some(node)) {
+                        ended.insert(Some(node));
                     }
                 }
             }
+        }
+        // A pan's scroll ends once the touch is lifted and its snap has
+        // been made and has arrived, whether or not the snap moved it.
+        let unended: Vec<scroll_state::Scroller> = self.shown.unended.iter().copied().collect();
+        for scroller in unended {
+            if self.at_rest(scroller) {
+                self.shown.unended.remove(&scroller);
+                ended.insert(scroller);
+            }
+        }
+        let mut ended: Vec<scroll_state::Scroller> = ended.into_iter().collect();
+        ended.sort_by_key(|scroller| scroller.map(|node| node.to_bits()));
+        for scroller in ended {
+            if let Some(areas) = change.remove(&scroller) {
+                self.fire_snap_event(scroller, "scrollsnapchange", areas);
+            }
+            if scroller.is_some_and(|node| !self.shown.document.contains(node)) {
+                continue;
+            }
+            match scroller {
+                None => {
+                    let document = self.document_target();
+                    self.fire(
+                        document,
+                        js::EventInit::new("Event", "scrollend")
+                            .with("bubbles", js::Field::Bool(true)),
+                    );
+                }
+                Some(node) => {
+                    self.fire(
+                        js::Target::Node(scripts::handle(node)),
+                        js::EventInit::new("Event", "scrollend"),
+                    );
+                }
+            }
+        }
+        // The snaps a layout or a style changed, which no scroll ends.
+        let mut change: Vec<_> = change.into_iter().collect();
+        change.sort_by_key(|(scroller, _)| scroller.map(|node| node.to_bits()));
+        for (scroller, areas) in change {
+            self.fire_snap_event(scroller, "scrollsnapchange", areas);
         }
         // The animations' update (HTML's "update animations and send
         // events", Web Animations 1 section 4.2; D75): the pending tasks
@@ -6671,9 +7027,6 @@ impl Engine {
         if !changes.is_empty() {
             self.document_changed(changes);
         }
-        if let Some(node) = self.shown.scripts.take_scroll() {
-            self.scroll_focus_into_view(node);
-        }
         // A script's focus reaches interest invokers as the user's does.
         self.interest_changed();
         // A sheet a script changed through the CSSOM (D66).
@@ -6695,7 +7048,14 @@ impl Engine {
         self.request_fonts();
         // A script's scroll is at once (CSSOM View's "auto" behavior),
         // or animated over the frames to come when smooth.
-        for scroll in self.shown.scripts.take_scrolls() {
+        let scrolls = self.shown.scripts.take_scrolls();
+        // A script's scroll before the first rendering is one the first
+        // frame's `scroll` and `scrollend` tell of: that frame compares
+        // with the offsets it scrolled from.
+        if !scrolls.is_empty() && self.shown.rendered.is_none() && !self.shown.made {
+            self.shown.rendered = Some(self.shown.rendered_now(self.viewport));
+        }
+        for scroll in scrolls {
             let instant = !scroll.smooth;
             let before = self.scroll_targets(scroll.node);
             match scroll.node {
@@ -6727,7 +7087,14 @@ impl Engine {
             if scroll.relative {
                 self.note_relative_scroll(scroll.node, before);
             }
+            if !scroll.resnap {
+                self.shown.moved.insert(scroll.node);
+            }
         }
+        // What the scripts' scrolls and reads snapped to (CSS Scroll Snap
+        // 1): kept, so that the frames follow the areas they chose.
+        let snapped = self.shown.scripts.take_snapped();
+        self.shown.snaps.extend(snapped);
         if let Some(notice) = self.shown.scripts.take_notice() {
             self.notice = Some(notice);
         }
@@ -7486,8 +7853,9 @@ impl Engine {
     /// target, or an animation plays in its active phase or waits for a
     /// frame to start it (M22.3), or, with scripts on, an animation
     /// frame callback or an animation event waits for the next frame's
-    /// rendering steps (M26). A new viewport size is the caller's to
-    /// know: the frame takes it.
+    /// rendering steps (M26), or a pan's scroll waits for its
+    /// `scrollend`. A new viewport size is the caller's to know: the
+    /// frame takes it.
     pub fn needs_frame(&self) -> bool {
         self.changed
             || self.shown.scripts.canvases_changed()
@@ -7500,6 +7868,7 @@ impl Engine {
                 && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
             || self.frames_need_frame()
             || self.focus_fixup_due()
+            || !self.shown.unended.is_empty()
     }
 
     /// Whether the element focused can no longer take the focus by the
@@ -8664,36 +9033,71 @@ impl Engine {
         self.settle_scrolls();
     }
 
-    /// Puts each snapping scroll container's offset, the viewport's among
-    /// them, on its snap positions (CSS Scroll Snap 1, see
-    /// [`scroll_state`]): after a scroll since the last frame, where the
-    /// scroll was going, in its direction for a relative one; else back
-    /// on the areas it was snapped to, which a layout may have moved. A
-    /// container that was at rest is put there at once, or smoothly when
-    /// its `scroll-behavior` says so and the snap is not a scroll's own;
-    /// one moving to a target has its target moved.
+    /// Puts each scroll container that a `scroll-initial-target` places,
+    /// and that neither the user nor a script has scrolled, where it
+    /// places it (Scroll Snap 2 section 3); then each snapping scroll
+    /// container's offset, the viewport's among them, on its snap
+    /// positions (CSS Scroll Snap 1, see [`scroll_snap`]): after a scroll
+    /// since the last frame, where the scroll was going, in its direction
+    /// for a relative one; else back on the areas it was snapped to,
+    /// which a layout may have moved. A container that was at rest is put
+    /// there at once, or, for a snap afresh that is not a scroll's own,
+    /// smoothly when its `scroll-behavior` says so; one moving to a
+    /// target has its target moved. One a touch pans is not snapped until
+    /// the touch is lifted, but what it would come to rest on is kept,
+    /// which `scrollsnapchanging` tells.
     fn snap_scrolls(&mut self, width: f32) {
         let viewport = (width, self.viewport.1 as f32);
-        let containers = scroll_state::snap_containers(self.layout(width), viewport);
+        let layout = self.layout(width);
+        let initial = scroll_snap::initial_targets(layout, viewport);
+        let containers = scroll_snap::snap_containers(layout, viewport);
+        for (scroller, at) in initial {
+            if !self.shown.moved.contains(&scroller) && self.scroll_targets(scroller) != at {
+                self.move_scroll_target(scroller, at, false);
+            }
+        }
+        let document = &self.shown.document;
+        let target = scroll_snap::chain(document, self.shown.target);
+        let focus = scroll_snap::chain(document, document.focused());
+        let prefer = scroll_snap::Prefer {
+            target: &target,
+            focus: &focus,
+        };
         let mut snaps = HashMap::new();
         for container in containers {
             let scroller = container.scroller;
             let target = self.scroll_targets(scroller);
+            let snap = self.shown.snaps.get(&scroller).copied();
+            if let Some(&from) = self
+                .shown
+                .pan
+                .as_ref()
+                .and_then(|pan| pan.from.get(&scroller))
+            {
+                let direction = way(from, target).map(|way| way * 2);
+                let (_, areas) = container.select(target, from, direction, &prefer);
+                snaps.insert(scroller, scroll_snap::Snap { areas, at: from });
+                continue;
+            }
             let direction = self
                 .shown
                 .snap_direction
                 .remove(&scroller)
                 .unwrap_or_default();
-            let (at, areas) =
-                container.settle(self.shown.snaps.get(&scroller).copied(), target, direction);
+            let (at, areas) = container.settle(snap, target, direction, &prefer);
             if at != target {
-                let smooth =
-                    container.smooth && direction == [0, 0] && !self.preferences.reduced_motion;
+                // Following the areas it was snapped to is at once, as the
+                // reference browser follows them.
+                let followed = snap.is_some_and(|snap| snap.at == target && snap.areas == areas);
+                let smooth = container.smooth
+                    && direction == [0, 0]
+                    && !followed
+                    && !self.preferences.reduced_motion;
                 self.move_scroll_target(scroller, at, smooth);
             }
             snaps.insert(
                 scroller,
-                scroll_state::Snap {
+                scroll_snap::Snap {
                     areas,
                     at: self.scroll_targets(scroller),
                 },
@@ -9042,15 +9446,11 @@ impl Engine {
     /// scroll that moved nothing changes nothing.
     fn note_relative_scroll(&mut self, scroller: Option<NodeId>, before: (f32, f32)) {
         let after = self.scroll_targets(scroller);
-        let sign = |from: f32, to: f32| match to.partial_cmp(&from) {
-            Some(std::cmp::Ordering::Greater) => 1,
-            Some(std::cmp::Ordering::Less) => -1,
-            _ => 0,
-        };
-        let moved = [sign(before.0, after.0), sign(before.1, after.1)];
+        let moved = way(before, after);
         if moved == [0, 0] {
             return;
         }
+        self.shown.moved.insert(scroller);
         let scrolled = self.shown.scrolled.entry(scroller).or_default();
         for (axis, &way) in moved.iter().enumerate() {
             if way != 0 {
@@ -9157,12 +9557,178 @@ impl Engine {
                 .map_or(0.0, |s| s.target_x);
             if (dx > 0.0 && target < max) || (dx < 0.0 && target > min) {
                 self.scroll_element_across_by(node, dx);
+                self.snap_way(Some(node), 2);
                 return;
             }
         }
         if self.viewport_takes_user_scrolls() {
             self.scroll_across_by(dx);
+            self.snap_way(None, 2);
         }
+    }
+
+    /// A touch went down at the viewport point `(x, y)` (as a
+    /// touchscreen's): a press of the primary button there, its pointer
+    /// events a touch's, which [`Engine::touch_move`] turns into a pan of
+    /// what it is on once it moves, and [`Engine::touch_up`] ends, a tap
+    /// clicking as a press's release does.
+    pub fn touch_down(&mut self, x: f32, y: f32) {
+        let chain = self.scroll_chain_at(x, y);
+        self.touching = true;
+        self.pointer_down(x, y, Button::Primary, 1);
+        self.touching = false;
+        self.shown.pan = Some(Pan {
+            at: (x, y),
+            chain,
+            from: HashMap::new(),
+            panned: false,
+        });
+    }
+
+    /// The touch moved to `(x, y)`: `pointermove`, and the content under
+    /// it follows it at once, in each axis the innermost scroll container
+    /// around where it went down that can still move that way, else the
+    /// viewport, none of them snapped until the touch is lifted. The
+    /// press it began is a pan's from now: `pointercancel`, and no click.
+    pub fn touch_move(&mut self, x: f32, y: f32) {
+        let Some(pan) = self.shown.pan.as_mut() else {
+            return;
+        };
+        let delta = [pan.at.0 - x, pan.at.1 - y];
+        if delta == [0.0, 0.0] {
+            return;
+        }
+        pan.at = (x, y);
+        let chain = pan.chain.clone();
+        if !std::mem::replace(&mut pan.panned, true) {
+            self.cancel_press(x, y);
+        }
+        self.touch_event("pointermove", x, y, -1);
+        for (axis, delta) in delta.into_iter().enumerate() {
+            if delta == 0.0 || !delta.is_finite() {
+                continue;
+            }
+            let mut scroller = None;
+            for &node in chain.iter().rev() {
+                let target = self.scroll_targets(Some(node));
+                let (min, max) = if axis == 0 {
+                    self.element_scroll_range_x(node)
+                } else {
+                    (0.0, self.element_max_scroll(node))
+                };
+                let at = [target.0, target.1][axis];
+                if (delta > 0.0 && at < max) || (delta < 0.0 && at > min) {
+                    scroller = Some(Some(node));
+                    break;
+                }
+            }
+            let Some(scroller) =
+                scroller.or_else(|| self.viewport_takes_user_scrolls().then_some(None))
+            else {
+                continue;
+            };
+            let before = self.scroll_targets(scroller);
+            if let Some(pan) = self.shown.pan.as_mut() {
+                pan.from.entry(scroller).or_insert(before);
+            }
+            match (scroller, axis) {
+                (None, 0) => self.scroll_to_x(before.0 + delta, true),
+                (None, _) => self.set_scroll(before.1 + delta),
+                (Some(node), 0) => self.scroll_element_to_x(node, before.0 + delta, true),
+                (Some(node), _) => self.set_element_scroll(node, before.1 + delta),
+            }
+            // What `scroll-state(scrolled)` reads; the snap waits.
+            let moved = way(before, self.scroll_targets(scroller));
+            if moved != [0, 0] {
+                self.shown.moved.insert(scroller);
+                let scrolled = self.shown.scrolled.entry(scroller).or_default();
+                if moved[axis] != 0 {
+                    scrolled[axis] = moved[axis];
+                }
+            }
+        }
+    }
+
+    /// The touch was lifted at `(x, y)`: a tap's release, which clicks,
+    /// or a pan's end, each scroll container it moved snapping in the
+    /// pan's direction (CSS Scroll Snap 1 section 6.2), its `scrollend`
+    /// once that is done.
+    pub fn touch_up(&mut self, x: f32, y: f32) {
+        let panned = self.shown.pan.as_ref().is_some_and(|pan| pan.panned);
+        self.end_pan();
+        if !panned {
+            self.touching = true;
+            self.pointer_up(x, y, Button::Primary, 1);
+            self.touching = false;
+        }
+    }
+
+    /// The press a touch began, a pan's now: let go with no release,
+    /// `pointercancel` at what it pressed, as a touch's pan cancels it.
+    fn cancel_press(&mut self, x: f32, y: f32) {
+        self.buttons &= !Button::Primary.bit();
+        let pressed = self.shown.pressed[Button::Primary.number() as usize].take();
+        self.set_flag(ElementState::ACTIVE, Vec::new());
+        self.shown.selecting = None;
+        if self.buttons == 0 {
+            self.shown.no_mouse = false;
+        }
+        if let Some(target) = pressed.filter(|&node| self.shown.document.contains(node)) {
+            self.pointer_at(x, y);
+            let event = self.touch_pointer_event("pointercancel", target, -1);
+            self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+    }
+
+    /// Ends a pan, a touch's or the scrollbar's: each scroll container
+    /// it moved snaps in its direction, as a wheel's scroll does, its
+    /// `scrollend` once that is done.
+    fn end_pan(&mut self) {
+        if let Some(pan) = self.shown.pan.take() {
+            for (scroller, from) in pan.from {
+                let to = self.scroll_targets(scroller);
+                let direction = way(from, to).map(|way| way * 2);
+                self.shown.snap_direction.insert(scroller, direction);
+                self.shown.unended.insert(scroller);
+            }
+            self.changed = true;
+        }
+    }
+
+    /// The user took (`held`) or let go of the viewport's scrollbar
+    /// thumb, which [`Engine::scroll_to_fraction`] moves meanwhile: a pan
+    /// of the viewport, not snapped until it is let go (CSS Scroll Snap 1
+    /// section 6.2), as the reference browser snaps a thumb's drag.
+    pub fn hold_scrollbar(&mut self, held: bool) {
+        if !held {
+            self.end_pan();
+            return;
+        }
+        let at = self.scroll_targets(None);
+        self.shown.moved.insert(None);
+        self.shown.pan = Some(Pan {
+            at: (0.0, 0.0),
+            chain: Vec::new(),
+            from: HashMap::from([(None, at)]),
+            panned: true,
+        });
+    }
+
+    /// Fires the pointer event `kind` of a touch at `(x, y)` at the
+    /// element there, its button `button` (-1 for none).
+    fn touch_event(&mut self, kind: &str, x: f32, y: f32, button: i16) {
+        let Some(target) = self.pointer_at(x, y) else {
+            return;
+        };
+        let event = self.touch_pointer_event(kind, target, button);
+        self.fire(js::Target::Node(scripts::handle(target)), event);
+    }
+
+    /// A touch's pointer event `kind` at `target`, its button `button`.
+    fn touch_pointer_event(&mut self, kind: &str, target: NodeId, button: i16) -> js::EventInit {
+        self.mouse_event("PointerEvent", kind, target, button, 0, None)
+            .with("pointerId", js::Field::Number(2.0))
+            .with("pointerType", js::Field::String("touch".to_owned()))
     }
 
     /// [`Engine::wheel`], saying whether the wheel was taken: its event
@@ -9196,6 +9762,7 @@ impl Engine {
             let target = self.element_scroll_target(node);
             if (dy > 0.0 && target < max) || (dy < 0.0 && target > 0.0) {
                 self.scroll_element_by(node, dy);
+                self.snap_way(Some(node), 2);
                 return true;
             }
         }
@@ -9204,7 +9771,22 @@ impl Engine {
         }
         let before = self.shown.scroll_target;
         self.scroll_by(dy);
+        self.snap_way(None, 2);
         self.shown.scroll_target != before
+    }
+
+    /// Makes the snap a relative scroll of the viewport (`None`) or of a
+    /// scroll container is due the snap of `kind`, as
+    /// [`scroll_snap::SnapContainer::select`] takes its direction: 2 a
+    /// wheel's, which may go back to where it was, 3 a page's by a key,
+    /// which passes no area it has not shown whole; a key's or a
+    /// script's otherwise snaps past where it was.
+    fn snap_way(&mut self, scroller: scroll_state::Scroller, kind: i8) {
+        if let Some(direction) = self.shown.snap_direction.get_mut(&scroller) {
+            for way in direction {
+                *way = way.signum() * kind;
+            }
+        }
     }
 
     /// The scroll containers that take the wheel under the viewport
@@ -9510,96 +10092,224 @@ impl Engine {
                         self.shown.scroll_y = 0.0;
                         self.shown.scroll_target = 0.0;
                     }
-                    Some(Indicated::Element(node)) => self.scroll_into_view(node),
+                    Some(Indicated::Element(node)) => self.reveal(node, Reveal::Fragment(false)),
                     None => {}
                 }
             }
         }
     }
 
-    /// Scrolls `node` into view as CSSOM View's "scroll into view" does
-    /// with `block: start` and the behaviour "auto", that is at once:
-    /// each scrolling box around it, innermost first, is scrolled so
-    /// that the top of the element's first box is at the top of the
-    /// box's padding edge, as far as it can go, and then the viewport.
-    /// An element with no box is not scrolled to.
-    fn scroll_into_view(&mut self, node: NodeId) {
-        let Some((_, chain)) = self.locate(node) else {
-            return;
-        };
-        for (container, _) in chain.into_iter().rev() {
-            // Where things are now that the boxes inside have scrolled.
-            let Some((top, chain)) = self.locate(node) else {
-                return;
-            };
-            let Some(&(_, padding_top)) = chain.iter().find(|(c, _)| *c == container) else {
-                return;
-            };
-            let max = self.element_max_scroll(container);
-            let scroll = self.shown.element_scroll.entry(container).or_default();
-            let wanted = (scroll.y + top - padding_top).clamp(0.0, max);
-            scroll.y = wanted;
-            scroll.target = wanted;
-        }
-        let Some((top, _)) = self.locate(node) else {
-            return;
-        };
-        let wanted = top.clamp(0.0, self.max_scroll());
-        self.shown.scroll_y = wanted;
-        self.shown.scroll_target = wanted;
-    }
-
-    /// Where `node`'s first box is in the document, with the scroll
-    /// containers scrolled as they are, and the clipping boxes around
-    /// it, outermost first, each with the top of its padding box: from
-    /// the paint order of the whole document, as a viewport as tall as
-    /// it and at its top would see it.
-    fn locate(&mut self, node: NodeId) -> Option<(f32, Vec<(NodeId, f32)>)> {
+    /// Scrolls `node` into view as CSSOM View's "scroll a target into
+    /// view" does (section 7.1), as the scripts' host does for
+    /// `scrollIntoView`: each scroll container around it, innermost
+    /// first, then the viewport, so that its border box, grown by its
+    /// `scroll-margin`, is where `how` puts it in the scrollport less the
+    /// container's `scroll-padding` (the root's for the viewport). A
+    /// container that snaps comes to rest on its snap positions, the
+    /// areas of `node` and of what holds it preferred there (CSS Scroll
+    /// Snap 1). An element with no box is not scrolled to.
+    fn reveal(&mut self, node: NodeId, how: Reveal) {
         let (width, height) = self.viewport;
         if width == 0 {
-            return None;
+            return;
         }
-        // In the document's coordinates, the viewport unscrolled.
-        let (_, mut offsets) = self.drawn_offsets();
-        offsets.viewport_x = 0.0;
-        let layout = self.layout(width as f32);
-        let whole = Viewport {
-            width: width as f32,
-            height: layout.height.max(0.0) + height as f32,
-            scroll_y: 0.0,
+        let document = &self.shown.document;
+        let root = document.document_element();
+        let body = root.and_then(|r| {
+            document
+                .element_children(r)
+                .find(|&c| document.tag(c) == Some("body"))
+        });
+        let around: Vec<NodeId> = document
+            .flat_ancestors(node)
+            .filter(|&a| document.is_element(a))
+            .collect();
+        let prefer_target = scroll_snap::chain(document, Some(node));
+        let focus = scroll_snap::chain(document, document.focused());
+        let (scroll_y, offsets) = self.drawn_offsets();
+        self.layout(width as f32);
+        let Some(cached) = self.shown.layout.as_ref() else {
+            return;
         };
-        let mut padding_tops: HashMap<NodeId, f32> = HashMap::new();
-        // As in `hit`, with the clips of generated boxes, which do not
-        // scroll, left out; and the first box is one of the element's
-        // own, not one its `::before` generated.
-        let mut chain: Vec<Option<NodeId>> = Vec::new();
-        for step in paint_order(&layout.roots, whole, &offsets) {
-            match step {
-                Step::Box { fragment, rect, .. } | Step::Text { fragment, rect, .. } => {
-                    if fragment.generated.is_some() {
-                        continue;
-                    }
-                    if fragment.clips() {
-                        padding_tops.insert(fragment.node, padding_box(fragment, rect).y);
-                    }
-                    if fragment.node == node {
-                        let chain = chain
-                            .iter()
-                            .flatten()
-                            .map(|c| (*c, padding_tops.get(c).copied().unwrap_or(0.0)))
-                            .collect();
-                        return Some((rect.y, chain));
-                    }
+        let layout = &cached.layout;
+        let document = &self.shown.document;
+        // The root's overflow is the viewport's (css-overflow-3 section
+        // 3.3), and so is the body's when the root's is `visible`.
+        let root_visible = root.is_some_and(|r| {
+            fragment_of(&layout.roots, r).is_none_or(|f| f.style.overflow() == Overflow::Visible)
+        });
+        let containers: Vec<NodeId> = around
+            .into_iter()
+            .filter(|&a| {
+                Some(a) != root
+                    && !(root_visible && Some(a) == body)
+                    && fragment_of(&layout.roots, a)
+                        .is_some_and(|f| f.clips() && f.style.overflow().scrolls())
+            })
+            .collect();
+        let mut targets: HashSet<NodeId> = containers.iter().copied().collect();
+        targets.insert(node);
+        let viewport = Viewport {
+            width: width as f32,
+            height: height as f32,
+            scroll_y,
+        };
+        let measured = geometry::measure(layout, viewport, &offsets, &targets);
+        let Some(m) = measured.get(&node) else {
+            return;
+        };
+        let snappers = scroll_snap::snap_containers(layout, (width as f32, height as f32));
+        let styles = |node: NodeId| fragment_of(&layout.roots, node).map(|f| f.style.clone());
+        let margin = styles(node).map_or([0.0; 4], |s| s.effects().scroll_margin);
+        // The target's border box in viewport coordinates, moved as each
+        // scroll moves it and cut to the scrollport of each scroll
+        // container it is scrolled in, grown by its `scroll-margin` in
+        // each, as the scripts' host carries it.
+        let mut element = m.bounds;
+        // Each container, its padding box and its style.
+        type Port = (Option<NodeId>, [f32; 4], Option<Arc<style::ComputedStyle>>);
+        let mut ports: Vec<Port> = Vec::new();
+        for &c in &containers {
+            let Some(cm) = measured.get(&c) else {
+                continue;
+            };
+            let [top, right, bottom, left] = cm.border;
+            ports.push((
+                Some(c),
+                [
+                    cm.bounds[0] + left,
+                    cm.bounds[1] + top,
+                    (cm.bounds[2] - left - right).max(0.0),
+                    (cm.bounds[3] - top - bottom).max(0.0),
+                ],
+                styles(c),
+            ));
+        }
+        ports.push((
+            None,
+            [0.0, 0.0, width as f32, height as f32],
+            root.and_then(styles),
+        ));
+        let mut moves = Vec::new();
+        let mut snapped = Vec::new();
+        for (container, scrollport, style) in ports {
+            let target = [
+                element[0] - margin[3],
+                element[1] - margin[0],
+                element[2] + margin[1] + margin[3],
+                element[3] + margin[0] + margin[2],
+            ];
+            let port = scrollport;
+            // The scrollport less its `scroll-padding`; a sticky box's own
+            // place is where it sticks, which no padding moves.
+            let stuck = std::iter::once(node)
+                .chain(document.flat_ancestors(node))
+                .take_while(|&a| Some(a) != container)
+                .any(|a| {
+                    fragment_of(&layout.roots, a)
+                        .is_some_and(|f| f.style.position == style::computed::Position::Sticky)
+                });
+            let padding = style
+                .as_ref()
+                .filter(|_| !stuck)
+                .map(|s| s.effects().scroll_padding.clone());
+            let side = |i: usize, size: f32| {
+                padding
+                    .as_ref()
+                    .map_or(0.0, |p| p[i].resolve(size, 0.0).max(0.0))
+            };
+            let pad = [
+                side(0, port[3]),
+                side(1, port[2]),
+                side(2, port[3]),
+                side(3, port[2]),
+            ];
+            let port = [
+                port[0] + pad[3],
+                port[1] + pad[0],
+                (port[2] - pad[1] - pad[3]).max(0.0),
+                (port[3] - pad[0] - pad[2]).max(0.0),
+            ];
+            let (now, (min_x, max_x), max_y) = match container {
+                None => (
+                    (self.shown.scroll_x, self.shown.scroll_y),
+                    (
+                        0.0,
+                        crate::scroll_state::viewport_max(layout, (width as f32, height as f32)).0,
+                    ),
+                    crate::scroll_state::viewport_max(layout, (width as f32, height as f32)).1,
+                ),
+                Some(c) => {
+                    let f = fragment_of(&layout.roots, c);
+                    (
+                        self.shown
+                            .element_scroll
+                            .get(&c)
+                            .map_or((0.0, 0.0), |s| (s.x, s.y)),
+                        f.map_or((0.0, 0.0), geometry::scroll_range_x),
+                        f.map_or(0.0, |f| f.max_scroll()),
+                    )
                 }
-                Step::PushClip { node, .. } => chain.push(node),
-                Step::PopClip => {
-                    chain.pop();
+            };
+            let (block, inline) = match how {
+                Reveal::Fragment(_) => (Align::Start, Align::Nearest),
+                Reveal::IfNeeded => (Align::IfNeeded, Align::IfNeeded),
+            };
+            let mut y =
+                (now.1 + block.delta((target[1], target[3]), (port[1], port[3]))).clamp(0.0, max_y);
+            let mut x = (now.0 + inline.delta((target[0], target[2]), (port[0], port[2])))
+                .clamp(min_x, max_x);
+            if let Some(snapping) = snappers.iter().find(|c| c.scroller == container) {
+                let prefer = scroll_snap::Prefer {
+                    target: &prefer_target,
+                    focus: &focus,
+                };
+                let ((sx, sy), areas) = snapping.select((x, y), now, [0, 0], &prefer);
+                (x, y) = (sx, sy);
+                snapped.push((container, scroll_snap::Snap { areas, at: (x, y) }));
+            }
+            element[0] -= x - now.0;
+            element[1] -= y - now.1;
+            let left = element[0].max(scrollport[0]);
+            let top = element[1].max(scrollport[1]);
+            let right = (element[0] + element[2]).min(scrollport[0] + scrollport[2]);
+            let bottom = (element[1] + element[3]).min(scrollport[1] + scrollport[3]);
+            element = [left, top, (right - left).max(0.0), (bottom - top).max(0.0)];
+            let smooth = match how {
+                Reveal::Fragment(smooth) => {
+                    smooth && style.is_some_and(|s| s.effects().scroll_behavior_smooth)
                 }
-                Step::PushGroup { .. } | Step::PopGroup => {}
-                Step::Scrollbar { .. } => {}
+                Reveal::IfNeeded => false,
+            };
+            if (x, y) != now {
+                moves.push((container, (x, y), smooth));
             }
         }
-        None
+        self.shown.snaps.extend(snapped);
+        // Moved as a fragment's goal moves it, which a later layout may
+        // move again: no user's scroll, which would give the goal up.
+        let smoothly = !self.preferences.reduced_motion;
+        for (container, (x, y), smooth) in moves {
+            self.shown.moved.insert(container);
+            self.changed = true;
+            let at_once = !(smooth && smoothly);
+            match container {
+                None => {
+                    let shown = &mut self.shown;
+                    (shown.scroll_target_x, shown.scroll_target) = (x, y);
+                    if at_once {
+                        (shown.scroll_x, shown.scroll_y) = (x, y);
+                    }
+                }
+                Some(c) => {
+                    let scroll = self.shown.element_scroll.entry(c).or_default();
+                    (scroll.target_x, scroll.target) = (x, y);
+                    if at_once {
+                        (scroll.x, scroll.y) = (x, y);
+                    }
+                }
+            }
+        }
     }
 }
 

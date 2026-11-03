@@ -618,12 +618,16 @@ fn pull(checkout: &Path) -> Result<(), String> {
                 let expected = kind == "png"
                     && path.with_extension("html").is_file()
                     && rel.starts_with("html/canvas/");
+                // A page a test loads in a frame by its script, which
+                // WPT names `-iframe.html`.
+                let frame_page = name.ends_with("-iframe.html");
                 let frames_support = FRAME_DIRECTORIES
                     .iter()
                     .any(|d| rel.starts_with(&format!("{d}/")))
                     && (rel.contains("/support/") || rel.contains("/resources/"))
                     && !matches!(kind, "py" | "yml" | "md");
                 if frames_support
+                    || frame_page
                     || (!matches!(kind, "html" | "htm" | "xhtml" | "js" | "py" | "yml" | "md")
                         && !expected)
                 {
@@ -896,6 +900,8 @@ fn take_testharness(
         workers_rule(&text, false)?;
     }
     let mut scripts = Vec::new();
+    // The stylesheets a page links, copied with it.
+    let mut stylesheets = Vec::new();
     let (pages, long) = if let Some(stem) = rel
         .strip_suffix(".any.js")
         .map(|stem| (stem, ".any"))
@@ -996,6 +1002,15 @@ fn take_testharness(
                         variants.push(format!("{rel}{}", variant_query(variant)));
                     }
                 }
+                Some("link") => {
+                    let stylesheet = document.attr(id, "rel").is_some_and(|rels| {
+                        rels.split_whitespace()
+                            .any(|kind| kind.eq_ignore_ascii_case("stylesheet"))
+                    });
+                    if stylesheet && let Some(href) = document.attr(id, "href") {
+                        stylesheets.push(resolve(rel, href)?);
+                    }
+                }
                 Some("frame" | "object" | "embed") => {
                     return Err("a frame of another kind than iframe".to_string());
                 }
@@ -1024,6 +1039,12 @@ fn take_testharness(
             workers_rule(&text, true)?;
         }
     }
+    for sheet in &stylesheets {
+        if !checkout.join(sheet).is_file() {
+            return Err(format!("missing file {sheet}"));
+        }
+    }
+    scripts.extend(stylesheets);
     Ok((pages, long, scripts))
 }
 

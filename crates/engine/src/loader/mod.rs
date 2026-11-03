@@ -94,6 +94,8 @@ mod service_worker_fetch_tests;
 mod service_worker_tests;
 mod sheets;
 #[cfg(test)]
+mod snap_tests;
+#[cfg(test)]
 mod state_tests;
 #[cfg(test)]
 mod submit_tests;

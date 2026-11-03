@@ -5474,6 +5474,18 @@ fn compute_style(
         style.float = Float::None;
         style.flow_relative.float = None;
     }
+    style.inline_out_of_flow = style.position.is_out_of_flow()
+        && matches!(
+            style.display,
+            Display::Inline
+                | Display::InlineBlock
+                | Display::InlineTable
+                | Display::InlineFlex
+                | Display::InlineGrid
+                | Display::InlineListItem
+                | Display::Ruby
+                | Display::Math
+        );
     if style.float != Float::None || style.position.is_out_of_flow() {
         style.display = style.display.blockified();
     }
@@ -6830,6 +6842,14 @@ fn apply_declaration(
             };
             set_effects(style, always, |e, v| e.scroll_snap_stop_always = v)
         }
+        "scroll-initial-target" => {
+            let nearest = match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
+                Some("none") => Some(false),
+                Some("nearest") => Some(true),
+                _ => None,
+            };
+            set_effects(style, nearest, |e, v| e.scroll_initial_target = v)
+        }
         // Scroll Snap 1 section 6: lengths, and `auto` or lengths and
         // percentages not below zero.
         "scroll-margin" => {
@@ -8060,6 +8080,9 @@ fn apply_css_wide(
         }
         "scroll-snap-stop" => copy_effects(style, src, |e, s| {
             e.scroll_snap_stop_always = s.scroll_snap_stop_always
+        }),
+        "scroll-initial-target" => copy_effects(style, src, |e, s| {
+            e.scroll_initial_target = s.scroll_initial_target
         }),
         "scroll-margin" => copy_effects(style, src, |e, s| e.scroll_margin = s.scroll_margin),
         "scroll-padding" => copy_effects(style, src, |e, s| {
@@ -10860,10 +10883,11 @@ fn single_token(tokens: &[Token]) -> Option<&Token> {
     }
 }
 
-/// A `scroll-snap-type`, `scroll-snap-align` or `scroll-snap-stop` value
-/// as a declaration block keeps it: at its shortest, as its computed
-/// value is written (a `proximity` and a second alignment saying the
-/// first again left out); `None` for one not valid.
+/// A `scroll-snap-type`, `scroll-snap-align`, `scroll-snap-stop` or
+/// `scroll-initial-target` value as a declaration block keeps it: at its
+/// shortest, as its computed value is written (a `proximity` and a
+/// second alignment saying the first again left out); `None` for one not
+/// valid.
 pub fn scroll_snap_value(name: &str, tokens: &[Token]) -> Option<String> {
     let mut style = ComputedStyle::default();
     let parent = ComputedStyle::default();
@@ -10876,7 +10900,8 @@ pub fn scroll_snap_value(name: &str, tokens: &[Token]) -> Option<String> {
 }
 
 /// `scroll-snap-type` (Scroll Snap 1 section 5.1): `none`, or an axis
-/// and, after it, a strictness, `proximity` when none is given.
+/// (`pair` among them, Scroll Snap 2's, as the reference browser takes
+/// it) and, after it, a strictness, `proximity` when none is given.
 fn parse_scroll_snap_type(tokens: &[Token]) -> Option<ScrollSnapType> {
     let words: Option<Vec<String>> = tokens
         .iter()
@@ -10894,6 +10919,7 @@ fn parse_scroll_snap_type(tokens: &[Token]) -> Option<ScrollSnapType> {
             "block" => SnapAxis::Block,
             "inline" => SnapAxis::Inline,
             "both" => SnapAxis::Both,
+            "pair" => SnapAxis::Pair,
             _ => return None,
         })
     };
@@ -17161,6 +17187,19 @@ mod tests {
             ),
             ("", "scroll-snap-stop", "normal"),
             ("scroll-snap-stop: ALWAYS", "scroll-snap-stop", "always"),
+            // Scroll Snap 2's, as the reference browser takes them.
+            ("scroll-snap-type: pair", "scroll-snap-type", "pair"),
+            (
+                "scroll-snap-type: pair mandatory",
+                "scroll-snap-type",
+                "pair mandatory",
+            ),
+            ("", "scroll-initial-target", "none"),
+            (
+                "scroll-initial-target: Nearest",
+                "scroll-initial-target",
+                "nearest",
+            ),
         ] {
             assert_eq!(
                 value(&format!("p {{ {written} }}"), name),
@@ -17175,6 +17214,11 @@ mod tests {
             ("scroll-snap-align", "start start start"),
             ("scroll-snap-align", "left"),
             ("scroll-snap-stop", "none"),
+            ("scroll-snap-stop", "before"),
+            ("scroll-snap-type", "both pair"),
+            ("scroll-snap-type", "pair x"),
+            ("scroll-initial-target", "auto"),
+            ("scroll-initial-target", "nearest none"),
         ] {
             assert!(
                 !supports(name, &css::tokenize(invalid)),
@@ -17186,13 +17230,15 @@ mod tests {
         let styles = cascade_document(
             &document,
             &[sheet(
-                "div { scroll-snap-type: y; scroll-snap-align: start }",
+                "div { scroll-snap-type: y; scroll-snap-align: start;
+                       scroll-initial-target: nearest }",
             )],
             &CascadeContext::default(),
         );
         let p = styles.get(first(&document, "p")).unwrap();
         assert_eq!(p.effects().scroll_snap_type, ScrollSnapType::NONE);
         assert_eq!(p.effects().scroll_snap_align, [SnapAlign::None; 2]);
+        assert!(!p.effects().scroll_initial_target);
     }
 
     #[test]

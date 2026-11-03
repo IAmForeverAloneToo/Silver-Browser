@@ -1034,12 +1034,14 @@ impl ScrollSnapType {
             SnapAxis::None => [false, false],
             SnapAxis::X | SnapAxis::Inline => [true, false],
             SnapAxis::Y | SnapAxis::Block => [false, true],
-            SnapAxis::Both => [true, true],
+            SnapAxis::Both | SnapAxis::Pair => [true, true],
         }
     }
 }
 
-/// `scroll-snap-type`'s axis.
+/// `scroll-snap-type`'s axis: `pair` (Scroll Snap 2, as the reference
+/// browser takes it) snaps both axes together, to one area's position in
+/// each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SnapAxis {
     None,
@@ -1048,6 +1050,7 @@ pub enum SnapAxis {
     Block,
     Inline,
     Both,
+    Pair,
 }
 
 /// `scroll-snap-type`'s strictness: `proximity`, the default, snaps
@@ -2141,6 +2144,9 @@ pub struct Effects {
     pub scroll_snap_align: [SnapAlign; 2],
     /// `scroll-snap-stop: always` (section 6.4).
     pub scroll_snap_stop_always: bool,
+    /// `scroll-initial-target: nearest` (Scroll Snap 2 section 3): the
+    /// element is where its nearest scroll container starts scrolled to.
+    pub scroll_initial_target: bool,
     /// Not a property: what the element's animations current or in
     /// effect animate, which the engine acts as if `will-change` named
     /// (Web Animations §5.6, M22.2), so that an animated transform or
@@ -2245,6 +2251,7 @@ impl Default for Effects {
             scroll_snap_type: ScrollSnapType::NONE,
             scroll_snap_align: [SnapAlign::None; 2],
             scroll_snap_stop_always: false,
+            scroll_initial_target: false,
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
@@ -4179,6 +4186,11 @@ pub struct ComputedStyle {
     /// container's (D77): they are its items, and blockified, as the
     /// container's own children are.
     pub contents_in_items: bool,
+    /// Not a property: whether the element's `display` was inline-level
+    /// before its absolute position blockified it (CSS2 section 9.7):
+    /// its static position is then an inline box's on a line, not a
+    /// block's beside its container's start edge.
+    pub inline_out_of_flow: bool,
     /// Not a property: whether its parent's `direction` is `rtl`, which
     /// way a box of it in flow, wider than its containing block,
     /// overflows it (CSS2 section 10.3.3).
@@ -4304,6 +4316,7 @@ impl Default for ComputedStyle {
             root: false,
             fieldset: false,
             contents_in_items: false,
+            inline_out_of_flow: false,
             motion: None,
             image: None,
             background: None,

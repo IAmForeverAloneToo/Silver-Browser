@@ -497,6 +497,10 @@ impl<V: View> Session<V> {
         left.set_hidden(true);
         left.set_window_focus(false);
         left.pointer_leave();
+        // A thumb held is let go with the tab.
+        if matches!(self.held, Some(Held::Thumb(_))) {
+            left.hold_scrollbar(false);
+        }
         let mut left_panel =
             std::mem::replace(&mut self.panel, incoming.panel.take().map(|panel| *panel));
         if let Some(panel) = &mut left_panel {
@@ -1377,7 +1381,9 @@ impl<V: View> Session<V> {
                 self.release_panel(engine::Button::Primary, count);
                 return;
             }
-            Some(Held::Thumb(_) | Held::ThumbAcross(_) | Held::Track) | None => {}
+            // The thumb let go: the page snaps where it was dragged to.
+            Some(Held::Thumb(_)) => self.engine.hold_scrollbar(false),
+            Some(Held::ThumbAcross(_) | Held::Track) | None => {}
         }
         self.sync();
         self.refresh_hover();
@@ -1842,6 +1848,8 @@ impl<V: View> Session<V> {
             && bar.contains(x, y)
         {
             self.held = Some(if bar.thumb_contains(x, y) {
+                // Taken, the page is not snapped until it is let go.
+                self.engine.hold_scrollbar(true);
                 Held::Thumb(y - bar.thumb_y)
             } else {
                 self.engine
