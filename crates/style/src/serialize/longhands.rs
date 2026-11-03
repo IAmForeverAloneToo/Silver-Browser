@@ -14,7 +14,7 @@ use crate::computed::{
     GradientItem, GradientShape, GridLine, Image, ImageOrientation, ImageRendering,
     LengthPercentage, LineDirection, ListStylePosition, ListStyleType, ObjectFit, Outset,
     PrintColorAdjust, Quotes, RadialSize, Repeat, RepeatCount, SliceSide, TemplateAreas,
-    TextAlignLast, TextJustify, TrackBreadth, TrackList, TrackSection, TrackSize,
+    TextAlignLast, TextJustify, Timeline, TrackBreadth, TrackList, TrackSection, TrackSize,
     TransformFunction, TransformStyle, TransitionBehavior, TransitionProperty, UnderlinePosition,
 };
 use crate::easing::{Easing, StepPosition};
@@ -340,7 +340,17 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
             n.as_ref()
                 .map_or_else(|| "none".to_owned(), |n| n.to_string())
         }),
-        "animation-duration" => times(&style.motion().animation_duration),
+        // `auto` is resolved to `0s` for the document's timeline alone,
+        // as the reference browser resolves it.
+        "animation-duration" => {
+            let motion = style.motion();
+            let document = matches!(motion.animation_timeline[..], [Timeline::Auto]);
+            list(&motion.animation_duration, |d| match d {
+                Some(s) => super::shorthands::seconds(*s),
+                None if document => "0s".to_owned(),
+                None => "auto".to_owned(),
+            })
+        }
         "animation-delay" => times(&style.motion().animation_delay),
         "animation-timing-function" => easings(&style.motion().animation_timing_function),
         "animation-iteration-count" => list(&style.motion().animation_iteration_count, |&n| {

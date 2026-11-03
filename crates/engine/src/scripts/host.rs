@@ -2131,18 +2131,21 @@ impl DocumentHost {
             Call::IdleDeadline => {
                 // An idle period ends 50 ms on, at the next timer, or at
                 // the next frame when one is wanted.
+                // In tenths of a millisecond, as `performance.now()` is,
+                // counted from the now it reads, so that the time left is
+                // never more than the period whatever the rounding.
                 let now = self.now();
-                let mut end = now + std::time::Duration::from_millis(50);
+                let origin = self.origin.map(|origin| origin.at).unwrap_or_default();
+                let tenths = |at: std::time::Duration| at.saturating_sub(origin).as_micros() / 100;
+                let start = tenths(now);
+                let mut end = start + 500;
                 if let Some(due) = self.timers.next_due() {
-                    end = end.min(due.max(now));
+                    end = end.min(tenths(due.max(now)));
                 }
                 if self.frame_wanted {
-                    end = end.min(now + std::time::Duration::from_micros(16_667));
+                    end = end.min(start + 166);
                 }
-                // In tenths of a millisecond, as `performance.now()` is.
-                let origin = self.origin.map(|origin| origin.at).unwrap_or_default();
-                let tenths = end.saturating_sub(origin).as_micros() / 100;
-                Ok(Answer::Number(tenths as f64 / 10.0))
+                Ok(Answer::Number(end as f64 / 10.0))
             }
             Call::TextDecoderName(label) => Ok(super::decoding::name(&label)),
             Call::TextDecode {
@@ -5011,7 +5014,7 @@ impl DocumentHost {
         let (scroll_y, offsets) = self.scroll_state();
         let (width, height) = self.window.viewport;
         let Some(layout) = self.layout_now() else {
-            return vec![0.0; 6];
+            return vec![0.0; 7];
         };
         let (at, max, at_x, max_x) = match node {
             None => {
@@ -5056,9 +5059,14 @@ impl DocumentHost {
                 })
                 .map_or([0.0, 0.0], crate::geometry::overflow),
         };
-        [at.min(max), max, at_x.min(max_x), max_x, over_y, over_x]
+        // Whether a smooth scroll is on its way: the engine's, or one this
+        // run asked for.
+        let moving = self.window.scrolling || self.outputs.scrolls.iter().any(|s| s.smooth);
+        let mut out = [at.min(max), max, at_x.min(max_x), max_x, over_y, over_x]
             .map(f64::from)
-            .to_vec()
+            .to_vec();
+        out.push(if moving { 1.0 } else { 0.0 });
+        out
     }
 
     /// A script's scroll of the viewport (`None`) or of `node` across to

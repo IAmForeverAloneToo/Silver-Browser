@@ -539,9 +539,18 @@ fn transition(style: &ComputedStyle) -> String {
 
 /// `animation`: each animation's duration, easing, delay, iteration
 /// count, direction, fill mode, play state and name, as the reference
-/// browser orders them.
+/// browser orders them, those at their initial values left out; the
+/// empty string where its reset-only longhands are not at theirs
+/// (Scroll-driven Animations 1 section 4).
 fn animation(style: &ComputedStyle) -> String {
+    use crate::computed::{Edge, Timeline};
     let motion = style.motion();
+    if !matches!(motion.animation_timeline[..], [Timeline::Auto])
+        || !matches!(motion.animation_range_start[..], [Edge::Normal])
+        || !matches!(motion.animation_range_end[..], [Edge::Normal])
+    {
+        return String::new();
+    }
     let get = |name: &str| longhands::value(style, name, &|_| None).unwrap_or_default();
     let lists: Vec<Vec<String>> = [
         "animation-iteration-count",
@@ -558,7 +567,7 @@ fn animation(style: &ComputedStyle) -> String {
         .enumerate()
         .map(|(i, name)| {
             let mut parts = vec![
-                seconds(*at(&motion.animation_duration, i)),
+                at(&motion.animation_duration, i).map_or_else(|| "0s".to_owned(), seconds),
                 easing(at(&motion.animation_timing_function, i)),
                 seconds(*at(&motion.animation_delay, i)),
             ];
@@ -567,8 +576,50 @@ fn animation(style: &ComputedStyle) -> String {
                 name.as_ref()
                     .map_or_else(|| "none".to_owned(), |n| n.to_string()),
             );
-            parts.join(" ")
+            let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+            animation_item(&parts, "0s")
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// One item of `animation` from its eight parts, in [`animation`]'s
+/// order, as the reference browser writes it: those at their initial
+/// values left out, the duration (`duration`, its initial value) kept
+/// before a delay, and a part kept whose keywords the name would be read
+/// as were it left out; `none` where every part is left out.
+pub fn animation_item(parts: &[&str], duration: &str) -> String {
+    let initial = [
+        duration, "ease", "0s", "1", "normal", "none", "running", "none",
+    ];
+    let name = parts[7].to_ascii_lowercase();
+    let claims = |slot: usize| match slot {
+        0 => name == "auto",
+        1 => matches!(
+            name.as_str(),
+            "ease" | "linear" | "ease-in" | "ease-out" | "ease-in-out" | "step-start" | "step-end"
+        ),
+        3 => name == "infinite",
+        4 => matches!(
+            name.as_str(),
+            "normal" | "reverse" | "alternate" | "alternate-reverse"
+        ),
+        5 => matches!(name.as_str(), "none" | "forwards" | "backwards" | "both"),
+        6 => matches!(name.as_str(), "running" | "paused"),
+        _ => false,
+    };
+    let named = parts[7] != initial[7];
+    let kept: Vec<&str> = parts
+        .iter()
+        .enumerate()
+        .filter(|&(slot, v)| {
+            *v != initial[slot] || (slot == 0 && parts[2] != initial[2]) || (named && claims(slot))
+        })
+        .map(|(_, v)| *v)
+        .collect();
+    if kept.is_empty() {
+        "none".to_owned()
+    } else {
+        kept.join(" ")
+    }
 }

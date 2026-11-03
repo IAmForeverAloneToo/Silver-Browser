@@ -13427,6 +13427,10 @@
     }
   }
 
+  // `@starting-style` (Transitions 2 section 3.1), a grouping rule of
+  // nothing more.
+  class CSSStartingStyleRule extends CSSGroupingRule {}
+
   class CSSConditionRule extends CSSGroupingRule {
     get conditionText() {
       return ruleData(ruleState(this))[2];
@@ -13915,6 +13919,7 @@
   RULE_CLASSES["font-palette-values"] = CSSFontPaletteValuesRule;
   RULE_CLASSES["nested-declarations"] = CSSNestedDeclarations;
   RULE_CLASSES.scope = CSSScopeRule;
+  RULE_CLASSES["starting-style"] = CSSStartingStyleRule;
   RULE_CLASSES.property = CSSPropertyRule;
 
   // A media list (CSSOM section 4.1) over where its queries are kept:
@@ -14487,6 +14492,7 @@
   expose(CSSFontPaletteValuesRule, "CSSFontPaletteValuesRule");
   expose(CSSNestedDeclarations, "CSSNestedDeclarations");
   expose(CSSScopeRule, "CSSScopeRule");
+  expose(CSSStartingStyleRule, "CSSStartingStyleRule");
   expose(CSSPropertyRule, "CSSPropertyRule");
   expose(CSSFontFeatureValuesMap, "CSSFontFeatureValuesMap");
   expose(CSSPageRule, "CSSPageRule");
@@ -22347,9 +22353,102 @@
     return handle !== null && native.computedValue(handle, "", "scroll-behavior") === "smooth";
   }
 
+  // ---- The scroll methods' promises (as the reference browser has
+  // them: CSSOM View's scroll methods return a promise) ----
+  // Each scroll a method made, until it settles, by the scrollers it
+  // moves: the viewport (-1) or an element's handle. A scroll settles
+  // with `{ interrupted }`: false once it is where it was going (a
+  // smooth one over the frames to come), true once another scroll of a
+  // scroller it moves, or the scroller's leaving the document, cut it
+  // short.
+  const scrollsUnderWay = new $Map();
+  let scrollsWatched = false;
+
+  function scrollerKey(target) {
+    return target === null ? -1 : target;
+  }
+
+  // The scrolls under way of the scroller `target` settle, cut short: a
+  // new scroll of it is made.
+  function interruptScrolls(target) {
+    const list = MapGet(scrollsUnderWay, scrollerKey(target));
+    if (list === undefined) return;
+    MapDelete(scrollsUnderWay, scrollerKey(target));
+    for (let i = 0; i < list.length; i++) settleScroll(list[i], true);
+  }
+
+  // Scroll `scroll` settles, `interrupted` or not, and is forgotten.
+  function settleScroll(scroll, interrupted) {
+    if (scroll.settled) return;
+    scroll.settled = true;
+    for (let i = 0; i < scroll.targets.length; i++) {
+      const key = scrollerKey(scroll.targets[i]);
+      const list = MapGet(scrollsUnderWay, key);
+      if (list === undefined) continue;
+      const kept = [];
+      for (let j = 0; j < list.length; j++) {
+        if (list[j] !== scroll) ArrayPush(kept, list[j]);
+      }
+      if (kept.length === 0) MapDelete(scrollsUnderWay, key);
+      else MapSet(scrollsUnderWay, key, kept);
+    }
+    scroll.resolve({ interrupted });
+  }
+
+  // A promise of a scroll of the scrollers `targets` under way, settled
+  // once `arrived()` says it is where it was going, checked at each
+  // frame.
+  function scrollPromise(targets, arrived) {
+    let resolve;
+    const promise = new $Promise((r) => {
+      resolve = r;
+    });
+    const scroll = { __proto__: null, targets, arrived, resolve, settled: false };
+    for (let i = 0; i < targets.length; i++) {
+      const key = scrollerKey(targets[i]);
+      const list = MapGet(scrollsUnderWay, key);
+      if (list === undefined) MapSet(scrollsUnderWay, key, [scroll]);
+      else ArrayPush(list, scroll);
+    }
+    watchScrolls();
+    return promise;
+  }
+
+  // The scrolls under way checked at the next frame, and the frames after
+  // while some are.
+  function watchScrolls() {
+    if (scrollsWatched) return;
+    scrollsWatched = true;
+    frameFunctions.requestAnimationFrame(() => {
+      scrollsWatched = false;
+      const all = [];
+      MapForEach(scrollsUnderWay, (list) => {
+        for (let i = 0; i < list.length; i++) {
+          if (ArrayIndexOf(all, list[i]) < 0) ArrayPush(all, list[i]);
+        }
+      });
+      for (let i = 0; i < all.length; i++) {
+        const scroll = all[i];
+        let gone = false;
+        for (let j = 0; j < scroll.targets.length; j++) {
+          const target = scroll.targets[j];
+          if (target !== null && !native.connected(target)) gone = true;
+        }
+        if (gone) settleScroll(scroll, true);
+        else if (scroll.arrived()) settleScroll(scroll, false);
+      }
+      let left = false;
+      MapForEach(scrollsUnderWay, () => {
+        left = true;
+      });
+      if (left) watchScrolls();
+    });
+  }
+
   // A scroll of the viewport (`target` null) or an element by the
   // arguments `args` of `method`, by them or to them: a promise settled
-  // once it is made, rejected for arguments it cannot take.
+  // once it is where it goes, or cut short; rejected for arguments it
+  // cannot take.
   function scrollWith(element, target, args, relative) {
     let options;
     try {
@@ -22358,13 +22457,23 @@
       return PromiseReject(error);
     }
     let [x, y] = options;
+    const now = native.scrollOffset(target);
     if (relative) {
-      const now = native.scrollOffset(target);
       x = x === x ? now[2] + x : NaN;
       y = y === y ? now[0] + y : NaN;
     }
-    native.scrollTo(target, x, y, smoothScroll(element, options[2]));
-    return PromiseResolve(undefined);
+    interruptScrolls(target);
+    const smooth = smoothScroll(element, options[2]);
+    native.scrollTo(target, x, y, smooth);
+    if (!smooth) return PromiseResolve({ interrupted: false });
+    // Where it goes, as far as the scroller can.
+    const clamp = (v, max) => (v < 0 ? 0 : v > max ? max : v);
+    const toY = y === y ? MathRound(clamp(y, now[1])) : NaN;
+    const toX = x === x ? MathRound(clamp(x, now[3])) : NaN;
+    return scrollPromise([target], () => {
+      const at = native.scrollOffset(target);
+      return (toY !== toY || MathRound(at[0]) === toY) && (toX !== toX || MathRound(at[2]) === toX);
+    });
   }
 
   // The element's parent in the flat tree (D68): its slot when it is
@@ -22460,6 +22569,7 @@
 
       set scrollTop(value) {
         const handle = self(this);
+        interruptScrolls(scrollingRoot(this) ? null : handle);
         native.scrollTo(
           scrollingRoot(this) ? null : handle,
           NaN,
@@ -22475,6 +22585,7 @@
 
       set scrollLeft(value) {
         const handle = self(this);
+        interruptScrolls(scrollingRoot(this) ? null : handle);
         native.scrollTo(
           scrollingRoot(this) ? null : handle,
           finiteOrZero(value),
@@ -22545,8 +22656,23 @@
           inline = pick(arg.inline, "nearest", places);
           behavior = pick(arg.behavior, "auto", ["auto", "instant", "smooth"]);
         }
+        // Every scroller around it may move: their scrolls under way are
+        // cut short, and its own settles once it stays where it is.
+        const scrollers = [null];
+        for (let a = native.parent(handle); a !== null; a = native.parent(a)) {
+          if (native.kind(a) === 1) ArrayPush(scrollers, a);
+        }
+        for (let i = 0; i < scrollers.length; i++) interruptScrolls(scrollers[i]);
         native.scrollIntoView(handle, block, inline, behavior);
-        return PromiseResolve(undefined);
+        if (behavior === "instant") return PromiseResolve({ interrupted: false });
+        let last = null;
+        return scrollPromise(scrollers, () => {
+          const g = native.geometry(handle, true);
+          const now = g.length === 0 ? "" : g[0] + "," + g[1];
+          const still = now === last && native.scrollOffset(null)[6] === 0;
+          last = now;
+          return still;
+        });
       },
     },
     [Element.prototype],
@@ -26409,8 +26535,20 @@
   if (!WORKER) {
     chunkInterfaces("animations", [
       "Animation", "AnimationEffect", "AnimationPlaybackEvent", "AnimationTimeline",
-      "CSSAnimation", "CSSTransition", "DocumentTimeline", "KeyframeEffect",
+      "CSSAnimation", "CSSMathSum", "CSSMathValue", "CSSNumericValue", "CSSStyleValue",
+      "CSSTransition", "CSSUnitValue", "DocumentTimeline", "KeyframeEffect", "ScrollTimeline",
+      "ViewTimeline",
     ]);
+    // The numeric factories of the CSS namespace (CSS Typed OM 1 section
+    // 5.3), which the chunk's numeric values make.
+    const CSS_UNITS = [
+      "number", "percent", "em", "rem", "ex", "ch", "lh", "vw", "vh", "vmin", "vmax", "cm",
+      "mm", "q", "in", "pt", "pc", "px", "deg", "grad", "rad", "turn", "s", "ms", "hz",
+      "khz", "dpi", "dpcm", "dppx", "fr",
+    ];
+    for (let i = 0; i < CSS_UNITS.length; i++) {
+      chunkLazy("animations", CSSNamespace, CSS_UNITS[i], true, true);
+    }
     chunkLazy("animations", Element.prototype, "animate", true, true);
     chunkLazy("animations", Element.prototype, "getAnimations", true, true);
     chunkLazy("animations", Document.prototype, "getAnimations", true, true);
@@ -26431,13 +26569,14 @@
   const CHUNK_ENVS = {
     __proto__: null,
     animations: () => ({
-      $DOMException, $FinalizationRegistry, $Map, $Number, $Promise, $TypeError, ArrayPush,
-      ArraySort, CharCodeAt, Document, EVENT_INIT, Element, Event, EventTarget, JSONParse,
-      JSONStringify, KEY, MapDelete, MapGet, MapSet, ObjectCreate, PromiseResolve, PromiseThen,
-      ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys, Register, StringSlice,
-      ToUpperCase, defineHandlers, defineProperty, dispatching, eventArgs, eventState, expose,
-      handleOf, illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need,
-      setStyleProperty, str, wrap,
+      $DOMException, $FinalizationRegistry, $Map, $Number, $Promise, $TypeError, ArrayIndexOf,
+      ArrayJoin, ArrayPush, ArraySort, CSSNamespace, CharCodeAt, Document, EVENT_INIT, Element,
+      Event, EventTarget, JSONParse, JSONStringify, KEY, MapDelete, MapGet, MapSet, ObjectCreate,
+      PromiseResolve, PromiseThen, ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys,
+      Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
+      defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
+      illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperty,
+      str, wrap,
     }),
     gpu: () => ({
       $ArrayBuffer, $DOMException, $DataView, $Map, $MapForEach, $Number, $NumberIsFinite, $Promise,

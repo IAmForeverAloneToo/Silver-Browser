@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use dom::NodeId;
 
-use crate::computed::{AnimationDirection, AnimationFillMode, Composite};
+use crate::computed::{AnimationDirection, AnimationFillMode, Composite, Edge, LengthPercentage};
 use crate::easing::Easing;
 use crate::keyframes::ScriptKeyframes;
 use crate::selector_matching::PseudoElement;
@@ -49,6 +49,7 @@ use crate::selector_matching::PseudoElement;
 mod events;
 pub mod player;
 mod script;
+mod timeline;
 mod transition;
 
 pub use events::{AnimationEvent, EventKind, PlaybackEvent, PlaybackKind, Running};
@@ -58,6 +59,8 @@ pub use script::{
     AnimationState, ComputedTiming, EffectInput, KeyframesSource, ScriptError, TimingInput,
     TransitionValue, pseudo_element, pseudo_element_name,
 };
+pub use timeline::{Kind as TimelineKind, Measured, RANGES, Source as TimelineSource};
+use timeline::{Kind, Timeline};
 use transition::{Completed, TransitionValues};
 pub(crate) use transition::{Property, Transitioning, Value};
 
@@ -394,6 +397,16 @@ pub(crate) struct Animation {
     pub(crate) effect: Option<u64>,
     /// Its timeline, by its place among the document's; `None` for none.
     pub(crate) timeline: Option<usize>,
+    /// The range of a progress-based timeline it is attached to, its
+    /// start and its end (Web Animations 2 section 4.4.1.1, `rangeStart`
+    /// and `rangeEnd`; `animation-range`).
+    pub(crate) range: [Edge<LengthPercentage>; 2],
+    /// Whether a script set its range, which its style then no longer
+    /// does (Animations 2 section 4.2).
+    pub(crate) range_set: bool,
+    /// Whether a script set its timeline, which its style's
+    /// `animation-timeline` then no longer does.
+    pub(crate) timeline_set: bool,
     pub(crate) replace: ReplaceState,
     /// What the last sample gave, for the next frame to compare with.
     last: Sampled,
@@ -505,6 +518,11 @@ pub(crate) struct Wanted {
     pub(crate) composite: Composite,
     /// The longhands its keyframes animate.
     pub(crate) longhands: Arc<[crate::animate::Longhand]>,
+    /// Whether its duration is `auto`, the timing's zero.
+    pub(crate) duration_auto: bool,
+    /// Its `animation-timeline` and `animation-range`.
+    pub(crate) timeline: crate::computed::Timeline<LengthPercentage>,
+    pub(crate) range: [Edge<LengthPercentage>; 2],
 }
 
 /// The keyframes a sample reads.
@@ -536,9 +554,10 @@ pub(crate) struct Sample {
 pub struct Animations {
     /// The document timeline's time, in milliseconds from its origin.
     time: f64,
-    /// The origins of the document timelines scripts made, on the
-    /// document's; the document's own is the first, at zero.
-    origins: Vec<f64>,
+    /// The timelines: the document's own first, at the origin zero, then
+    /// the document timelines scripts made and the progress-based ones
+    /// scripts and styles made, each by its place.
+    timelines: Vec<Timeline>,
     /// The number the next animation or effect takes.
     next: u64,
     /// Every animation by its number, which is its place in the global
@@ -578,6 +597,8 @@ pub struct Animations {
     /// Whether the store is lent to a script's run, whose style flushes
     /// the frame's styles do not see.
     in_script: bool,
+    /// Whether the user asked for reduced motion (D76).
+    reduced_motion: bool,
 }
 
 impl Default for Animations {
@@ -592,7 +613,7 @@ impl Animations {
     pub fn new() -> Self {
         Animations {
             time: 0.0,
-            origins: vec![0.0],
+            timelines: vec![Timeline::new(Kind::Document { origin: 0.0 })],
             next: 0,
             animations: BTreeMap::new(),
             effects: HashMap::new(),
@@ -609,6 +630,7 @@ impl Animations {
             committing: None,
             transition_generation: 0,
             in_script: false,
+            reduced_motion: false,
         }
     }
 
@@ -647,22 +669,94 @@ impl Animations {
         self.next
     }
 
-    /// The current time of timeline `timeline`, `None` for none.
+    /// The current time of timeline `timeline`, `None` for none or an
+    /// inactive one.
     fn timeline_time(&self, timeline: Option<usize>) -> Option<f64> {
-        let origin = *self.origins.get(timeline?)?;
-        Some(self.time - origin)
+        self.timelines.get(timeline?)?.current_time(self.time)
     }
 
-    /// What `animation`'s procedures need: its timeline's time and its
-    /// effect's end.
+    /// Whether timeline `timeline` is progress-based.
+    fn progress_based(&self, timeline: Option<usize>) -> bool {
+        timeline
+            .and_then(|t| self.timelines.get(t))
+            .is_some_and(|t| t.kind.progress_based())
+    }
+
+    /// The range of its progress-based timeline `animation` is attached
+    /// to, as percentages of the timeline's (Web Animations 2 section
+    /// 4.4.1.1): `None` on a document timeline, or none; the whole of it
+    /// while the timeline is inactive.
+    fn attachment(&self, animation: &Animation) -> Option<(f64, f64)> {
+        let timeline = self.timelines.get(animation.timeline?)?;
+        if !timeline.kind.progress_based() {
+            return None;
+        }
+        Some(match &timeline.measured {
+            Some(measured) => (
+                measured.edge_percent(&animation.range[0], false),
+                measured.edge_percent(&animation.range[1], true),
+            ),
+            // Unmeasured, a percentage of the whole is what it says.
+            None => {
+                let plain = |edge: &Edge<LengthPercentage>, default: f64| match edge {
+                    Edge::At(None, LengthPercentage::Percent(p)) => f64::from(*p),
+                    _ => default,
+                };
+                (
+                    plain(&animation.range[0], 0.0),
+                    plain(&animation.range[1], 100.0),
+                )
+            }
+        })
+    }
+
+    /// The timing `effect` plays by in `animation`: as it is given, or on
+    /// a progress-based timeline converted to proportions of the range
+    /// the animation is attached to (Web Animations 2 section 4.5.3): an
+    /// `auto` duration fills the range, its iterations sharing it, and
+    /// times given keep their proportions, scaled to fill it.
+    fn timing_in(&self, animation: Option<&Animation>, effect: &Effect) -> Timing {
+        let Some((start, end)) = animation.and_then(|a| self.attachment(a)) else {
+            return effect.timing.clone();
+        };
+        let length = (end - start).max(0.0);
+        let mut timing = effect.timing.clone();
+        if effect.duration_auto {
+            timing.delay = 0.0;
+            timing.end_delay = 0.0;
+            timing.duration = if timing.iterations.is_finite() && timing.iterations > 0.0 {
+                length / timing.iterations
+            } else {
+                0.0
+            };
+            return timing;
+        }
+        let total = timing.delay + timing.active_duration() + timing.end_delay;
+        if total.is_finite() && total > 0.0 {
+            let scale = length / total;
+            timing.delay *= scale;
+            timing.end_delay *= scale;
+            timing.duration *= scale;
+        } else {
+            timing.delay = 0.0;
+            timing.end_delay = 0.0;
+            timing.duration = 0.0;
+        }
+        timing
+    }
+
+    /// What `animation`'s procedures need: its timeline's time, its
+    /// effect's end, and the range of a progress-based timeline it is
+    /// attached to.
     fn context(&self, animation: &Animation) -> Context {
         let end = animation
             .effect
             .and_then(|e| self.effects.get(&e))
-            .map_or(0.0, |e| e.timing.end_time());
+            .map_or(0.0, |e| self.timing_in(Some(animation), e).end_time());
         Context {
             timeline: self.timeline_time(animation.timeline),
             end,
+            range: self.attachment(animation),
         }
     }
 
@@ -672,17 +766,37 @@ impl Animations {
         let effect = self.effects.get(&animation.effect?)?;
         let local = animation.player.current_time(&self.context(animation))?;
         Some(
-            effect
-                .timing
-                .progress_in(local, animation.player.playback_rate < 0.0),
+            self.timing_in(Some(animation), effect)
+                .progress_in(local, self.backwards(animation)),
         )
+    }
+
+    /// Whether `animation`'s phases are those of playing backwards, whose
+    /// active interval takes its end and not its start: when it does,
+    /// and on a progress-based timeline when it plays forwards at the
+    /// timeline's end, where the effect's end is in it (Web Animations 2
+    /// section 4.5.5, "at progress timeline boundary"), or backwards at
+    /// its start.
+    fn backwards(&self, animation: &Animation) -> bool {
+        let backwards = animation.player.playback_rate < 0.0;
+        if !self.progress_based(animation.timeline) {
+            return backwards;
+        }
+        match self.timeline_time(animation.timeline) {
+            Some(time) if !backwards && time >= 100.0 => true,
+            Some(time) if backwards && time <= 0.0 => false,
+            _ => backwards,
+        }
     }
 
     /// Whether `animation`'s effect is current (section 4.5.2): in play,
     /// or yet to play in the direction it plays.
     fn is_current(&self, animation: &Animation) -> bool {
         let Some(progress) = self.progress_of(animation) else {
-            return false;
+            // One waiting for its progress-based timeline to become active
+            // is yet to play, as the reference browser has it.
+            return self.progress_based(animation.timeline)
+                && animation.player.play_state(&self.context(animation)) != PlayState::Idle;
         };
         let cx = self.context(animation);
         let rate = animation.player.playback_rate;
@@ -827,8 +941,147 @@ impl Animations {
     /// time, and every finished state updated, before the frame's
     /// callbacks run.
     pub fn update_timelines(&mut self) {
+        self.align_start_times();
         self.start_pending();
+        if self.reduced_motion {
+            self.finish_playing();
+        }
         self.update_finished();
+    }
+
+    /// Whether the user asked for reduced motion (D76, G30): from now on
+    /// each frame finishes the animations and transitions playing.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+    }
+
+    /// Finishes every animation playing forwards on a document timeline
+    /// to an end it has (D76): it shows its end at once, its events
+    /// still sent as its phase changes. One that never ends plays on.
+    fn finish_playing(&mut self) {
+        let ids: Vec<u64> = self.animations.keys().copied().collect();
+        for id in ids {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let cx = self.context(animation);
+            if self.progress_based(animation.timeline)
+                || animation.player.pending()
+                || animation.player.playback_rate <= 0.0
+                || !cx.end.is_finite()
+                || animation.player.play_state(&cx) != PlayState::Running
+            {
+                continue;
+            }
+            let mut notices = Vec::new();
+            if let Some(animation) = self.animations.get_mut(&id) {
+                let _ = animation.player.finish(&cx, &mut notices);
+            }
+            self.owe(id, notices);
+            let effect = self.animations.get(&id).and_then(|a| a.effect);
+            self.touch_effect(effect);
+        }
+    }
+
+    /// Aligns the start time of each playing animation whose start time
+    /// follows its progress-based timeline's range (Web Animations 2
+    /// section 4.4.11.1, "auto-align start time"), the range having moved
+    /// with the timeline's measure.
+    fn align_start_times(&mut self) {
+        let ids: Vec<u64> = self
+            .animations
+            .iter()
+            .filter(|(_, a)| a.player.auto_align)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ids {
+            let Some(animation) = self.animations.get(&id) else {
+                continue;
+            };
+            let cx = self.context(animation);
+            if let Some(animation) = self.animations.get_mut(&id) {
+                animation.player.align(&cx);
+            }
+        }
+    }
+
+    /// The timelines that follow a scroll, by their places, with what
+    /// each follows: those the engine measures at each frame.
+    pub fn progress_timelines(&self) -> Vec<(usize, TimelineKind)> {
+        self.timelines
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind.progress_based())
+            .map(|(i, t)| (i, t.kind.clone()))
+            .collect()
+    }
+
+    /// What the engine measured of progress-based timeline `timeline` at
+    /// the frame's start, `None` for an inactive one; whether it changed.
+    pub fn set_measured(&mut self, timeline: usize, measured: Option<Measured>) -> bool {
+        match self.timelines.get_mut(timeline) {
+            Some(t) if t.measured != measured => {
+                t.measured = measured;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the engine last measured of timeline `timeline`.
+    pub fn measured(&self, timeline: usize) -> Option<&Measured> {
+        self.timelines.get(timeline)?.measured.as_ref()
+    }
+
+    /// What timeline `timeline` follows.
+    pub fn timeline_kind(&self, timeline: usize) -> Option<&TimelineKind> {
+        self.timelines.get(timeline).map(|t| &t.kind)
+    }
+
+    /// The place of a timeline of `kind`, made if there is none of it
+    /// yet; the document's past [`MAX_TIMELINES`].
+    pub fn timeline_of(&mut self, kind: TimelineKind) -> usize {
+        if let Some(i) = self.timelines.iter().position(|t| t.kind == kind) {
+            return i;
+        }
+        if self.timelines.len() > MAX_TIMELINES {
+            return 0;
+        }
+        self.timelines.push(Timeline::new(kind));
+        self.timelines.len() - 1
+    }
+
+    /// The timeline a CSS animation of the element `node` runs on, by
+    /// its `animation-timeline` (Scroll-driven Animations 1 section 4.1):
+    /// the document's, none, or a progress-based one of the element.
+    fn css_timeline(
+        &mut self,
+        node: NodeId,
+        value: &crate::computed::Timeline<LengthPercentage>,
+    ) -> Option<usize> {
+        use crate::computed::{Scroller, Timeline as Value};
+        let kind = match value {
+            Value::Auto => return Some(0),
+            Value::None => return None,
+            Value::Named(name) => Kind::Named {
+                name: Arc::clone(name),
+                from: node,
+            },
+            Value::Scroll { scroller, axis } => Kind::Scroll {
+                source: match scroller {
+                    Scroller::Nearest => TimelineSource::Nearest(node),
+                    Scroller::Root => TimelineSource::Root,
+                    Scroller::Own => TimelineSource::Own(node),
+                },
+                axis: *axis,
+            },
+            Value::View { axis, inset } => Kind::View {
+                subject: Some(node),
+                axis: *axis,
+                inset: inset.clone(),
+            },
+        };
+        Some(self.timeline_of(kind))
     }
 
     /// Updates every animation's finished state at the timeline's time
@@ -1008,7 +1261,10 @@ impl Animations {
                 return self.timeline_time(animation.timeline).is_some();
             }
             let cx = self.context(animation);
-            animation.player.play_state(&cx) == PlayState::Running
+            // One on a progress-based timeline changes as it scrolls, not
+            // as time goes.
+            !self.progress_based(animation.timeline)
+                && animation.player.play_state(&cx) == PlayState::Running
                 && animation.player.playback_rate != 0.0
                 && self
                     .progress_of(animation)
@@ -1023,6 +1279,9 @@ impl Animations {
     pub fn next_change(&self) -> Option<f64> {
         let mut soonest: Option<f64> = None;
         for animation in self.animations.values() {
+            if self.progress_based(animation.timeline) {
+                continue;
+            }
             let cx = self.context(animation);
             let (Some(start), Some(timeline)) = (animation.player.start_time, cx.timeline) else {
                 continue;
@@ -1052,11 +1311,13 @@ impl Animations {
                 .find(|&b| b > local);
             if let Some(boundary) = boundary {
                 let at = start + boundary / rate;
-                let origin = animation
-                    .timeline
-                    .and_then(|t| self.origins.get(t))
-                    .copied()
-                    .unwrap_or(0.0);
+                let origin = match animation.timeline.and_then(|t| self.timelines.get(t)) {
+                    Some(Timeline {
+                        kind: Kind::Document { origin },
+                        ..
+                    }) => *origin,
+                    _ => 0.0,
+                };
                 let at = (at + origin) / 1000.0;
                 soonest = Some(soonest.map_or(at, |s: f64| s.min(at)));
             }
@@ -1245,7 +1506,7 @@ impl Animations {
                 pseudo: target.1,
                 animation: None,
                 timing: item.timing.clone(),
-                duration_auto: false,
+                duration_auto: item.duration_auto,
                 fill_auto: false,
                 overridden: 0,
                 composite: item.composite,
@@ -1262,6 +1523,7 @@ impl Animations {
         if let Some(e) = self.effects.get_mut(&effect) {
             e.animation = Some(id);
         }
+        let timeline = self.css_timeline(target.0, &item.timeline);
         self.animations.insert(
             id,
             Animation {
@@ -1273,7 +1535,10 @@ impl Animations {
                 },
                 player: Player::new(),
                 effect: Some(effect),
-                timeline: Some(0),
+                timeline,
+                range: item.range.clone(),
+                range_set: false,
+                timeline_set: false,
                 replace: ReplaceState::Active,
                 last: Sampled::NOTHING,
                 reported: Reported::Idle,
@@ -1316,6 +1581,7 @@ impl Animations {
             }
             if set & SET_DURATION == 0 {
                 timing.duration = wanted.duration;
+                effect.duration_auto = item.duration_auto;
             }
             if set & SET_ITERATIONS == 0 {
                 timing.iterations = wanted.iterations;
@@ -1336,6 +1602,24 @@ impl Animations {
             {
                 *easing = item.easing.clone();
                 *longhands = Arc::clone(&item.longhands);
+            }
+        }
+        // Its timeline and its range, as its style names them now, the
+        // range unless a script set it.
+        let Some(animation) = self.animations.get(&id) else {
+            return;
+        };
+        let (owner, range_set, timeline_set) = match &animation.class {
+            Class::Css { owner, .. } => (*owner, animation.range_set, animation.timeline_set),
+            _ => (None, true, true),
+        };
+        if let Some(owner) = owner {
+            if !timeline_set {
+                let timeline = self.css_timeline(owner.0, &item.timeline);
+                let _ = self.set_timeline(id, timeline);
+            }
+            if !range_set && let Some(animation) = self.animations.get_mut(&id) {
+                animation.range = item.range.clone();
             }
         }
         let Some(animation) = self.animations.get(&id) else {

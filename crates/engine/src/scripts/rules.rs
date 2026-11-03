@@ -50,6 +50,8 @@ pub(crate) enum Kind {
     Scope,
     /// `@property` (Properties and Values API section 4.1), a valid one.
     Property,
+    /// `@starting-style` (Transitions 2 section 3.1).
+    StartingStyle,
 }
 
 impl Kind {
@@ -74,6 +76,7 @@ impl Kind {
             Kind::NestedDeclarations => "nested-declarations",
             Kind::Scope => "scope",
             Kind::Property => "property",
+            Kind::StartingStyle => "starting-style",
         }
     }
 }
@@ -170,6 +173,9 @@ fn kind(rule: &Rule, place: Place, ns: &Namespaces) -> Option<Kind> {
                     Some(Kind::LayerStatement)
                 }
                 "media" if rules => Some(Kind::Media),
+                "starting-style" if rules && trim_space(&at.prelude).is_empty() => {
+                    Some(Kind::StartingStyle)
+                }
                 "supports" if rules => Some(Kind::Supports),
                 "layer"
                     if rules && {
@@ -1181,6 +1187,15 @@ fn css_text(rule: &Rule, kind: Kind, indent: &str, place: Place, ns: &Namespaces
             } else {
                 format!("@import url(\"{url}\") {rest};")
             }
+        }
+        (Rule::At(at), Kind::StartingStyle) => {
+            let mut out = "@starting-style {\n".to_owned();
+            if let Some(Block::Rules(inner)) = &at.block {
+                children(inner, &mut out);
+            }
+            out.push_str(indent);
+            out.push('}');
+            out
         }
         (Rule::At(at), Kind::Media) => {
             let mut out = format!("@media {} {{\n", media_text(&at.prelude));

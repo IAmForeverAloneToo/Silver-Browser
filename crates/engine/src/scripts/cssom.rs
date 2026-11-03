@@ -298,7 +298,7 @@ const BORDER_BLOCK: [&str; 6] = [
 
 /// The shorthands a declaration block keeps as their longhands (G50),
 /// each with its longhands in their canonical order.
-const SHORTHANDS: [(&str, &[&str]); 41] = [
+const SHORTHANDS: [(&str, &[&str]); 48] = [
     ("font", &FONT_LONGHANDS),
     ("font-variant", &style::VARIANT_LONGHANDS),
     ("margin", &MARGIN),
@@ -340,7 +340,119 @@ const SHORTHANDS: [(&str, &[&str]); 41] = [
     ("border-block-end", &BORDER_BLOCK_END),
     ("border-inline", &BORDER_INLINE),
     ("border-block", &BORDER_BLOCK),
+    ("animation", &ANIMATION),
+    (
+        "animation-range",
+        &["animation-range-start", "animation-range-end"],
+    ),
+    (
+        "scroll-timeline",
+        &["scroll-timeline-name", "scroll-timeline-axis"],
+    ),
+    (
+        "view-timeline",
+        &[
+            "view-timeline-name",
+            "view-timeline-axis",
+            "view-timeline-inset",
+        ],
+    ),
+    (
+        "timeline-trigger",
+        &style::cascade::timelines::TIMELINE_TRIGGER,
+    ),
+    (
+        "timeline-trigger-activation-range",
+        &[
+            "timeline-trigger-activation-range-start",
+            "timeline-trigger-activation-range-end",
+        ],
+    ),
+    (
+        "timeline-trigger-active-range",
+        &[
+            "timeline-trigger-active-range-start",
+            "timeline-trigger-active-range-end",
+        ],
+    ),
 ];
+
+/// The longhands `animation` sets, in the reference browser's order: each
+/// animation's eight, then the three it resets (Scroll-driven Animations
+/// 1 section 4), which it keeps as one value each.
+const ANIMATION: [&str; 11] = [
+    "animation-duration",
+    "animation-timing-function",
+    "animation-delay",
+    "animation-iteration-count",
+    "animation-direction",
+    "animation-fill-mode",
+    "animation-play-state",
+    "animation-name",
+    "animation-timeline",
+    "animation-range-start",
+    "animation-range-end",
+];
+
+/// What an item of `animation` gives each of its eight longhands that it
+/// leaves out.
+const ANIMATION_INITIAL: [&str; 8] = [
+    "auto", "ease", "0s", "1", "normal", "none", "running", "none",
+];
+
+/// `animation`'s longhands from its value `tokens`: each item's parts as
+/// written, those it leaves out their initial values, and the reset
+/// ones' initial values.
+fn animation_longhands(tokens: &[Token]) -> Option<Vec<(String, String)>> {
+    let items = style::cascade::motion_animation_parts(tokens)?;
+    let mut out = Vec::new();
+    for (i, longhand) in ANIMATION.iter().enumerate() {
+        let value = match i {
+            8 => "auto".to_owned(),
+            9 | 10 => "normal".to_owned(),
+            _ => items
+                .iter()
+                .map(|parts| match &parts[i] {
+                    Some(text) => written(longhand, text),
+                    None => ANIMATION_INITIAL[i].to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        out.push(((*longhand).to_owned(), value));
+    }
+    Some(out)
+}
+
+/// `animation` from its longhands' `values` in [`ANIMATION`]'s order: each
+/// item's parts but those at their initial values, a duration kept
+/// before a delay; `None` where the reset longhands are not initial or
+/// the lists differ in length.
+fn animation_value(values: &[&str]) -> Option<String> {
+    if values[8] != "auto" || values[9] != "normal" || values[10] != "normal" {
+        return None;
+    }
+    let lists: Vec<Vec<&str>> = values[..8]
+        .iter()
+        .map(|v| {
+            split_top_level(v, ',')
+                .into_iter()
+                .map(|p| p.trim_matches(is_space))
+                .collect()
+        })
+        .collect();
+    let count = lists[0].len();
+    if lists.iter().any(|l| l.len() != count) {
+        return None;
+    }
+    let items: Vec<String> = (0..count)
+        .map(|i| {
+            let item: Vec<&str> = lists.iter().map(|l| l[i]).collect();
+            style::serialize::animation_item(&item, ANIMATION_INITIAL[0])
+        })
+        .collect();
+    Some(items.join(", "))
+}
 
 /// The longhands of the shorthand `name`, if it is one a block keeps as
 /// them.
@@ -448,6 +560,18 @@ fn expand(name: &str, value: &str) -> Option<Vec<(String, String)>> {
         return None;
     }
     let tokens = css::tokenize(value);
+    if name == "animation" {
+        return animation_longhands(&tokens);
+    }
+    if style::cascade::timelines::longhands(name).is_some() {
+        let values = style::cascade::timelines::specified_longhands(name, &tokens)?;
+        return Some(
+            values
+                .into_iter()
+                .map(|(longhand, text)| (longhand.to_owned(), text))
+                .collect(),
+        );
+    }
     let pair = |values: Vec<String>| -> Option<Vec<(String, String)>> {
         Some(
             longhands
@@ -648,6 +772,13 @@ fn written(name: &str, value: &str) -> String {
         "font-palette" => style::font_palette_specified(&tokens),
         // Its shortest form (css-display-3 section 2, D77): `block flow`
         // is `block`, `list-item inline` `inline list-item`.
+        // The scroll-driven animations' and the triggers' (D75), with
+        // what their grammars fill in left out.
+        _ if style::cascade::timelines::is_timeline_property(name) => {
+            style::cascade::timelines::specified_longhands(name, &tokens)
+                .and_then(|values| values.into_iter().next())
+                .map(|(_, text)| text)
+        }
         "display" => style::cascade::parse_display_value(&tokens)
             .map(|(display, flow_root)| style::serialize::display_value(display, flow_root)),
         // A colour's keyword, named, a system colour's or `currentcolor`,
@@ -715,6 +846,10 @@ pub(crate) fn shorthand_value(name: &str, block: &[Declared]) -> String {
         };
     }
     match name {
+        "animation" => animation_value(&values).unwrap_or_default(),
+        _ if style::cascade::timelines::longhands(name).is_some() => {
+            style::cascade::timelines::specified_shorthand(name, &values).unwrap_or_default()
+        }
         "font-variant" => style::write_font_variant(&values).unwrap_or_default(),
         "font" => font_value(&values).unwrap_or_default(),
         "border" => {
@@ -1463,5 +1598,50 @@ mod tests {
         assert_eq!(rule("named :first"), None);
         assert_eq!(rule(":first :left"), None);
         assert_eq!(rule(":nope"), None);
+    }
+
+    #[test]
+    fn the_animation_shorthand_is_kept_as_its_longhands_and_said_from_them() {
+        // As the reference browser keeps it: each item's parts, those left
+        // out initial, and the reset-only longhands one value each.
+        let block = declarations("animation: anim paused both reverse, 4 1s -3s ease-in");
+        let value = |name: &str| {
+            block
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| d.value.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(value("animation-duration"), "auto, 1s");
+        assert_eq!(value("animation-name"), "anim, none");
+        assert_eq!(value("animation-timeline"), "auto");
+        assert_eq!(value("animation-range-end"), "normal");
+        assert_eq!(
+            shorthand_value("animation", &block),
+            "reverse both paused anim, 1s ease-in -3s 4"
+        );
+        // A name a keyword of a part left out would be taken as keeps it.
+        let block = declarations("animation: normal normal");
+        assert_eq!(shorthand_value("animation", &block), "normal normal");
+        // A timeline the shorthand cannot say makes it the empty string.
+        let block = declarations("animation: anim 1s; animation-timeline: --t");
+        assert_eq!(shorthand_value("animation", &block), "");
+    }
+
+    #[test]
+    fn the_timeline_shorthands_are_kept_as_their_longhands() {
+        let block = declarations("animation-range: entry 10% exit; view-timeline: --v x 1px 1px");
+        let value = |name: &str| {
+            block
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| d.value.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(value("animation-range-start"), "entry 10%");
+        assert_eq!(value("animation-range-end"), "exit");
+        assert_eq!(value("view-timeline-inset"), "1px");
+        assert_eq!(shorthand_value("animation-range", &block), "entry 10% exit");
+        assert_eq!(shorthand_value("view-timeline", &block), "--v x 1px");
     }
 }

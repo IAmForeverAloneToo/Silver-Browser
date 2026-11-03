@@ -9,13 +9,14 @@
 (function (env) {
   "use strict";
   const {
-    $DOMException, $FinalizationRegistry, $Map, $Number, $Promise, $TypeError, ArrayPush,
-    ArraySort, CharCodeAt, Document, EVENT_INIT, Element, Event, EventTarget, JSONParse,
-    JSONStringify, KEY, MapDelete, MapGet, MapSet, ObjectCreate, PromiseResolve, PromiseThen,
-    ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys, Register, StringSlice,
-    ToUpperCase, defineHandlers, defineProperty, dispatching, eventArgs, eventState, expose,
-    handleOf, illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need,
-    setStyleProperty, str, wrap,
+    $DOMException, $FinalizationRegistry, $Map, $Number, $Promise, $TypeError, ArrayIndexOf,
+    ArrayJoin, ArrayPush, ArraySort, CSSNamespace, CharCodeAt, Document, EVENT_INIT, Element,
+    Event, EventTarget, JSONParse, JSONStringify, KEY, MapDelete, MapGet, MapSet, ObjectCreate,
+    PromiseResolve, PromiseThen, ReflectApply, ReflectGetOwnPropertyDescriptor, ReflectOwnKeys,
+    Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
+    defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
+    illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperty,
+    str, wrap,
   } = env;
 
   // ---- The store (D75) ------------------------------------------------------
@@ -627,15 +628,28 @@
 
     get currentTime() {
       if (!(#index in this)) throw new $TypeError("Illegal invocation");
-      return ask(op(["op", "timeline.time", "timeline", this.#index]));
+      const time = ask(op(["op", "timeline.time", "timeline", this.#index]));
+      return this.#index !== 0 && timelineInfo(this.#index).kind !== "document"
+        ? percentValue(time)
+        : time;
     }
 
+    // A progress-based timeline's is 100% (Web Animations 2 section
+    // 4.2.2.1), a document timeline's none.
     get duration() {
       if (!(#index in this)) throw new $TypeError("Illegal invocation");
-      return null;
+      return this.#index !== 0 && timelineInfo(this.#index).kind !== "document"
+        ? new CSSUnitValue(100, "percent")
+        : null;
     }
   }
   expose(AnimationTimeline, "AnimationTimeline");
+
+  // What timeline `index` is, as the store says.
+  function timelineInfo(index) {
+    const info = ask(op(["op", "timeline.info", "timeline", index]));
+    return info === null ? { __proto__: null, kind: "none" } : info;
+  }
 
   class DocumentTimeline extends AnimationTimeline {
     constructor(options = undefined) {
@@ -653,13 +667,465 @@
   }
   expose(DocumentTimeline, "DocumentTimeline");
 
+
+  // ---- Scroll-driven Animations 1's timelines (sections 2.2 and 3.2) ----
+
+  const AXES = ["block", "inline", "x", "y"];
+
+  // A ScrollTimelineOptions' or a ViewTimelineOptions' axis.
+  function axisOf(options, iface) {
+    const axis = options === null || options === undefined ? undefined : options.axis;
+    return axis === undefined ? "block" : enumValue(axis, AXES, "ScrollAxis", "constructor", iface);
+  }
+
+  class ScrollTimeline extends AnimationTimeline {
+    constructor(options = undefined, index = undefined) {
+      if (options === KEY) {
+        super(KEY, index);
+        return;
+      }
+      if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+        throw new $TypeError("Failed to construct 'ScrollTimeline': The provided value is not of type 'ScrollTimelineOptions'.");
+      }
+      const given = options === undefined || options === null ? ObjectCreate(null) : options;
+      let source;
+      if (given.source === undefined) {
+        // The document's scrolling element, as at the time it is made.
+        source = scrollingHandle();
+      } else if (given.source === null) {
+        source = null;
+      } else {
+        if (!isNode(given.source) || kindOf(given.source) !== 1) {
+          throw new $TypeError("Failed to construct 'ScrollTimeline': Failed to read the 'source' property from 'ScrollTimelineOptions': parameter 1 is not of type 'Element'.");
+        }
+        source = handleOf(given.source);
+      }
+      const axis = axisOf(given, "ScrollTimeline");
+      super(KEY, ask(op(["op", "timeline.scroll", "source", source, "axis", axis]),
+        "constructor", "ScrollTimeline"));
+    }
+
+    get source() {
+      const index = timelineIndex(this);
+      if (index === undefined || index === null) throw new $TypeError("Illegal invocation");
+      return wrap(timelineInfo(index).source);
+    }
+
+    get axis() {
+      const index = timelineIndex(this);
+      if (index === undefined || index === null) throw new $TypeError("Illegal invocation");
+      return timelineInfo(index).axis;
+    }
+  }
+  expose(ScrollTimeline, "ScrollTimeline");
+
+  // The document's scrolling element's handle, `null` for none.
+  function scrollingHandle() {
+    const root = documentElement(native.document());
+    return root === undefined ? null : root;
+  }
+
+  class ViewTimeline extends ScrollTimeline {
+    constructor(options = undefined, index = undefined) {
+      if (options === KEY) {
+        super(KEY, index);
+        return;
+      }
+      if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+        throw new $TypeError("Failed to construct 'ViewTimeline': The provided value is not of type 'ViewTimelineOptions'.");
+      }
+      const given = options === undefined || options === null ? ObjectCreate(null) : options;
+      let subject = null;
+      if (given.subject !== undefined && given.subject !== null) {
+        if (!isNode(given.subject) || kindOf(given.subject) !== 1) {
+          throw new $TypeError("Failed to construct 'ViewTimeline': Failed to read the 'subject' property from 'ViewTimelineOptions': parameter 1 is not of type 'Element'.");
+        }
+        subject = handleOf(given.subject);
+      }
+      const axis = axisOf(given, "ViewTimeline");
+      let inset = null;
+      const v = given.inset;
+      if (v !== undefined) {
+        if (typeof v === "string") {
+          inset = v;
+        } else if (v !== null && typeof v === "object" && iteratorMethod(v) !== undefined) {
+          const sides = listOf(v, iteratorMethod(v));
+          if (sides.length < 1 || sides.length > 2) {
+            throw new $TypeError("Failed to construct 'ViewTimeline': Invalid inset");
+          }
+          inset = ArrayJoin(mapped(sides, (side) => {
+            if (side === "auto") return "auto";
+            const unit = unitOf(side);
+            const text = numericText(side);
+            if (text === null || (unit !== null && unit[1] !== "px" && unit[1] !== "percent")) {
+              throw new $TypeError("Failed to construct 'ViewTimeline': Invalid inset");
+            }
+            return text;
+          }), " ");
+        } else {
+          inset = str(v);
+        }
+      }
+      super(KEY, ask(op(["op", "timeline.view", "subject", subject, "axis", axis, "inset", inset]),
+        "constructor", "ViewTimeline"));
+    }
+
+    get subject() {
+      const index = timelineIndex(this);
+      if (index === undefined || index === null) throw new $TypeError("Illegal invocation");
+      return wrap(timelineInfo(index).subject);
+    }
+
+    // Where the subject's range starts and ends, as scroll offsets.
+    get startOffset() {
+      const index = timelineIndex(this);
+      if (index === undefined || index === null) throw new $TypeError("Illegal invocation");
+      const start = timelineInfo(index).start;
+      return start === null ? null : new CSSUnitValue(start, "px");
+    }
+
+    get endOffset() {
+      const index = timelineIndex(this);
+      if (index === undefined || index === null) throw new $TypeError("Illegal invocation");
+      const end = timelineInfo(index).end;
+      return end === null ? null : new CSSUnitValue(end, "px");
+    }
+  }
+  expose(ViewTimeline, "ViewTimeline");
+
   // The document's timeline.
   const documentTimeline = new DocumentTimeline(KEY);
 
+  // Timeline `index`'s object: made now for one a style made (`scroll()`,
+  // `view()`, a name), of the kind it is; none for a name that names no
+  // timeline.
   function timelineFor(index) {
     if (index === null || index === undefined) return null;
     const known = MapGet(timelineObjects, index);
-    return known === undefined ? null : known;
+    if (known !== undefined) return known;
+    const info = timelineInfo(index);
+    if (info.kind !== "scroll" && info.kind !== "view") return null;
+    // Styles that name the same timeline share its object; an anonymous
+    // one is its element's own.
+    if (!info.named) {
+      const own = info.kind === "scroll" ? new ScrollTimeline(KEY, index) : new ViewTimeline(KEY, index);
+      MapSet(timelineObjects, index, own);
+      return own;
+    }
+    const same = info.kind + " " + info.source + " " + info.subject + " " + info.axis;
+    let made = MapGet(styleTimelines, same);
+    if (made === undefined) {
+      made = info.kind === "scroll" ? new ScrollTimeline(KEY, index) : new ViewTimeline(KEY, index);
+      MapSet(styleTimelines, same, made);
+    }
+    MapSet(timelineObjects, index, made);
+    return made;
+  }
+
+  // The timeline objects of the timelines styles made, by what they
+  // follow.
+  const styleTimelines = new $Map();
+
+
+  // ---- CSS numeric values (CSS Typed OM 1, as the times and offsets of
+  // scroll-driven animations need them; D75) ----
+  // What Web Animations 2 and Scroll-driven Animations 1 give and take
+  // as a CSSNumberish: a number with its unit, or a sum of them, with
+  // `CSS.number()`, `CSS.percent()`, `CSS.px()` and the other units'
+  // factories, and `CSSNumericValue.parse()` of one value.
+
+  // The units the factories make, by their factories' names.
+  const UNITS = [
+    "number", "percent", "em", "rem", "ex", "ch", "lh", "vw", "vh", "vmin", "vmax", "cm",
+    "mm", "q", "in", "pt", "pc", "px", "deg", "grad", "rad", "turn", "s", "ms", "hz",
+    "khz", "dpi", "dpcm", "dppx", "fr",
+  ];
+
+  // The value and unit of a CSSUnitValue, and the values of a
+  // CSSMathSum; `null` for another value. Set by their classes.
+  let unitOf = null;
+  let sumOf = null;
+
+  class CSSStyleValue {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("CSSStyleValue");
+    }
+  }
+  expose(CSSStyleValue, "CSSStyleValue");
+
+  class CSSNumericValue extends CSSStyleValue {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("CSSNumericValue");
+      super(KEY);
+    }
+
+    // One number, percentage or dimension (section 4.2.1's parse, of the
+    // values these need).
+    static parse(cssText) {
+      const read = numericParts(StringTrim(str(cssText)));
+      if (read === null) {
+        throw new $DOMException(
+          "Failed to execute 'parse' on 'CSSNumericValue': Invalid math expression",
+          "SyntaxError",
+        );
+      }
+      return new CSSUnitValue(read[0], read[1]);
+    }
+  }
+  expose(CSSNumericValue, "CSSNumericValue");
+
+  // A number, a percentage or a dimension as text: its value and unit,
+  // `null` for anything else.
+  function numericParts(text) {
+    let i = 0;
+    const at = (k) => (k < text.length ? CharCodeAt(text, k) : -1);
+    const digit = (c) => c >= 48 && c <= 57;
+    if (at(i) === 43 || at(i) === 45) i++;
+    const digitsFrom = i;
+    while (digit(at(i))) i++;
+    if (at(i) === 46) {
+      i++;
+      while (digit(at(i))) i++;
+    }
+    if (i === digitsFrom || (i === digitsFrom + 1 && at(digitsFrom) === 46)) return null;
+    if ((at(i) === 101 || at(i) === 69) && (digit(at(i + 1)) || ((at(i + 1) === 43 || at(i + 1) === 45) && digit(at(i + 2))))) {
+      i += 2;
+      while (digit(at(i))) i++;
+    }
+    const value = $Number(StringSlice(text, 0, i));
+    const rest = StringSlice(text, i);
+    if (rest === "") return [value, "number"];
+    if (rest === "%") return [value, "percent"];
+    const unit = ToLowerCase(rest);
+    return ArrayIndexOf(UNITS, unit) < 0 ? null : [value, unit];
+  }
+
+  // Each of `list` made by `f`, as a new list.
+  function mapped(list, f) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) ArrayPush(out, f(list[i]));
+    return out;
+  }
+
+  class CSSUnitValue extends CSSNumericValue {
+    #value = 0;
+    #unit = "number";
+
+    constructor(value, unit) {
+      super(KEY);
+      need(arguments.length, 2, "constructor", "CSSUnitValue");
+      this.#value = finite(value, "", "constructor", "CSSUnitValue");
+      const u = ToLowerCase(str(unit));
+      if (ArrayIndexOf(UNITS, u) < 0) {
+        throw new $TypeError(
+          "Failed to construct 'CSSUnitValue': Invalid unit: " + str(unit),
+        );
+      }
+      this.#unit = u;
+    }
+
+    static {
+      unitOf = (value) =>
+        value !== null && typeof value === "object" && #unit in value ? [value.#value, value.#unit] : null;
+    }
+
+    get value() {
+      if (!(#value in this)) throw new $TypeError("Illegal invocation");
+      return this.#value;
+    }
+
+    set value(v) {
+      if (!(#value in this)) throw new $TypeError("Illegal invocation");
+      this.#value = finite(v, "", "=value", "CSSUnitValue");
+    }
+
+    get unit() {
+      if (!(#value in this)) throw new $TypeError("Illegal invocation");
+      return this.#unit;
+    }
+
+    toString() {
+      if (!(#value in this)) throw new $TypeError("Illegal invocation");
+      return unitText(this.#value, this.#unit);
+    }
+  }
+  expose(CSSUnitValue, "CSSUnitValue");
+
+  // A unit value's text: `50%`, `3px`, a number alone.
+  function unitText(value, unit) {
+    if (unit === "number") return "" + value;
+    if (unit === "percent") return value + "%";
+    return value + unit;
+  }
+
+
+  class CSSMathValue extends CSSNumericValue {
+    constructor(key) {
+      if (key !== KEY) throw illegalConstructor("CSSMathValue");
+      super(KEY);
+    }
+  }
+  expose(CSSMathValue, "CSSMathValue");
+
+  // A sum of numeric values, written `calc(a + b)`.
+  class CSSMathSum extends CSSMathValue {
+    #values = [];
+
+    constructor(...values) {
+      super(KEY);
+      if (values.length === 0) {
+        throw new $DOMException(
+          "Failed to construct 'CSSMathSum': Must specify at least one argument.",
+          "SyntaxError",
+        );
+      }
+      for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        ArrayPush(this.#values, typeof v === "number" ? new CSSUnitValue(v, "number") : v);
+      }
+    }
+
+    static {
+      sumOf = (value) =>
+        value !== null && typeof value === "object" && #values in value ? value.#values : null;
+    }
+
+    get values() {
+      if (!(#values in this)) throw new $TypeError("Illegal invocation");
+      return mapped(this.#values, (v) => v);
+    }
+
+    toString() {
+      if (!(#values in this)) throw new $TypeError("Illegal invocation");
+      return numericText(this);
+    }
+  }
+  expose(CSSMathSum, "CSSMathSum");
+
+
+  // A numeric value's text as CSS writes it, `null` for what is none.
+  function numericText(value) {
+    const unit = unitOf(value);
+    if (unit !== null) return unitText(unit[0], unit[1]);
+    const sum = sumOf(value);
+    if (sum !== null) {
+      return "calc(" + ArrayJoin(mapped(sum, (v) => numericText(v)), " + ") + ")";
+    }
+    return null;
+  }
+
+  // `CSS.number()`, `CSS.percent()`, `CSS.px()` and the rest (section
+  // 5.3), on the CSS namespace.
+  for (let i = 0; i < UNITS.length; i++) {
+    const unit = UNITS[i];
+    defineProperty(CSSNamespace, unit, {
+      value: {
+        [unit](value) {
+          need(arguments.length, 1, unit, "CSS");
+          return new CSSUnitValue(value, unit);
+        },
+      }[unit],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // A percentage as a scroll-driven animation's time.
+  function percentValue(n) {
+    return n === null || n === undefined ? null : new CSSUnitValue(unwired(n), "percent");
+  }
+
+  // A CSSNumberish set as a time (Web Animations 2 section 6.4): a
+  // percentage on a progress-based timeline, else milliseconds, a
+  // number, or seconds or milliseconds of a unit value.
+  function timeFrom(value, progress, method, iface) {
+    if (value === null || value === undefined) return null;
+    const unit = unitOf(value);
+    if (unit === null) {
+      if (progress) {
+        throw new $TypeError(where(method, iface) + "The provided value is not a percentage.");
+      }
+      return finite(value, "", method, iface);
+    }
+    if (progress) {
+      if (unit[1] !== "percent") {
+        throw new $TypeError(where(method, iface) + "The provided value is not a percentage.");
+      }
+      return unit[0];
+    }
+    if (unit[1] === "ms") return unit[0];
+    if (unit[1] === "s") return unit[0] * 1000;
+    if (unit[1] === "number") return unit[0];
+    throw new $TypeError(where(method, iface) + "The provided value is not a time.");
+  }
+
+  // A range's edge a script gives (`rangeStart`, `rangeEnd`, and
+  // `animate()`'s): `normal`, a string as `animation-range-start` takes
+  // one, a numeric value, or a TimelineRangeOffset; as text.
+  function rangeText(value, method, iface) {
+    if (typeof value === "string") return value;
+    const numeric = numericText(value);
+    if (numeric !== null) return numeric;
+    if (value !== null && typeof value === "object") {
+      const name = value.rangeName === undefined || value.rangeName === null
+        ? ""
+        : str(value.rangeName);
+      let offset = "";
+      if (value.offset !== undefined) {
+        offset = numericText(value.offset);
+        if (offset === null) {
+          throw new $TypeError(where(method, iface) + "The offset is not a CSSNumericValue.");
+        }
+      }
+      if (name === "" && offset === "") return "normal";
+      if (name !== "" && offset === "") return name;
+      return name === "" ? offset : name + " " + offset;
+    }
+    return str(value);
+  }
+
+  // A range's edge as `rangeStart` gives it: `normal`, or its name and
+  // offset.
+  function rangeObject(text, end) {
+    if (text === "normal") return "normal";
+    const space = StringIndexOf(text, " ");
+    const first = space < 0 ? text : StringSlice(text, 0, space);
+    if (ArrayIndexOf(RANGE_NAMES, first) < 0) {
+      return { rangeName: "none", offset: parseOffset(text) };
+    }
+    const offset = space < 0
+      ? new CSSUnitValue(end ? 100 : 0, "percent")
+      : parseOffset(StringSlice(text, space + 1));
+    return { rangeName: first, offset };
+  }
+
+  const RANGE_NAMES = ["cover", "contain", "entry", "exit", "entry-crossing", "exit-crossing"];
+
+  // An offset's text as a numeric value: a unit value, or a sum of
+  // them as `calc()` writes it.
+  function parseOffset(text) {
+    const read = numericParts(text);
+    if (read !== null) return new CSSUnitValue(read[0], read[1]);
+    if (StringSlice(text, 0, 5) !== "calc(" || StringSlice(text, text.length - 1) !== ")") {
+      return new CSSUnitValue(0, "percent");
+    }
+    const inner = StringSlice(text, 5, text.length - 1);
+    const parts = [];
+    let from = 0;
+    for (;;) {
+      const plus = StringIndexOf(inner, " + ", from);
+      const piece = numericParts(StringSlice(inner, from, plus < 0 ? inner.length : plus));
+      if (piece === null) return new CSSUnitValue(0, "percent");
+      ArrayPush(parts, new CSSUnitValue(piece[0], piece[1]));
+      if (plus < 0) break;
+      from = plus + 3;
+    }
+    return ReflectApply(sumMaker, null, parts);
+  }
+
+  function sumMaker(...parts) {
+    return new CSSMathSum(...parts);
   }
 
   // ---- Effects (section 6.5 and 6.6) ----
@@ -710,6 +1176,13 @@
       out.localTime = t.localTime;
       out.progress = t.progress;
       out.currentIteration = unwired(t.currentIteration);
+      // On a progress-based timeline its times are percentages.
+      if (t.progressBased) {
+        const times = ["duration", "startTime", "endTime", "activeDuration", "localTime"];
+        for (let i = 0; i < times.length; i++) {
+          out[times[i]] = percentValue(out[times[i]]);
+        }
+      }
       return out;
     }
 
@@ -924,23 +1397,47 @@
     }
 
     get startTime() {
-      return state(this).startTime;
+      const s = state(this);
+      return s.progress ? percentValue(s.startTime) : s.startTime;
     }
 
     set startTime(value) {
       const id = animationId(this);
-      const time = finiteOrNull(value, "", "=startTime", "Animation");
+      const time = timeFrom(value, state(this).progress, "=startTime", "Animation");
       ask(op(["op", "animation.startTime", "id", id, "time", time]), "=startTime", "Animation");
     }
 
     get currentTime() {
-      return state(this).currentTime;
+      const s = state(this);
+      return s.progress ? percentValue(s.currentTime) : s.currentTime;
     }
 
     set currentTime(value) {
       const id = animationId(this);
-      const time = finiteOrNull(value, "", "=currentTime", "Animation");
+      const time = timeFrom(value, state(this).progress, "=currentTime", "Animation");
       ask(op(["op", "animation.currentTime", "id", id, "time", time]), "=currentTime", "Animation");
+    }
+
+    // The range of its timeline it is attached to (Web Animations 2
+    // section 6.4.1).
+    get rangeStart() {
+      return rangeObject(state(this).rangeStart, false);
+    }
+
+    set rangeStart(value) {
+      const id = animationId(this);
+      const text = rangeText(value, "=rangeStart", "Animation");
+      ask(op(["op", "animation.range", "id", id, "start", text]), "=rangeStart", "Animation");
+    }
+
+    get rangeEnd() {
+      return rangeObject(state(this).rangeEnd, true);
+    }
+
+    set rangeEnd(value) {
+      const id = animationId(this);
+      const text = rangeText(value, "=rangeEnd", "Animation");
+      ask(op(["op", "animation.range", "id", id, "end", text]), "=rangeEnd", "Animation");
     }
 
     get playbackRate() {
@@ -1093,8 +1590,14 @@
       const args = eventArgs(arguments.length, type, eventInitDict, PLAYBACK_INIT, "AnimationPlaybackEvent");
       super(args[0], args[1]);
       const init = args[1];
-      this.#currentTime = finiteOrNull(init.currentTime, "currentTime", "constructor", "AnimationPlaybackEvent");
-      this.#timelineTime = finiteOrNull(init.timelineTime, "timelineTime", "constructor", "AnimationPlaybackEvent");
+      // A CSSNumberish each (Web Animations 2 section 6.11): a numeric
+      // value as it is, else a double.
+      const numberish = (value, member) =>
+        numericText(value) !== null
+          ? value
+          : finiteOrNull(value, member, "constructor", "AnimationPlaybackEvent");
+      this.#currentTime = numberish(init.currentTime, "currentTime");
+      this.#timelineTime = numberish(init.timelineTime, "timelineTime");
     }
 
     get currentTime() {
@@ -1135,6 +1638,15 @@
     const effect = new KeyframeEffect(KEY, made.effect);
     const animation = new Animation(KEY, made.animation);
     animation.id = name;
+    // Its range, before it plays and aligns with it.
+    if (typeof options === "object" && options !== null) {
+      const start = options.rangeStart === undefined ? null : rangeText(options.rangeStart, "animate", "Element");
+      const end = options.rangeEnd === undefined ? null : rangeText(options.rangeEnd, "animate", "Element");
+      if (start !== null || end !== null) {
+        ask(op(["op", "animation.range", "id", made.animation, "start", start, "end", end]),
+          "animate", "Element");
+      }
+    }
     promisesOf(made.animation);
     ask(op(["op", "animation.play", "id", made.animation]), "animate", "Element");
     return animation;
@@ -1227,8 +1739,8 @@
     const target = MapGet(animationObjects, e.id);
     if (target === undefined) return false;
     const event = new AnimationPlaybackEvent(e.type, {
-      currentTime: e.currentTime,
-      timelineTime: e.timelineTime,
+      currentTime: e.progress ? percentValue(e.currentTime) : e.currentTime,
+      timelineTime: e.progress ? percentValue(e.timelineTime) : e.timelineTime,
     });
     eventState(event).trusted = true;
     return yield* dispatching(target, event);

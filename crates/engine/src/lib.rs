@@ -152,6 +152,7 @@ mod svg_images;
 mod tables_tests;
 #[cfg(test)]
 mod testing;
+mod timelines;
 mod view;
 mod web_fonts;
 mod webaudio;
@@ -2217,6 +2218,7 @@ impl Engine {
             fonts: Some(self.layout_fonts.clone()),
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
+            scrolling: self.animating(),
             compat: self.compat_user_agent,
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
@@ -3931,6 +3933,14 @@ impl Engine {
                     }
                 }
                 Err(event) => {
+                    // On a progress-based timeline the times are
+                    // percentages (Web Animations 2 section 6.11).
+                    let progress = self
+                        .shown
+                        .animations
+                        .get_mut()
+                        .state(event.animation)
+                        .is_some_and(|s| s.progress);
                     let text = devtools::Json::object([(
                         "event",
                         devtools::Json::object([
@@ -3938,6 +3948,7 @@ impl Engine {
                             ("type", devtools::Json::from(event.kind.name())),
                             ("currentTime", json_time(event.current_time)),
                             ("timelineTime", json_time(event.timeline_time)),
+                            ("progress", devtools::Json::Bool(progress)),
                         ]),
                     )])
                     .write();
@@ -7586,12 +7597,21 @@ impl Engine {
                 self.frame_margins,
             );
             let cached = self.shown.styled.as_mut().expect("not stale");
-            let restyle = self.shown.stylesheets.restyle_animated(
+            // The scripts' last flush, newer than these styles, is the
+            // before-change style of an element they have not met (G46).
+            let flushed = self
+                .shown
+                .scripts
+                .flushed_styles()
+                .filter(|(version, _)| cached.version < *version)
+                .map(|(_, styles)| styles);
+            let restyle = self.shown.stylesheets.restyle_flushed(
                 &self.shown.document,
                 &context,
                 &mut cached.styles,
                 &changes,
                 &animated,
+                flushed,
             );
             // Styles that did not depend on the viewport stand for this
             // one; any computed now used it.
@@ -7921,9 +7941,9 @@ impl Engine {
     /// for them, and cascades the document again; a page that asks
     /// nothing of them is left alone. The engine reads one itself:
     /// under reduced motion its scrolls jump to their targets, one on
-    /// its way there included (M22.5). Animations and transitions run
-    /// as the page wrote them, which the page's own
-    /// `prefers-reduced-motion` query is the means to change.
+    /// its way there included (M22.5); and its animations and
+    /// transitions stop at their ends, their events still sent (D76, G30),
+    /// besides what the page's own `prefers-reduced-motion` query does.
     pub fn set_preferences(&mut self, preferences: Preferences) {
         self.for_each_frame(&mut |frame| frame.set_preferences(preferences));
         self.preferences = preferences;
@@ -7971,6 +7991,58 @@ impl Engine {
     /// frame that cannot hold its layers draws them through.
     pub fn set_layer_budget(&mut self, bytes: usize) {
         self.backend.set_layer_budget(bytes);
+    }
+
+    /// Measures the shown document's progress-based timelines in its
+    /// layout, when it has one, at the scroll offsets shown (D75): each
+    /// one's scroll container, how far it is scrolled and its ranges;
+    /// one that cannot be measured is inactive. Without a layout they
+    /// keep what they had.
+    fn measure_timelines(&mut self) {
+        let kinds = self.shown.animations.get_mut().progress_timelines();
+        if kinds.is_empty() {
+            return;
+        }
+        let Some(cached) = self.shown.layout.as_ref() else {
+            return;
+        };
+        let offsets = paint::Offsets {
+            y: self
+                .shown
+                .element_scroll
+                .iter()
+                .map(|(node, scroll)| (*node, scroll.y))
+                .collect(),
+            x: self
+                .shown
+                .element_scroll
+                .iter()
+                .map(|(node, scroll)| (*node, scroll.x))
+                .collect(),
+            viewport_x: self.shown.scroll_x,
+        };
+        let scene = timelines::Scene {
+            document: &self.shown.document,
+            styles: self.shown.styled.as_ref().map(|cached| &cached.styles),
+            layout: &cached.layout,
+            viewport: (self.viewport.0 as f32, self.viewport.1 as f32),
+            scroll: (self.shown.scroll_y, self.shown.scroll_x),
+            offsets: &offsets,
+        };
+        let measured: Vec<(usize, Option<style::animation::Measured>)> = kinds
+            .iter()
+            .map(|(index, kind)| (*index, scene.measure(kind)))
+            .collect();
+        let animations = self.shown.animations.get_mut();
+        let mut moved = false;
+        for (index, measured) in measured {
+            moved |= animations.set_measured(index, measured);
+        }
+        // A timeline that moved changes what its animations show, and
+        // their finished states: a frame is wanted to take them.
+        if moved {
+            self.changed = true;
+        }
     }
 
     /// The scroll offsets of the frame: the viewport's and each scroll
@@ -8024,6 +8096,9 @@ impl Engine {
         };
         let timeline = time.now.saturating_sub(origin).as_secs_f64();
         self.shown.animations.get_mut().set_time(timeline);
+        // The progress-based timelines, from the last frame's layout at
+        // the scroll offsets now (Scroll-driven Animations 1 section 2.1).
+        self.measure_timelines();
         self.update_the_rendering(width, height, time.now);
         if self.animating() {
             let elapsed = self
@@ -8096,9 +8171,15 @@ impl Engine {
         // start at its time, and the elements whose animations give
         // something new at it are restyled with the document's changes;
         // those the style stage makes start at its time too.
+        let reduced = self.preferences.reduced_motion;
         let animations = self.shown.animations.get_mut();
         if !animations.is_empty() {
             animations.start_pending();
+            // Under reduced motion what plays is at its end (D76).
+            animations.set_reduced_motion(reduced);
+            if reduced {
+                animations.update_timelines();
+            }
             let moved = animations.sample();
             self.shown.animated.extend(moved);
         }
@@ -8120,6 +8201,9 @@ impl Engine {
         let stage = Instant::now();
         self.layout(width as f32);
         let layout_time = stage.elapsed();
+        // What the next frame's animations see of the scroll containers:
+        // this layout's (section 2.1, the timelines' snapshot).
+        self.measure_timelines();
         // The document may be shorter at this width than where the
         // offset was; so may a scroll container's content.
         let max = self.max_scroll();
@@ -13894,30 +13978,30 @@ mod tests {
     }
 
     #[test]
-    fn animations_and_transitions_run_as_written_under_reduced_motion() {
-        // M22.5: the page's own `prefers-reduced-motion` query is its
-        // means of honouring the user, as in every browser; the engine
-        // stops nothing, which would change what pages show at their
-        // ends and when their events come.
+    fn animations_and_transitions_stop_at_their_ends_under_reduced_motion() {
+        // D76 (G30): the user's preference stops what plays at its end,
+        // a fill forwards holding it; the page's own query still answers.
         let mut engine = test_engine();
         engine.set_preferences(REDUCED);
         engine.load_document(&format!(
-            "{SLIDE}<style>#a {{ animation: s 1s linear }}
+            "{SLIDE}<style>#a {{ animation: s 1s linear forwards }}
              @media (prefers-reduced-motion: no-preference) {{ #b {{ animation: s 1s linear }} }}
              #c {{ margin-left: 0px; transition: margin-left 1s linear }}
-             #c.on {{ margin-left: 100px }}</style>\
-             <div id=a></div><div id=b></div><div id=c></div>"
+             #c.on {{ margin-left: 100px }}
+             #d {{ animation: s 1s linear infinite }}</style>\
+             <div id=a></div><div id=b></div><div id=c></div><div id=d></div>"
         ));
         draw_at(&mut engine, 0);
         set(&mut engine, "c", "class", "on");
-        draw_at(&mut engine, 500);
-        // The animation half way, the one the page's query leaves out
-        // not made.
-        assert_eq!(margin_left_of(&mut engine, "a"), 50.0);
+        draw_at(&mut engine, 16);
+        draw_at(&mut engine, 32);
+        // The animation at its end, the one the page's query leaves out
+        // not made, the transition ended at its end value.
+        assert_eq!(margin_left_of(&mut engine, "a"), 100.0);
         assert_eq!(margin_left_of(&mut engine, "b"), 0.0);
-        assert!(engine.needs_frame());
-        // The transition, made by the frame at 500, half way at 1000.
-        draw_at(&mut engine, 1000);
-        assert_eq!(margin_left_of(&mut engine, "c"), 50.0);
+        assert_eq!(margin_left_of(&mut engine, "c"), 100.0);
+        // One with no end plays on.
+        draw_at(&mut engine, 500);
+        assert_eq!(margin_left_of(&mut engine, "d"), 50.0);
     }
 }

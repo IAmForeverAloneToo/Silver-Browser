@@ -307,3 +307,76 @@ fn an_animation_a_script_makes_is_ready_at_the_next_frame() {
     frame_at(&mut tab, &clock, 1216);
     assert_eq!(lines(&mut tab), ["finished 1000", "finish 1000 1200"]);
 }
+
+#[test]
+fn a_flush_of_an_element_no_frame_styled_is_the_before_change_style_of_the_frames_restyle() {
+    // G46: an element a script made and flushed, then changed, is not new
+    // to the frame that restyles it after a frame has drawn the page: the
+    // flush is its before-change style, and the change transitions.
+    let (mut tab, clock, _) = page(
+        "<script>\
+         requestAnimationFrame(function () {\
+           var d = document.createElement('div');\
+           d.style.cssText = 'transition: width 5000ms; width: 0px';\
+           document.body.appendChild(d);\
+           getComputedStyle(d).width;\
+           d.style.width = '100px';\
+           d.addEventListener('transitionrun', function (e) { console.log(e.type); });\
+         });\
+         </script>",
+    );
+    frame_at(&mut tab, &clock, 16);
+    frame_at(&mut tab, &clock, 32);
+    frame_at(&mut tab, &clock, 48);
+    assert_eq!(lines(&mut tab), ["transitionrun"]);
+}
+
+#[test]
+fn an_animationend_listener_sees_the_forwards_fill() {
+    // The reference browser's listener reads the value the animation
+    // fills forwards with, the event's frame having sampled it.
+    let (mut tab, clock, _) = page(
+        "<style>@keyframes m { to { margin-left: 100px; opacity: 0.5 } }\
+         #d { animation: m 0.1s forwards }</style><div id=d></div><script>\
+         var d = document.getElementById('d');\
+         getComputedStyle(d).opacity;\
+         d.addEventListener('animationend', function () {\
+           var cs = getComputedStyle(d); console.log(cs.marginLeft, cs.opacity); });\
+         </script>",
+    );
+    for at in [0, 16, 50, 100, 116, 132, 148] {
+        frame_at(&mut tab, &clock, at);
+    }
+    assert_eq!(lines(&mut tab), ["100px 0.5"]);
+}
+
+#[test]
+fn an_element_first_rendered_transitions_from_its_starting_style() {
+    // Transitions 2 section 3.1: the `@starting-style` rules are the
+    // before-change style of an element with none, and only that.
+    let (mut tab, clock, console) = page(
+        "<style>#d { transition: margin-left 100s linear; margin-left: 100px }\
+         @starting-style { #d { margin-left: 0px } }</style><script>\
+         requestAnimationFrame(function () {\
+           var d = document.createElement('div'); d.id = 'd';\
+           document.body.appendChild(d);\
+           console.log(getComputedStyle(d).marginLeft, d.getAnimations().length);\
+           requestAnimationFrame(function () {\
+             console.log(document.styleSheets[0].cssRules[1].constructor.name);\
+             console.log(document.styleSheets[0].cssRules[1].cssText);\
+           });\
+         });\
+         </script>",
+    );
+    assert!(console.is_empty());
+    frame_at(&mut tab, &clock, 16);
+    frame_at(&mut tab, &clock, 32);
+    assert_eq!(
+        lines(&mut tab),
+        [
+            "0px 1",
+            "CSSStartingStyleRule",
+            "@starting-style {\n  #d { margin-left: 0px; }\n}"
+        ]
+    );
+}

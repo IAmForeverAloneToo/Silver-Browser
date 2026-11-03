@@ -78,11 +78,15 @@ pub enum Refusal {
 
 /// What a procedure needs of the animation's surroundings: its timeline's
 /// current time, `None` when it has no timeline or the timeline is
-/// inactive; and its associated effect's end time, zero for none.
+/// inactive; its associated effect's end time, zero for none; and, on a
+/// progress-based timeline, the range of it the animation is attached
+/// to, its start and end as the timeline's times (Web Animations 2
+/// section 4.4.1.1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Context {
     pub timeline: Option<f64>,
     pub end: f64,
+    pub range: Option<(f64, f64)>,
 }
 
 /// An animation's playback.
@@ -99,6 +103,10 @@ pub struct Player {
     ready_pending: bool,
     /// Whether the current finished promise is resolved.
     finished_resolved: bool,
+    /// Whether its start time follows its progress-based timeline's
+    /// range (Web Animations 2's auto-align start time flag): set by
+    /// playing, cleared by a time a script sets.
+    pub auto_align: bool,
 }
 
 impl Default for Player {
@@ -120,6 +128,31 @@ impl Player {
             previous_current_time: None,
             ready_pending: false,
             finished_resolved: false,
+            auto_align: false,
+        }
+    }
+
+    /// The start time its range gives it (Web Animations 2 section
+    /// 4.4.11.1): the range's start played forwards, its end backwards.
+    fn aligned_start(&self, cx: &Context) -> Option<f64> {
+        let (start, end) = cx.range?;
+        Some(if self.effective_playback_rate() >= 0.0 {
+            start
+        } else {
+            end
+        })
+    }
+
+    /// Aligns the start time with the range again, where it follows it
+    /// and runs: the range moves as its timeline is measured.
+    pub fn align(&mut self, cx: &Context) {
+        if self.auto_align
+            && self.pending.is_none()
+            && self.hold_time.is_none()
+            && self.start_time.is_some()
+            && let Some(start) = self.aligned_start(cx)
+        {
+            self.start_time = Some(start);
         }
     }
 
@@ -207,6 +240,7 @@ impl Player {
             }
             return Ok(());
         };
+        self.auto_align = false;
         if self.hold_time.is_some()
             || self.start_time.is_none()
             || cx.timeline.is_none()
@@ -249,6 +283,7 @@ impl Player {
         cx: &Context,
         notices: &mut Vec<Notice>,
     ) {
+        self.auto_align = false;
         if cx.timeline.is_none() && new_start.is_some() {
             self.hold_time = None;
         }
@@ -277,6 +312,24 @@ impl Player {
         notices: &mut Vec<Notice>,
     ) -> Result<(), Refusal> {
         let aborted_pause = self.pending == Some(Pending::Pause);
+        // On a progress-based timeline the start time follows the range
+        // (Web Animations 2 section 4.4.11): set once the animation is
+        // ready, a time held let go.
+        if cx.range.is_some() && auto_rewind {
+            if cx.end == f64::INFINITY && self.effective_playback_rate() < 0.0 {
+                return Err(Refusal::InvalidState);
+            }
+            let has_pending_ready_promise = self.pending.take().is_some();
+            self.auto_align = true;
+            self.hold_time = None;
+            self.start_time = None;
+            if !has_pending_ready_promise {
+                self.new_ready(notices);
+            }
+            self.pending = Some(Pending::Play);
+            self.update_finished_state(false, false, cx, notices);
+            return Ok(());
+        }
         let mut has_pending_ready_promise = false;
         let mut seek = None;
         let rate = self.effective_playback_rate();
@@ -351,6 +404,12 @@ impl Player {
     /// time `ready` (sections 4.4.11 and 4.4.13).
     pub fn ready(&mut self, ready: f64, cx: &Context, notices: &mut Vec<Notice>) {
         match self.pending.take() {
+            Some(Pending::Play) if self.auto_align && self.hold_time.is_none() => {
+                self.apply_pending_playback_rate();
+                self.start_time = self.aligned_start(cx).or(Some(ready));
+                self.resolve_ready(notices);
+                self.update_finished_state(false, false, cx, notices);
+            }
             Some(Pending::Play) => {
                 if let Some(hold) = self.hold_time {
                     self.apply_pending_playback_rate();
@@ -378,6 +437,9 @@ impl Player {
                 self.update_finished_state(false, false, cx, notices);
             }
             Some(Pending::Pause) => {
+                if self.auto_align && self.start_time.is_none() && self.hold_time.is_none() {
+                    self.start_time = self.aligned_start(cx);
+                }
                 if let (Some(start), None) = (self.start_time, self.hold_time) {
                     self.hold_time = Some((ready - start) * self.playback_rate);
                 }
@@ -397,6 +459,7 @@ impl Player {
             return Err(Refusal::InvalidState);
         }
         self.apply_pending_playback_rate();
+        self.auto_align = false;
         let limit = if self.playback_rate > 0.0 {
             cx.end
         } else {
@@ -462,6 +525,14 @@ impl Player {
         self.pending_playback_rate = None;
         let previous = self.current_time(cx);
         self.playback_rate = rate;
+        // On a progress-based timeline a running animation keeps its start
+        // time, or follows the range where its start time does, its
+        // current time scaled (Web Animations 2 section 4.4.17).
+        if cx.range.is_some() && self.start_time.is_some() && self.hold_time.is_none() {
+            self.align(cx);
+            self.update_finished_state(false, false, cx, notices);
+            return;
+        }
         if let Some(previous) = previous {
             let _ = self.set_current_time(Some(previous), cx, notices);
         }
@@ -513,9 +584,13 @@ impl Player {
         } else {
             self.unconstrained_time(cx)
         };
+        // One whose start time follows its progress-based timeline's
+        // range holds no time past its ends: its current time follows the
+        // scroll back into its range.
         if let Some(unconstrained) = unconstrained
             && self.start_time.is_some()
             && self.pending.is_none()
+            && !(self.auto_align && cx.range.is_some())
         {
             if self.playback_rate > 0.0 && unconstrained >= cx.end {
                 self.hold_time = Some(if did_seek {
@@ -574,7 +649,46 @@ mod tests {
         Context {
             timeline: Some(timeline),
             end,
+            range: None,
         }
+    }
+
+    #[test]
+    fn on_a_progress_based_timeline_the_start_time_follows_the_range() {
+        let range = |timeline: f64, start: f64, end: f64| Context {
+            timeline: Some(timeline),
+            end: end - start,
+            range: Some((start, end)),
+        };
+        let mut player = Player::new();
+        let mut notices = Vec::new();
+        player
+            .play(true, &range(50.0, 0.0, 100.0), &mut notices)
+            .unwrap();
+        assert!(player.auto_align);
+        assert_eq!(player.start_time, None);
+        player.ready(50.0, &range(50.0, 0.0, 100.0), &mut notices);
+        // Aligned with the range's start, wherever the timeline is.
+        assert_eq!(player.start_time, Some(0.0));
+        assert_eq!(player.current_time(&range(50.0, 0.0, 100.0)), Some(50.0));
+        // The range moved: so does the start time.
+        player.align(&range(50.0, 20.0, 80.0));
+        assert_eq!(player.start_time, Some(20.0));
+        // A time a script sets makes it stick.
+        player
+            .set_current_time(Some(10.0), &range(50.0, 20.0, 80.0), &mut notices)
+            .unwrap();
+        assert!(!player.auto_align);
+        player.align(&range(50.0, 0.0, 100.0));
+        assert_eq!(player.start_time, Some(40.0));
+        // Backwards, aligned with its end.
+        let mut back = Player::new();
+        back.playback_rate = -1.0;
+        back.play(true, &range(0.0, 0.0, 100.0), &mut notices)
+            .unwrap();
+        back.ready(0.0, &range(0.0, 0.0, 100.0), &mut notices);
+        assert_eq!(back.start_time, Some(100.0));
+        assert_eq!(back.current_time(&range(0.0, 0.0, 100.0)), Some(100.0));
     }
 
     #[test]

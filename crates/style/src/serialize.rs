@@ -17,6 +17,8 @@
 mod longhands;
 mod shorthands;
 
+pub use shorthands::animation_item;
+
 use css::Token;
 
 use crate::computed::{
@@ -48,7 +50,11 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "animation-iteration-count",
     "animation-name",
     "animation-play-state",
+    "animation-range-end",
+    "animation-range-start",
+    "animation-timeline",
     "animation-timing-function",
+    "animation-trigger",
     "aspect-ratio",
     "backface-visibility",
     "background-attachment",
@@ -255,6 +261,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "scroll-padding-left",
     "scroll-padding-right",
     "scroll-padding-top",
+    "scroll-timeline-axis",
+    "scroll-timeline-name",
     "shape-rendering",
     "stop-color",
     "stop-opacity",
@@ -287,6 +295,13 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "text-underline-position",
     "text-wrap-mode",
     "text-wrap-style",
+    "timeline-scope",
+    "timeline-trigger-activation-range-end",
+    "timeline-trigger-activation-range-start",
+    "timeline-trigger-active-range-end",
+    "timeline-trigger-active-range-start",
+    "timeline-trigger-name",
+    "timeline-trigger-source",
     "top",
     "transform",
     "transform-box",
@@ -298,8 +313,12 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "transition-property",
     "transition-timing-function",
     "translate",
+    "trigger-scope",
     "vector-effect",
     "vertical-align",
+    "view-timeline-axis",
+    "view-timeline-inset",
+    "view-timeline-name",
     "visibility",
     "white-space-collapse",
     "widows",
@@ -344,6 +363,10 @@ pub fn resolved_value(
 ) -> Option<String> {
     if let Some(value) = shorthands::value(style, name, resolver) {
         return value;
+    }
+    // The scroll-driven animations' and the triggers' (D75).
+    if crate::cascade::timelines::is_timeline_property(name) {
+        return crate::cascade::timelines::computed_text(style, name);
     }
     // A flow-relative property is its physical ones' (D74): a two-value
     // shorthand its start's and end's, one when they are alike; one of
@@ -971,7 +994,7 @@ fn svg(style: &ComputedStyle, name: &str) -> Option<String> {
 }
 
 /// A number at its shortest, `-0` as `0`.
-fn number(value: f32) -> String {
+pub(crate) fn number(value: f32) -> String {
     if value == 0.0 {
         "0".to_owned()
     } else {

@@ -104,7 +104,7 @@ fn each_chunks_names_are_the_same_before_and_after_it_is_made() {
                 "Document.prototype.getAnimations",
             ]
             .as_slice(),
-            126,
+            133,
         ),
         (
             RealmKind::DedicatedWorker {

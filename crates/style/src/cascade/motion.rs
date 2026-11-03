@@ -329,15 +329,16 @@ pub(super) fn parse_durations(tokens: &[Token], bases: &LengthBases<'_>) -> Opti
     list(tokens, |item| duration(item, bases))
 }
 
-/// `animation-duration`: times, and `auto` (Animations 2 §4.1), which
-/// is zero for an animation on a document's timeline.
+/// `animation-duration`: times, and `auto` (Animations 2 section 4.1,
+/// `None`), which is zero for an animation on a document's timeline and
+/// the whole of a progress-based one (Web Animations 2 section 4.5.3).
 pub(super) fn parse_animation_durations(
     tokens: &[Token],
     bases: &LengthBases<'_>,
-) -> Option<Vec<f64>> {
+) -> Option<Vec<Option<f64>>> {
     list(tokens, |item| match single_ident(item) {
-        Some(word) if word.eq_ignore_ascii_case("auto") => Some(0.0),
-        _ => duration(item, bases),
+        Some(word) if word.eq_ignore_ascii_case("auto") => Some(None),
+        _ => duration(item, bases).map(Some),
     })
 }
 
@@ -545,7 +546,8 @@ pub(super) fn parse_transition(
 #[derive(Debug, Default)]
 pub(super) struct AnimationLists {
     pub(super) name: Vec<Option<Arc<str>>>,
-    pub(super) duration: Vec<f64>,
+    /// `None` for `auto`.
+    pub(super) duration: Vec<Option<f64>>,
     pub(super) timing_function: Vec<Easing>,
     pub(super) iteration_count: Vec<f64>,
     pub(super) direction: Vec<AnimationDirection>,
@@ -558,89 +560,140 @@ pub(super) struct AnimationLists {
 pub(super) fn parse_animation(tokens: &[Token], bases: &LengthBases<'_>) -> Option<AnimationLists> {
     let mut lists = AnimationLists::default();
     for item in split_commas(tokens) {
-        let item = trim(item);
-        if item.is_empty() {
-            return None;
+        let [
+            duration_part,
+            easing_part,
+            delay_part,
+            count_part,
+            direction_part,
+            fill_part,
+            play_part,
+            name_part,
+        ] = animation_parts(trim(item), bases)?;
+        fn word(part: Option<&[Token]>) -> Option<&str> {
+            part.and_then(single_ident)
         }
-        let mut name: Option<Option<Arc<str>>> = None;
-        let mut duration_value: Option<f64> = None;
-        let mut easing: Option<Easing> = None;
-        let mut count: Option<f64> = None;
-        let mut direction_value: Option<AnimationDirection> = None;
-        let mut play: Option<AnimationPlayState> = None;
-        let mut delay_value: Option<f64> = None;
-        let mut fill: Option<AnimationFillMode> = None;
-        for part in components(item) {
-            if let Some(time) = time(part, bases) {
-                if duration_value.is_none() && (time.math || time.seconds >= 0.0) {
-                    duration_value = Some(time.seconds.max(0.0));
-                } else if delay_value.is_none() {
-                    delay_value = Some(time.seconds);
-                } else {
-                    return None;
-                }
-                continue;
-            }
-            if easing.is_none()
-                && let Some(value) = parse_easing(part, bases)
-            {
-                easing = Some(value);
-                continue;
-            }
-            if count.is_none()
-                && let Some(value) = iteration_count(part, bases)
-            {
-                count = Some(value);
-                continue;
-            }
-            if let Some(word) = single_ident(part) {
-                if duration_value.is_none() && word.eq_ignore_ascii_case("auto") {
-                    duration_value = Some(0.0);
-                    continue;
-                }
-                if direction_value.is_none()
-                    && let Some(value) = direction(word)
-                {
-                    direction_value = Some(value);
-                    continue;
-                }
-                if fill.is_none()
-                    && let Some(value) = fill_mode(word)
-                {
-                    fill = Some(value);
-                    continue;
-                }
-                if play.is_none()
-                    && let Some(value) = play_state(word)
-                {
-                    play = Some(value);
-                    continue;
-                }
-            }
-            if name.is_none()
-                && let Some(value) = animation_name_item(part)
-            {
-                name = Some(value);
-                continue;
-            }
-            return None;
-        }
-        lists.name.push(name.unwrap_or(None));
-        lists.duration.push(duration_value.unwrap_or(0.0));
-        lists.timing_function.push(easing.unwrap_or(Easing::EASE));
-        lists.iteration_count.push(count.unwrap_or(1.0));
-        lists
-            .direction
-            .push(direction_value.unwrap_or(AnimationDirection::Normal));
-        lists
-            .play_state
-            .push(play.unwrap_or(AnimationPlayState::Running));
-        lists.delay.push(delay_value.unwrap_or(0.0));
-        lists
-            .fill_mode
-            .push(fill.unwrap_or(AnimationFillMode::None));
+        lists.name.push(match name_part {
+            Some(part) => animation_name_item(part)?,
+            None => None,
+        });
+        lists.duration.push(match duration_part {
+            Some(part) if word(Some(part)).is_some() => None,
+            Some(part) => Some(time(part, bases)?.seconds.max(0.0)),
+            None => None,
+        });
+        lists.timing_function.push(match easing_part {
+            Some(part) => parse_easing(part, bases)?,
+            None => Easing::EASE,
+        });
+        lists.iteration_count.push(match count_part {
+            Some(part) => iteration_count(part, bases)?,
+            None => 1.0,
+        });
+        lists.direction.push(
+            word(direction_part)
+                .and_then(direction)
+                .unwrap_or(AnimationDirection::Normal),
+        );
+        lists.play_state.push(
+            word(play_part)
+                .and_then(play_state)
+                .unwrap_or(AnimationPlayState::Running),
+        );
+        lists.delay.push(match delay_part {
+            Some(part) => time(part, bases)?.seconds,
+            None => 0.0,
+        });
+        lists.fill_mode.push(
+            word(fill_part)
+                .and_then(fill_mode)
+                .unwrap_or(AnimationFillMode::None),
+        );
     }
     Some(lists)
+}
+
+/// The components of one item of `animation`, `item`, that give its
+/// longhands their values, in the order the reference browser writes
+/// them: the duration (a time, or `auto`), the timing function, the
+/// delay, the iteration count, the direction, the fill mode, the play
+/// state and the name, each `None` where the item leaves it out; `None`
+/// for an item that is not one.
+pub(super) fn animation_parts<'a>(
+    item: &'a [Token],
+    bases: &LengthBases<'_>,
+) -> Option<[Option<&'a [Token]>; 8]> {
+    const DURATION: usize = 0;
+    const EASING: usize = 1;
+    const DELAY: usize = 2;
+    const COUNT: usize = 3;
+    const DIRECTION: usize = 4;
+    const FILL: usize = 5;
+    const PLAY: usize = 6;
+    const NAME: usize = 7;
+    if item.is_empty() {
+        return None;
+    }
+    let mut parts: [Option<&'a [Token]>; 8] = [None; 8];
+    for part in components(item) {
+        if let Some(time) = time(part, bases) {
+            if parts[DURATION].is_none() && (time.math || time.seconds >= 0.0) {
+                parts[DURATION] = Some(part);
+            } else if parts[DELAY].is_none() {
+                parts[DELAY] = Some(part);
+            } else {
+                return None;
+            }
+            continue;
+        }
+        if parts[EASING].is_none() && parse_easing(part, bases).is_some() {
+            parts[EASING] = Some(part);
+            continue;
+        }
+        if parts[COUNT].is_none() && iteration_count(part, bases).is_some() {
+            parts[COUNT] = Some(part);
+            continue;
+        }
+        if let Some(word) = single_ident(part) {
+            let slot = if word.eq_ignore_ascii_case("auto") {
+                Some(DURATION)
+            } else if direction(word).is_some() {
+                Some(DIRECTION)
+            } else if fill_mode(word).is_some() {
+                Some(FILL)
+            } else if play_state(word).is_some() {
+                Some(PLAY)
+            } else {
+                None
+            };
+            // A keyword of a property the item has given is the name.
+            if let Some(slot) = slot.filter(|&slot| parts[slot].is_none()) {
+                parts[slot] = Some(part);
+                continue;
+            }
+        }
+        if parts[NAME].is_none() && animation_name_item(part).is_some() {
+            parts[NAME] = Some(part);
+            continue;
+        }
+        return None;
+    }
+    Some(parts)
+}
+
+/// The items of the `animation` shorthand `tokens`, each the text of the
+/// component that gives each longhand its value, in [`animation_parts`]'
+/// order; `None` for a value the shorthand does not take.
+pub fn animation_part_texts(tokens: &[Token]) -> Option<Vec<[Option<String>; 8]>> {
+    super::with_default_bases(|bases| {
+        split_commas(tokens)
+            .into_iter()
+            .map(|item| {
+                let parts = animation_parts(trim(item), bases)?;
+                Some(parts.map(|part| part.map(crate::serialize::tokens)))
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -919,7 +972,7 @@ mod tests {
         assert_eq!(parse_fill_modes(&tokens("none, initial")), None);
         let durations =
             |value: &str| with_bases(|bases| parse_animation_durations(&tokens(value), bases));
-        assert_eq!(durations("auto, 2s"), Some(vec![0.0, 2.0]));
+        assert_eq!(durations("auto, 2s"), Some(vec![None, Some(2.0)]));
     }
 
     #[test]
@@ -1008,7 +1061,7 @@ mod tests {
         let name = |lists: &AnimationLists| lists.name[0].as_deref().map(str::to_string);
         let lists = animation("1s 2s ease-in infinite reverse both paused slide").expect("valid");
         assert_eq!(name(&lists), Some("slide".into()));
-        assert_eq!((lists.duration[0], lists.delay[0]), (1.0, 2.0));
+        assert_eq!((lists.duration[0], lists.delay[0]), (Some(1.0), 2.0));
         assert_eq!(lists.timing_function[0], Easing::EASE_IN);
         assert_eq!(lists.iteration_count[0], f64::INFINITY);
         assert_eq!(lists.direction[0], AnimationDirection::Reverse);
@@ -1034,7 +1087,7 @@ mod tests {
         let auto = animation("auto 1s").unwrap();
         assert_eq!(
             (auto.duration[0], auto.delay[0], name(&auto)),
-            (0.0, 1.0, None)
+            (None, 1.0, None)
         );
         assert_eq!(name(&animation("auto auto").unwrap()), Some("auto".into()));
         assert_eq!(
@@ -1046,7 +1099,7 @@ mod tests {
             Some("infinite".into())
         );
         let negative = animation("-1s").unwrap();
-        assert_eq!((negative.duration[0], negative.delay[0]), (0.0, -1.0));
+        assert_eq!((negative.duration[0], negative.delay[0]), (None, -1.0));
         // A string name, which the draft takes.
         assert_eq!(name(&animation("\"x\" 1s").unwrap()), Some("x".into()));
         // The web-platform-tests' animation-shorthand items.

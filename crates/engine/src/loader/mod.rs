@@ -77,6 +77,8 @@ mod sandbox_tests;
 #[cfg(test)]
 mod script_tests;
 #[cfg(test)]
+mod scroll_animation_tests;
+#[cfg(test)]
 pub(crate) mod security_tests;
 #[cfg(test)]
 mod service_worker_acceptance_tests;

@@ -30,7 +30,7 @@ use super::{
 use crate::animate::{self, AnimationType, Longhand, longhands_of};
 use crate::cascade::canonical_name;
 use crate::computed::{
-    AnimationFillMode, Composite, ComputedStyle, TransitionBehavior, TransitionProperty,
+    AnimationFillMode, Composite, ComputedStyle, Edge, TransitionBehavior, TransitionProperty,
 };
 use crate::easing::Easing;
 
@@ -357,6 +357,9 @@ impl Animations {
             player: Player::new(),
             effect: Some(effect),
             timeline: Some(0),
+            range: [Edge::Normal, Edge::Normal],
+            range_set: false,
+            timeline_set: false,
             replace: ReplaceState::Active,
             last: Sampled::NOTHING,
             reported: Reported::Idle,

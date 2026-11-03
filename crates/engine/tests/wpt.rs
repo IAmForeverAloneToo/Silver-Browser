@@ -38,8 +38,9 @@
 //!   to its driver; an `.any.js` or `.window.js` test is served in the
 //!   page wptserve makes of it for a window, a file's `.headers` are
 //!   sent with it, and an `.asis` file is sent as the whole response,
-//!   as wptserve sends them. The page's clock waits for the network while a
-//!   fetch is in flight and moves on to its timers otherwise; the
+//!   as wptserve sends them. The page's clock runs in real time while a
+//!   fetch is in flight, its frames a frame apart, and moves on to its
+//!   timers and frames otherwise; the
 //!   harness keeps no timeout of its own, and a test still running
 //!   after ten seconds of its time (a minute for a long one), or with
 //!   nothing left to wait for, times out. Pages of other kinds that load
@@ -1036,19 +1037,43 @@ fn reply(content_type: &str, body: Vec<u8>, headers: Option<String>) -> Reply {
     Reply::Send(bytes)
 }
 
-/// A page's clock, in nanoseconds since it was made: moved only by the
-/// runner.
+/// A page's clock, in nanoseconds since it was made: moved by the runner,
+/// and, once it runs, by real time too between the runner's moves, as a
+/// browser's clock runs while its page waits on the network or spins in
+/// a script (`performance.now()` moving on as it reads it).
 #[derive(Clone, Default)]
-struct HandClock(Arc<AtomicU64>);
+struct HandClock {
+    at: Arc<AtomicU64>,
+    /// When the runner last moved it, while it runs.
+    since: Arc<Mutex<Option<Instant>>>,
+}
 
 impl HandClock {
     fn now(&self) -> Duration {
-        Duration::from_nanos(self.0.load(Ordering::Relaxed))
+        let at = Duration::from_nanos(self.at.load(Ordering::Relaxed));
+        let since = *self.since.lock().unwrap_or_else(|e| e.into_inner());
+        at + since.map_or(Duration::ZERO, |since| since.elapsed())
     }
 
     fn set(&self, at: Duration) {
-        let nanos = u64::try_from(at.as_nanos()).unwrap_or(u64::MAX);
-        self.0.fetch_max(nanos, Ordering::Relaxed);
+        let mut since = self.since.lock().unwrap_or_else(|e| e.into_inner());
+        // What it has run since it was last moved counts too: it never
+        // goes back.
+        let ran = since.map_or(Duration::ZERO, |since| since.elapsed());
+        let base = Duration::from_nanos(self.at.load(Ordering::Relaxed)) + ran;
+        let to = at.max(base);
+        let nanos = u64::try_from(to.as_nanos()).unwrap_or(u64::MAX);
+        self.at.store(nanos, Ordering::Relaxed);
+        if since.is_some() {
+            *since = Some(Instant::now());
+        }
+    }
+
+    /// From now on it runs in real time between the runner's moves.
+    fn run(&self) {
+        let now = self.now();
+        *self.since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.set(now);
     }
 }
 
@@ -1425,6 +1450,24 @@ fn the_clock_moves_on_to_the_next_frame_or_task() {
     assert_eq!(next_time(ms(100), false, None, None), None);
 }
 
+#[test]
+fn a_running_clock_moves_in_real_time_between_moves_and_never_back() {
+    let clock = HandClock::default();
+    clock.set(Duration::from_millis(100));
+    // A hand's clock stands still.
+    thread::sleep(Duration::from_millis(5));
+    assert_eq!(clock.now(), Duration::from_millis(100));
+    clock.run();
+    thread::sleep(Duration::from_millis(5));
+    let ran = clock.now();
+    assert!(ran >= Duration::from_millis(105), "{ran:?}");
+    // A move behind where it ran to leaves it there.
+    clock.set(Duration::from_millis(101));
+    assert!(clock.now() >= ran);
+    clock.set(Duration::from_secs(2));
+    assert!(clock.now() >= Duration::from_secs(2));
+}
+
 /// Whether the root element's `class` holds `class`.
 fn waits(engine: &Engine, class: &str) -> bool {
     let document = engine.document();
@@ -1710,15 +1753,20 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
     let mut moved = Instant::now();
     // What the console said, but for the runner.
     let mut said = Vec::new();
+    // The page's time runs on while it waits, and its frames come a frame
+    // apart, as a browser's do: not at every poll.
+    clock.run();
+    let mut last_frame: Option<Duration> = None;
     loop {
         let now = clock.now();
         engine.poll_network();
         engine.run_tasks();
         bless(engine, now, &mut said);
-        if engine.needs_frame() {
+        if engine.needs_frame() && last_frame.is_none_or(|last| now >= last + FRAME) {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
             // An animation frame's callbacks may ask for keys or clicks.
             bless(engine, now, &mut said);
+            last_frame = Some(now);
         }
         if let Some(harness) = harness_results(engine) {
             let passed = harness.status == 0 && harness.tests.iter().all(|(_, s, _)| *s == 0);
@@ -1753,8 +1801,14 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                 format!("TIMEOUT: still running after {LOAD:?}"),
             );
         };
+        // While a fetch is in flight the page's clock runs in real time,
+        // its frames and timers falling as they come.
         if engine.fetching() {
-            let _ = woken.recv_timeout(left.min(Duration::from_millis(100)));
+            let frame_due = engine.needs_frame().then(|| {
+                last_frame.map_or(Duration::ZERO, |last| (last + FRAME).saturating_sub(now))
+            });
+            let wait = frame_due.unwrap_or(Duration::from_millis(100));
+            let _ = woken.recv_timeout(left.min(wait).max(Duration::from_millis(1)));
             continue;
         }
         let next = next_time(
@@ -1762,7 +1816,12 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
             engine.needs_frame(),
             engine.next_frame_at(),
             engine.next_task_at(),
-        );
+        )
+        .map(|at| match last_frame {
+            // The next frame a frame after the last.
+            Some(last) if engine.needs_frame() => at.max(last + FRAME),
+            _ => at,
+        });
         // A page's workers run in real time (M31): what they send is
         // taken for a slice of real time before the page's clock moves
         // on, however often they send; and a move longer than a slice is

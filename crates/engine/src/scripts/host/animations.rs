@@ -16,7 +16,8 @@ use style::animation::{
     EffectInput, KeyframesSource, ScriptError, TimingInput, TransitionValue, pseudo_element,
     pseudo_element_name,
 };
-use style::computed::Composite;
+use style::animation::{TimelineKind, TimelineSource};
+use style::computed::{Axis, Composite, Edge, Inset, LengthPercentage};
 use style::keyframes::{ScriptKeyframe, ScriptKeyframes, parse_easing, script_declaration};
 use style::selector_matching::PseudoElement;
 use style::{CascadeContext, ComputedStyle, Recascade};
@@ -42,6 +43,14 @@ fn number(value: f64) -> Json {
         Json::from("Infinity")
     } else {
         Json::from("-Infinity")
+    }
+}
+
+/// The axis an op names, `block` where it names none.
+fn op_axis(op: &Json) -> Result<Axis, Failure> {
+    match op.get("axis").and_then(Json::as_str) {
+        None => Ok(Axis::Block),
+        Some(word) => Axis::from_name(word).ok_or_else(|| type_error("The axis is not valid.")),
     }
 }
 
@@ -416,6 +425,14 @@ impl DocumentHost {
                     ),
                 ];
                 if name == "effect.computed" {
+                    // On a progress-based timeline, the timing it plays by:
+                    // proportions of the range it is attached to.
+                    let computed = animations
+                        .computed_timing(effect)
+                        .expect("its timing was there");
+                    if computed.progress_based {
+                        members[5] = ("duration", number(computed.timing.duration));
+                    }
                     let computed = animations
                         .computed_timing(effect)
                         .expect("its timing was there");
@@ -430,6 +447,7 @@ impl DocumentHost {
                         ("localTime", time(computed.local_time)),
                         ("progress", time(computed.progress)),
                         ("currentIteration", time(computed.current_iteration)),
+                        ("progressBased", Json::Bool(computed.progress_based)),
                     ]);
                 }
                 Ok(Json::object(members))
@@ -540,7 +558,7 @@ impl DocumentHost {
                     .get("timeline")
                     .and_then(Json::as_u64)
                     .map(|t| t as usize);
-                store(self.animations.get_mut().set_timeline(id, timeline))
+                store(self.animations.get_mut().set_script_timeline(id, timeline))
             }
             "animation.effect" => {
                 let effect = op.get("effect").and_then(Json::as_u64);
@@ -579,8 +597,167 @@ impl DocumentHost {
                     self.animations.borrow().timeline_current_time(timeline),
                 ))
             }
+            // The `ScrollTimeline` constructor (Scroll-driven Animations 1
+            // section 2.2): its source an element or none.
+            "timeline.scroll" => {
+                let source = self.op_node(op.get("source"));
+                let axis = op_axis(op)?;
+                let made =
+                    self.animations
+                        .get_mut()
+                        .create_progress_timeline(TimelineKind::Scroll {
+                            source: TimelineSource::Element(source),
+                            axis,
+                        });
+                self.measure_timeline(made);
+                Ok(Json::from(made as u64))
+            }
+            // The `ViewTimeline` constructor (section 3.2), its inset as
+            // `view-timeline-inset` takes one.
+            "timeline.view" => {
+                let subject = self.op_node(op.get("subject"));
+                let axis = op_axis(op)?;
+                let inset = match op.get("inset").and_then(Json::as_str) {
+                    Some(text) => style::cascade::timelines::computed_insets(&css::tokenize(text))
+                        .ok_or_else(|| type_error("The inset is not valid."))?,
+                    None => [Inset::Auto, Inset::Auto],
+                };
+                let made = self
+                    .animations
+                    .get_mut()
+                    .create_progress_timeline(TimelineKind::View {
+                        subject,
+                        axis,
+                        inset,
+                    });
+                self.measure_timeline(made);
+                Ok(Json::from(made as u64))
+            }
+            // What a timeline is: its kind, and a progress-based one's
+            // source, subject, axis and the offsets of its whole range.
+            "timeline.info" => {
+                let timeline = op.get("timeline").and_then(Json::as_u64).unwrap_or(0) as usize;
+                // One no frame has measured yet, a style's named timeline
+                // among them, is measured now, as the reference browser
+                // resolves it with the style.
+                let unmeasured = {
+                    let animations = self.animations.borrow();
+                    animations
+                        .timeline_kind(timeline)
+                        .is_some_and(|k| k.progress_based())
+                        && animations.measured(timeline).is_none()
+                };
+                if unmeasured {
+                    self.measure_timeline(timeline);
+                }
+                let animations = self.animations.borrow();
+                let Some(kind) = animations.timeline_kind(timeline) else {
+                    return Ok(Json::Null);
+                };
+                let measured = animations.measured(timeline);
+                let node = |n: Option<NodeId>| {
+                    n.filter(|n| self.document.contains(*n))
+                        .map_or(Json::Null, |n| Json::from(n.to_bits()))
+                };
+                let root = self.document.document_element();
+                let (name, axis, source, subject) = match kind {
+                    TimelineKind::Document { .. } => ("document", Axis::Block, None, None),
+                    TimelineKind::Scroll { source, axis } => (
+                        "scroll",
+                        *axis,
+                        match source {
+                            TimelineSource::Element(element) => *element,
+                            // The viewport's is the document's scrolling
+                            // element, which stands for it before a frame
+                            // has measured a scroll container nearer.
+                            TimelineSource::Root => root,
+                            TimelineSource::Nearest(_) => {
+                                measured.map_or(root, |m| m.scroller.or(root))
+                            }
+                            TimelineSource::Own(node) => {
+                                measured.map_or(Some(*node), |m| m.scroller.or(root))
+                            }
+                        },
+                        None,
+                    ),
+                    TimelineKind::View { subject, axis, .. } => (
+                        "view",
+                        *axis,
+                        measured.and_then(|m| m.scroller.or(root)),
+                        *subject,
+                    ),
+                    TimelineKind::Named { .. } => match measured {
+                        Some(m) if m.view => ("view", m.axis, m.scroller.or(root), m.subject),
+                        Some(m) => ("scroll", m.axis, m.scroller.or(root), None),
+                        None => ("none", Axis::Block, None, None),
+                    },
+                };
+                let cover = measured.map(|m| m.ranges[0]);
+                Ok(Json::object([
+                    ("kind", Json::from(name)),
+                    (
+                        "named",
+                        Json::Bool(matches!(kind, TimelineKind::Named { .. })),
+                    ),
+                    ("axis", Json::from(axis.name())),
+                    ("source", node(source)),
+                    ("subject", node(subject)),
+                    ("start", time(cover.map(|c| c.0))),
+                    ("end", time(cover.map(|c| c.1))),
+                ]))
+            }
+            // `rangeStart` and `rangeEnd` set (Web Animations 2 section
+            // 6.4), each as text.
+            "animation.range" => {
+                let edge =
+                    |key: &str, end: bool| -> Result<Option<Edge<LengthPercentage>>, Failure> {
+                        match op.get(key).and_then(Json::as_str) {
+                            None => Ok(None),
+                            Some(text) => {
+                                style::cascade::timelines::computed_edge(&css::tokenize(text), end)
+                                    .map(Some)
+                                    .ok_or_else(|| type_error("The range is not valid."))
+                            }
+                        }
+                    };
+                let (start, end) = (edge("start", false)?, edge("end", true)?);
+                self.animations.get_mut().set_range(id, start, end);
+                Ok(Json::Null)
+            }
             other => Err(type_error(format!("'{other}' is no animation call"))),
         }
+    }
+
+    /// Measures progress-based timeline `index` as a script made it, in
+    /// the layout as it is now: a timeline has its time from when it is
+    /// made, each frame then measuring it again (D75).
+    fn measure_timeline(&mut self, index: usize) {
+        let Some(kind) = self.animations.borrow().timeline_kind(index).cloned() else {
+            return;
+        };
+        let (scroll_y, offsets) = self.scroll_state();
+        if self.layout_now().is_none() {
+            return;
+        }
+        let Some((_, layout)) = self.laid_out.as_ref() else {
+            return;
+        };
+        let scene = crate::timelines::Scene {
+            document: &self.document,
+            styles: self.computed.as_ref().map(|cached| &cached.styles),
+            layout,
+            viewport: (self.window.viewport.0 as f32, self.window.viewport.1 as f32),
+            scroll: (scroll_y, offsets.viewport_x),
+            offsets: &offsets,
+        };
+        let measured = scene.measure(&kind);
+        self.animations.get_mut().set_measured(index, measured);
+    }
+
+    /// The element an op's handle names, `None` for none or a node gone.
+    fn op_node(&self, value: Option<&Json>) -> Option<NodeId> {
+        let handle = value.and_then(Json::as_f64)?;
+        self.node(Handle(handle as u64)).ok()
     }
 
     /// What animation `id` is, as its object reads it; `null` for none.
@@ -622,6 +799,9 @@ impl DocumentHost {
                 "name",
                 Json::from(state.name.as_deref().unwrap_or_default()),
             ),
+            ("progress", Json::Bool(state.progress)),
+            ("rangeStart", Json::from(state.range[0].text(false))),
+            ("rangeEnd", Json::from(state.range[1].text(true))),
             ("overallProgress", time(overall)),
         ])
     }

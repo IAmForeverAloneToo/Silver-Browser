@@ -386,6 +386,9 @@ pub(crate) struct WindowEnv {
     /// The viewport's scroll offset and each scroll container's, as
     /// drawn (D65).
     pub(crate) scroll: Arc<(f32, paint::Offsets)>,
+    /// Whether a smooth scroll is on its way to where it goes, which the
+    /// scroll methods' promises wait for.
+    pub(crate) scrolling: bool,
     pub(crate) compat: bool,
     /// The user's languages, the most wanted first (M37).
     pub(crate) languages: Vec<String>,

@@ -151,6 +151,9 @@ fn wanted(name: &str, delay: f64, paused: bool) -> Wanted {
         paused,
         composite: Composite::Replace,
         longhands: Arc::from(Vec::new()),
+        duration_auto: false,
+        timeline: crate::computed::Timeline::Auto,
+        range: [crate::computed::Edge::Normal, crate::computed::Edge::Normal],
     }
 }
 
@@ -593,4 +596,52 @@ fn script_keyframes_compute_their_missing_offsets_and_check_their_order() {
     assert!(crate::keyframes::script_declaration("animation-name", "x").is_none());
     assert!(crate::keyframes::script_declaration("--x", "anything").is_some());
     assert!(crate::keyframes::script_declaration("margin", "1px 2px").is_some());
+}
+
+#[test]
+fn a_progress_based_animations_start_time_follows_its_range_as_the_timeline_moves() {
+    use crate::computed::{Axis, LengthPercentage, RangeName};
+    let mut store = Animations::new();
+    let timeline = store.create_progress_timeline(TimelineKind::Scroll {
+        source: TimelineSource::Root,
+        axis: Axis::Block,
+    });
+    // A timeline 0 to 100px, scrolled half way, its entry range at
+    // `entry`.
+    let measured = |entry: (f64, f64)| Measured {
+        view: true,
+        scroller: None,
+        subject: None,
+        axis: Axis::Block,
+        offset: 50.0,
+        ranges: [
+            (0.0, 100.0),
+            (0.0, 100.0),
+            entry,
+            (0.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 100.0),
+        ],
+    };
+    store.set_measured(timeline, Some(measured((20.0, 40.0))));
+    let id = store.create_animation(None, Some(timeline)).unwrap();
+    store.set_range(
+        id,
+        Some(Edge::At(
+            Some(RangeName::Entry),
+            LengthPercentage::Percent(0.0),
+        )),
+        None,
+    );
+    store.play(id).unwrap();
+    store.update_timelines();
+    assert_eq!(store.state(id).unwrap().start_time, Some(20.0));
+    assert_eq!(store.state(id).unwrap().current_time, Some(30.0));
+    // The range moved with the timeline's measure: so does the start.
+    store.set_measured(timeline, Some(measured((30.0, 40.0))));
+    store.update_timelines();
+    assert_eq!(store.state(id).unwrap().start_time, Some(30.0));
+    // Inactive, the timeline has no time and the animation none.
+    store.set_measured(timeline, None);
+    assert_eq!(store.state(id).unwrap().current_time, None);
 }

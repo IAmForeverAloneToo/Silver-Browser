@@ -14,6 +14,9 @@ use std::sync::{Arc, LazyLock};
 pub use crate::calc::Calc;
 use crate::calc::Expression;
 use crate::cascade::MAX_LENGTH_PX;
+pub use crate::cascade::timelines::{
+    AnimationTrigger, Axis, Edge, Inset, Insets, RangeName, Scope, Scroller, Timeline,
+};
 use crate::custom::CustomProperties;
 use crate::easing::Easing;
 
@@ -3016,10 +3019,10 @@ pub struct Motion {
     /// `animation-name`: `None` for `none`, the name as written
     /// otherwise, an identifier's or a string's.
     pub animation_name: Vec<Option<Arc<str>>>,
-    /// `animation-duration`, in seconds, none below zero: `auto`
-    /// (Animations 2) is zero, as it is for an animation on a
-    /// document's timeline.
-    pub animation_duration: Vec<f64>,
+    /// `animation-duration`, in seconds, none below zero; `None` for
+    /// `auto` (Animations 2), the initial value, which is zero for an
+    /// animation on a document's timeline.
+    pub animation_duration: Vec<Option<f64>>,
     /// `animation-timing-function`.
     pub animation_timing_function: Vec<Easing>,
     /// `animation-iteration-count`: none below zero, `infinite` an
@@ -3039,6 +3042,33 @@ pub struct Motion {
     /// gave `animation-name`, `None` for the document's, where its names
     /// are looked up first (CSS Scoping 1 section 3.5, D69).
     pub animation_names_tree: Option<dom::NodeId>,
+    /// `animation-timeline` (Scroll-driven Animations 1 section 4.1).
+    pub animation_timeline: Vec<Timeline<LengthPercentage>>,
+    /// `animation-range-start` and `animation-range-end` (section 4.2).
+    pub animation_range_start: Vec<Edge<LengthPercentage>>,
+    pub animation_range_end: Vec<Edge<LengthPercentage>>,
+    /// `animation-trigger`: `None` for `none`.
+    pub animation_trigger: Vec<Option<AnimationTrigger>>,
+    /// `scroll-timeline-name` and `scroll-timeline-axis` (section 2.3).
+    pub scroll_timeline_name: Vec<Option<Arc<str>>>,
+    pub scroll_timeline_axis: Vec<Axis>,
+    /// `view-timeline-name`, `view-timeline-axis` and
+    /// `view-timeline-inset` (section 3.2).
+    pub view_timeline_name: Vec<Option<Arc<str>>>,
+    pub view_timeline_axis: Vec<Axis>,
+    pub view_timeline_inset: Vec<Insets<LengthPercentage>>,
+    /// `timeline-scope` (section 4.4).
+    pub timeline_scope: Scope,
+    /// `timeline-trigger`'s longhands: each trigger's name, its source,
+    /// its activation range and its active range.
+    pub timeline_trigger_name: Vec<Option<Arc<str>>>,
+    pub timeline_trigger_source: Vec<Timeline<LengthPercentage>>,
+    pub timeline_trigger_activation_range_start: Vec<Edge<LengthPercentage>>,
+    pub timeline_trigger_activation_range_end: Vec<Edge<LengthPercentage>>,
+    pub timeline_trigger_active_range_start: Vec<Edge<LengthPercentage>>,
+    pub timeline_trigger_active_range_end: Vec<Edge<LengthPercentage>>,
+    /// `trigger-scope`.
+    pub trigger_scope: Scope,
 }
 
 impl Default for Motion {
@@ -3050,7 +3080,7 @@ impl Default for Motion {
             transition_delay: vec![0.0],
             transition_behavior: vec![TransitionBehavior::Normal],
             animation_name: vec![None],
-            animation_duration: vec![0.0],
+            animation_duration: vec![None],
             animation_timing_function: vec![Easing::EASE],
             animation_iteration_count: vec![1.0],
             animation_direction: vec![AnimationDirection::Normal],
@@ -3059,6 +3089,23 @@ impl Default for Motion {
             animation_fill_mode: vec![AnimationFillMode::None],
             animation_composition: vec![Composite::Replace],
             animation_names_tree: None,
+            animation_timeline: vec![Timeline::Auto],
+            animation_range_start: vec![Edge::Normal],
+            animation_range_end: vec![Edge::Normal],
+            animation_trigger: vec![None],
+            scroll_timeline_name: vec![None],
+            scroll_timeline_axis: vec![Axis::Block],
+            view_timeline_name: vec![None],
+            view_timeline_axis: vec![Axis::Block],
+            view_timeline_inset: vec![[Inset::Auto, Inset::Auto]],
+            timeline_scope: Scope::None,
+            timeline_trigger_name: vec![None],
+            timeline_trigger_source: vec![Timeline::Auto],
+            timeline_trigger_activation_range_start: vec![Edge::Normal],
+            timeline_trigger_activation_range_end: vec![Edge::Normal],
+            timeline_trigger_active_range_start: vec![Edge::Auto],
+            timeline_trigger_active_range_end: vec![Edge::Auto],
+            trigger_scope: Scope::None,
         }
     }
 }
@@ -3102,6 +3149,10 @@ impl Motion {
                 delay: *coordinated(&self.animation_delay, i),
                 fill_mode: *coordinated(&self.animation_fill_mode, i),
                 composition: *coordinated(&self.animation_composition, i),
+                timeline: coordinated(&self.animation_timeline, i),
+                range_start: coordinated(&self.animation_range_start, i),
+                range_end: coordinated(&self.animation_range_end, i),
+                trigger: coordinated(&self.animation_trigger, i),
             })
     }
 }
@@ -3205,8 +3256,8 @@ pub struct SingleTransition<'m> {
 pub struct SingleAnimation<'m> {
     /// `None` for `none`, which runs nothing but keeps its place.
     pub name: Option<&'m Arc<str>>,
-    /// In seconds.
-    pub duration: f64,
+    /// In seconds, `None` for `auto`.
+    pub duration: Option<f64>,
     pub timing_function: &'m Easing,
     pub iteration_count: f64,
     pub direction: AnimationDirection,
@@ -3215,6 +3266,13 @@ pub struct SingleAnimation<'m> {
     pub delay: f64,
     pub fill_mode: AnimationFillMode,
     pub composition: Composite,
+    /// Its timeline, and the range of it the animation is attached to
+    /// (Scroll-driven Animations 1 section 4).
+    pub timeline: &'m Timeline<LengthPercentage>,
+    pub range_start: &'m Edge<LengthPercentage>,
+    pub range_end: &'m Edge<LengthPercentage>,
+    /// The trigger it follows, `None` for none.
+    pub trigger: &'m Option<AnimationTrigger>,
 }
 
 /// `text-decoration-style`'s computed value.
@@ -4671,7 +4729,7 @@ mod tests {
         // repeated or cut.
         let motion = Motion {
             animation_name: vec![Some(Arc::from("a")), None, Some(Arc::from("c"))],
-            animation_duration: vec![1.0, 2.0],
+            animation_duration: vec![Some(1.0), Some(2.0)],
             animation_delay: vec![0.5, 0.25, 0.125, 9.0],
             ..Motion::default()
         };
@@ -4682,9 +4740,9 @@ mod tests {
         assert_eq!(
             animations,
             vec![
-                (Some("a".to_string()), 1.0, 0.5),
-                (None, 2.0, 0.25),
-                (Some("c".to_string()), 1.0, 0.125)
+                (Some("a".to_string()), Some(1.0), 0.5),
+                (None, Some(2.0), 0.25),
+                (Some("c".to_string()), Some(1.0), 0.125)
             ]
         );
         // `transition-property: none` asks for no transition at all.

@@ -26,10 +26,11 @@ use super::{
     Animation, Animations, Class, Effect, Frames, MAX_ANIMATIONS, MAX_TIMELINES, Phase,
     PlaybackEvent, PlaybackKind, ReplaceState, SET_COMPOSITE, SET_DELAY, SET_DIRECTION,
     SET_DURATION, SET_EASING, SET_END_DELAY, SET_FILL, SET_ITERATION_START, SET_ITERATIONS,
-    SET_KEYFRAMES, Sampled, Target, Timing, Value, cancelled, event,
+    SET_KEYFRAMES, Sampled, Target, Timeline, TimelineKind as Kind, Timing, Value, cancelled,
+    event,
 };
 use crate::animate::Longhand;
-use crate::computed::{AnimationDirection, AnimationFillMode, Composite};
+use crate::computed::{AnimationDirection, AnimationFillMode, Composite, Edge, LengthPercentage};
 use crate::easing::Easing;
 use crate::keyframes::{ScriptKeyframes, parse_easing};
 use crate::selector_matching::PseudoElement;
@@ -138,6 +139,9 @@ impl From<&Value> for TransitionValue {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedTiming {
     pub timing: Timing,
+    /// Whether its animation's timeline is progress-based, its times
+    /// percentages.
+    pub progress_based: bool,
     pub end_time: f64,
     pub active_duration: f64,
     pub local_time: Option<f64>,
@@ -168,6 +172,10 @@ pub struct AnimationState {
     pub name: Option<Arc<str>>,
     /// Its owning element while it has one.
     pub owner: Option<Target>,
+    /// Whether its timeline is progress-based, its times percentages.
+    pub progress: bool,
+    /// The range of its timeline it is attached to, its start and end.
+    pub range: [Edge<LengthPercentage>; 2],
 }
 
 /// The pseudo-element a script names (Web Animations 1 section 6.6): a
@@ -405,7 +413,10 @@ impl Animations {
                 class: Class::Script,
                 player: Player::new(),
                 effect: None,
-                timeline: timeline.filter(|&t| t < self.origins.len()),
+                timeline: timeline.filter(|&t| t < self.timelines.len()),
+                range: [Edge::Normal, Edge::Normal],
+                range_set: false,
+                timeline_set: false,
                 replace: ReplaceState::Active,
                 last: Sampled::NOTHING,
                 reported: Reported::Idle,
@@ -421,11 +432,23 @@ impl Animations {
     /// A new document timeline whose origin is `origin` milliseconds on
     /// the document's (the `DocumentTimeline` constructor): its place.
     pub fn create_timeline(&mut self, origin: f64) -> usize {
-        if self.origins.len() > MAX_TIMELINES {
+        if self.timelines.len() > MAX_TIMELINES {
             return 0;
         }
-        self.origins.push(origin);
-        self.origins.len() - 1
+        self.timelines
+            .push(Timeline::new(Kind::Document { origin }));
+        self.timelines.len() - 1
+    }
+
+    /// A new progress-based timeline of `kind` (the `ScrollTimeline` and
+    /// `ViewTimeline` constructors): its place; the document's past
+    /// [`MAX_TIMELINES`].
+    pub fn create_progress_timeline(&mut self, kind: Kind) -> usize {
+        if self.timelines.len() > MAX_TIMELINES {
+            return 0;
+        }
+        self.timelines.push(Timeline::new(kind));
+        self.timelines.len() - 1
     }
 
     /// The current time of timeline `timeline`, in milliseconds.
@@ -519,7 +542,49 @@ impl Animations {
             kind,
             name,
             owner,
+            progress: self.progress_based(animation.timeline),
+            range: animation.range.clone(),
         })
+    }
+
+    /// `rangeStart`'s and `rangeEnd`'s setters (Web Animations 2 section
+    /// 6.4): animation `id` attached to the range from `start` to `end`,
+    /// each kept where `None`; its style's `animation-range` no longer
+    /// sets it.
+    pub fn set_range(
+        &mut self,
+        id: u64,
+        start: Option<Edge<LengthPercentage>>,
+        end: Option<Edge<LengthPercentage>>,
+    ) {
+        let Some(animation) = self.animations.get_mut(&id) else {
+            return;
+        };
+        if let Some(start) = start {
+            animation.range[0] = start;
+        }
+        if let Some(end) = end {
+            animation.range[1] = end;
+        }
+        animation.range_set = true;
+        let effect = animation.effect;
+        if let Some(animation) = self.animations.get(&id) {
+            let cx = self.context(animation);
+            let mut notices = Vec::new();
+            if let Some(animation) = self.animations.get_mut(&id) {
+                animation.player.align(&cx);
+                animation
+                    .player
+                    .update_finished_state(false, false, &cx, &mut notices);
+            }
+            self.owe(id, notices);
+        }
+        self.touch_effect(effect);
+    }
+
+    /// Whether timeline `timeline` is progress-based.
+    pub fn is_progress_based(&self, timeline: usize) -> bool {
+        self.progress_based(Some(timeline))
     }
 
     /// Runs `f` on animation `id`'s playback with its context, keeping
@@ -740,10 +805,23 @@ impl Animations {
         resolved
     }
 
+    /// `timeline`'s setter as a script calls it: a CSS animation's
+    /// `animation-timeline` no longer sets it (Animations 2 section 4.2).
+    pub fn set_script_timeline(
+        &mut self,
+        id: u64,
+        timeline: Option<usize>,
+    ) -> Result<(), ScriptError> {
+        if let Some(animation) = self.animations.get_mut(&id) {
+            animation.timeline_set = true;
+        }
+        self.set_timeline(id, timeline)
+    }
+
     /// `timeline`'s setter (section 4.4.1): animation `id` on timeline
     /// `timeline`, its current time kept where it can be.
     pub fn set_timeline(&mut self, id: u64, timeline: Option<usize>) -> Result<(), ScriptError> {
-        let timeline = timeline.filter(|&t| t < self.origins.len());
+        let timeline = timeline.filter(|&t| t < self.timelines.len());
         let Some(animation) = self.animations.get(&id) else {
             return Ok(());
         };
@@ -882,6 +960,21 @@ impl Animations {
     /// `updateTiming()` (section 6.7.1): a CSS animation's members set
     /// stay the script's.
     pub fn update_timing(&mut self, effect: u64, input: &TimingInput) -> Result<(), ScriptError> {
+        // An effect on a progress-based timeline shares its range among
+        // its iterations: it has no room for endless ones (Web Animations
+        // 2 section 4.5.3, as the reference browser refuses them).
+        let on_progress = self
+            .effects
+            .get(&effect)
+            .and_then(|e| e.animation)
+            .and_then(|a| self.animations.get(&a))
+            .is_some_and(|a| self.progress_based(a.timeline));
+        if on_progress && input.iterations == Some(f64::INFINITY) {
+            return Err(ScriptError::Type(
+                "Effect iterations cannot be Infinity when used with a progress-based timeline."
+                    .into(),
+            ));
+        }
         let Some(e) = self.effects.get_mut(&effect) else {
             return Ok(());
         };
@@ -908,12 +1001,14 @@ impl Animations {
         let e = self.effects.get(&effect)?;
         let animation = e.animation.and_then(|a| self.animations.get(&a));
         let local = animation.and_then(|a| a.player.current_time(&self.context(a)));
-        let backwards = animation.is_some_and(|a| a.player.playback_rate < 0.0);
-        let progress = local.map(|local| e.timing.progress_in(local, backwards));
+        let backwards = animation.is_some_and(|a| self.backwards(a));
+        let timing = self.timing_in(animation, e);
+        let progress = local.map(|local| timing.progress_in(local, backwards));
         Some(ComputedTiming {
-            timing: e.timing.clone(),
-            end_time: e.timing.end_time(),
-            active_duration: e.timing.active_duration(),
+            progress_based: animation.is_some_and(|a| self.progress_based(a.timeline)),
+            end_time: timing.end_time(),
+            active_duration: timing.active_duration(),
+            timing,
             local_time: local,
             progress: progress.and_then(|p| p.progress),
             current_iteration: progress.and_then(|p| p.iteration),

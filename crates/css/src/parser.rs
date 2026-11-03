@@ -205,7 +205,7 @@ pub fn parse_block_contents(input: &str) -> Vec<Rule> {
 /// are its keyframes, a selector list of offsets and a block of
 /// declarations each (CSS Animations 1 section 3, M22); a feature values
 /// rule's are its feature value blocks (CSS Fonts 4 section 6.10).
-const NESTED_RULE_AT: [&str; 7] = [
+const NESTED_RULE_AT: [&str; 8] = [
     "media",
     "supports",
     "layer",
@@ -213,13 +213,21 @@ const NESTED_RULE_AT: [&str; 7] = [
     "keyframes",
     "-webkit-keyframes",
     "font-feature-values",
+    "starting-style",
 ];
 
 /// At-rule names that may be nested in a style rule (CSS Nesting 1
 /// section 3.2, the conditional group rules and `@layer`), whose blocks
 /// are then read as a style rule's contents are, declarations and all;
 /// an `@scope` rule's block always is (Cascade 6 section 2.1).
-const NESTED_GROUP_AT: [&str; 5] = ["media", "supports", "layer", "container", "scope"];
+const NESTED_GROUP_AT: [&str; 6] = [
+    "media",
+    "supports",
+    "layer",
+    "container",
+    "scope",
+    "starting-style",
+];
 
 /// At-rule names whose blocks contain declarations.
 const DECLARATION_AT: [&str; 5] = [

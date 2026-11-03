@@ -338,6 +338,8 @@ struct StyleRule {
     scope: Option<u32>,
     /// The innermost `@container` block around it.
     container: Option<u32>,
+    /// Whether it is a `@starting-style` rule's.
+    starting: bool,
 }
 
 /// An `@page` rule kept: as a [`StyleRule`], with page selectors.
@@ -395,6 +397,9 @@ struct Place {
     weight: usize,
     /// What a selector that names no anchor is relative to.
     relative: Relative,
+    /// Whether it is in a `@starting-style` rule (Transitions 2 section
+    /// 3.1), whose rules style an element only for its starting style.
+    starting: bool,
 }
 
 impl Place {
@@ -447,6 +452,7 @@ impl RuleSet {
                 parent: None,
                 weight: 0,
                 relative: Relative::No,
+                starting: false,
             };
             builder.namespaces = Namespaces::default();
             builder.namespaces_closed = false;
@@ -485,14 +491,34 @@ impl RuleSet {
         sheets: &'s [css::Stylesheet],
         answers: &[bool],
     ) -> InForce<'s> {
+        self.in_force_of(sheets, answers, false)
+    }
+
+    /// Whether a `@starting-style` rule is among the rules.
+    pub(crate) fn has_starting_style(&self) -> bool {
+        self.rules.iter().any(|rule| rule.starting)
+    }
+
+    /// [`RuleSet::in_force`], the `@starting-style` rules among them
+    /// where `starting`, for an element's starting style (Transitions 2
+    /// section 3.1), and left out otherwise.
+    pub(crate) fn in_force_of<'s>(
+        &'s self,
+        sheets: &'s [css::Stylesheet],
+        answers: &[bool],
+        starting: bool,
+    ) -> InForce<'s> {
         let (holds, places) = self.ordered(answers);
         let last = places[UNLAYERED as usize];
         let mut kept = 0u32;
+        let taken = |rule: &StyleRule| {
+            rule.block.is_none_or(|b| holds[b as usize]) && (starting || !rule.starting)
+        };
         let rule_places = self
             .rules
             .iter()
             .map(|rule| {
-                if rule.block.is_none_or(|b| holds[b as usize]) {
+                if taken(rule) {
                     kept += 1;
                     kept - 1
                 } else {
@@ -504,7 +530,7 @@ impl RuleSet {
             .rules
             .iter()
             .enumerate()
-            .filter(|(_, rule)| rule.block.is_none_or(|b| holds[b as usize]))
+            .filter(|(_, rule)| taken(rule))
             .map(|(index, rule)| {
                 let place = places[rule.layer as usize];
                 ParsedRule {
@@ -1049,6 +1075,7 @@ impl Builder<'_> {
             layer: place.layer,
             scope: place.scope,
             container: place.container,
+            starting: place.starting,
         });
     }
 
@@ -1185,6 +1212,15 @@ impl Builder<'_> {
                 });
                 let inside = Place {
                     container: Some(container),
+                    ..place.clone()
+                };
+                self.walk(rules, &inside);
+            }
+            // Its rules style an element's starting style alone
+            // (Transitions 2 section 3.1); its prelude is empty.
+            ("starting-style", Some(rules)) if trim(&at.prelude).is_empty() => {
+                let inside = Place {
+                    starting: true,
                     ..place.clone()
                 };
                 self.walk(rules, &inside);

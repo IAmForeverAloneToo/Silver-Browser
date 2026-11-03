@@ -168,6 +168,9 @@ mod revert;
 mod scoping_tests;
 mod svg;
 mod text;
+pub mod timelines;
+
+pub use motion::animation_part_texts as motion_animation_parts;
 
 use animated::Animated;
 pub(crate) use images::{is_frame_hint, is_img_hint};
@@ -1134,6 +1137,10 @@ impl Stylesheets {
         // The registrations in force: the `@property` rules', then the
         // scripts', which win (D73).
         let registry = Registry::new(self.rules.properties_in_force(&answers), &self.registered);
+        // The rules of an element's starting style, `@starting-style`'s
+        // among them, where a sheet has one and transitions run.
+        let starting = (context.animations.is_some() && self.rules.has_starting_style())
+            .then(|| self.rules.in_force_of(&self.sheets, &answers, true));
         let mut media = ua_answers;
         media.extend(answers);
         media.extend(self.shadow_answers(&context.media));
@@ -1161,6 +1168,7 @@ impl Stylesheets {
                 })
                 .collect();
         }
+        cascader.starting = starting;
         cascader
     }
 
@@ -1201,6 +1209,23 @@ impl Stylesheets {
         changes: &[Change],
         animated: &[NodeId],
     ) -> Restyle {
+        self.restyle_flushed(document, context, styles, changes, animated, None)
+    }
+
+    /// [`Stylesheets::restyle_animated`], an element `styles` has not met
+    /// taking its before-change style from `flushed`, the styles a
+    /// script's style flush computed since (CSS Transitions 1 section 3,
+    /// G46): one a script styled before it changed it transitions from
+    /// that style, as the reference browser has it.
+    pub fn restyle_flushed(
+        &self,
+        document: &Document,
+        context: &CascadeContext<'_>,
+        styles: &mut Styles,
+        changes: &[Change],
+        animated: &[NodeId],
+        flushed: Option<&Styles>,
+    ) -> Restyle {
         if let Some(animations) = context.animations
             && !animations.borrow().is_empty()
         {
@@ -1218,7 +1243,7 @@ impl Stylesheets {
                     .retain(|node| !taken_out.contains(&node));
             }
         }
-        self.restyle_reaching(document, context, styles, changes, animated, &[])
+        self.restyle_reaching(document, context, styles, changes, animated, &[], flushed)
     }
 
     /// The containers of `sizes`, a layout's, whose content box changed
@@ -1238,11 +1263,12 @@ impl Stylesheets {
         if changed.is_empty() {
             return None;
         }
-        Some(self.restyle_reaching(document, context, styles, &[], &[], &changed))
+        Some(self.restyle_reaching(document, context, styles, &[], &[], &changed, None))
     }
 
-    /// [`Stylesheets::restyle_animated`], with the elements `subtrees`
+    /// [`Stylesheets::restyle_flushed`], with the elements `subtrees`
     /// restyled with everything under them too.
+    #[allow(clippy::too_many_arguments)]
     fn restyle_reaching(
         &self,
         document: &Document,
@@ -1251,6 +1277,7 @@ impl Stylesheets {
         changes: &[Change],
         animated: &[NodeId],
         subtrees: &[NodeId],
+        flushed: Option<&Styles>,
     ) -> Restyle {
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
@@ -1318,8 +1345,16 @@ impl Stylesheets {
                 // The style it had is its before-change style, if it was
                 // rendered (M22.1).
                 let old = styles.computed(node);
-                let before =
-                    Before::Known(old.filter(|old| !old.unrendered).map(|old| &*old.style));
+                let before = Before::Known(
+                    old.filter(|old| !old.unrendered)
+                        .or_else(|| {
+                            old.is_none()
+                                .then(|| flushed.and_then(|f| f.computed(node)))
+                                .flatten()
+                                .filter(|f| !f.unrendered)
+                        })
+                        .map(|old| &*old.style),
+                );
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
                 let computed =
@@ -2151,9 +2186,12 @@ fn wanted<'k>(
             Some(Wanted {
                 name: Arc::clone(name),
                 // The effect's timing is in milliseconds.
+                duration_auto: item.duration.is_none(),
+                timeline: item.timeline.clone(),
+                range: [item.range_start.clone(), item.range_end.clone()],
                 timing: Timing {
                     delay: item.delay * 1000.0,
-                    duration: item.duration * 1000.0,
+                    duration: item.duration.unwrap_or(0.0) * 1000.0,
                     iterations: item.iteration_count,
                     direction: item.direction,
                     fill: item.fill_mode,
@@ -2467,6 +2505,9 @@ struct Cascader<'a> {
     queried: RefCell<Queried>,
     /// Set when an element's style meets a container unit.
     containers_used: Cell<bool>,
+    /// The author rules of an element's starting style (Transitions 2
+    /// section 3.1), `@starting-style`'s among them, where there are any.
+    starting: Option<InForce<'a>>,
 }
 
 impl<'a> Cascader<'a> {
@@ -2506,6 +2547,7 @@ impl<'a> Cascader<'a> {
             queried: RefCell::new(Queried::new()),
             containers_used: Cell::new(false),
             shadow_keyframes: HashMap::new(),
+            starting: None,
         }
     }
 
@@ -2620,6 +2662,57 @@ impl<'a> Cascader<'a> {
         let sets_composited = self.sets_composited;
         let base_display = base.display;
         let display_none = parent.display_none || base_display == Display::None;
+        // An element newly rendered has no before-change style: its
+        // starting style stands for one (Transitions 2 section 3.1), its
+        // `@starting-style` rules matched with the others, so that its
+        // first style transitions from them.
+        // One no style held before, which a cascade knows nothing of, is
+        // newly rendered too.
+        let starting_style;
+        let newly = match before {
+            Before::Known(None) => true,
+            Before::Unknown => old.is_none(),
+            Before::Known(Some(_)) => false,
+        };
+        let before = match (&before, &self.starting) {
+            (_, Some(starting)) if newly && !display_none && transitions_run(&base) => {
+                let containers = Containers {
+                    document: self.document,
+                    styles,
+                    sizes: &self.container_sizes,
+                    queried: &self.queried,
+                    substitutions: &self.substitutions,
+                    viewport,
+                    rem,
+                    fonts: self.context.fonts,
+                };
+                let matched = declarations_for(
+                    self.document,
+                    (&mut self.matcher, &mut self.candidates),
+                    element,
+                    (&self.ua, starting, &self.shadow),
+                    self.context.inline_styles,
+                    self.context.frame_margins,
+                    Some(&containers),
+                );
+                starting_style = element_style(
+                    self.document,
+                    element,
+                    &matched,
+                    parent.style,
+                    &resolution,
+                    None,
+                    None,
+                );
+                // A starting style that renders nothing is none.
+                if starting_style.display == Display::None {
+                    Before::Known(None)
+                } else {
+                    Before::Known(Some(&starting_style))
+                }
+            }
+            _ => before,
+        };
         let animating = self.sample((element, None), &base, Some(!display_none));
         let (mut style, after_change) = changed_style(
             self.context.animations,
@@ -3134,6 +3227,15 @@ fn changed_style(
             (style, after)
         }
     }
+}
+
+/// Whether `style` asks for a transition that runs: one of a combined
+/// duration above zero (Transitions 1 section 3).
+fn transitions_run(style: &ComputedStyle) -> bool {
+    style
+        .motion()
+        .transitions()
+        .any(|t| t.duration.max(0.0) + t.delay > 0.0)
 }
 
 /// What one document's relative units resolve against, beyond the
@@ -5295,6 +5397,9 @@ fn apply_declaration(
         return apply_logical(style, mapped, value, bases, parent, border_color_set);
     }
     match name {
+        name if timelines::is_timeline_property(name) => {
+            timelines::apply(style, name, value, bases)
+        }
         "color" => set(&mut style.color, color_of_color(value, parent, bases)),
         "direction" => set(&mut style.direction, parse_direction(value)),
         "color-scheme" => match color_scheme_of(value, parent) {
@@ -6122,8 +6227,12 @@ fn apply_declaration(
             m.animation_play_state = v.play_state;
             m.animation_delay = v.delay;
             m.animation_fill_mode = v.fill_mode;
-            // A reset-only longhand of the shorthand (Animations 2).
+            // The reset-only longhands of the shorthand (Animations 2,
+            // Scroll-driven Animations 1 section 4).
             m.animation_composition = vec![crate::computed::Composite::Replace];
+            m.animation_timeline = vec![crate::computed::Timeline::Auto];
+            m.animation_range_start = vec![crate::computed::Edge::Normal];
+            m.animation_range_end = vec![crate::computed::Edge::Normal];
         }),
         "break-before" => {
             set_fragmentation(style, fragmentation::parse_break_between(value), |f, v| {
@@ -6805,6 +6914,10 @@ fn apply_css_wide(
             }
         };
     }
+    if timelines::is_timeline_property(name) {
+        timelines::copy(style, src, name);
+        return true;
+    }
     match name {
         // Every longhand but `direction` and `unicode-bidi` (Cascade 5
         // section 3.1).
@@ -7253,6 +7366,9 @@ fn apply_css_wide(
             m.animation_delay = s.animation_delay.clone();
             m.animation_fill_mode = s.animation_fill_mode.clone();
             m.animation_composition = s.animation_composition.clone();
+            m.animation_timeline = s.animation_timeline.clone();
+            m.animation_range_start = s.animation_range_start.clone();
+            m.animation_range_end = s.animation_range_end.clone();
         }),
         "break-before" | "page-break-before" => {
             copy_fragmentation(style, src, |f, s| f.break_before = s.break_before)
@@ -13399,7 +13515,7 @@ mod tests {
              animation: spin 2s linear infinite; animation-direction: reverse }",
         );
         assert_eq!(m.animation_name, vec![name("spin")]);
-        assert_eq!(m.animation_duration, vec![2.0]);
+        assert_eq!(m.animation_duration, vec![Some(2.0)]);
         assert_eq!(m.animation_delay, vec![0.0]);
         assert_eq!(m.animation_play_state, vec![AnimationPlayState::Running]);
         assert_eq!(m.animation_iteration_count, vec![f64::INFINITY]);
@@ -13441,7 +13557,7 @@ mod tests {
         );
         let unset = child("div { animation: a 1s } p { animation: b 2s; animation-name: unset }");
         assert_eq!(unset.motion().animation_name, vec![None]);
-        assert_eq!(unset.motion().animation_duration, vec![2.0]);
+        assert_eq!(unset.motion().animation_duration, vec![Some(2.0)]);
         assert!(
             child("div { animation: a 1s } p { color: red }")
                 .motion
