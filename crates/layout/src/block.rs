@@ -1477,6 +1477,28 @@ pub(crate) fn layout_contents<'a>(
             imposed,
         );
     }
+    // A ruby column and a formula lay their content out by their own
+    // rules (D77).
+    if crate::ruby::is_column(b) {
+        return crate::ruby::layout_column_contents(
+            b,
+            edges,
+            cb_width,
+            content_width,
+            margin_left,
+            pass,
+        );
+    }
+    if crate::math::lays_out(b) {
+        return crate::math::layout_math_contents(
+            b,
+            edges,
+            cb_width,
+            content_width,
+            margin_left,
+            pass,
+        );
+    }
     if b.is_table() {
         return crate::table::layout_table_contents(
             b,

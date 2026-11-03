@@ -11,9 +11,10 @@ use super::{LengthBases, Range, Want, components, integer, length, length_percen
 use super::{single_ident, single_token};
 use crate::calc;
 use crate::computed::{
-    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LengthPercentage, LineBreak, TabSize,
-    TextAutospace, TextFit, TextFitKind, TextFitMethod, TextGroupAlign, TextIndent,
-    TextSpacingTrim, TextTransform, TextWrapStyle, TransformExtra, WordSpaceTransform,
+    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LengthPercentage, LineBreak, MathStyle,
+    RubyAlign, RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind, TextFitMethod,
+    TextGroupAlign, TextIndent, TextSpacingTrim, TextTransform, TextWrapStyle, TransformExtra,
+    WordSpaceTransform,
 };
 
 /// The keyword `tokens` are, lowercased.
@@ -172,6 +173,36 @@ pub(super) fn parse_text_spacing_trim(tokens: &[Token]) -> Option<TextSpacingTri
         "trim-both" => TextSpacingTrim::TrimBoth,
         "trim-all" => TextSpacingTrim::TrimAll,
         "auto" => TextSpacingTrim::Auto,
+        _ => return None,
+    })
+}
+
+/// `ruby-position` (CSS Ruby 1 section 3.1, D77): `over` or `under`,
+/// the values the reference browser takes.
+pub(super) fn parse_ruby_position(tokens: &[Token]) -> Option<RubyPosition> {
+    Some(match keyword(tokens)?.as_str() {
+        "over" => RubyPosition::Over,
+        "under" => RubyPosition::Under,
+        _ => return None,
+    })
+}
+
+/// `math-style` (MathML Core section 2.1.1, D77).
+pub(super) fn parse_math_style(tokens: &[Token]) -> Option<MathStyle> {
+    Some(match keyword(tokens)?.as_str() {
+        "normal" => MathStyle::Normal,
+        "compact" => MathStyle::Compact,
+        _ => return None,
+    })
+}
+
+/// `ruby-align` (CSS Ruby 1 section 4.1, D77).
+pub(super) fn parse_ruby_align(tokens: &[Token]) -> Option<RubyAlign> {
+    Some(match keyword(tokens)?.as_str() {
+        "space-around" => RubyAlign::SpaceAround,
+        "space-between" => RubyAlign::SpaceBetween,
+        "start" => RubyAlign::Start,
+        "center" => RubyAlign::Center,
         _ => return None,
     })
 }

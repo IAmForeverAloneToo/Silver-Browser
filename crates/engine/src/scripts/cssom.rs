@@ -525,6 +525,10 @@ fn written(name: &str, value: &str) -> String {
         "font-stretch" | "font-weight" | "font-style" => {
             Some(style::serialize::tokens(&tokens).to_ascii_lowercase())
         }
+        // Its shortest form (css-display-3 section 2, D77): `block flow`
+        // is `block`, `list-item inline` `inline list-item`.
+        "display" => style::cascade::parse_display_value(&tokens)
+            .map(|(display, flow_root)| style::serialize::display_value(display, flow_root)),
         // A colour's keyword, named, a system colour's or `currentcolor`,
         // in lowercase (CSSOM section 6.7.2).
         _ if takes_color(name)
@@ -544,7 +548,7 @@ fn written(name: &str, value: &str) -> String {
         }
         _ => None,
     };
-    text.unwrap_or_else(|| style::serialize::specified(&tokens))
+    text.unwrap_or_else(|| style::serialize::specified_of(name, &tokens))
 }
 
 /// Whether `name` is a property whose value may be a colour alone.
@@ -1046,6 +1050,20 @@ mod tests {
         out
     }
 
+    #[test]
+    fn display_and_an_opacitys_calculation_are_written_in_their_shortest_forms() {
+        // D77, D78: as the reference browser writes them.
+        assert_eq!(written("display", "flow block"), "block");
+        assert_eq!(
+            written("display", "list-item inline flow-root"),
+            "inline flow-root list-item"
+        );
+        assert_eq!(written("display", "math inline"), "math");
+        assert_eq!(written("opacity", "min(50%, 0%)"), "calc(0%)");
+        assert_eq!(written("width", "min(50%, 0%)"), "min(50%, 0%)");
+        assert_eq!(written("width", "calc(1px * NaN)"), "calc(NaN * 1px)");
+    }
+
     /// The block's declarations, as name, value and priority.
     fn read(text: &str) -> Vec<(String, String, bool)> {
         declarations(text)
@@ -1125,12 +1143,13 @@ mod tests {
         );
         assert_eq!(block("content", "\"a(\\\"", false), "content: \"a(\\\"\";");
         assert_eq!(block("grid-area", "[a] (b]", false), "grid-area: [a] (b]);");
-        // Written back, the block reads as it was set.
+        // Written back, the block reads as it was set, its calculation
+        // simplified as a specified value is (D78).
         let text = block("margin-left", "calc(1px * 2", false);
         assert_eq!(
             read(&format!("{text} color: red")),
             [
-                ("margin-left".into(), "calc(1px * 2)".into(), false),
+                ("margin-left".into(), "calc(2px)".into(), false),
                 ("color".into(), "red".into(), false)
             ]
         );

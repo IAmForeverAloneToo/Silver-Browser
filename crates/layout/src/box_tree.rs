@@ -45,7 +45,7 @@ use std::sync::Arc;
 use dom::{Document, NodeId};
 use style::computed::{
     BackfaceVisibility, CaptionSide, Content, Display, Float, ListStylePosition, ListStyleType,
-    TransformStyle,
+    Overflow, TransformStyle,
 };
 use style::selector_matching::PseudoElement;
 use style::{ComputedStyle, Recascade, Styles};
@@ -53,6 +53,7 @@ use style::{ComputedStyle, Recascade, Styles};
 mod first_letter;
 mod first_line;
 mod generated;
+mod ruby;
 
 use crate::cache::LayoutCache;
 use crate::decoration::{self, Decorating};
@@ -738,6 +739,7 @@ fn build(
         kept,
     };
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
+    propagate_overflow(document, &mut boxes);
     place_markers(&mut boxes);
     first_line::apply(&styled, &mut boxes);
     first_letter::apply(&styled, &mut boxes);
@@ -750,6 +752,69 @@ fn build(
         &mut HashSet::new(),
     );
     boxes
+}
+
+/// `style` for a text box of `text`: under `text-transform: math-auto`
+/// (CSS Text 4, MathML Core section 3.2.1, D77) a text of one letter is
+/// its mathematical italic letter, for which the slanted face is taken,
+/// which every font has where few have those letters.
+fn math_auto(style: Arc<ComputedStyle>, text: &str) -> Arc<ComputedStyle> {
+    if !style.text().transform_extra.math_auto
+        || style.font().style != style::computed::FontStyle::Normal
+    {
+        return style;
+    }
+    let mut letters = text.trim_matches(crate::inline::is_css_space).chars();
+    match (letters.next(), letters.next()) {
+        (Some(letter), None) if letter.is_alphabetic() => {
+            let mut italic = (*style).clone();
+            italic.font_mut().style = style::computed::FontStyle::Italic;
+            Arc::new(italic)
+        }
+        _ => style,
+    }
+}
+
+/// Gives the viewport the root's `overflow` (css-overflow-3 section 3.3,
+/// D77), or the body's when the root's is `visible`: the element whose
+/// value the viewport takes then has a used `overflow` of `visible`, so
+/// its box does not clip what the viewport scrolls. Its computed value,
+/// which scripts read and the viewport's scrolling takes, is the
+/// cascade's. The root is an `html` element's, as a page's is; a tree
+/// whose top element is another stands for content in a page.
+fn propagate_overflow(document: &Document, boxes: &mut [LayoutBox]) {
+    let Some(root) = document
+        .document_element()
+        .filter(|&root| document.tag(root) == Some("html"))
+    else {
+        return;
+    };
+    let body = document
+        .element_children(root)
+        .find(|&child| document.tag(child) == Some("body"));
+    let visible = |b: &LayoutBox| b.style.overflow() == Overflow::Visible;
+    let own = |b: &LayoutBox, node: NodeId| b.node == node && !b.anonymous;
+    let make_visible = |b: &mut LayoutBox| {
+        let style = Arc::make_mut(&mut b.style);
+        style.overflow_x = Overflow::Visible;
+        style.overflow_y = Overflow::Visible;
+    };
+    for b in boxes.iter_mut().filter(|b| own(b, root)) {
+        if !visible(b) {
+            make_visible(b);
+            continue;
+        }
+        let Some(body) = body else {
+            continue;
+        };
+        for child in b
+            .children
+            .iter_mut()
+            .filter(|c| own(c, body) && !visible(c))
+        {
+            make_visible(child);
+        }
+    }
 }
 
 /// Numbers `boxes` and everything in them in tree order from `next`
@@ -1055,11 +1120,54 @@ impl<'a> Styled<'a> {
     }
 
     /// The children of `node` that may make boxes: its elements and
-    /// text, not its comments or processing instructions (D58).
+    /// text, not its comments or processing instructions (D58). Every
+    /// walk of the tree the boxes are built from goes through here, so
+    /// that it is the one place that says what a node's children are.
     fn boxed_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.document
             .children(node)
             .filter(|&child| self.document.is_element(child) || self.document.is_text(child))
+    }
+
+    /// [`Styled::children`], each element of `display: contents` among
+    /// them replaced by its own, the same way (css-display-3 section 2.5,
+    /// D77): what a flex or a grid container's items, a table's parts or
+    /// a ruby container's bases and annotations are made from, where the
+    /// element would have been.
+    fn flat_children(&self, item: Item) -> Vec<Item> {
+        let mut out = Vec::new();
+        for child in self.children(item) {
+            if self.is_contents(child) {
+                out.extend(self.flat_children(child));
+            } else {
+                out.push(child);
+            }
+        }
+        out
+    }
+
+    /// Whether `item` is an element or a pseudo-element of `display:
+    /// contents`, which makes no box.
+    fn is_contents(&self, item: Item) -> bool {
+        self.is_element(item)
+            && self
+                .style(item)
+                .is_some_and(|style| style.display == Display::Contents)
+    }
+
+    /// What the text `child`, met among the children of `parent`, takes
+    /// its style and decorations from: its own parent element when that
+    /// is of `display: contents` and so not `parent` (D77), else
+    /// `parent`.
+    fn text_owner(&self, parent: Item, child: Item) -> Item {
+        if let Item::Node(node) = child
+            && let Some(up) = self.document.parent(node)
+            && Item::Node(up) != parent
+            && self.is_contents(Item::Node(up))
+        {
+            return Item::Node(up);
+        }
+        parent
     }
 
     /// What a control has inside its box in place of its children (M26.7,
@@ -1801,7 +1909,7 @@ fn build_inside(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> Vec<L
 fn build_items(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     let mut out = Vec::new();
     let mut run = Vec::new();
-    for child in styled.children(item) {
+    for child in styled.flat_children(item) {
         if !styled.is_element(child) {
             run.push(child);
             continue;
@@ -1948,6 +2056,9 @@ impl BlockContainer<'_> {
                 self.add_control_text(parent, node, text.into_owned());
                 continue;
             }
+            // Text whose element makes no box, of `display: contents`,
+            // is still that element's.
+            let parent = styled.text_owner(parent, child);
             let decorations = styled.decorations(parent);
             if text.contains(OBJECT)
                 && let Item::GeneratedText(element, side) = child
@@ -1956,7 +2067,7 @@ impl BlockContainer<'_> {
                 continue;
             }
             self.add_inline_level(LayoutBox {
-                style: styled.shared_or_initial(parent),
+                style: math_auto(styled.shared_or_initial(parent), &text),
                 kind: BoxKind::Text(text.into_owned()),
                 children: Default::default(),
                 node: parent.node(),
@@ -2131,7 +2242,13 @@ impl BlockContainer<'_> {
             // is `table`; outside it is out of flow, and goes where it
             // is met: into the run or inline open around it, else among
             // the container's blocks.
-            Display::Block | Display::ListItem | Display::Table | Display::Flex | Display::Grid
+            Display::Block
+            | Display::ListItem
+            | Display::Table
+            | Display::Flex
+            | Display::Grid
+            | Display::BlockRuby
+            | Display::BlockMath
                 if style.float != Float::None || style.position.is_out_of_flow() =>
             {
                 let kind = if style.position.is_out_of_flow() {
@@ -2189,6 +2306,55 @@ impl BlockContainer<'_> {
                 let table =
                     styled.own_box(child, style, BoxKind::Table, || build_table(styled, child));
                 self.add_inline_level(table);
+            }
+            // No box of its own (css-display-3 section 2.5, D77): its
+            // children and pseudo-elements in its place, the text among
+            // them styled by it.
+            Display::Contents => self.add_children(child, &styled.children(child)),
+            // An inline list item (D77): an inline box with its marker
+            // first in it, or an inline-block with one.
+            Display::InlineListItem if style.flow_root => {
+                let block = styled.own_box(child, style, BoxKind::InlineBlock, || {
+                    build_block_container(styled, child)
+                });
+                self.add_inline_level(block);
+            }
+            Display::InlineListItem => self.add_inline(child, style),
+            // A ruby container (CSS Ruby 1 section 2, D77): an inline box
+            // of its columns, or a block holding one.
+            Display::Ruby => {
+                let ruby = ruby::container(styled, child, style);
+                self.add_inline_level(ruby);
+            }
+            Display::BlockRuby => {
+                let block = styled.own_box(child, style, BoxKind::Block, || {
+                    ruby::block_contents(styled, child)
+                });
+                self.add_block(block);
+            }
+            // A ruby base or annotation met outside a ruby container is
+            // in one of its own (CSS Ruby 1 section 2.2's anonymous ruby
+            // container).
+            Display::RubyBase
+            | Display::RubyText
+            | Display::RubyBaseContainer
+            | Display::RubyTextContainer => {
+                let ruby = ruby::wrapped(styled, child);
+                self.add_inline_level(ruby);
+            }
+            // A formula (MathML Core section 2.1, D77): an inline-block
+            // or a block laid out by MathML's rules ([`crate::math`]).
+            Display::Math => {
+                let math = styled.own_box(child, style, BoxKind::InlineBlock, || {
+                    build_block_container(styled, child)
+                });
+                self.add_inline_level(math);
+            }
+            Display::BlockMath => {
+                let math = styled.own_box(child, style, BoxKind::Block, || {
+                    build_block_container(styled, child)
+                });
+                self.add_block(math);
             }
             Display::None
             | Display::TableRowGroup
@@ -2298,8 +2464,11 @@ impl BlockContainer<'_> {
     /// the run of the list item's first line, where there is one.
     fn add_marker(&mut self, item: Item, element: NodeId, style: &ComputedStyle) {
         let styled = self.styled;
+        // An inline list item's marker is inside it, at its start, as the
+        // reference browser places it (D77).
         let outside = styled.styles.get(element).is_none_or(|list_item| {
             list_item.lists().list_style_position == ListStylePosition::Outside
+                && list_item.display == Display::ListItem
         });
         // An image marker (M23.3) is a marker box showing it.
         if let Some(image) = styled.list_image(style) {
@@ -2537,7 +2706,7 @@ fn build_table_part(styled: &Styled<'_>, item: Item, style: &ComputedStyle) -> L
 /// as `display: none`).
 fn build_columns(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     styled
-        .children(item)
+        .flat_children(item)
         .into_iter()
         .filter_map(|child| {
             let style = styled
@@ -2613,7 +2782,7 @@ fn rows_and_parts(
             parts.push(anonymous_row(styled, item, cells));
         }
     };
-    for child in styled.children(item) {
+    for child in styled.flat_children(item) {
         match row_item(styled, child) {
             Some(RowItem::Element(child, style)) if proper(style.display) => {
                 flush(&mut parts, &mut row_run);
@@ -2631,7 +2800,7 @@ fn rows_and_parts(
 /// else in anonymous cells, consecutive ones in the same cell.
 fn build_row(styled: &Styled<'_>, item: Item) -> Vec<LayoutBox> {
     let items = styled
-        .children(item)
+        .flat_children(item)
         .into_iter()
         .filter_map(|child| row_item(styled, child))
         .collect();
@@ -5658,6 +5827,121 @@ mod tests {
         let shape = tree.shape_of(&tree.body().children);
         assert_eq!(shape.iter().filter(|(k, _)| k == "^text T").count(), 1);
         assert!(!first_line_styles(&tree, &tree.body().children).is_empty());
+    }
+
+    #[test]
+    fn display_contents_boxes_its_children_and_pseudo_elements_in_its_place() {
+        let tree = tree_of(
+            "<div><span>a<b>b</b></span>c</div>",
+            "span { display: contents; color: #f00 } span::before { content: 'x' }",
+        );
+        let div = &tree.body().children[0];
+        assert_eq!(
+            tree.shape_of(&div.children),
+            pairs(&[
+                ("anon", 4),
+                ("+inline", 5),
+                ("+text x", 5),
+                ("text a", 5),
+                ("inline", 6),
+                ("text b", 6),
+                ("text c", 4),
+            ])
+        );
+        // Its text is still its own, in its colour.
+        let anon = &div.children[0];
+        let red = style::computed::Color::rgb8(255, 0, 0);
+        assert_eq!(anon.children[1].style.color, red);
+        assert_ne!(anon.children[3].style.color, red);
+    }
+
+    #[test]
+    fn display_contents_makes_its_children_the_items_of_a_flex_container() {
+        let tree = tree_of(
+            "<div><span><i>x</i>y</span></div>",
+            "div { display: flex } span { display: contents }",
+        );
+        let flex = &tree.body().children[0];
+        assert_eq!(
+            tree.shape_of(&flex.children),
+            pairs(&[
+                ("block", 6),
+                ("anon", 6),
+                ("text x", 6),
+                ("block", 4),
+                ("anon", 4),
+                ("text y", 5),
+            ])
+        );
+        // And the rows of a table its parts.
+        let tree = tree_of(
+            "<table><tbody><tr><td>a</td><span><td>b</td></span></tr></tbody></table>",
+            "span { display: contents }",
+        );
+        let shape = tree.shape_of(&tree.body().children);
+        assert_eq!(
+            shape.iter().filter(|(k, _)| k.starts_with("cell")).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_replaced_element_with_display_contents_makes_no_box() {
+        let tree = tree_of(
+            "<div><img><input><span>t</span></div>",
+            "img, input, span { display: contents }",
+        );
+        let div = &tree.body().children[0];
+        assert_eq!(
+            tree.shape_of(&div.children),
+            pairs(&[("anon", 4), ("text t", 7)])
+        );
+    }
+
+    #[test]
+    fn an_identifier_of_one_letter_is_slanted_and_an_inline_list_items_marker_inside() {
+        use style::computed::FontStyle;
+        let tree = tree_of("<p><math><mi>x</mi><mi>sin</mi><mi>2</mi></math></p>", "");
+        let mut styles = Vec::new();
+        fn walk(b: &LayoutBox, out: &mut Vec<(String, FontStyle)>) {
+            if let BoxKind::Text(text) = &b.kind {
+                out.push((text.clone(), b.style.font().style));
+            }
+            b.children.iter().for_each(|c| walk(c, out));
+        }
+        walk(tree.body(), &mut styles);
+        assert_eq!(
+            styles,
+            [
+                ("x".to_owned(), FontStyle::Italic),
+                ("sin".to_owned(), FontStyle::Normal),
+                ("2".to_owned(), FontStyle::Normal),
+            ]
+        );
+        let tree = tree_of("<ul><li>a</li></ul>", "li { display: inline list-item }");
+        let shape = tree.shape_of(&tree.body().children);
+        assert!(
+            shape.iter().any(|(k, _)| k.starts_with("*marker inside")),
+            "{shape:?}"
+        );
+        assert!(!shape.iter().any(|(k, _)| k.starts_with("*marker outside")));
+    }
+
+    #[test]
+    fn the_viewport_takes_the_roots_overflow_or_the_bodys() {
+        let overflow = |html_css: &str| {
+            let tree = tree_of("<p>x</p>", html_css);
+            let html = &tree.boxes[0];
+            (html.style.overflow(), html.children[0].style.overflow())
+        };
+        use style::computed::Overflow::{Hidden, Visible};
+        assert_eq!(overflow("body { overflow: hidden }"), (Visible, Visible));
+        assert_eq!(overflow("html { overflow: hidden }"), (Visible, Visible));
+        assert_eq!(
+            overflow("html { overflow: hidden } body { overflow: hidden }"),
+            (Visible, Hidden),
+            "the body's is its own when the root's is not visible"
+        );
     }
 }
 

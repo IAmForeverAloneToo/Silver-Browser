@@ -147,6 +147,23 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
         },
         "text-autospace" => text_autospace(style.text().text_autospace),
         "text-spacing-trim" => text_spacing_trim(style.text().text_spacing_trim).to_owned(),
+        "ruby-position" => match style.text().ruby_position {
+            crate::computed::RubyPosition::Over => "over",
+            crate::computed::RubyPosition::Under => "under",
+        }
+        .to_owned(),
+        "math-style" => match style.text().math_style {
+            crate::computed::MathStyle::Normal => "normal",
+            crate::computed::MathStyle::Compact => "compact",
+        }
+        .to_owned(),
+        "ruby-align" => match style.text().ruby_align {
+            crate::computed::RubyAlign::SpaceAround => "space-around",
+            crate::computed::RubyAlign::SpaceBetween => "space-between",
+            crate::computed::RubyAlign::Start => "start",
+            crate::computed::RubyAlign::Center => "center",
+        }
+        .to_owned(),
         "hanging-punctuation" => {
             let hanging = style.text().hanging_punctuation;
             let mut parts = Vec::new();
@@ -575,9 +592,10 @@ fn list<T>(items: &[T], item: impl Fn(&T) -> String) -> String {
     items.iter().map(item).collect::<Vec<_>>().join(", ")
 }
 
-/// Times in seconds, `0s`.
+/// Times in seconds, `0s`: past what an `f32` holds, the largest it does
+/// (D78), as a computed infinity is written.
 fn times(list: &[f64]) -> String {
-    self::list(list, |&s| format!("{}s", number(s as f32)))
+    self::list(list, |&s| super::shorthands::seconds(s))
 }
 
 fn easings(list: &[Easing]) -> String {
@@ -762,7 +780,8 @@ pub(super) fn url_value(written: &str, url: Url<'_>) -> String {
 /// A gradient (CSS Images 3 and 4 section 3), as the reference browser
 /// writes it: what was left to its default left out (`to bottom`, a
 /// radial gradient's `ellipse farthest-corner at center`, a conic one's
-/// `from 0deg at center`), its colours computed.
+/// `from 0deg at center`), its colours computed, its angles in degrees
+/// to six figures (`114.592deg`, D78).
 fn gradient(gradient: &Gradient) -> String {
     let lp = |v: &LengthPercentage| length_percentage(v).unwrap_or_default();
     let centre = |c: &[LengthPercentage; 2]| {
@@ -778,7 +797,9 @@ fn gradient(gradient: &Gradient) -> String {
                     270.0 => Some("to left".to_owned()),
                     _ => None,
                 },
-                LineDirection::Angle(degrees) => Some(format!("{}deg", number(degrees))),
+                LineDirection::Angle(degrees) => {
+                    Some(format!("{}deg", crate::color::number(degrees)))
+                }
                 // The horizontal side first, as the reference browser
                 // writes a corner whichever order it was given in.
                 LineDirection::Corner { right, bottom } => Some(format!(
@@ -825,7 +846,7 @@ fn gradient(gradient: &Gradient) -> String {
         GradientShape::Conic { from, center } => {
             let mut words: Vec<String> = Vec::new();
             if *from != 0.0 {
-                words.push(format!("from {}deg", number(*from)));
+                words.push(format!("from {}deg", crate::color::number(*from)));
             }
             words.extend(centre(center));
             (
@@ -845,7 +866,7 @@ fn gradient(gradient: &Gradient) -> String {
         });
     }
     let position = |v: &LengthPercentage| match v {
-        LengthPercentage::Px(degrees) if conic => format!("{}deg", number(*degrees)),
+        LengthPercentage::Px(degrees) if conic => format!("{}deg", crate::color::number(*degrees)),
         other => lp(other),
     };
     let items = gradient.items.iter().map(|item| match item {

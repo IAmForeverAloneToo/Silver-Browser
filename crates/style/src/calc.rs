@@ -30,6 +30,9 @@ use css::Token;
 
 use crate::cascade::MAX_LENGTH_PX;
 
+mod specified;
+pub use specified::specified;
+
 /// The deepest a calculation may nest, parentheses and math functions
 /// together: §10.8's least that a user agent must support, as
 /// selectors' and media queries' parentheses are bounded.
@@ -366,6 +369,9 @@ enum Expr {
     Max(Vec<Expr>),
     /// `clamp()`, its `none` bounds absent.
     Clamp(Option<Box<Expr>>, Box<Expr>, Option<Box<Expr>>),
+    /// A relative colour's channel keyword, by its place in the
+    /// parser's list.
+    Keyword(usize),
     /// One of the other functions, of its arguments.
     Call(Op, Vec<Expr>),
 }
@@ -453,18 +459,24 @@ impl Op {
             Op::Acos => a.acos().to_degrees(),
             Op::Atan => a.atan().to_degrees(),
             Op::Atan2 => a.atan2(b.unwrap_or(f64::NAN)).to_degrees(),
-            // A unit base to an infinite power is NaN, as in JavaScript.
+            // A unit base to an infinite power is NaN, as in JavaScript,
+            // and so is anything of a NaN (Values 4 section 10.9.1), where
+            // IEEE 754 makes a power of 0 or of 1 one.
             Op::Pow => match b {
+                Some(b) if a.is_nan() || b.is_nan() => f64::NAN,
                 Some(b) if b.is_infinite() && a.abs() == 1.0 => f64::NAN,
                 Some(b) => a.powf(b),
                 None => f64::NAN,
             },
             Op::Sqrt => a.sqrt(),
             Op::Hypot => args.iter().map(|v| v * v).sum::<f64>().sqrt(),
+            // A logarithm of zero is a positive zero, whatever the sign of
+            // the base's, as the reference browser has it: `1 / log(1,
+            // 0.5)` is an infinity, not its negative.
             Op::Log => match b {
                 // A base of 1 has no logarithms.
                 Some(1.0) => f64::NAN,
-                Some(base) => a.ln() / base.ln(),
+                Some(base) => (a.ln() / base.ln()) + 0.0,
                 None => a.ln(),
             },
             Op::Exp => a.exp(),
@@ -558,7 +570,11 @@ fn math_name(name: &str) -> bool {
 /// its type fails or does not match.
 pub fn parse(tokens: &[Token], want: Want) -> Option<Parsed> {
     let tokens = trim(tokens);
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        keywords: &[],
+    };
     let expr = p.function(0)?;
     if p.pos != tokens.len() {
         return None;
@@ -593,7 +609,7 @@ fn trim(tokens: &[Token]) -> &[Token] {
 /// percent hint).
 fn type_of(expr: &Expr, want: Want) -> Option<Type> {
     Some(match expr {
-        Expr::Number(_) => Type::NUMBER,
+        Expr::Number(_) | Expr::Keyword(_) => Type::NUMBER,
         Expr::Percent(_) => {
             if want == Want::LengthPercentage {
                 Type::of(Base::Length).apply_hint(Base::Length)
@@ -669,6 +685,9 @@ fn type_of(expr: &Expr, want: Want) -> Option<Type> {
 struct Parser<'t> {
     tokens: &'t [Token],
     pos: usize,
+    /// The channel keywords a relative colour's component takes, each a
+    /// number (css-color-5 section 4): none but in [`specified`].
+    keywords: &'t [&'t str],
 }
 
 impl Parser<'_> {
@@ -918,6 +937,13 @@ impl Parser<'_> {
             }
             Token::Ident(word) => {
                 self.pos += 1;
+                if let Some(at) = self
+                    .keywords
+                    .iter()
+                    .position(|k| k.eq_ignore_ascii_case(&word))
+                {
+                    return Some(Expr::Keyword(at));
+                }
                 Expr::Number(match word.to_ascii_lowercase().as_str() {
                     "e" => std::f64::consts::E,
                     "pi" => std::f64::consts::PI,
@@ -1130,6 +1156,9 @@ impl Folded {
 fn simplify(expr: &Expr, lengths: &dyn Lengths, basis: Option<f64>, fold: bool) -> Folded {
     match expr {
         Expr::Number(v) => Folded::Value(*v),
+        // A channel keyword is parsed for a specified value's text
+        // alone ([`specified`]): never computed.
+        Expr::Keyword(_) => Folded::Value(f64::NAN),
         Expr::Percent(p) => match basis {
             Some(basis) => Folded::Value(basis * p / 100.0),
             None => Folded::Tree(Expression::Percent(*p as f32)),
@@ -1429,6 +1458,11 @@ mod tests {
         // NaN, which computes to 0.
         near("calc(pow(-1, infinity) * 1px)", Want::Length, 0.0);
         near("calc(log(2, 1) * 1px)", Want::Length, 0.0);
+        // Anything of a NaN is NaN (D78), where IEEE 754 makes a power
+        // of 0 or of 1 one; and a zero logarithm is a positive zero.
+        near("calc(pow(NaN, 0) * 1px)", Want::Length, 0.0);
+        near("calc(pow(1, NaN) * 1px)", Want::Length, 0.0);
+        assert_eq!(value("calc(1 / log(1, 0.5))", Want::Number), f64::INFINITY);
         near("calc(1px * atan2(1, 1) / 1deg)", Want::Length, 45.0);
         near("calc(asin(1))", Want::Angle, 90.0);
         near("acos(0)", Want::Angle, 90.0);

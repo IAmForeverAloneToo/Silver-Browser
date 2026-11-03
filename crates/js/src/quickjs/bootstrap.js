@@ -19590,9 +19590,21 @@
   expose(DOMRectList, "DOMRectList");
 
   // Whether `element` lays out as an inline box, which has no client
-  // area (CSSOM View section 6).
+  // area (CSSOM View section 6): an inline element, an inline list item
+  // and a ruby container or its parts (D77).
   function inlineBox(element) {
-    return native.computedValue(self(element), "", "display") === "inline";
+    switch (native.computedValue(self(element), "", "display")) {
+      case "inline":
+      case "inline list-item":
+      case "ruby":
+      case "ruby-base":
+      case "ruby-text":
+      case "ruby-base-container":
+      case "ruby-text-container":
+        return true;
+      default:
+        return false;
+    }
   }
 
   // Whether `element` is the document's element, which stands for the

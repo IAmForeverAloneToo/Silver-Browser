@@ -153,6 +153,13 @@ fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
     if let Some(replaced) = &b.replaced {
         return crate::replaced::content_widths(b, replaced);
     }
+    // A ruby column's and a formula's, by their own layouts (D77).
+    if crate::ruby::is_column(b) {
+        return crate::ruby::content_widths(b, pass);
+    }
+    if crate::math::lays_out(b) {
+        return crate::math::content_widths(b, pass);
+    }
     // A form control's own width (M26.11), whatever it holds.
     if let Some(width) = b.control_size.and_then(|size| size.width) {
         return (width, width);

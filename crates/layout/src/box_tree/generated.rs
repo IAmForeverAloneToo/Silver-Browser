@@ -244,7 +244,7 @@ impl<'w, 'a> Walk<'w, 'a> {
                 None => Set::of(number, Rc::clone(&top.set.counters)),
             };
             let mut working = None;
-            let list_item = matches!(child, Item::Node(_)) && style.display == Display::ListItem;
+            let list_item = matches!(child, Item::Node(_)) && style.display.is_list_item();
             if style.lists.is_some() || list_item {
                 let working = working.get_or_insert_with(|| Working::of(self, &set));
                 self.change(working, style.lists(), list_item, number, parent);

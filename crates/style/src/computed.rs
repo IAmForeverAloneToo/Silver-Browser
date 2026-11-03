@@ -19,9 +19,9 @@ use crate::easing::Easing;
 
 mod text;
 pub use text::{
-    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LineBreak, TabSize, TextAutospace,
-    TextFit, TextFitKind, TextFitMethod, TextGroupAlign, TextIndent, TextProps, TextSpacingTrim,
-    TextWrapStyle, TransformExtra, WordSpaceTransform,
+    AutospaceMode, HangingEnd, HangingPunctuation, Hyphens, LineBreak, MathStyle, RubyAlign,
+    RubyPosition, TabSize, TextAutospace, TextFit, TextFitKind, TextFitMethod, TextGroupAlign,
+    TextIndent, TextProps, TextSpacingTrim, TextWrapStyle, TransformExtra, WordSpaceTransform,
 };
 
 /// An RGBA color, 0.0–1.0 channels (see `paint::Rgba8` for the 8-bit
@@ -116,6 +116,38 @@ pub enum Display {
     /// that generates a `::marker` box and increments the `list-item`
     /// counter. Blockified, it stays one.
     ListItem,
+    /// An inline-level list item (css-display-3 section 2.4, `inline
+    /// list-item`; gap batch H, D77): an inline box with a `::marker`,
+    /// or with [`ComputedStyle::flow_root`] an inline-block with one.
+    /// Blockified, it is a [`Display::ListItem`].
+    InlineListItem,
+    /// `contents` (css-display-3 section 2.5, D77): the element makes no
+    /// box, its children and pseudo-elements boxed in its place, still
+    /// inheriting from it.
+    Contents,
+    /// An inline-level ruby container (CSS Ruby 1 section 2, `ruby` and
+    /// HTML's `ruby`): its bases on the line, each with its annotations
+    /// above or below it.
+    Ruby,
+    /// A block-level ruby container (`block ruby`): a block box holding
+    /// one inline ruby container.
+    BlockRuby,
+    /// A ruby base (`ruby-base`, HTML's `rb`): what an annotation is of.
+    RubyBase,
+    /// A ruby annotation (`ruby-text`, HTML's `rt`).
+    RubyText,
+    /// A container of ruby bases (`ruby-base-container`, HTML's `rbc`).
+    RubyBaseContainer,
+    /// A container of ruby annotations (`ruby-text-container`, HTML's
+    /// `rtc`).
+    RubyTextContainer,
+    /// An inline-level MathML box (`math`, MathML Core section 2.1): a
+    /// MathML element laid out by MathML Core's rules; on any other
+    /// element it computes to `inline`.
+    Math,
+    /// A block-level MathML box (`block math`): on any other element it
+    /// computes to `block`.
+    BlockMath,
 }
 
 impl Display {
@@ -148,6 +180,51 @@ impl Display {
         self.is_flex() || self.is_grid()
     }
 
+    /// Whether this value makes a list item, block-level or inline-level
+    /// (Lists 3 section 2): a box with a `::marker` that increments the
+    /// `list-item` counter.
+    pub fn is_list_item(self) -> bool {
+        matches!(self, Display::ListItem | Display::InlineListItem)
+    }
+
+    /// The list item an outside value makes: inline-level when `inline`.
+    pub fn list_item(inline: bool) -> Display {
+        if inline {
+            Display::InlineListItem
+        } else {
+            Display::ListItem
+        }
+    }
+
+    /// Whether this value is one of CSS Ruby 1's internal ones (section
+    /// 2): a base, an annotation, or a container of either.
+    pub fn is_ruby_internal(self) -> bool {
+        matches!(
+            self,
+            Display::RubyBase
+                | Display::RubyText
+                | Display::RubyBaseContainer
+                | Display::RubyTextContainer
+        )
+    }
+
+    /// Whether this value lays its box out by MathML Core's rules.
+    pub fn is_math(self) -> bool {
+        matches!(self, Display::Math | Display::BlockMath)
+    }
+
+    /// The flow value a `math` one computes to on an element that is not
+    /// MathML's, or on a pseudo-element (MathML Core section 2.1):
+    /// `inline` for `math`, `block` for `block math`; any other value
+    /// itself.
+    pub fn without_math(self) -> Display {
+        match self {
+            Display::Math => Display::Inline,
+            Display::BlockMath => Display::Block,
+            other => other,
+        }
+    }
+
     /// The value a float, an absolutely positioned box, a flex item or a
     /// grid item computes to (CSS2 §9.7's table, css-display-3 §2.7's
     /// blockification): an inline table becomes a table, an inline flex
@@ -155,7 +232,9 @@ impl Display {
     /// container; an inline box, an inline-block and every
     /// table-internal box become a block; a block, a list item, a table,
     /// a flex container, a grid container and `none` stay what they
-    /// are.
+    /// are. Past CSS2 (css-display-3 section 2.7, D77): an inline list
+    /// item becomes a list item, `ruby` and `math` their block forms,
+    /// ruby's internal boxes blocks, and `contents` stays itself.
     pub fn blockified(self) -> Display {
         match self {
             Display::Block
@@ -163,12 +242,22 @@ impl Display {
             | Display::Table
             | Display::Flex
             | Display::Grid
+            | Display::BlockRuby
+            | Display::BlockMath
+            | Display::Contents
             | Display::None => self,
             Display::InlineTable => Display::Table,
             Display::InlineFlex => Display::Flex,
             Display::InlineGrid => Display::Grid,
+            Display::InlineListItem => Display::ListItem,
+            Display::Ruby => Display::BlockRuby,
+            Display::Math => Display::BlockMath,
             Display::Inline
             | Display::InlineBlock
+            | Display::RubyBase
+            | Display::RubyText
+            | Display::RubyBaseContainer
+            | Display::RubyTextContainer
             | Display::TableRowGroup
             | Display::TableHeaderGroup
             | Display::TableFooterGroup
@@ -179,6 +268,49 @@ impl Display {
             | Display::TableCaption => Display::Block,
         }
     }
+}
+
+/// The MathML Core layout a MathML element's box takes (D77), by its
+/// name, with what its attributes give it: [`TextProps::math`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum MathElement {
+    /// Not a MathML element.
+    #[default]
+    None,
+    /// `math`, `mrow` and the elements laid out as it is (`mstyle`,
+    /// `merror`, `mpadded`, `mphantom`, `semantics` and the unknown
+    /// ones, MathML Core section 3.1): its children side by side on
+    /// one baseline.
+    Row,
+    /// A token element, `mi`, `mn`, `mtext` or `ms` (section 3.2): its
+    /// text on one line.
+    Token,
+    /// An operator, `mo` (section 3.2.4): its text, with the space the
+    /// operator dictionary puts around it.
+    Operator,
+    /// `mspace` (section 3.2.5): its `height` above its baseline and its
+    /// `depth` below, here in CSS pixels; its `width` is its CSS width.
+    Space {
+        height: f32,
+        depth: f32,
+    },
+    /// `mfrac` (section 3.3.2): its `linethickness` in CSS pixels, `None`
+    /// for the default rule thickness.
+    Fraction {
+        thickness: Option<f32>,
+    },
+    /// `msqrt` (section 3.3.3).
+    Sqrt,
+    /// `mroot` (section 3.3.3).
+    Root,
+    /// `msub`, `msup` and `msubsup` (section 3.4.1).
+    Sub,
+    Sup,
+    SubSup,
+    /// `munder`, `mover` and `munderover` (section 3.4.2).
+    Under,
+    Over,
+    UnderOver,
 }
 
 /// `table-layout` (CSS2 §17.5.2, M12): which algorithm sizes a table's
@@ -3611,6 +3743,11 @@ pub struct ComputedStyle {
     /// whose box establishes a block formatting context and places its
     /// rendered legend over its top border (HTML section 15.3.13).
     pub fieldset: bool,
+    /// Not a property: whether the style is that of an element of
+    /// `display: contents` whose children's box is a flex or a grid
+    /// container's (D77): they are its items, and blockified, as the
+    /// container's own children are.
+    pub contents_in_items: bool,
     /// The transition and animation properties (M22), behind one pointer
     /// as the effects are; `None` is every initial value. Read through
     /// [`ComputedStyle::motion`].
@@ -3720,6 +3857,7 @@ impl Default for ComputedStyle {
             flow_root: false,
             root: false,
             fieldset: false,
+            contents_in_items: false,
             motion: None,
             image: None,
             background: None,
@@ -3732,6 +3870,17 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Whether the element's box is an inline box (CSS Display 3 section
+    /// 2.1, D77): `inline`, an inline list item not a flow root, a ruby
+    /// container and its parts; not an atomic inline nor a block.
+    pub fn is_inline_box(&self) -> bool {
+        match self.display {
+            Display::Inline | Display::Ruby => true,
+            Display::InlineListItem => !self.flow_root,
+            other => other.is_ruby_internal(),
+        }
+    }
+
     /// `overflow` as one value, what layout and paint act on: the axes'
     /// when they agree, else the one that does most, so that a box one
     /// axis of which scrolls is a scroll container.

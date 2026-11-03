@@ -111,10 +111,15 @@ fn number_or_percentage(arg: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
 }
 
 /// An `<angle>` in degrees (css-values-4 §6.2): `deg`, `grad`, `rad` or
-/// `turn`, or a math function's angle; `0` too when `zero` is allowed.
+/// `turn`, or a math function's angle, an infinite one none, as the
+/// reference browser turns by it (D78); `0` too when `zero` is allowed.
 pub(super) fn angle(arg: &[Token], zero: bool, bases: &LengthBases<'_>) -> Option<f32> {
     if let Some(Computed::Value(v)) = math(arg, Want::Angle, bases, None) {
-        return Some(Range::All.clamp(v));
+        return Some(if v.is_finite() {
+            Range::All.clamp(v)
+        } else {
+            0.0
+        });
     }
     let degrees = match single_token(arg)? {
         Token::Dimension { value, unit } => {

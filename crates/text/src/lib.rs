@@ -229,8 +229,97 @@ pub struct FontStore {
     /// The `BASE` table's hanging and ideographic baselines, above the
     /// alphabetic one, in font units, when it gives them.
     baselines: (Option<f32>, Option<f32>),
+    /// The MATH table's constants, by [`MathConstant`], in font units
+    /// (percentages for the percentages), when the font has the table.
+    math: Option<Arc<[i16; MathConstant::COUNT]>>,
     /// ab_glyph handle for outline rasterization.
     glyph_font: ab_glyph::FontArc,
+}
+
+/// A constant of a font's OpenType MATH table that MathML layout reads
+/// (MathML Core section 3, gap batch H, D77): [`FontStore::math_constant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathConstant {
+    AxisHeight,
+    FractionNumeratorShiftUp,
+    FractionNumeratorDisplayStyleShiftUp,
+    FractionDenominatorShiftDown,
+    FractionDenominatorDisplayStyleShiftDown,
+    FractionNumeratorGapMin,
+    FractionNumDisplayStyleGapMin,
+    FractionDenominatorGapMin,
+    FractionDenomDisplayStyleGapMin,
+    FractionRuleThickness,
+    SubscriptShiftDown,
+    SubscriptTopMax,
+    SubscriptBaselineDropMin,
+    SuperscriptShiftUp,
+    SuperscriptBottomMin,
+    SuperscriptBaselineDropMax,
+    SubSuperscriptGapMin,
+    SuperscriptBottomMaxWithSubscript,
+    SpaceAfterScript,
+    UpperLimitGapMin,
+    UpperLimitBaselineRiseMin,
+    LowerLimitGapMin,
+    LowerLimitBaselineDropMin,
+    OverbarVerticalGap,
+    UnderbarVerticalGap,
+    RadicalVerticalGap,
+    RadicalDisplayStyleVerticalGap,
+    RadicalRuleThickness,
+    RadicalExtraAscender,
+    RadicalKernBeforeDegree,
+    RadicalKernAfterDegree,
+    /// A percentage of the radical's height.
+    RadicalDegreeBottomRaisePercent,
+}
+
+impl MathConstant {
+    const COUNT: usize = MathConstant::RadicalDegreeBottomRaisePercent as usize + 1;
+
+    /// Whether the constant is a percentage rather than a length.
+    fn is_percentage(self) -> bool {
+        self == MathConstant::RadicalDegreeBottomRaisePercent
+    }
+
+    /// The constants this enum names, read from `table`'s.
+    fn read(table: &ttf_parser::math::Constants<'_>) -> [i16; MathConstant::COUNT] {
+        [
+            table.axis_height().value,
+            table.fraction_numerator_shift_up().value,
+            table.fraction_numerator_display_style_shift_up().value,
+            table.fraction_denominator_shift_down().value,
+            table.fraction_denominator_display_style_shift_down().value,
+            table.fraction_numerator_gap_min().value,
+            table.fraction_num_display_style_gap_min().value,
+            table.fraction_denominator_gap_min().value,
+            table.fraction_denom_display_style_gap_min().value,
+            table.fraction_rule_thickness().value,
+            table.subscript_shift_down().value,
+            table.subscript_top_max().value,
+            table.subscript_baseline_drop_min().value,
+            table.superscript_shift_up().value,
+            table.superscript_bottom_min().value,
+            table.superscript_baseline_drop_max().value,
+            table.sub_superscript_gap_min().value,
+            table.superscript_bottom_max_with_subscript().value,
+            table.space_after_script().value,
+            table.upper_limit_gap_min().value,
+            table.upper_limit_baseline_rise_min().value,
+            table.lower_limit_gap_min().value,
+            table.lower_limit_baseline_drop_min().value,
+            table.overbar_vertical_gap().value,
+            table.underbar_vertical_gap().value,
+            table.radical_vertical_gap().value,
+            table.radical_display_style_vertical_gap().value,
+            table.radical_rule_thickness().value,
+            table.radical_extra_ascender().value,
+            table.radical_kern_before_degree().value,
+            table.radical_kern_after_degree().value,
+            table.radical_degree_bottom_raise_percent(),
+        ]
+    }
 }
 
 impl fmt::Debug for FontStore {
@@ -322,6 +411,11 @@ impl FontStore {
             .table(ttf_parser::Tag::from_bytes(b"head"))
             .and_then(|head| head.get(16..18))
             .is_some_and(|flags| flags[1] & 0x08 != 0);
+        let math = ttf
+            .tables()
+            .math
+            .and_then(|math| math.constants)
+            .map(|constants| Arc::new(MathConstant::read(&constants)));
 
         // The glyphs are drawn from the face `index` names too, the one
         // the metrics were read from: a collection's (`.ttc`) first is
@@ -349,7 +443,21 @@ impl FontStore {
             underline_units,
             integer_ppem,
             baselines,
+            math,
             glyph_font,
+        })
+    }
+
+    /// The font's MATH table constant `constant` at `font_size_px`
+    /// (OpenType's MATH table, MathML Core section 3; D77), in CSS
+    /// pixels, or a percentage for the percentages among them; `None`
+    /// when the font has no MATH table, for MathML's fallbacks.
+    pub fn math_constant(&self, constant: MathConstant, font_size_px: f32) -> Option<f32> {
+        let units = f32::from(self.math.as_ref()?[constant as usize]);
+        Some(if constant.is_percentage() {
+            units
+        } else {
+            units * font_size_px / self.units_per_em
         })
     }
 
@@ -2263,6 +2371,21 @@ mod tests {
                 "at {size}px"
             );
         }
+    }
+
+    #[test]
+    fn a_math_tables_constants_are_read_where_a_font_has_one() {
+        // D77: the bundled font has a MATH table, read in pixels by the
+        // size, a percentage as it is.
+        let font = FontStore::from_bytes(TEST_FONT.to_vec(), 0).expect("parses");
+        let axis = font.math_constant(MathConstant::AxisHeight, 16.0);
+        assert!(axis.is_some_and(|a| a > 2.0 && a < 8.0), "{axis:?}");
+        let twice = font.math_constant(MathConstant::AxisHeight, 32.0);
+        assert_eq!(twice, axis.map(|a| a * 2.0));
+        let raise = font.math_constant(MathConstant::RadicalDegreeBottomRaisePercent, 16.0);
+        assert!(raise.is_some_and(|r| r > 10.0 && r <= 100.0), "{raise:?}");
+        let rule = font.math_constant(MathConstant::FractionRuleThickness, 16.0);
+        assert!(rule.is_some_and(|t| t > 0.0 && t < 4.0), "{rule:?}");
     }
 
     #[test]

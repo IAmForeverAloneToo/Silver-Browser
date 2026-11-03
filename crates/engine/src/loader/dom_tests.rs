@@ -2086,6 +2086,42 @@ fn the_user_agents_rules_are_htmls_or_svgs_and_a_sheet_declares_its_namespaces()
 }
 
 #[test]
+fn an_element_of_display_contents_answers_as_one_with_no_box() {
+    // D77: it has no box, so its rect is empty and its client rects none,
+    // as the reference browser answers; its children are boxed in its
+    // place, and a point over its ::after finds it.
+    let page = "<style>body { margin: 0 } #c { display: contents } \
+                #c::after { content: ''; position: absolute; left: 0; top: 0; \
+                width: 50px; height: 50px } #p { position: relative; height: 100px }</style>\
+                <div id=p><span id=c><b id=b>x</b></span></div>\
+                <span id=li style='display: inline list-item'>y</span>\
+                <script>\
+                var c = document.getElementById('c'), r = c.getBoundingClientRect(); \
+                console.log(r.x, r.y, r.width, r.height, c.getClientRects().length); \
+                console.log(document.getElementById('b').getClientRects().length, \
+                getComputedStyle(c).display, document.elementFromPoint(40, 40).id); \
+                var range = document.createRange(); range.selectNode(c); \
+                console.log(range.getClientRects().length > 0, \
+                document.getElementById('li').clientWidth);\
+                </script>";
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", page.as_bytes())),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.frame(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["0 0 0 0 0", "1 contents c", "true 0"]);
+}
+
+#[test]
 fn layout_queries_lay_the_page_out_as_it_stands() {
     // D65: CSSOM View's members and getComputedStyle's used values read a
     // layout of the document as the script left it.

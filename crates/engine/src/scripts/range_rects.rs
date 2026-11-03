@@ -37,13 +37,15 @@ enum Slot {
 }
 
 /// The rectangles of the range from `start` to `end` in viewport
-/// coordinates, in tree order: `[x, y, width, height]` each.
+/// coordinates, in tree order: `[x, y, width, height]` each. An element
+/// in `unboxed`, of `display: contents`, gives none of its own: the
+/// range reaches its children as if they were its parent's (D77).
 pub(super) fn range_rects(
     document: &Document,
     layout: &DocumentLayout,
-    viewport: Viewport,
-    offsets: &dyn ScrollOffsets,
+    (viewport, offsets): (Viewport, &dyn ScrollOffsets),
     fonts: &text::FontCollection,
+    unboxed: &HashSet<NodeId>,
     start: Boundary,
     end: Boundary,
 ) -> Vec<[f32; 4]> {
@@ -99,7 +101,7 @@ pub(super) fn range_rects(
             };
             let contained = document.compare_boundaries(start, before) != Some(Ordering::Greater)
                 && document.compare_boundaries(after, end) != Some(Ordering::Greater);
-            if contained {
+            if contained && !unboxed.contains(&node) {
                 whole.insert(node);
                 held.push(Held::Element(node));
             }

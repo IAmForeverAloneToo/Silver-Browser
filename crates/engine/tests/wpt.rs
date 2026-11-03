@@ -2074,6 +2074,16 @@ fn display_name(display: Display) -> &'static str {
         Display::Grid => "grid",
         Display::InlineGrid => "inline-grid",
         Display::ListItem => "list-item",
+        Display::InlineListItem => "inline list-item",
+        Display::Contents => "contents",
+        Display::Ruby => "ruby",
+        Display::BlockRuby => "block ruby",
+        Display::RubyBase => "ruby-base",
+        Display::RubyText => "ruby-text",
+        Display::RubyBaseContainer => "ruby-base-container",
+        Display::RubyTextContainer => "ruby-text-container",
+        Display::Math => "math",
+        Display::BlockMath => "block math",
     }
 }
 

@@ -4533,6 +4533,24 @@ impl DocumentHost {
         if self.layout_now().is_none() {
             return Vec::new();
         }
+        // The elements of `display: contents`, which have no box: the
+        // range reaches into them (D77).
+        let elements: Vec<NodeId> = self
+            .document
+            .subtree(self.document.root())
+            .filter(|&n| self.document.is_element(n))
+            .collect();
+        let unboxed: HashSet<NodeId> = match self.styles_now() {
+            Some(styles) => elements
+                .into_iter()
+                .filter(|&n| {
+                    styles
+                        .get(n)
+                        .is_some_and(|s| s.display == style::computed::Display::Contents)
+                })
+                .collect(),
+            None => HashSet::new(),
+        };
         let (Some((_, layout)), Some(fonts)) = (
             self.laid_out.as_ref(),
             self.window
@@ -4551,9 +4569,9 @@ impl DocumentHost {
         super::range_rects::range_rects(
             &self.document,
             layout,
-            viewport,
-            &offsets,
+            (viewport, &offsets),
             fonts,
+            &unboxed,
             start,
             end,
         )
@@ -5147,13 +5165,19 @@ impl DocumentHost {
                 continue;
             }
             let tag = document.tag(n);
-            let block = !matches!(style.display, Display::Inline | Display::None)
+            // An inline box, an atomic inline, or an element of `display:
+            // contents`, which has no box (D77), breaks no line.
+            let block = !style.is_inline_box()
                 && !matches!(
                     style.display,
-                    Display::InlineBlock
+                    Display::None
+                        | Display::Contents
+                        | Display::InlineBlock
                         | Display::InlineFlex
                         | Display::InlineGrid
                         | Display::InlineTable
+                        | Display::InlineListItem
+                        | Display::Math
                 );
             if leaving {
                 match tag {
@@ -6651,7 +6675,7 @@ fn used_value(style: &style::ComputedStyle, property: &str, geometry: &[f64]) ->
         return None;
     }
     let g = |i: usize| geometry[i] as f32;
-    let inline = style.display == style::computed::Display::Inline;
+    let inline = style.is_inline_box();
     let border_box = style.box_sizing == style::computed::BoxSizing::BorderBox;
     let value = match property {
         "width" if !inline => {
@@ -6958,8 +6982,7 @@ fn text_transform_of(style: &style::computed::ComputedStyle) -> text::Transform<
 /// The text before `node` in its block, inline elements and all: the
 /// last text node before it whose parent is rendered inline.
 fn text_before(document: &Document, styles: &Styles, node: NodeId) -> Option<String> {
-    use style::computed::Display;
-    let inline = |n: NodeId| styles.get(n).is_some_and(|s| s.display == Display::Inline);
+    let inline = |n: NodeId| styles.get(n).is_some_and(|s| s.is_inline_box());
     let mut at = node;
     loop {
         let Some(prev) = document.prev_sibling(at) else {

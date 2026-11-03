@@ -64,10 +64,12 @@ pub(super) fn image(part: &[Token], bases: &LengthBases<'_>) -> Option<Option<Im
     }
 }
 
-/// A `<resolution>`, in image pixels a CSS pixel, never negative.
+/// A `<resolution>`, in image pixels a CSS pixel, never negative: a math
+/// function's clamped to its range, an infinity the largest the value
+/// holds (Values 4 section 10.12, D78).
 fn resolution(part: &[Token], bases: &LengthBases<'_>) -> Option<f32> {
     let dppx = match math(part, Want::Resolution, bases, None) {
-        Some(Computed::Value(v)) => v,
+        Some(Computed::Value(v)) => v.clamp(0.0, f64::from(f32::MAX)),
         Some(_) => return None,
         None => match single_token(part)? {
             Token::Dimension { value, unit } => {

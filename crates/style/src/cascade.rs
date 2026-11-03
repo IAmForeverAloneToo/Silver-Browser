@@ -1603,7 +1603,12 @@ impl Recascade for Recascader<'_> {
         // A list item's marker has a style whether a rule styles it or
         // not, and nothing else has one.
         let marker = target == Target::Marker;
-        if marker && self.styles.get(element).map(|s| s.display) != Some(Display::ListItem) {
+        if marker
+            && !self
+                .styles
+                .get(element)
+                .is_some_and(|s| s.display.is_list_item())
+        {
             return None;
         }
         let base = self.with_matched(element, |matched, resolution| {
@@ -1664,6 +1669,16 @@ fn element_style(
     animated: Option<&Animated<'_>>,
     transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
+    // A MathML script, or a part of a fraction, inherits a smaller font
+    // and the compact style (D77).
+    let scripted;
+    let parent = match script_level(document, element, parent) {
+        Some(scripted_parent) => {
+            scripted = scripted_parent;
+            &scripted
+        }
+        None => parent,
+    };
     let mut style = compute_style(
         matched.of(Target::Element),
         parent,
@@ -1677,8 +1692,36 @@ fn element_style(
     // its `display` (CSS2 §9.7, css-display-3 §2.7): what the canvas
     // takes its background from, and every other box is inside.
     if document.document_element() == Some(element) {
-        style.display = style.display.blockified();
+        style.display = match style.display {
+            // The root's `contents` is `block` (css-display-3 section
+            // 2.5).
+            Display::Contents => Display::Block,
+            other => other.blockified(),
+        };
         style.root = true;
+    }
+    // `math` is MathML's elements' alone: on another it computes to the
+    // flow value (MathML Core section 2.1).
+    if document.namespace(element) != Some(&dom::Namespace::MathMl) {
+        style.display = style.display.without_math();
+    } else {
+        set_math_element(document, element, &mut style);
+        // `semantics` shows its first child alone, the others being its
+        // annotations (MathML Core section 3.7).
+        if let Some(up) = document.parent_element(element)
+            && document.namespace(up) == Some(&dom::Namespace::MathMl)
+            && document.local_name(up) == Some("semantics")
+            && document.element_children(up).next() != Some(element)
+        {
+            style.display = Display::None;
+        }
+    }
+    // An element whose box is a replaced element's, a form control's or
+    // a frame's, or SVG's other than its containers', makes none with
+    // `contents`, as css-display-3's appendix B and the reference
+    // browser have it.
+    if style.display == Display::Contents && unboxes_to_nothing(document, element) {
+        style.display = Display::None;
     }
     // A `legend` is blockified wherever it is, as in the reference
     // browser; a `fieldset` is marked for layout (HTML section 15.3.13).
@@ -1691,6 +1734,138 @@ fn element_style(
         set_language(&mut style, lang);
     }
     style
+}
+
+/// The MathML Core layout the MathML element `element` takes (D77), its
+/// attributes read for it: `mspace`'s `height` and `depth`, and its
+/// `width` as its CSS width where no rule gives one, and `mfrac`'s
+/// `linethickness`, each a length (MathML Core section 2.2.1), invalid
+/// ones dropped.
+fn set_math_element(document: &Document, element: NodeId, style: &mut ComputedStyle) {
+    use crate::computed::MathElement;
+    let em = style.font_size_px;
+    let length = |name: &str| {
+        let tokens = css::tokenize(document.attr(element, name)?);
+        let px = match single_token(&tokens)? {
+            Token::Dimension { value, unit } => {
+                let unit = LengthUnit::of(unit)?;
+                match unit.absolute() {
+                    Some(per) => value * per,
+                    None if unit == LengthUnit::Em => value * f64::from(em),
+                    // An `ex` is half an em here, as the font is not at
+                    // hand.
+                    None if unit == LengthUnit::Ex => value * f64::from(em) / 2.0,
+                    None => return None,
+                }
+            }
+            Token::Number { value, .. } if *value == 0.0 => 0.0,
+            _ => return None,
+        };
+        px.is_finite().then_some(px as f32)
+    };
+    style.text_mut().math = match document.local_name(element).unwrap_or_default() {
+        "mi" | "mn" | "mtext" | "ms" => MathElement::Token,
+        "mo" => MathElement::Operator,
+        "mspace" => {
+            if style.width == Size::Auto
+                && let Some(width) = length("width").filter(|w| *w >= 0.0)
+            {
+                style.width = Size::Px(width);
+            }
+            MathElement::Space {
+                height: length("height").unwrap_or(0.0).max(0.0),
+                depth: length("depth").unwrap_or(0.0).max(0.0),
+            }
+        }
+        "mfrac" => MathElement::Fraction {
+            thickness: length("linethickness").map(|t| t.max(0.0)),
+        },
+        "msqrt" => MathElement::Sqrt,
+        "mroot" => MathElement::Root,
+        "msub" => MathElement::Sub,
+        "msup" => MathElement::Sup,
+        "msubsup" => MathElement::SubSup,
+        "munder" => MathElement::Under,
+        "mover" => MathElement::Over,
+        "munderover" => MathElement::UnderOver,
+        _ => MathElement::Row,
+    };
+}
+
+/// The style a MathML element inherits in place of `parent` when it is a
+/// script or a part of a fraction (MathML Core section 4's UA sheet, its
+/// `math-depth` and `math-style`, D77): every child of an `mfrac`, and
+/// every child but the first of the scripted and the limit elements, is
+/// `compact`, and set at `math-depth` one more than its parent's, a font
+/// 71% of its parent's (the MATH table's scriptPercentScaleDown's
+/// fallback), where its parent is compact, as `auto-add` makes it for a
+/// fraction's, or always, as `add(1)` makes it for a script's; `mroot`'s
+/// index two more. `None` for any other element, which inherits its
+/// parent's style as it is.
+fn script_level(
+    document: &Document,
+    element: NodeId,
+    parent: &ComputedStyle,
+) -> Option<ComputedStyle> {
+    use crate::computed::MathStyle;
+    if document.namespace(element) != Some(&dom::Namespace::MathMl) {
+        return None;
+    }
+    let up = document.parent_element(element)?;
+    if document.namespace(up) != Some(&dom::Namespace::MathMl) {
+        return None;
+    }
+    let first = document.element_children(up).next() == Some(element);
+    let levels = match document.local_name(up)? {
+        "mfrac" if parent.text().math_style == MathStyle::Compact => 1,
+        "mfrac" => 0,
+        "mroot" if !first => 2,
+        "msub" | "msup" | "msubsup" | "munder" | "mover" | "munderover" if !first => 1,
+        _ => return None,
+    };
+    let mut scripted = parent.clone();
+    scripted.font_size_px *= 0.71f32.powi(levels);
+    scripted.text_mut().math_style = MathStyle::Compact;
+    Some(scripted)
+}
+
+/// Whether `element` makes no box at all with `display: contents`
+/// (css-display-3 appendix B, D77): HTML's replaced elements, form
+/// controls and frames, whose content is not their children's boxes;
+/// and an SVG element but for those that only group others (`a`, `g`,
+/// `switch`, `use`, `tspan`, `textPath` and an inner `svg`), the outer
+/// `svg` among the others.
+fn unboxes_to_nothing(document: &Document, element: NodeId) -> bool {
+    if let Some(tag) = document.svg_tag(element) {
+        let outer = document
+            .parent_element(element)
+            .is_none_or(|parent| document.svg_tag(parent).is_none());
+        return outer
+            || !matches!(
+                tag,
+                "a" | "g" | "switch" | "use" | "tspan" | "textPath" | "svg"
+            );
+    }
+    matches!(
+        document.tag(element),
+        Some(
+            "br" | "wbr"
+                | "meter"
+                | "progress"
+                | "canvas"
+                | "embed"
+                | "object"
+                | "audio"
+                | "iframe"
+                | "img"
+                | "video"
+                | "frame"
+                | "frameset"
+                | "input"
+                | "textarea"
+                | "select"
+        )
+    )
 }
 
 /// Takes `lang`, an element's `lang` attribute, as its content language,
@@ -1961,6 +2136,8 @@ fn plain() -> bool {
 /// proximity and order.
 #[derive(PartialEq, Eq, Hash)]
 struct StyleKey {
+    /// Whether the element makes no box with `display: contents` (D77).
+    unboxes: bool,
     parent: u32,
     root: bool,
     dir: Option<Box<str>>,
@@ -2202,7 +2379,7 @@ impl<'a> Cascader<'a> {
         let pseudo = |target: Target| {
             let applied = matched.of(target);
             let styled = if target == Target::Marker {
-                style.display == Display::ListItem
+                style.display.is_list_item()
             } else {
                 !applied.is_empty()
             };
@@ -2300,6 +2477,11 @@ impl<'a> Cascader<'a> {
         if !self.keeps {
             return None;
         }
+        // A MathML element's style is its name's and its place's as well
+        // (D77): none is made of its declarations alone.
+        if self.document.namespace(element) == Some(&dom::Namespace::MathMl) {
+            return None;
+        }
         let mut declarations = Vec::new();
         for applied in matched.of(Target::Element) {
             let identity = applied.identity()?;
@@ -2325,6 +2507,7 @@ impl<'a> Cascader<'a> {
         Some(StyleKey {
             parent,
             root: self.document.document_element() == Some(element),
+            unboxes: unboxes_to_nothing(self.document, element),
             dir: self.document.attr(element, "dir").map(Box::from),
             lang: self.document.attr(element, "lang").map(Box::from),
             rem: rem.to_bits(),
@@ -2658,10 +2841,11 @@ impl<'a> LengthBases<'a> {
     }
 
     /// What the element's colours resolve against.
-    fn colors(&self) -> Colors {
+    fn colors(&self) -> Colors<'_> {
         Colors {
             current: self.color,
             dark: self.dark,
+            lengths: Some(self),
         }
     }
 }
@@ -3648,8 +3832,19 @@ fn compute_style(
     // below, which does not substitute and parse it again.
     let mut current = style.color;
     let mut declared: Vec<(usize, Color)> = Vec::new();
-    let dark = style.dark;
     let mut colors = Vec::new();
+    // A relative length in its components is of the element's font, final
+    // now (D78).
+    let font = style.font.clone();
+    let font = font.as_deref().unwrap_or(crate::computed::initial_font());
+    let color_bases = LengthBases {
+        em: style.font_size_px,
+        font,
+        line: (font, style.font_size_px),
+        resolution,
+        color: parent.color,
+        dark: style.dark,
+    };
     for (n, a) in sorted.iter().enumerate() {
         rollbacks.keep(&mut colors, n, None, &current);
         if !matches!(&*a.decl.name, "color" | "all") || !target.applies("color") {
@@ -3665,9 +3860,9 @@ fn compute_style(
             continue;
         }
         let color = match specified {
-            Specified::Written(value) => color_of_color(value, parent, dark),
+            Specified::Written(value) => color_of_color(value, parent, &color_bases),
             Specified::Substituted(value) => {
-                Some(color_of_color(&value, parent, dark).unwrap_or(parent.color))
+                Some(color_of_color(&value, parent, &color_bases).unwrap_or(parent.color))
             }
             Specified::Invalid => Some(parent.color),
             Specified::Ignored => None,
@@ -3858,10 +4053,19 @@ fn compute_style(
     // parent here is the element. A `::first-letter` or `::first-line`
     // is not one, nor is an element inheriting from a `::first-line`,
     // whose `display` is never a flex or a grid container's.
-    if matches!(target, Target::Element | Target::Before | Target::After)
-        && parent.display.has_items()
-    {
+    // A parent of `display: contents` makes no box: the box its children
+    // are in is the nearest ancestor's that makes one (css-display-3
+    // section 2.5, D77), which the parent's style records.
+    let in_items = parent.display.has_items()
+        || (parent.display == Display::Contents && parent.contents_in_items);
+    if matches!(target, Target::Element | Target::Before | Target::After) && in_items {
         style.display = style.display.blockified();
+    }
+    style.contents_in_items = style.display == Display::Contents && in_items;
+    // `math` on a pseudo-element computes to the flow value (MathML Core
+    // section 2.1).
+    if matches!(target, Target::Before | Target::After | Target::Marker) {
+        style.display = style.display.without_math();
     }
     // A spacing of a percentage is of the element's own font size, which
     // an inherited one is resolved against again.
@@ -4360,7 +4564,7 @@ fn apply_declaration(
         return applied;
     }
     match name {
-        "color" => set(&mut style.color, color_of_color(value, parent, bases.dark)),
+        "color" => set(&mut style.color, color_of_color(value, parent, bases)),
         "color-scheme" => match color_scheme_of(value, parent) {
             Some(scheme) => {
                 style.color_scheme = scheme;
@@ -4656,6 +4860,15 @@ fn apply_declaration(
         }),
         "text-spacing-trim" => set_text(style, text::parse_text_spacing_trim(value), |t, v| {
             t.text_spacing_trim = v
+        }),
+        "ruby-position" => set_text(style, text::parse_ruby_position(value), |t, v| {
+            t.ruby_position = v
+        }),
+        "ruby-align" => set_text(style, text::parse_ruby_align(value), |t, v| {
+            t.ruby_align = v
+        }),
+        "math-style" => set_text(style, text::parse_math_style(value), |t, v| {
+            t.math_style = v
         }),
         "text-spacing" => set_text(style, text::parse_text_spacing(value), |t, (trim, auto)| {
             t.text_spacing_trim = trim;
@@ -5749,6 +5962,9 @@ fn is_inherited(name: &str) -> bool {
             | "hyphenate-limit-lines"
             | "text-autospace"
             | "text-spacing-trim"
+            | "ruby-position"
+            | "ruby-align"
+            | "math-style"
             | "text-spacing"
             | "hanging-punctuation"
             | "word-space-transform"
@@ -5935,6 +6151,9 @@ fn apply_css_wide(
         "text-spacing-trim" => {
             copy_text(style, src, |t, s| t.text_spacing_trim = s.text_spacing_trim)
         }
+        "ruby-position" => copy_text(style, src, |t, s| t.ruby_position = s.ruby_position),
+        "ruby-align" => copy_text(style, src, |t, s| t.ruby_align = s.ruby_align),
+        "math-style" => copy_text(style, src, |t, s| t.math_style = s.math_style),
         "text-spacing" => copy_text(style, src, |t, s| {
             t.text_spacing_trim = s.text_spacing_trim;
             t.text_autospace = s.text_autospace;
@@ -6859,9 +7078,10 @@ fn length_percentage_of(
     match computed {
         Some(calc::Computed::Value(v)) => return Some(LengthPercentage::Px(range.clamp(v))),
         // A percentage below zero is of a basis never below it, so it
-        // is fitted to a non-negative range as a length is.
+        // is fitted to a non-negative range as a length is; an infinite
+        // one is the largest a percentage holds (D78).
         Some(calc::Computed::Percent(p)) => {
-            let p = p as f32;
+            let p = p.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32;
             return Some(LengthPercentage::Percent(match range {
                 Range::All => p,
                 Range::NonNegative => p.max(0.0),
@@ -6911,33 +7131,17 @@ fn is_auto(tokens: &[Token]) -> bool {
     single_ident(tokens).is_some_and(|s| s.eq_ignore_ascii_case("auto"))
 }
 
+/// `display` as its text is (css-display-3 section 2), the value it
+/// computes to before blockification and whether its box is a flow root:
+/// for a script's specified value, written as the computed one is
+/// ([`crate::serialize`]); `None` for a value the engine does not take.
+pub fn parse_display_value(tokens: &[Token]) -> Option<(Display, bool)> {
+    parse_display(tokens)
+}
+
 fn parse_display(tokens: &[Token]) -> Option<(Display, bool)> {
-    if let Some(list_item) = parse_list_item_display(tokens) {
-        return Some(list_item);
-    }
-    // `flow-root` (css-display-3 section 2.4, gap batch E), alone or as
-    // the inside of `block` or `inline`, which is `inline-block`.
-    let words: Vec<String> = tokens
-        .iter()
-        .filter_map(|t| match t {
-            Token::Whitespace => None,
-            Token::Ident(word) => Some(word.to_ascii_lowercase()),
-            _ => Some(String::new()),
-        })
-        .collect();
-    match words
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        ["flow-root"] | ["block", "flow-root"] | ["flow-root", "block"] => {
-            return Some((Display::Block, true));
-        }
-        ["inline", "flow-root"] | ["flow-root", "inline"] => {
-            return Some((Display::InlineBlock, false));
-        }
-        _ => {}
+    if let Some(multi) = parse_multi_keyword_display(tokens) {
+        return Some(multi);
     }
     let display = match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "block" => Some(Display::Block),
@@ -6959,33 +7163,89 @@ fn parse_display(tokens: &[Token]) -> Option<(Display, bool)> {
         "inline-flex" | "-webkit-inline-flex" => Some(Display::InlineFlex),
         "grid" => Some(Display::Grid),
         "inline-grid" => Some(Display::InlineGrid),
-        _ => None, // contents, ruby and the like are not values here
+        // css-display-3 section 2.5 and its internal ruby values (D77).
+        "contents" => Some(Display::Contents),
+        "ruby-base" => Some(Display::RubyBase),
+        "ruby-text" => Some(Display::RubyText),
+        "ruby-base-container" => Some(Display::RubyBaseContainer),
+        "ruby-text-container" => Some(Display::RubyTextContainer),
+        // `run-in` is not taken: the reference browser does not take it
+        // (D77), alone or with an inside value.
+        _ => None,
     }?;
     Some((display, false))
 }
 
-/// `display: list-item` (css-display-3 §2.4, M21.6) in the block forms
-/// this engine takes: `list-item`, with `block` or `flow` or both, in any
-/// order, each once. The inline and `flow-root` forms are not taken.
-fn parse_list_item_display(tokens: &[Token]) -> Option<(Display, bool)> {
-    let mut seen = [false; 4];
-    let mut any = false;
+/// `display`'s multi-keyword values (css-display-3 section 2, gap batch
+/// E's `flow-root` and D77's): an outside value (`block` or `inline`)
+/// and an inside one (`flow`, `flow-root`, `table`, `flex`, `grid`,
+/// `ruby`, `math`), each at most once in either order, the outside one
+/// `block` where it is left out but for `ruby` and `math`, which are
+/// inline; or a list item, `list-item` with an outside value and `flow`
+/// or `flow-root`. A lone keyword that is a legacy or a box value is
+/// [`parse_display`]'s. The value and whether it is a flow root.
+fn parse_multi_keyword_display(tokens: &[Token]) -> Option<(Display, bool)> {
+    let mut outside = None::<bool>;
+    let mut inside = None::<&'static str>;
+    let mut list_item = false;
+    let mut count = 0;
     for token in tokens {
-        let at = match token {
-            Token::Whitespace => continue,
-            Token::Ident(word) if word.eq_ignore_ascii_case("list-item") => 0,
-            Token::Ident(word) if word.eq_ignore_ascii_case("block") => 1,
-            Token::Ident(word) if word.eq_ignore_ascii_case("flow") => 2,
-            // `flow-root list-item` (gap batch E).
-            Token::Ident(word) if word.eq_ignore_ascii_case("flow-root") => 3,
-            _ => return None,
-        };
-        if std::mem::replace(&mut seen[at], true) {
+        let Token::Ident(word) = token else {
+            if matches!(token, Token::Whitespace) {
+                continue;
+            }
             return None;
+        };
+        count += 1;
+        match word.to_ascii_lowercase().as_str() {
+            "block" | "inline" if outside.is_none() => {
+                outside = Some(word.eq_ignore_ascii_case("inline"));
+            }
+            "list-item" if !list_item => list_item = true,
+            other if inside.is_none() => {
+                inside = Some(match other {
+                    "flow" => "flow",
+                    "flow-root" => "flow-root",
+                    "table" => "table",
+                    "flex" => "flex",
+                    "grid" => "grid",
+                    "ruby" => "ruby",
+                    "math" => "math",
+                    _ => return None,
+                });
+            }
+            _ => return None,
         }
-        any = true;
     }
-    (any && seen[0] && !(seen[2] && seen[3])).then_some((Display::ListItem, seen[3]))
+    // A single keyword of these is a legacy value or `flow-root`'s,
+    // `flow`'s, `ruby`'s and `math`'s own: the table there names them.
+    if count == 1 && !list_item && !matches!(inside, Some("flow" | "flow-root" | "ruby" | "math")) {
+        return None;
+    }
+    let inline = outside.unwrap_or(matches!(inside, Some("ruby" | "math")) && !list_item);
+    if list_item {
+        return match inside {
+            None | Some("flow") => Some((Display::list_item(inline), false)),
+            Some("flow-root") => Some((Display::list_item(inline), true)),
+            _ => None,
+        };
+    }
+    Some(match (inside?, inline) {
+        ("flow", false) => (Display::Block, false),
+        ("flow", true) => (Display::Inline, false),
+        ("flow-root", false) => (Display::Block, true),
+        ("flow-root", true) => (Display::InlineBlock, false),
+        ("table", false) => (Display::Table, false),
+        ("table", true) => (Display::InlineTable, false),
+        ("flex", false) => (Display::Flex, false),
+        ("flex", true) => (Display::InlineFlex, false),
+        ("grid", false) => (Display::Grid, false),
+        ("grid", true) => (Display::InlineGrid, false),
+        ("ruby", false) => (Display::BlockRuby, false),
+        ("ruby", true) => (Display::Ruby, false),
+        ("math", false) => (Display::BlockMath, false),
+        _ => (Display::Math, false),
+    })
 }
 
 /// `table-layout` (M12).
@@ -8256,22 +8516,29 @@ fn uses_dark(scheme: Option<&str>, resolution: &Resolution<'_>) -> bool {
 }
 
 /// What a colour resolves against (gap batch E): the element's
-/// `currentcolor`, and whether it uses the dark scheme (D49).
+/// `currentcolor`, whether it uses the dark scheme (D49), and its lengths,
+/// which a relative length in a colour's component is resolved by (D78).
 #[derive(Clone, Copy)]
-pub(super) struct Colors {
+pub(super) struct Colors<'a> {
     pub(super) current: Color,
     pub(super) dark: bool,
+    pub(super) lengths: Option<&'a dyn calc::Lengths>,
 }
 
-/// Whether `tokens` mix `currentcolor` in a `color-mix()`: a value kept
-/// unresolved for the element where it is used (Color 5 section 3.1).
+/// Whether `tokens` mix `currentcolor` in a `color-mix()`, take it as a
+/// relative colour's origin or contrast with it (D78): a value kept
+/// unresolved for the element where it is used (Color 5 sections 3.1, 4
+/// and 6).
 fn mixes_current_color(tokens: &[Token]) -> bool {
-    tokens
+    tokens.iter().any(|t| match t {
+        Token::Function(name) => {
+            name.eq_ignore_ascii_case("color-mix") || name.eq_ignore_ascii_case("contrast-color")
+        }
+        Token::Ident(word) => word.eq_ignore_ascii_case("from"),
+        _ => false,
+    }) && tokens
         .iter()
-        .any(|t| matches!(t, Token::Function(name) if name.eq_ignore_ascii_case("color-mix")))
-        && tokens
-            .iter()
-            .any(|t| matches!(t, Token::Ident(name) if name.eq_ignore_ascii_case("currentcolor")))
+        .any(|t| matches!(t, Token::Ident(name) if name.eq_ignore_ascii_case("currentcolor")))
 }
 
 /// Keeps `mix` as `style`'s `background-color` mixing `currentcolor`, or
@@ -8285,7 +8552,14 @@ fn keep_color_mix(style: &mut ComputedStyle, mix: Option<Arc<[Token]>>) {
 /// The colour `mix`, a value mixing `currentcolor`, is for an element
 /// whose `color` is `current`.
 pub(crate) fn mix_again(mix: &[Token], current: Color, dark: bool) -> Option<Color> {
-    color_value(mix, Colors { current, dark })
+    color_value(
+        mix,
+        Colors {
+            current,
+            dark,
+            lengths: None,
+        },
+    )
 }
 
 /// A colour, `currentcolor` being `colors.current`, the system colours and
@@ -8298,16 +8572,21 @@ pub(super) fn color_value(tokens: &[Token], colors: Colors) -> Option<Color> {
     if single_ident(tokens).is_some_and(|w| w.eq_ignore_ascii_case("currentcolor")) {
         return Some(Color::CURRENT.resolve(colors.current));
     }
-    color_with(tokens, Some(colors.current), colors.dark)
+    color_in(tokens, Some(colors.current), colors.dark, colors.lengths)
 }
 
 /// `color`'s value: its `currentcolor` the parent's colour; `inherit`
 /// the parent's, `initial` `CanvasText` by the element's scheme (D49).
-fn color_of_color(tokens: &[Token], parent: &ComputedStyle, dark: bool) -> Option<Color> {
+/// A relative length in it is the element's (D78).
+fn color_of_color(
+    tokens: &[Token],
+    parent: &ComputedStyle,
+    bases: &LengthBases<'_>,
+) -> Option<Color> {
     match css_wide_keyword(tokens) {
-        Some(CssWide::Initial) => crate::color::system("canvastext", dark),
+        Some(CssWide::Initial) => crate::color::system("canvastext", bases.dark),
         Some(_) => Some(parent.color),
-        None => color_with(tokens, Some(parent.color), dark),
+        None => color_in(tokens, Some(parent.color), bases.dark, Some(bases)),
     }
 }
 
@@ -8316,16 +8595,38 @@ pub(crate) fn parse_color(tokens: &[Token]) -> Option<Color> {
     color_with(tokens, None, false)
 }
 
-fn color_with(tokens: &[Token], current: Option<Color>, dark: bool) -> Option<Color> {
+/// [`color_in`] without an element's lengths, which a relative length in
+/// a component then makes invalid.
+pub(super) fn color_with(tokens: &[Token], current: Option<Color>, dark: bool) -> Option<Color> {
+    color_in(tokens, current, dark, None)
+}
+
+/// A colour, `currentcolor` being `current` (none without an element), the
+/// system colours and `light-dark()` by the `dark` scheme, a relative
+/// length in a component resolved by `lengths`; a relative colour of
+/// every function (css-color-5 section 4, D78) from any colour these
+/// take.
+fn color_in(
+    tokens: &[Token],
+    current: Option<Color>,
+    dark: bool,
+    lengths: Option<&dyn calc::Lengths>,
+) -> Option<Color> {
     let tokens = trim(tokens);
     if let [Token::Function(name), arguments @ .., Token::CloseParen] = tokens {
+        let mut origin = |part: &[Token]| color_in(part, current, dark, lengths);
+        if crate::color::is_relative(arguments) {
+            return crate::color::relative(name, arguments, &mut origin, lengths);
+        }
+        let math = |hue_first| crate::color::computed_math(arguments, hue_first, lengths);
         return match name.to_ascii_lowercase().as_str() {
-            "rgb" | "rgba" => parse_rgb(&crate::color::computed_math(arguments, false)?),
-            "hsl" | "hsla" => parse_hsl(&crate::color::computed_math(arguments, true)?, false),
-            "hwb" => parse_hsl(&crate::color::computed_math(arguments, true)?, true),
-            "color-mix" => {
-                crate::color::parse_mix(arguments, &mut |part| color_with(part, current, dark))
-            }
+            "rgb" | "rgba" => parse_rgb(&math(false)?),
+            "hsl" | "hsla" => parse_hsl(&math(true)?, false),
+            "hwb" => parse_hsl(&math(true)?, true),
+            "color-mix" => crate::color::parse_mix(arguments, &mut origin, lengths),
+            // `contrast-color()` (css-color-5 section 6, D78): white or
+            // black, whichever stands out more against the colour.
+            "contrast-color" => Some(crate::color::contrast(&origin(arguments)?)),
             // `light-dark()` (Color 5 section 5): two colours, the one
             // of the element's scheme taken.
             "light-dark" => {
@@ -8333,11 +8634,11 @@ fn color_with(tokens: &[Token], current: Option<Color>, dark: bool) -> Option<Co
                 let [light, darker] = parts.as_slice() else {
                     return None;
                 };
-                let light = color_with(light, current, dark)?;
-                let darker = color_with(darker, current, dark)?;
+                let light = origin(light)?;
+                let darker = origin(darker)?;
                 Some(if dark { darker } else { light })
             }
-            other => crate::color::parse_function(other, arguments),
+            other => crate::color::parse_function(other, arguments, lengths),
         };
     }
     match single_token(tokens)? {
@@ -9538,7 +9839,8 @@ mod tests {
         assert_eq!(style_of("<p>x</p>", &sheets, "p").font_size_px, 16.0);
         // A percentage is kept as written, or as a math function makes
         // it, and is a length in range once it is resolved; a math
-        // function's `NaN` is 0 (M21).
+        // function's `NaN` is 0 (M21), its infinity the largest a
+        // percentage holds (D78).
         let sheets = [sheet(
             "p { width: 1e38%; padding-left: calc(1% * infinity); margin-left: calc(1% * NaN); }",
         )];
@@ -9548,7 +9850,7 @@ mod tests {
             s.width.length_percentage().map(|w| w.resolve(800.0)),
             Some(MAX_LENGTH_PX)
         );
-        assert_eq!(s.padding[LEFT], LengthPercentage::Percent(f32::INFINITY));
+        assert_eq!(s.padding[LEFT], LengthPercentage::Percent(f32::MAX));
         assert_eq!(s.padding[LEFT].resolve(800.0), MAX_LENGTH_PX);
         assert_eq!(s.padding[LEFT].resolve(0.0), 0.0);
         assert_eq!(s.margin[LEFT], LengthPercentageAuto::Percent(0.0));
@@ -10277,6 +10579,25 @@ mod tests {
         );
         // An element that sets none has none.
         assert_eq!(style_of(html, &sheets, "span").background().color_mix, None);
+        // A relative colour from it and a contrast with it likewise
+        // (D78).
+        for (value, own, child) in [
+            (
+                "rgb(from currentcolor calc(255 - r) g b)",
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0],
+            ),
+            ("contrast-color(currentcolor)", [1.0; 3], [0.0; 3]),
+        ] {
+            let sheets = [sheet(&format!(
+                "div {{ color: black; background-color: {value} }}
+                 p {{ color: white; background-color: inherit }}"
+            ))];
+            let html = "<div><p>x</p></div>";
+            let of = |selector| channels(style_of(html, &sheets, selector).background_color);
+            assert_eq!(of("div"), own, "{value}");
+            assert_eq!(of("p"), child, "{value}: the child's own colour");
+        }
     }
 
     #[test]
@@ -15127,6 +15448,105 @@ mod tests {
     }
 
     #[test]
+    fn display_contents_and_the_elements_it_makes_none_of() {
+        let sheets = [sheet(
+            "html, div, img, input, svg, span { display: contents }",
+        )];
+        let html = "<div id=d><img><input><svg><g></g></svg><span><b>x</b></span></div>";
+        let display = |selector: &str| style_of(html, &sheets, selector).display;
+        assert_eq!(display("html"), Display::Block, "the root's is block");
+        assert_eq!(display("#d"), Display::Contents);
+        assert_eq!(display("span"), Display::Contents);
+        assert_eq!(display("img"), Display::None);
+        assert_eq!(display("input"), Display::None);
+        assert_eq!(display("svg"), Display::None, "an outer svg");
+        // Its children are a grid's items where its parent is a grid.
+        let sheets = [sheet("#g { display: grid } span { display: contents }")];
+        let html = "<div id=g><span><b>x</b></span></div><p><span><i>y</i></span></p>";
+        assert_eq!(style_of(html, &sheets, "b").display, Display::Block);
+        assert_eq!(style_of(html, &sheets, "i").display, Display::Inline);
+        assert_eq!(
+            style_of(html, &sheets, "#g span").display,
+            Display::Contents
+        );
+    }
+
+    #[test]
+    fn math_is_mathmls_and_its_elements_take_their_layouts() {
+        use crate::computed::MathElement;
+        let sheets = [sheet(
+            "div, mrow { display: block math } p { display: math }",
+        )];
+        let html = "<div></div><p></p><math><mrow></mrow>\
+                    <msub><mi>x</mi><mn>2</mn></msub>\
+                    <mfrac linethickness=2px><mn>1</mn><mn>3</mn></mfrac>\
+                    <mspace width=10px height=1em depth=2px></mspace>\
+                    <semantics><mi>a</mi><annotation>b</annotation><mi>c</mi></semantics></math>";
+        let of = |selector: &str| style_of(html, &sheets, selector);
+        assert_eq!(of("div").display, Display::Block);
+        assert_eq!(of("p").display, Display::Inline);
+        assert_eq!(of("mrow").display, Display::BlockMath);
+        assert_eq!(of("math").display, Display::Math);
+        assert_eq!(of("msub").text().math, MathElement::Sub);
+        assert_eq!(of("mrow").text().math, MathElement::Row);
+        assert_eq!(of("div").text().math, MathElement::None);
+        assert_eq!(
+            of("mfrac").text().math,
+            MathElement::Fraction {
+                thickness: Some(2.0)
+            }
+        );
+        let space = of("mspace");
+        assert_eq!(
+            space.text().math,
+            MathElement::Space {
+                height: 16.0,
+                depth: 2.0
+            }
+        );
+        assert_eq!(space.width, Size::Px(10.0));
+        // A script inherits a smaller font, compact; its base does not.
+        let script = of("msub > mn");
+        assert!((script.font_size_px - 16.0 * 0.71).abs() < 0.01);
+        assert_eq!(
+            script.text().math_style,
+            crate::computed::MathStyle::Compact
+        );
+        assert_eq!(of("msub > mi").font_size_px, 16.0);
+        // In a formula set inline, a fraction's parts too.
+        assert!((of("mfrac > mn").font_size_px - 16.0 * 0.71).abs() < 0.01);
+        // `semantics` shows its first child alone.
+        assert_eq!(of("semantics > mi").display, Display::BlockMath);
+        assert_eq!(
+            of("semantics > mi + annotation + mi").display,
+            Display::None
+        );
+    }
+
+    #[test]
+    fn ruby_takes_its_displays_and_its_properties() {
+        let html = "<ruby>a<rt>b</rt><rp>(</rp></ruby>";
+        let sheets = [sheet("ruby { ruby-position: under; ruby-align: start }")];
+        let of = |selector: &str| style_of(html, &sheets, selector);
+        assert_eq!(of("ruby").display, Display::Ruby);
+        assert_eq!(of("rp").display, Display::None);
+        let rt = of("rt");
+        assert_eq!(rt.display, Display::RubyText);
+        assert_eq!(
+            rt.text().ruby_position,
+            crate::computed::RubyPosition::Under
+        );
+        assert_eq!(rt.text().ruby_align, crate::computed::RubyAlign::Start);
+        assert_eq!(rt.font_size_px, 8.0);
+        let p = p_with("<p>x</p>", "p { display: ruby; float: left }");
+        assert_eq!(p.display, Display::BlockRuby, "blockified");
+        let p = p_with("<p>x</p>", "p { display: ruby-text; position: absolute }");
+        assert_eq!(p.display, Display::Block);
+        let p = p_with("<p>x</p>", "p { display: run-in }");
+        assert_eq!(p.display, Display::Block, "run-in is not taken");
+    }
+
+    #[test]
     fn list_item_takes_its_block_forms() {
         // css-display-3 §2.4, M21.6.
         for value in [
@@ -15142,14 +15562,21 @@ mod tests {
             assert_eq!(p.display, Display::ListItem, "{value}");
         }
         for value in [
-            "inline list-item",
             "list-item list-item",
             "block flow",
             "list-item 2",
+            "list-item table",
         ] {
             let p = p_with("<p>x</p>", &format!("p {{ display: {value} }}"));
             assert_eq!(p.display, Display::Block, "{value}");
         }
+        // Its inline forms (D77), a flow root among them.
+        for value in ["inline list-item", "list-item flow inline"] {
+            let p = p_with("<p>x</p>", &format!("p {{ display: {value} }}"));
+            assert_eq!((p.display, p.flow_root), (Display::InlineListItem, false));
+        }
+        let p = p_with("<p>x</p>", "p { display: list-item inline flow-root }");
+        assert_eq!((p.display, p.flow_root), (Display::InlineListItem, true));
         // A floated list item stays one.
         let p = p_with("<p>x</p>", "p { display: list-item; float: left }");
         assert_eq!(p.display, Display::ListItem);

@@ -194,6 +194,15 @@ impl Color {
     /// A colour of `space`, its components there, `missing` the bits of
     /// those that are `none` (alpha's the fourth), which count as zero.
     pub fn of(space: Space, c: [f64; 3], alpha: f64, missing: u8) -> Color {
+        // An infinite component is kept, written as `calc(infinity)`
+        // (D78, G228); what it converts to is of the largest kept.
+        let kept = c.map(|v| {
+            if v.is_infinite() {
+                v
+            } else {
+                v.clamp(-MAX_COMPONENT, MAX_COMPONENT)
+            }
+        });
         let c = c.map(|v| v.clamp(-MAX_COMPONENT, MAX_COMPONENT));
         let given = [0, 1, 2].map(|i| if missing & (1 << i) != 0 { 0.0 } else { c[i] });
         let alpha = if missing & ALPHA != 0 { 0.0 } else { alpha };
@@ -206,7 +215,11 @@ impl Color {
             Space::Hsl | Space::Hwb => Space::Srgb,
             other => other,
         };
-        let c = if space == Space::Legacy { [r, g, b] } else { c };
+        let c = if space == Space::Legacy {
+            [r, g, b]
+        } else {
+            kept
+        };
         Color {
             r: r as f32,
             g: g as f32,
@@ -258,9 +271,11 @@ impl Color {
         (self.missing & ALPHA == 0).then_some(self.a)
     }
 
-    /// Whether the colour is one of the legacy forms.
+    /// Whether the colour is one of the legacy forms: a relative colour
+    /// never is (D78).
     pub fn is_legacy(&self) -> bool {
         matches!(self.space, Space::Legacy | Space::Hsl | Space::Hwb)
+            && self.missing & RELATIVE == 0
     }
 
     /// `currentcolor` (D66, G226): the keyword a computed colour keeps,
@@ -854,7 +869,9 @@ fn from_xyz65(space: Space, xyz: [f64; 3]) -> [f64; 3] {
 /// its `none` carried over by section 12.2's analogous components, and a
 /// hue made `none` where it is powerless there (section 4.4).
 fn converted(color: &Color, space: Space) -> ([f64; 3], u8) {
-    let own = color.c.map(f64::from);
+    let own = color
+        .c
+        .map(|v| f64::from(v).clamp(-MAX_COMPONENT, MAX_COMPONENT));
     let given = [0, 1, 2].map(|i| {
         if color.missing & (1 << i) != 0 {
             0.0
@@ -1076,15 +1093,34 @@ pub fn number(value: f32) -> String {
     if text == "-0" { "0".to_owned() } else { text }
 }
 
+/// A component written: [`number`], an infinity kept as the calculation
+/// it was (Values 4 section 10.12, D78).
+fn component_number(value: f32) -> String {
+    match value {
+        f32::INFINITY => "calc(infinity)".to_owned(),
+        f32::NEG_INFINITY => "calc(-infinity)".to_owned(),
+        _ => number(value),
+    }
+}
+
 /// A colour that is not legacy, serialized in its own form (section
 /// 15.2): `lab(50 20 30)`, `color(display-p3 1 0 0 / 0.5)`.
 pub fn serialize(c: &Color) -> String {
     let parts: Vec<String> = c
         .components()
         .iter()
-        .map(|v| v.map_or_else(|| "none".to_owned(), number))
+        .map(|v| v.map_or_else(|| "none".to_owned(), component_number))
         .collect();
+    let percent = |i: usize| match c.components()[i] {
+        Some(v) => format!("{}%", number(v)),
+        None => "none".to_owned(),
+    };
     let mut text = match c.space {
+        // A relative colour of `hsl()` or `hwb()` with a `none` in it
+        // (D78), its saturation and lightness, or whiteness and
+        // blackness, percentages.
+        Space::Hsl => format!("hsl({} {} {}", parts[0], percent(1), percent(2)),
+        Space::Hwb => format!("hwb({} {} {}", parts[0], percent(1), percent(2)),
         Space::Lab => format!("lab({}", parts.join(" ")),
         Space::Lch => format!("lch({}", parts.join(" ")),
         Space::Oklab => format!("oklab({}", parts.join(" ")),
@@ -1165,11 +1201,14 @@ enum Component {
 /// or angle it is (gap batch E): `None` where one is invalid in a colour,
 /// and `arguments` as they are where there is none. An infinite hue, the
 /// first component where `hue_first`, is 0, as the reference browser has
-/// it; another infinity is clamped to the component's range.
-pub(crate) fn computed_math(
-    arguments: &[Token],
+/// it; another infinity is clamped to the component's range. A relative
+/// length in one is resolved by `lengths`, the element's (D78), and with
+/// none makes the colour invalid.
+pub(crate) fn computed_math<'t>(
+    arguments: &'t [Token],
     hue_first: bool,
-) -> Option<std::borrow::Cow<'_, [Token]>> {
+    lengths: Option<&dyn calc::Lengths>,
+) -> Option<std::borrow::Cow<'t, [Token]>> {
     let math = |t: &Token| calc::is_math_function(std::slice::from_ref(t));
     if !arguments.iter().any(math) {
         return Some(std::borrow::Cow::Borrowed(arguments));
@@ -1207,7 +1246,7 @@ pub(crate) fn computed_math(
                 v.clamp(-MAX_COMPONENT, MAX_COMPONENT)
             }
         };
-        out.push(match component(&arguments[i..=end])? {
+        out.push(match component(&arguments[i..=end], lengths)? {
             Component::Number(value) => Token::Number {
                 value: finite(value),
                 is_integer: false,
@@ -1226,13 +1265,16 @@ pub(crate) fn computed_math(
     Some(std::borrow::Cow::Owned(out))
 }
 
-fn component(tokens: &[Token]) -> Option<Component> {
+/// One component's tokens: a number, a percentage, an angle in degrees
+/// or `none`, a math function computed to one, its relative lengths by
+/// `lengths` (none refusing them).
+fn component(tokens: &[Token], lengths: Option<&dyn calc::Lengths>) -> Option<Component> {
     if let [Token::Function(_), ..] = tokens {
         for want in [Want::Number, Want::Percentage, Want::Angle] {
             if let Some(parsed) = calc::parse(tokens, want) {
-                let lengths = NoLengths(std::cell::Cell::new(false));
-                let computed = parsed.compute(&lengths, None);
-                if lengths.0.get() {
+                let none = NoLengths(std::cell::Cell::new(false));
+                let computed = parsed.compute(lengths.unwrap_or(&none), None);
+                if none.0.get() {
                     return None;
                 }
                 let value = match computed {
@@ -1272,22 +1314,21 @@ fn component(tokens: &[Token]) -> Option<Component> {
     })
 }
 
-/// The three components and the optional alpha after a `/`.
-fn channels(arguments: &[Token]) -> Option<([Component; 3], Component)> {
-    let parts = components(arguments)?;
-    let (main, alpha) = match parts.as_slice() {
+/// The three components and the optional alpha after a `/`, each read by
+/// `read`.
+fn channels(
+    parts: &[&[Token]],
+    read: &mut dyn FnMut(&[Token]) -> Option<Component>,
+) -> Option<([Component; 3], Component)> {
+    let (main, alpha) = match parts {
         [a, b, c] => ([*a, *b, *c], None),
         [a, b, c, [Token::Delim('/')], alpha] => ([*a, *b, *c], Some(*alpha)),
         _ => return None,
     };
-    let main = [
-        component(main[0])?,
-        component(main[1])?,
-        component(main[2])?,
-    ];
+    let main = [read(main[0])?, read(main[1])?, read(main[2])?];
     let alpha = match alpha {
         None => Component::Number(1.0),
-        Some(tokens) => match component(tokens)? {
+        Some(tokens) => match read(tokens)? {
             Component::Degrees(_) => return None,
             other => other,
         },
@@ -1317,15 +1358,28 @@ fn hue(c: Component) -> Option<Option<f64>> {
     }
 }
 
-/// `lab()`, `lch()`, `oklab()`, `oklch()` or `color()`'s arguments.
-pub fn parse_function(name: &str, arguments: &[Token]) -> Option<Color> {
-    let lower = name.to_ascii_lowercase();
-    let (space, arguments) = match lower.as_str() {
-        "lab" => (Space::Lab, arguments),
-        "lch" => (Space::Lch, arguments),
-        "oklab" => (Space::Oklab, arguments),
-        "oklch" => (Space::Oklch, arguments),
-        "color" => {
+/// The space `lab()`, `lch()`, `oklab()` or `oklch()` is of; `None` for
+/// another name.
+fn space_of(name: &str) -> Option<Space> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "lab" => Space::Lab,
+        "lch" => Space::Lch,
+        "oklab" => Space::Oklab,
+        "oklch" => Space::Oklch,
+        _ => return None,
+    })
+}
+
+/// `lab()`, `lch()`, `oklab()`, `oklch()` or `color()`'s arguments, a
+/// relative length in a component resolved by `lengths` (D78).
+pub fn parse_function(
+    name: &str,
+    arguments: &[Token],
+    lengths: Option<&dyn calc::Lengths>,
+) -> Option<Color> {
+    let (space, arguments) = match space_of(name) {
+        Some(space) => (space, arguments),
+        None if name.eq_ignore_ascii_case("color") => {
             let start = arguments
                 .iter()
                 .position(|t| !matches!(t, Token::Whitespace))?;
@@ -1334,12 +1388,20 @@ pub fn parse_function(name: &str, arguments: &[Token]) -> Option<Color> {
             };
             (Space::predefined(space)?, &arguments[start + 1..])
         }
-        _ => return None,
+        None => return None,
     };
     if arguments.iter().any(|t| matches!(t, Token::Comma)) {
         return None;
     }
-    let (main, alpha) = channels(arguments)?;
+    let parts = components(arguments)?;
+    let (main, alpha) = channels(&parts, &mut |tokens| component(tokens, lengths))?;
+    of_components(space, main, alpha)
+}
+
+/// The colour of `space` whose components are `main` and `alpha`, each a
+/// number, a percentage of the component's reference range, or `none`;
+/// a hue a number of degrees or an angle.
+fn of_components(space: Space, main: [Component; 3], alpha: Component) -> Option<Color> {
     let values: [Option<f64>; 3] = match space {
         Space::Lab => [
             scaled(main[0], 100.0)?.map(|l| l.clamp(0.0, 100.0)),
@@ -1385,6 +1447,423 @@ pub fn parse_function(name: &str, arguments: &[Token]) -> Option<Color> {
     ))
 }
 
+/// Whether a colour function's `arguments` are a relative colour's
+/// (css-color-5 section 4, D78): `from` first.
+pub fn is_relative(arguments: &[Token]) -> bool {
+    matches!(
+        arguments.iter().find(|t| !matches!(t, Token::Whitespace)),
+        Some(Token::Ident(word)) if word.eq_ignore_ascii_case("from")
+    )
+}
+
+/// The channel keywords of the colour function `name` (css-color-5
+/// section 4.1), its alpha's last: `color()`'s by its space, `x`, `y`
+/// and `z` for the XYZ ones.
+pub fn channel_keywords(name: &str, space: Option<Space>) -> [&'static str; 4] {
+    match name.to_ascii_lowercase().as_str() {
+        "hsl" | "hsla" => ["h", "s", "l", "alpha"],
+        "hwb" => ["h", "w", "b", "alpha"],
+        "lab" | "oklab" => ["l", "a", "b", "alpha"],
+        "lch" | "oklch" => ["l", "c", "h", "alpha"],
+        _ if matches!(space, Some(Space::XyzD50 | Space::XyzD65)) => ["x", "y", "z", "alpha"],
+        _ => ["r", "g", "b", "alpha"],
+    }
+}
+
+/// A relative colour function's arguments, read apart
+/// ([`relative_parts`]).
+pub struct RelativeParts<'t> {
+    /// The origin colour's tokens.
+    pub origin: &'t [Token],
+    /// `color()`'s space.
+    pub space: Option<Space>,
+    /// The channels' parts: three, then optionally a `/` and the alpha;
+    /// `alpha()`'s, the `/` and the alpha alone.
+    pub channels: Vec<&'t [Token]>,
+}
+
+/// The parts of a relative colour function's arguments; `None` for
+/// arguments that are not one.
+pub fn relative_parts<'t>(name: &str, arguments: &'t [Token]) -> Option<RelativeParts<'t>> {
+    let parts = components(arguments)?;
+    if parts.iter().any(|part| matches!(part, [Token::Comma])) {
+        return None;
+    }
+    let [from, origin, rest @ ..] = parts.as_slice() else {
+        return None;
+    };
+    if !matches!(from, [Token::Ident(word)] if word.eq_ignore_ascii_case("from")) {
+        return None;
+    }
+    let (space, rest) = if name.eq_ignore_ascii_case("color") {
+        let [[Token::Ident(space)], rest @ ..] = rest else {
+            return None;
+        };
+        (Some(Space::predefined(space)?), rest)
+    } else {
+        (None, rest)
+    };
+    // `alpha()` (css-color-5 section 4.7) takes an alpha alone, after a
+    // `/`.
+    let fits = if name.eq_ignore_ascii_case("alpha") {
+        matches!(rest, [[Token::Delim('/')], _])
+    } else {
+        matches!(rest.len(), 3 | 5)
+    };
+    if !fits {
+        return None;
+    }
+    Some(RelativeParts {
+        origin,
+        space,
+        channels: rest.to_vec(),
+    })
+}
+
+/// `alpha()` of `origin` (css-color-5 section 4.7, D78): the origin with
+/// the alpha `tokens` give, in which `alpha` is the origin's; a legacy
+/// origin as the sRGB colour it is, any other in its own space.
+fn with_alpha(
+    origin: &Color,
+    tokens: &[Token],
+    lengths: Option<&dyn calc::Lengths>,
+) -> Option<Color> {
+    let own = origin.alpha();
+    let alpha = match tokens {
+        [Token::Ident(word)] if word.eq_ignore_ascii_case("alpha") => own,
+        tokens => {
+            let substituted: Vec<Token> = tokens
+                .iter()
+                .map(|t| match t {
+                    Token::Ident(word) if word.eq_ignore_ascii_case("alpha") => Token::Number {
+                        value: f64::from(own.unwrap_or(0.0)),
+                        is_integer: false,
+                    },
+                    other => other.clone(),
+                })
+                .collect();
+            match component(&substituted, lengths)? {
+                Component::Number(v) => Some(v.clamp(0.0, 1.0) as f32),
+                Component::Percent(p) => Some((p / 100.0).clamp(0.0, 1.0) as f32),
+                Component::None => None,
+                Component::Degrees(_) => return None,
+            }
+        }
+    };
+    let missing = (origin.missing & 7) | if alpha.is_none() { ALPHA } else { 0 };
+    let alpha = f64::from(alpha.unwrap_or(0.0));
+    Some(
+        if origin.is_legacy() || matches!(origin.space, Space::Hsl | Space::Hwb) {
+            let (rgb, _) = converted(origin, Space::Srgb);
+            Color::of(Space::Srgb, rgb, alpha, missing)
+        } else {
+            Color::of(origin.space, origin.c.map(f64::from), alpha, missing)
+        },
+    )
+}
+
+/// `contrast-color()` of `color` (css-color-5 section 6, D78): white where
+/// it contrasts with the colour at least as much as black does, else
+/// black, by WCAG 2.1's contrast ratio of the colour's luminance, its
+/// alpha aside.
+pub fn contrast(color: &Color) -> Color {
+    let ([r, g, b], _) = converted(&color.used(), Space::SrgbLinear);
+    let luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
+    let with_white = 1.05 / (luminance + 0.05);
+    let with_black = (luminance + 0.05) / 0.05;
+    if with_white >= with_black {
+        Color::rgb8(255, 255, 255)
+    } else {
+        Color::BLACK
+    }
+}
+
+/// The bit of [`Color::missing`] that keeps a relative colour of `hsl()`
+/// or `hwb()` with a `none` in it in its own form, as the reference
+/// browser writes it, rather than as the sRGB colour it is.
+const RELATIVE: u8 = 1 << 6;
+
+/// A relative colour (css-color-5 section 4, D78): the function `name`
+/// of `arguments`, after `from` its origin colour, which `origin` reads,
+/// and its channels, in which each channel keyword is the origin's
+/// component in the function's space (`none` alone where the origin's
+/// is missing, 0 in a calculation), a relative length resolved by
+/// `lengths`. The result of `rgb()`, `hsl()` and `hwb()` is an sRGB colour
+/// its channels unclamped, but one of `hsl()` or `hwb()` with a `none` in
+/// it, which keeps its form; of the others their own space's.
+pub fn relative(
+    name: &str,
+    arguments: &[Token],
+    origin: &mut dyn FnMut(&[Token]) -> Option<Color>,
+    lengths: Option<&dyn calc::Lengths>,
+) -> Option<Color> {
+    let RelativeParts {
+        origin: origin_tokens,
+        space: color_space,
+        channels: parts,
+    } = relative_parts(name, arguments)?;
+    let origin = origin(origin_tokens)?.used();
+    if name.eq_ignore_ascii_case("alpha") {
+        return with_alpha(&origin, parts.get(1)?, lengths);
+    }
+    let lower = name.to_ascii_lowercase();
+    let space = match lower.as_str() {
+        "rgb" | "rgba" => Space::Srgb,
+        "hsl" | "hsla" => Space::Hsl,
+        "hwb" => Space::Hwb,
+        _ => color_space.or_else(|| space_of(name))?,
+    };
+    let keywords = channel_keywords(name, color_space);
+    let (mut values, none) = converted(&origin, space);
+    if space == Space::Srgb && color_space.is_none() {
+        values = values.map(|v| v * 255.0);
+    }
+    let origin_alpha = (none & ALPHA == 0).then_some(f64::from(origin.a));
+    let channel = |i: usize| (none & (1 << i) == 0).then_some(values[i]);
+    let keyword_value = |word: &str| -> Option<Option<f64>> {
+        let at = keywords.iter().position(|k| k.eq_ignore_ascii_case(word))?;
+        Some(if at == 3 { origin_alpha } else { channel(at) })
+    };
+    let mut read = |tokens: &[Token]| -> Option<Component> {
+        if let [Token::Ident(word)] = tokens
+            && let Some(value) = keyword_value(word)
+        {
+            return Some(value.map_or(Component::None, Component::Number));
+        }
+        let substituted: Vec<Token> = tokens
+            .iter()
+            .map(|t| match t {
+                Token::Ident(word) => match keyword_value(word) {
+                    Some(value) => Token::Number {
+                        value: value.unwrap_or(0.0),
+                        is_integer: false,
+                    },
+                    None => t.clone(),
+                },
+                other => other.clone(),
+            })
+            .collect();
+        component(&substituted, lengths)
+    };
+    let (main, alpha) = channels(&parts, &mut read)?;
+    // An alpha left out is the origin's (css-color-5 section 4.1).
+    let alpha = match parts.len() {
+        3 => origin_alpha.map_or(Component::None, Component::Number),
+        _ => alpha,
+    };
+    let alpha_value = match alpha {
+        Component::Number(v) => Some(v.clamp(0.0, 1.0)),
+        Component::Percent(p) => Some((p / 100.0).clamp(0.0, 1.0)),
+        Component::None => None,
+        Component::Degrees(_) => return None,
+    };
+    let mut missing = if alpha_value.is_none() { ALPHA } else { 0 };
+    match space {
+        Space::Srgb if color_space.is_none() => {
+            let mut rgb = [0.0; 3];
+            for (i, c) in main.iter().enumerate() {
+                match *c {
+                    Component::Number(v) => rgb[i] = v / 255.0,
+                    Component::Percent(p) => rgb[i] = p / 100.0,
+                    Component::None => missing |= 1 << i,
+                    Component::Degrees(_) => return None,
+                }
+            }
+            Some(Color::of(
+                Space::Srgb,
+                rgb,
+                alpha_value.unwrap_or(0.0),
+                missing,
+            ))
+        }
+        Space::Hsl | Space::Hwb => {
+            let mut c = [
+                hue(main[0])?.unwrap_or_else(|| {
+                    missing |= 1;
+                    0.0
+                }),
+                0.0,
+                0.0,
+            ];
+            for i in 1..3 {
+                match scaled(main[i], 100.0)? {
+                    Some(v) => c[i] = v,
+                    None => missing |= 1 << i,
+                }
+            }
+            if missing != 0 {
+                return Some(Color::legacy(
+                    space,
+                    c,
+                    alpha_value.unwrap_or(0.0),
+                    missing | RELATIVE,
+                ));
+            }
+            let rgb = if space == Space::Hsl {
+                hsl_to_srgb(c)
+            } else {
+                hwb_to_srgb(c)
+            };
+            Some(Color::of(Space::Srgb, rgb, alpha_value.unwrap_or(0.0), 0))
+        }
+        _ => of_components(space, main, alpha),
+    }
+}
+
+/// One component of a colour function written as a specified value is: a
+/// keyword (a channel's or `none`) in lowercase, a number at its
+/// shortest, a percentage, an angle, a math function in its canonical
+/// form with `keywords` the channel keywords it may hold.
+fn component_text(tokens: &[Token], keywords: &[&str]) -> Option<String> {
+    Some(match tokens {
+        [Token::Ident(word)] => word.to_ascii_lowercase(),
+        [Token::Number { value, .. }] => number(*value as f32),
+        [Token::Percentage { value }] => format!("{}%", number(*value as f32)),
+        [Token::Dimension { value, unit }] => {
+            format!("{}{}", number(*value as f32), unit.to_ascii_lowercase())
+        }
+        [Token::Function(_), ..] => calc::specified(tokens, keywords, true)?,
+        _ => return None,
+    })
+}
+
+/// A relative colour's function `name` of `arguments` written as a
+/// specified value is (css-color-5 section 4, D78), as the reference
+/// browser writes it: `rgb()` for `rgba()` and `hsl()` for `hsla()`, its
+/// origin as `origin` writes it, its channels each as it was given, a
+/// calculation in its canonical form. `None` for arguments that are not
+/// a relative colour's.
+pub fn relative_text(
+    name: &str,
+    arguments: &[Token],
+    origin: &mut dyn FnMut(&[Token]) -> String,
+) -> Option<String> {
+    let RelativeParts {
+        origin: origin_tokens,
+        space,
+        channels: parts,
+    } = relative_parts(name, arguments)?;
+    let keywords = channel_keywords(name, space);
+    let name = match name.to_ascii_lowercase().as_str() {
+        "rgba" => "rgb".to_owned(),
+        "hsla" => "hsl".to_owned(),
+        other => other.to_owned(),
+    };
+    let mut out = format!("{name}(from {}", origin(origin_tokens));
+    if let Some(space) = space {
+        out.push(' ');
+        out.push_str(space.predefined_name().unwrap_or("srgb"));
+    }
+    for part in parts {
+        out.push(' ');
+        match part {
+            [Token::Delim('/')] => out.push('/'),
+            part => out.push_str(&component_text(part, &keywords)?),
+        }
+    }
+    out.push(')');
+    Some(out)
+}
+
+/// A colour function written as a specified value is where it is not
+/// written as the colour it is (D78): a legacy one, `rgb()`, `hsl()` or
+/// `hwb()`, whose `arguments` hold a calculation that waits for the
+/// element (a relative length in it), and `hsl()` or `hwb()` with a
+/// `none` in it; any other with a calculation in it. In the modern
+/// syntax, as the reference browser writes them: `color()`'s space by
+/// its own name, a hue's angle its degrees, an alpha a number, each
+/// calculation in its canonical form, and in a legacy one a percentage
+/// the number it stands for (of 255 in `rgb()`, of 100 in the others)
+/// where `numbers`.
+pub fn modern_text(name: &str, arguments: &[Token], numbers: bool) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    let (name, hundred, hue) = match lower.as_str() {
+        "rgb" | "rgba" => ("rgb".to_owned(), 255.0, None),
+        "hsl" | "hsla" => ("hsl".to_owned(), 100.0, Some(0)),
+        "hwb" => ("hwb".to_owned(), 100.0, Some(0)),
+        "lch" | "oklch" => (lower.clone(), 0.0, Some(2)),
+        "lab" | "oklab" => (lower.clone(), 0.0, None),
+        "color" => {
+            let start = arguments
+                .iter()
+                .position(|t| !matches!(t, Token::Whitespace))?;
+            let Token::Ident(space) = &arguments[start] else {
+                return None;
+            };
+            let space = Space::predefined(space)?.predefined_name()?;
+            let rest = modern_text("lab", &arguments[start + 1..], false)?;
+            return Some(format!("color({space} {}", rest.strip_prefix("lab(")?));
+        }
+        _ => return None,
+    };
+    let numbers = numbers && hundred > 0.0;
+    let (main, alpha) = if arguments.iter().any(|t| matches!(t, Token::Comma)) {
+        let parts: Vec<&[Token]> = split_commas(arguments)
+            .into_iter()
+            .map(trim_space)
+            .collect();
+        match parts.as_slice() {
+            [a, b, c] => ([*a, *b, *c], None),
+            [a, b, c, alpha] => ([*a, *b, *c], Some(*alpha)),
+            _ => return None,
+        }
+    } else {
+        match components(arguments)?.as_slice() {
+            [a, b, c] => ([*a, *b, *c], None),
+            [a, b, c, [Token::Delim('/')], alpha] => ([*a, *b, *c], Some(*alpha)),
+            _ => return None,
+        }
+    };
+    let mut out = format!("{name}(");
+    for (i, part) in main.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        // A channel of `rgb()` is fitted to 0 to 255, and a negative
+        // saturation is none, as the reference browser writes them.
+        let (low, high) = match (name.as_str(), i) {
+            ("rgb", _) => (0.0, 255.0),
+            ("hsl", 1) => (0.0, f64::MAX),
+            _ => (f64::MIN, f64::MAX),
+        };
+        out.push_str(&match part {
+            [Token::Percentage { value }] if numbers && hue != Some(i) => {
+                number((value / 100.0 * hundred).clamp(low, high) as f32)
+            }
+            [Token::Number { value, .. }] if *value < low || *value > high => {
+                number(value.clamp(low, high) as f32)
+            }
+            [Token::Dimension { .. }] if hue == Some(i) => match component(part, None)? {
+                Component::Degrees(degrees) => number(degrees as f32),
+                _ => return None,
+            },
+            part => component_text(part, &[])?,
+        });
+    }
+    if let Some(alpha) = alpha {
+        out.push_str(" / ");
+        out.push_str(&match alpha {
+            [Token::Percentage { value }] => number((value / 100.0) as f32),
+            part => component_text(part, &[])?,
+        });
+    }
+    out.push(')');
+    Some(out)
+}
+
+/// `tokens` without the white space around them.
+fn trim_space(tokens: &[Token]) -> &[Token] {
+    let start = tokens
+        .iter()
+        .position(|t| !matches!(t, Token::Whitespace))
+        .unwrap_or(tokens.len());
+    let end = tokens
+        .iter()
+        .rposition(|t| !matches!(t, Token::Whitespace))
+        .map_or(start, |i| i + 1);
+    &tokens[start..end]
+}
+
 /// A `<color-interpolation-method>`'s words after `in`: a space, and a
 /// hue method and `hue` after a polar one.
 pub fn parse_method(words: &[&Token]) -> Option<Method> {
@@ -1418,10 +1897,12 @@ pub fn parse_method(words: &[&Token]) -> Option<Method> {
 
 /// `color-mix()`'s arguments (css-color-5 section 2), each colour read
 /// by `color`: an optional method, then two colours each with an
-/// optional percentage.
+/// optional percentage, a relative length in one's calculation resolved
+/// by `lengths` (D78), and refused without them.
 pub fn parse_mix(
     arguments: &[Token],
     color: &mut dyn FnMut(&[Token]) -> Option<Color>,
+    lengths: Option<&dyn calc::Lengths>,
 ) -> Option<Color> {
     let mut depth = 0usize;
     for token in arguments {
@@ -1455,10 +1936,11 @@ pub fn parse_mix(
         let percentage = |part: &[Token]| match part {
             [Token::Percentage { value }] => Some(*value),
             _ if calc::is_math_function(part) => {
-                match calc::parse(part, Want::Percentage)?
-                    .compute(&NoLengths(Default::default()), None)
-                {
-                    calc::Computed::Percent(p) if !p.is_nan() => Some(p),
+                let none = NoLengths(Default::default());
+                let computed =
+                    calc::parse(part, Want::Percentage)?.compute(lengths.unwrap_or(&none), None);
+                match computed {
+                    calc::Computed::Percent(p) if !p.is_nan() && !none.0.get() => Some(p),
                     _ => None,
                 }
             }
@@ -1525,6 +2007,145 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 0.002
+    }
+
+    /// `text`'s computed colour as `getComputedStyle` writes it, a `p`'s
+    /// `color`.
+    fn computed(text: &str) -> String {
+        let document =
+            dom::Document::from_node(&html::parse_document("<p>x</p>").expect("never fails"));
+        let sheet = css::parse_stylesheet(&format!("p {{ color: {text} }}")).expect("parses");
+        let styles = crate::cascade::cascade_document(
+            &document,
+            &[sheet],
+            &crate::CascadeContext::default(),
+        );
+        let p = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("p"))
+            .expect("a p");
+        crate::serialize::computed_value(styles.get(p).expect("styled"), "color").expect("a colour")
+    }
+
+    /// `text` written as a specified value is.
+    fn specified(text: &str) -> String {
+        crate::serialize::specified(&css::tokenize(text))
+    }
+
+    #[test]
+    fn a_colours_relative_length_is_the_elements() {
+        // A `p` of the UA's 16px: `sign(1em - 10px)` is 1.
+        assert_eq!(
+            computed("rgb(calc(50% + (sign(1em - 10px) * 10%)), 0%, 0%, 50%)"),
+            "rgba(153, 0, 0, 0.5)"
+        );
+        assert_eq!(
+            computed("color(srgb 0.5 0 0 / calc(50% + (sign(1em - 10px) * 10%)))"),
+            "color(srgb 0.5 0 0 / 0.6)"
+        );
+        assert_eq!(
+            computed("color-mix(in srgb, red calc(50% + (sign(100em - 1px) * 10%)), blue)"),
+            "color(srgb 0.6 0 0.4)"
+        );
+        // Without an element it waits, written in the modern syntax.
+        assert_eq!(parse("rgb(calc(50% + sign(1em - 10px) * 10%) 0 0)"), None);
+        assert_eq!(
+            specified("rgba(calc(50 + (sign(1em - 10px) * 10)), 400, -400, 0.5)"),
+            "rgb(calc(50 + (10 * sign(1em - 10px))) 255 0 / 0.5)"
+        );
+        assert_eq!(
+            specified("hsla(calc(50deg + (sign(1em - 10px) * 10deg)), 0%, 0%, 50%)"),
+            "hsl(calc(50deg + (10deg * sign(1em - 10px))) 0 0 / 0.5)"
+        );
+        assert_eq!(
+            specified("lch(calc(50 + (sign(1em - 10px) * 10)) 30 50deg / 50%)"),
+            "lch(calc(50 + (10 * sign(1em - 10px))) 30 50 / 0.5)"
+        );
+        assert_eq!(
+            specified("color(xyz calc(NaN) 0 0)"),
+            "color(xyz-d65 calc(NaN) 0 0)"
+        );
+    }
+
+    #[test]
+    fn a_relative_colour_is_written_as_it_was_given() {
+        assert_eq!(
+            specified("rgba(from rgb(20%, 40%, 60%, 80%) r calc(g * 2) b / .20)"),
+            "rgb(from rgba(51, 102, 153, 0.8) r calc(2 * g) b / 0.2)"
+        );
+        assert_eq!(
+            specified("hsla(from currentColor h s calc(l - 20))"),
+            "hsl(from currentcolor h s calc(-20 + l))"
+        );
+        assert_eq!(
+            specified("color(from color(xyz 7 -20.5 100) xyz calc(x / 2) y z)"),
+            "color(from color(xyz-d65 7 -20.5 100) xyz-d65 calc(0.5 * x) y z)"
+        );
+        assert_eq!(specified("alpha(from red / 50%)"), "alpha(from red / 50%)");
+        assert_eq!(
+            specified("hsl(120deg none 50% / .5)"),
+            "hsl(120 none 50% / 0.5)"
+        );
+    }
+
+    #[test]
+    fn alpha_and_contrast_color_are_taken() {
+        assert_eq!(computed("alpha(from red / 0.5)"), "color(srgb 1 0 0 / 0.5)");
+        assert_eq!(
+            computed("alpha(from rgba(255, 0, 0, 0.8) / calc(alpha + 0.1))"),
+            "color(srgb 1 0 0 / 0.9)"
+        );
+        assert_eq!(
+            computed("alpha(from color(display-p3 1 0 0) / none)"),
+            "color(display-p3 1 0 0 / none)"
+        );
+        assert_eq!(parse("alpha(from red)"), None, "an alpha is given");
+        assert_eq!(computed("contrast-color(white)"), "rgb(0, 0, 0)");
+        assert_eq!(computed("contrast-color(navy)"), "rgb(255, 255, 255)");
+        assert_eq!(
+            computed("contrast-color(contrast-color(black))"),
+            "rgb(0, 0, 0)"
+        );
+        // An infinite chroma is kept, as the calculation it was.
+        assert_eq!(
+            computed("lch(50 calc(infinity) 0)"),
+            "lch(50 calc(infinity) 0)"
+        );
+    }
+
+    #[test]
+    fn a_relative_colour_takes_its_origins_channels() {
+        assert_eq!(
+            computed("rgb(from rebeccapurple r g b)"),
+            "color(srgb 0.4 0.2 0.6)"
+        );
+        assert_eq!(
+            computed("rgb(from rgb(20%, 40%, 60%, 80%) r g b)"),
+            "color(srgb 0.2 0.4 0.6 / 0.8)",
+            "its alpha left out is the origin's"
+        );
+        assert_eq!(
+            computed("rgb(from rebeccapurple calc(r * 2) none b / calc(alpha / 2))"),
+            "color(srgb 0.8 none 0.6 / 0.5)"
+        );
+        assert_eq!(
+            computed("hsl(from rebeccapurple h s none)"),
+            "hsl(270 50% none)"
+        );
+        assert_eq!(
+            computed("hwb(from rebeccapurple h w b / none)"),
+            "hwb(270 20% 40% / none)"
+        );
+        assert_eq!(computed("lab(from lab(25 20 50) l b a)"), "lab(25 50 20)");
+        // sin(50) is -0.26237, a lightness of 36.88.
+        assert_eq!(
+            computed("hsl(from hsl(50 50 50) h s calc((sin(clamp(0, l, 50)) + 1) * 50))"),
+            "color(srgb 0.553219 0.49175 0.184406)"
+        );
+        assert_eq!(
+            computed("color(from color-mix(in srgb, red, red) srgb r g b)"),
+            "color(srgb 1 0 0)"
+        );
     }
 
     #[test]

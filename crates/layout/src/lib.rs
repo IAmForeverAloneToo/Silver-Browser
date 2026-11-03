@@ -36,11 +36,13 @@ mod grid;
 pub mod inline;
 mod intrinsic;
 mod marker;
+mod math;
 /// Pagination (M20): a laid-out document cut into pages.
 pub mod paginate;
 mod parallel;
 mod pass;
 mod replaced;
+mod ruby;
 mod table;
 
 pub use block::{

@@ -473,6 +473,12 @@ pub(crate) fn invalidate(
                         out.mark(document, top, Reach::Element);
                     }
                 }
+                // A MathML element's children are a script or a base, a
+                // numerator or a denominator, by their place (D77): they
+                // are restyled with what they hold.
+                if document.namespace(*parent) == Some(&dom::Namespace::MathMl) {
+                    out.mark(document, *parent, Reach::Subtree);
+                }
             }
             // Its `Removed` and `Inserted` say what changed.
             Change::AttributeChanged { .. }
@@ -1133,6 +1139,25 @@ mod tests {
             d.set_attribute(z, "fill", "red").unwrap();
         });
         assert_eq!(r.computed, 0);
+    }
+
+    #[test]
+    fn an_insertion_into_a_mathml_element_restyles_its_children() {
+        // D77: a script is one by its place, which the insertion moves.
+        let (mut d, sheets, mut styles) = setup(
+            "<math><msub id=x><mi id=b>x</mi><mn id=s>2</mn></msub></math>",
+            "",
+        );
+        let (x, b, s) = (by_id(&d, "x"), by_id(&d, "b"), by_id(&d, "s"));
+        let size = |styles: &crate::Styles, n| styles.get(n).map(|s| s.font_size_px);
+        assert_eq!(size(&styles, b), Some(16.0));
+        change(&mut d, &sheets, &mut styles, |d| {
+            let first = d.create_element("mi").unwrap();
+            let at = d.first_child(x);
+            d.insert_before(x, first, at).unwrap();
+        });
+        assert!(size(&styles, b).is_some_and(|f| f < 16.0), "now a script");
+        assert!(size(&styles, s).is_some_and(|f| f < 16.0));
     }
 
     #[test]

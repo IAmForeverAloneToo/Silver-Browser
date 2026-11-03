@@ -498,8 +498,9 @@ fn at<T>(list: &[T], i: usize) -> &T {
     &list[i % list.len()]
 }
 
-/// Seconds, as `0s`.
-fn seconds(s: f64) -> String {
+/// Seconds, as `0s`: past what an `f32` holds, the largest it does (D78).
+pub(super) fn seconds(s: f64) -> String {
+    let s = s.clamp(-f64::from(f32::MAX), f64::from(f32::MAX));
     format!("{}s", number(s as f32))
 }
 

@@ -161,6 +161,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "margin-left",
     "margin-right",
     "margin-top",
+    "math-style",
     "max-height",
     "max-width",
     "min-height",
@@ -191,6 +192,8 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "right",
     "rotate",
     "row-gap",
+    "ruby-align",
+    "ruby-position",
     "rx",
     "ry",
     "scale",
@@ -420,11 +423,7 @@ fn longhand(style: &ComputedStyle, name: &str, url: longhands::Url<'_>) -> Optio
             LineHeight::Number(n) => px(n * style.font_size_px),
             LineHeight::Px(v) => px(v),
         },
-        "display" => match (style.display, style.flow_root) {
-            (Display::Block, true) => "flow-root".to_owned(),
-            (Display::ListItem, true) => "flow-root list-item".to_owned(),
-            (other, _) => display(other).to_owned(),
-        },
+        "display" => display_value(style.display, style.flow_root),
         "text-align" => match style.legacy_align {
             crate::computed::LegacyAlign::Left => "-webkit-left".to_owned(),
             crate::computed::LegacyAlign::Right => "-webkit-right".to_owned(),
@@ -1013,6 +1012,29 @@ fn display(value: Display) -> &'static str {
         Display::Grid => "grid",
         Display::InlineGrid => "inline-grid",
         Display::ListItem => "list-item",
+        Display::InlineListItem => "inline list-item",
+        Display::Contents => "contents",
+        Display::Ruby => "ruby",
+        Display::BlockRuby => "block ruby",
+        Display::RubyBase => "ruby-base",
+        Display::RubyText => "ruby-text",
+        Display::RubyBaseContainer => "ruby-base-container",
+        Display::RubyTextContainer => "ruby-text-container",
+        Display::Math => "math",
+        Display::BlockMath => "block math",
+    }
+}
+
+/// `display`'s value and whether its box is a flow root, written as the
+/// reference browser writes the computed value, and a specified one in
+/// its shortest form (css-display-3 section 2): `flow-root` for a block
+/// flow root, `inline flow-root list-item` for an inline one.
+pub fn display_value(value: Display, flow_root: bool) -> String {
+    match (value, flow_root) {
+        (Display::Block, true) => "flow-root".to_owned(),
+        (Display::ListItem, true) => "flow-root list-item".to_owned(),
+        (Display::InlineListItem, true) => "inline flow-root list-item".to_owned(),
+        (other, _) => display(other).to_owned(),
     }
 }
 
@@ -1102,7 +1124,7 @@ fn string(text: &str) -> String {
 /// space as one space, trimmed; and a selector's or a condition's, for
 /// the DevTools' rules (M36).
 pub fn tokens(value: &[Token]) -> String {
-    write_tokens(value, false)
+    write_tokens(value, false, false)
 }
 
 /// A property's specified value as CSSOM serializes it (section 6.7.2,
@@ -1111,20 +1133,31 @@ pub fn tokens(value: &[Token]) -> String {
 /// canonical form (Color 4 section 15), as the reference browser writes
 /// them.
 pub fn specified(value: &[Token]) -> String {
-    write_tokens(value, true)
+    write_tokens(value, true, false)
 }
 
 /// The colour functions a specified value's colour is written from.
 fn color_function(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "rgb" | "rgba" | "hsl" | "hsla" | "hwb" | "lab" | "lch" | "oklab" | "oklch" | "color"
+        "rgb"
+            | "rgba"
+            | "hsl"
+            | "hsla"
+            | "hwb"
+            | "lab"
+            | "lch"
+            | "oklab"
+            | "oklch"
+            | "color"
+            | "alpha"
     )
 }
 
 /// The colour a hash or a colour function at `value[at]` writes, and
-/// where it ends; `None` for anything else, or one with a substitution,
-/// a relative colour or a keyword that waits for the element in it.
+/// where it ends; `None` for anything else, or one with a substitution
+/// or a keyword that waits for the element in it. A relative colour is
+/// written in its own form (D78).
 fn color_at(value: &[Token], at: usize) -> Option<(usize, String)> {
     let end = match &value[at] {
         Token::Hash { .. } => at + 1,
@@ -1152,36 +1185,128 @@ fn color_at(value: &[Token], at: usize) -> Option<(usize, String)> {
     // A legacy function (`rgb()`, `hsl()`, `hwb()`) is written as its
     // `rgb()`, a calculation in it worked out, but `hsl()` and `hwb()`
     // with a missing component are kept; in the others a calculation is
-    // kept as written, as the reference browser keeps them.
+    // written in its canonical form, as the reference browser keeps them.
     let name = match &value[at] {
         Token::Function(f) => f.to_ascii_lowercase(),
         _ => String::new(),
     };
+    // A relative colour keeps its form, its origin written as a specified
+    // colour is (D78).
+    let arguments = match run {
+        [_, arguments @ .., Token::CloseParen] => arguments,
+        [_, arguments @ ..] => arguments,
+        [] => return None,
+    };
+    if crate::color::is_relative(arguments) {
+        let text = crate::color::relative_text(&name, arguments, &mut specified_color)?;
+        return Some((end, text));
+    }
     let legacy = matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla" | "hwb");
     let hue = matches!(name.as_str(), "hsl" | "hsla" | "hwb");
+    let math = |t: &Token| crate::calc::is_math_function(std::slice::from_ref(t));
     let waits = run.iter().skip(1).any(|t| match t {
-        Token::Function(f) => !(legacy && f.eq_ignore_ascii_case("calc")),
+        Token::Function(_) => !math(t),
         Token::Ident(word) => {
-            word.eq_ignore_ascii_case("from")
-                || word.eq_ignore_ascii_case("currentcolor")
-                || (hue && word.eq_ignore_ascii_case("none"))
+            word.eq_ignore_ascii_case("from") || word.eq_ignore_ascii_case("currentcolor")
         }
         _ => false,
     });
     if waits {
         return None;
     }
-    let parsed = crate::cascade::parse_color(run)?;
+    // `hsl()` and `hwb()` with a `none` keep their form, and the others
+    // their calculations, in the modern syntax (D78).
+    let none = run
+        .iter()
+        .any(|t| matches!(t, Token::Ident(word) if word.eq_ignore_ascii_case("none")));
+    if (hue && none) || (!legacy && run.iter().skip(1).any(math)) {
+        let text = crate::color::modern_text(&name, arguments, false)?;
+        return Some((end, text));
+    }
+    let Some(parsed) = crate::cascade::parse_color(run) else {
+        // A calculation that waits for the element, a relative length in
+        // it, writes a legacy function in the modern syntax.
+        let text = crate::color::modern_text(&name, arguments, true).filter(|_| legacy)?;
+        return Some((end, text));
+    };
     Some((end, color(parsed)))
 }
 
-/// [`tokens`], with `url()`s quoted when `quote_urls`.
-fn write_tokens(value: &[Token], quote_urls: bool) -> String {
+/// A colour's tokens written as a specified colour is (D78): a keyword in
+/// lowercase, a hash or a colour function as [`color_at`] writes it,
+/// anything else as it is.
+fn specified_color(tokens: &[Token]) -> String {
+    let start = tokens
+        .iter()
+        .position(|t| !matches!(t, Token::Whitespace))
+        .unwrap_or(tokens.len());
+    let tokens = &tokens[start..];
+    if let [Token::Ident(word), ..] = tokens {
+        return word.to_ascii_lowercase();
+    }
+    match (!tokens.is_empty()).then(|| color_at(tokens, 0)).flatten() {
+        Some((_, text)) => text,
+        None => write_tokens(tokens, true, false),
+    }
+}
+
+/// Where the function at `value[at]` ends: past its `)`, or the end of
+/// the value, which closes what it leaves open.
+fn function_end(value: &[Token], at: usize) -> usize {
+    let mut depth = 0usize;
+    for (i, token) in value.iter().enumerate().skip(at) {
+        match token {
+            Token::Function(_) | Token::OpenParen => depth += 1,
+            Token::CloseParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    value.len()
+}
+
+/// The math function at `value[at]` written as a specified value is
+/// (css-values-4 section 10.13, D78), and where it ends; `None` for
+/// anything else, or one that does not parse, which is written as it is.
+fn math_at(value: &[Token], at: usize, percentages: bool) -> Option<(usize, String)> {
+    if !crate::calc::is_math_function(&value[at..=at]) {
+        return None;
+    }
+    let end = function_end(value, at);
+    Some((
+        end,
+        crate::calc::specified(&value[at..end], &[], percentages)?,
+    ))
+}
+
+/// [`specified`] for the property `name` (D78): a math function's
+/// percentages compared where they stand for numbers, as the opacities'
+/// do, `min(50%, 0%)` written `calc(0%)` there.
+pub fn specified_of(name: &str, value: &[Token]) -> String {
+    let numbers = matches!(
+        name,
+        "opacity" | "fill-opacity" | "stroke-opacity" | "flood-opacity" | "stop-opacity"
+    );
+    write_tokens(value, true, numbers)
+}
+
+/// [`tokens`], with `url()`s quoted when `quote_urls`, a math function's
+/// percentages compared where `percentages` ([`specified_of`]).
+fn write_tokens(value: &[Token], quote_urls: bool, percentages: bool) -> String {
     let mut out = String::new();
     let mut at = 0;
     while at < value.len() {
         if quote_urls && let Some((end, color)) = color_at(value, at) {
             out.push_str(&color);
+            at = end;
+            continue;
+        }
+        if quote_urls && let Some((end, math)) = math_at(value, at, percentages) {
+            out.push_str(&math);
             at = end;
             continue;
         }
@@ -1387,6 +1512,53 @@ mod tests {
     fn of(declarations: &str, name: &str) -> String {
         let style = styled("<div id=t></div>", &format!("#t {{ {declarations} }}"));
         computed_value(&style, name).unwrap_or_else(|| panic!("{name} of {declarations}"))
+    }
+
+    #[test]
+    fn display_ruby_and_math_are_written_as_the_reference_browser_writes_them() {
+        assert_eq!(
+            of("display: list-item inline flow-root", "display"),
+            "inline flow-root list-item"
+        );
+        assert_eq!(of("display: ruby block", "display"), "block ruby");
+        assert_eq!(of("display: contents", "display"), "contents");
+        assert_eq!(of("display: block math", "display"), "block", "on a div");
+        assert_eq!(display_value(Display::BlockMath, false), "block math");
+        assert_eq!(of("ruby-position: under", "ruby-position"), "under");
+        assert_eq!(of("ruby-align: center", "ruby-align"), "center");
+        assert_eq!(of("math-style: compact", "math-style"), "compact");
+        assert_eq!(of("", "ruby-align"), "space-around");
+    }
+
+    #[test]
+    fn a_calculations_infinity_is_the_largest_value_its_place_holds() {
+        // D78: what a script reads is a number, not an infinity.
+        let largest = |text: String, unit: &str| {
+            let v: f64 = text.trim_end_matches(unit).parse().expect("a number");
+            assert!(v.is_finite() && v > 1e6, "{text}");
+        };
+        largest(
+            of("transition-delay: calc(infinity * 1s)", "transition-delay"),
+            "s",
+        );
+        largest(of("translate: calc(infinity * 100%)", "translate"), "%");
+        // A resolution's is taken, clamped to its range.
+        let image_set = "image-set(url(a.png) calc(1dppx * -infinity))";
+        assert!(crate::supports(
+            "background-image",
+            &css::tokenize(image_set)
+        ));
+        assert_eq!(
+            of("transform: rotate(calc(infinity * 1deg))", "transform"),
+            of("transform: rotate(0deg)", "transform")
+        );
+        assert_eq!(
+            of(
+                "background-image: conic-gradient(from 2rad, red, blue)",
+                "background-image"
+            ),
+            "conic-gradient(from 114.592deg, rgb(255, 0, 0), rgb(0, 0, 255))"
+        );
     }
 
     #[test]

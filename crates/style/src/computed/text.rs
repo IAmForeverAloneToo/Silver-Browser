@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::LengthPercentage;
+use super::{LengthPercentage, MathElement};
 
 /// The text properties of [`super::ComputedStyle::text`].
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -51,13 +51,58 @@ pub struct TextProps {
     /// and `word_spacing` are them resolved.
     pub letter_spacing: Option<LengthPercentage>,
     pub word_spacing: Option<LengthPercentage>,
+    /// `ruby-position` (CSS Ruby 1 section 3.1, D77).
+    pub ruby_position: RubyPosition,
+    /// `ruby-align` (CSS Ruby 1 section 4.1, D77).
+    pub ruby_align: RubyAlign,
+    /// `math-style` (MathML Core section 2.1.1, D77): whether a formula
+    /// is set in display style, `normal`, or `compact`.
+    pub math_style: MathStyle,
+    /// Not a property, nor inherited: which of MathML Core's layouts the
+    /// element's box takes when its `display` is `math` (D77), with what
+    /// its attributes say for it; [`MathElement::None`] for an element
+    /// that is not MathML's. Kept here, behind the pointer, as few
+    /// elements are MathML's.
+    pub math: MathElement,
+}
+
+/// `math-style`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MathStyle {
+    #[default]
+    Normal,
+    Compact,
+}
+
+/// `ruby-position`: which side of its base an annotation goes, the
+/// values the reference browser takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RubyPosition {
+    #[default]
+    Over,
+    Under,
+}
+
+/// `ruby-align`: how a base or an annotation narrower than the other is
+/// placed across the other's width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RubyAlign {
+    /// Its space shared out around and between its characters.
+    #[default]
+    SpaceAround,
+    /// Its space shared out between its characters alone.
+    SpaceBetween,
+    Start,
+    Center,
 }
 
 impl TextProps {
-    /// The values a child inherits: all but `text-group-align`.
+    /// The values a child inherits: all but `text-group-align` and the
+    /// MathML layout.
     pub(super) fn inherited(&self) -> TextProps {
         TextProps {
             text_group_align: TextGroupAlign::None,
+            math: MathElement::None,
             ..self.clone()
         }
     }

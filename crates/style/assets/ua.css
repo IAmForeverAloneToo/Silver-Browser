@@ -25,6 +25,7 @@
  */
 @namespace url(http://www.w3.org/1999/xhtml);
 @namespace svg url(http://www.w3.org/2000/svg);
+@namespace m url(http://www.w3.org/1998/Math/MathML);
 
 /* Non-rendering elements: real browsers hide these via the UA
  * stylesheet, not a hardcoded tag-name check scattered through the
@@ -319,6 +320,16 @@ select[multiple] option:checked, select[size] option:checked {
   color: rgb(16, 16, 16);
 }
 
+/* Ruby (HTML section 15.3.4, CSS Ruby 1; gap batch H, D77): the
+ * annotations half the size of their bases, a line of their own height,
+ * and the parentheses for browsers without ruby not shown. */
+ruby { display: ruby; }
+rb { display: ruby-base; white-space: nowrap; }
+rt { display: ruby-text; font-size: 50%; line-height: normal; white-space: nowrap; }
+rtc { display: ruby-text-container; font-size: 50%; }
+rtc > rt { font-size: 100%; }
+rp { display: none; }
+
 /* Frames (M33.2, HTML section 15.4.4): a border, and the frame's
  * document clipped to the box, as the reference browser computes them.
  * A `frameborder` of 0 takes the border off, a presentational hint. */
@@ -362,4 +373,58 @@ svg|*:not(svg|svg), svg|*:not(svg|foreignObject) > svg|svg {
 
 svg|*[xml\:space="preserve"], svg|*[xml\:space="preserve"] svg|* {
   white-space: pre;
+}
+
+/* MathML Core's (section 4, gap batch H, D77), as the reference
+ * browser's mathml.css has them: a formula is inline math, or block
+ * math centred on its own line by its `display` attribute; its elements
+ * are laid out by MathML's rules but its tables, which are CSS tables;
+ * and the elements that show nothing show nothing. Scripts, and a
+ * fraction's parts, are set a size smaller and compact as `math-depth`
+ * makes them by the cascade (`cascade::script_level`), not by rules here:
+ * a rule of a child's place among its siblings would have every insertion
+ * restyle them in every document. */
+m|* {
+  display: block math;
+}
+m|math {
+  direction: ltr;
+  text-indent: 0;
+  letter-spacing: normal;
+  line-height: normal;
+  word-spacing: normal;
+  font-family: math;
+  font-style: normal;
+  font-weight: normal;
+  display: math;
+  math-style: compact;
+}
+m|math[display="block" i] {
+  display: block math;
+  math-style: normal;
+  text-align: center;
+}
+m|mfrac {
+  padding-left: 1px;
+  padding-right: 1px;
+}
+m|mtable {
+  display: inline-table;
+}
+m|mtr {
+  display: table-row;
+}
+m|mtd {
+  display: table-cell;
+  text-align: center;
+  padding: 0.5ex 0.4em;
+}
+m|mi {
+  text-transform: math-auto;
+}
+m|mi[mathvariant="normal" i] {
+  text-transform: none;
+}
+m|annotation, m|annotation-xml, m|none, m|mprescripts, m|mphantom {
+  display: none;
 }
