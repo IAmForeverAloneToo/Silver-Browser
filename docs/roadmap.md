@@ -3706,6 +3706,59 @@ Deferred from the milestones above, each with what it waits on:
        `border-image-source` with a gradient serialize as nothing
        (G159's largest part, some 1,100 WPT subtests). Found in gap
        batch E. Done in gap batch D (D66).
+- [ ] G233 `calc-size()` and `interpolate-size`: sizes to and from
+       `auto` and the other intrinsic keywords, in layout and in
+       interpolation (some 3,300 WPT subtests). Found in gap batch H
+       (step 13, capped).
+- [ ] G234 Animation triggers' behaviour: `TimelineTrigger` and
+       `AnimationTrigger`, and animations held and played by
+       `animation-trigger` and `timeline-trigger` with their ranges,
+       which parse and compute already. Found in gap batch H (step 12,
+       capped).
+- [ ] G235 `overlay` and the top layer together: the cascade is given
+       the top layer (`style::TopLayer`) nowhere yet, so an element
+       leaving the top layer goes at once rather than when an
+       `allow-discrete` transition of `overlay` ends. Found in gap
+       batch H (step 13, capped).
+- [ ] G236 What scroll-driven animations still lack: timeline-range
+       keyframe selectors (`entry 0%`), sticky subjects of view
+       timelines, timelines declared on `::before` and `::after`, the
+       quirks-mode `body` as a scroll timeline's source, and the main
+       page's `document.compatMode`, always `CSS1Compat`. Found in gap
+       batch H (step 12, capped).
+- [ ] G237 CSS anchor positioning: `anchor-name`, `position-anchor`,
+       `anchor()`, `anchor-size()`, `position-area`, `position-try` and a
+       popover's implicit anchor, none of which the engine has;
+       `container-type: anchored` answers as for an element not anchor
+       positioned. Found in gap batch H.
+- [ ] G238 `unicode-bidi` in layout: `isolate`, `embed`, `bidi-override`,
+       `isolate-override` and `plaintext` acting on the bidirectional
+       algorithm, which computes them only, so that `<bdo>` overrides.
+       Found in gap batch H.
+- [ ] G239 `field-sizing` (content-sized form controls) and
+       `overflow-clip-margin`. Found in gap batch H.
+- [ ] G240 `element.pseudo()` and `CSSPseudoElement`; the highlight
+       pseudo-elements past `::selection` and `::highlight()`
+       (`::target-text`, `::spelling-error`, `::grammar-error`,
+       `::search-text`), which parse and match nothing; and
+       `getComputedStyle` of the form controls' pseudo-elements, the
+       rest of G12. Found in gap batch H.
+- [ ] G241 Positioning's corners: absolutely positioned replaced
+       elements' minimum and maximum sizes, `position: relative` on
+       table parts and in inline containing blocks, inline-level
+       absolute boxes' static positions beside floats, and sticky boxes
+       nested, in inlines, transformed, on the root scroller and
+       scrolled to by focus. Found in gap batch H.
+- [ ] G242 Buttons: their content centred and their `display` variants
+       as the reference browser lays them out. Found in gap batch H.
+- [ ] G243 Markers of `::before` and `::after` list items
+       (`::before::marker`), and a marker's hit area as tall as its
+       line. Found in gap batch H.
+- [ ] G244 Scroll anchoring (CSS Scroll Anchoring 1), and the viewport's
+       scrollbar taking room. Found in gap batch H.
+- [ ] G245 The reftests of `css/css-position`, `html/rendering` and
+       `css/css-pseudo` whose expected failures say what differs rather
+       than a cause diagnosed. Found in gap batch H.
 
 ---
 
