@@ -3791,6 +3791,17 @@ Deferred from the milestones above, each with what it waits on:
        batch H's steps, which the batch built, and which still fail:
        each now says what the test sees and cites this gap, its cause
        to be found. Found in gap batch H.
+- [ ] G247 What gap batch H costs: T4.3 against 13b332993 found the
+       first frame's style of a gallery of 1000 figures 2.4 times as
+       slow (5.1 to 12.3 ms), of a grid of 1000 cards 1.8 times, a table
+       of 1000 rows built by a script twice as slow (97 to 191 ms), the
+       layout of paragraphs appended one a frame 1.7 times, and a page
+       of 110 scripts 1.6 times; the per-element and per-node work the
+       batch added (pseudo-element targets, container and `:has()`
+       bookkeeping, shadow scoping, custom element reactions, tree
+       groups) to be made free where a page needs none of it. The
+       medians are in the T4.3 run of the batch. Found in gap batch H's
+       acceptance, left by the maintainer's word.
 
 ---
 
