@@ -725,11 +725,17 @@ pub trait Realm<H: ScriptingHost> {
     fn heap(&self) -> usize;
     /// Collects the garbage now.
     fn collect(&mut self);
-    /// Sweeps the objects of nodes held out of the document (D70): those
-    /// nothing reaches any more are collected and released, which a
-    /// realm that holds none such has nothing to do for.
-    fn sweep(&mut self, host: &mut H) {
+    /// Sweeps the groups of objects of trees out of the document held for
+    /// custom elements (D70), when one is due: those nothing else reaches
+    /// any more are collected and released. With `collect`, as the host
+    /// asks when its document's nodes have grown, the garbage is collected
+    /// whatever the bindings hold, the sweep with it, which frees the
+    /// trees nothing reaches whose objects hold each other.
+    fn sweep(&mut self, host: &mut H, collect: bool) {
         let _ = host;
+        if collect {
+            self.collect();
+        }
     }
     /// Why the realm can run nothing more, if it cannot.
     fn dead(&self) -> Option<Death>;

@@ -471,6 +471,10 @@ impl Document {
                 self.data_bytes += super::attributes::namespaces_size(namespaces);
                 self.rare.attr_ns.insert(made, namespaces.clone());
             }
+            // A `details` the parser opened owes its `toggle` here, where
+            // the bindings take it, as the reference browser fires it for
+            // a document of no browsing context too.
+            self.details_made(made);
             let children: Vec<NodeId> = from.children(node).collect();
             pending.extend(children.into_iter().rev().map(|c| (c, made)));
             if let (Some(from_contents), Some(contents)) =
@@ -690,5 +694,31 @@ mod tests {
             Err(MutationError::TooManyNodes)
         );
         assert!(small.other_documents().is_empty());
+    }
+
+    #[test]
+    fn a_grafted_open_details_owes_its_toggle() {
+        // As the parser made it open, in the document it is copied into:
+        // the toggle the bindings fire (HTML section 4.11.1).
+        let mut from = Document::new();
+        let root = from.root();
+        let html = from.create_element("html").unwrap();
+        from.append_child(root, html).unwrap();
+        for open in [true, false] {
+            let attrs = match open {
+                true => vec![("open".to_owned(), String::new())],
+                false => Vec::new(),
+            };
+            let details = from.create_element_with("details", attrs).unwrap();
+            from.append_child(html, details).unwrap();
+        }
+        let mut d = Document::new();
+        d.take_details_toggles();
+        let made = d.graft(&from, DocumentFacts::html("about:blank")).unwrap();
+        let copies: Vec<NodeId> = d
+            .subtree(made)
+            .filter(|&n| d.tag(n) == Some("details"))
+            .collect();
+        assert_eq!(d.take_details_toggles(), [(copies[0], false)]);
     }
 }

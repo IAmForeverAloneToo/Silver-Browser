@@ -211,12 +211,15 @@ impl DocumentHost {
                 let mut held = self.mutations.held();
                 held.extend(self.document.live_nodes());
                 held.extend(self.outputs.events.iter().map(|&(node, _)| node));
+                held.extend(self.media.active());
                 let mut kept = Vec::new();
                 for root in roots {
                     let Ok(node) = self.node(root) else {
                         continue;
                     };
-                    let subtree = self.document.shadow_including_subtree(node);
+                    // The tree the bindings group its objects by: its
+                    // shadow trees and its templates' contents with it.
+                    let subtree = self.document.subtree_with_contents(node);
                     self.work += subtree.len() as u64;
                     if subtree.iter().any(|node| held.contains(node)) {
                         kept.push(root);

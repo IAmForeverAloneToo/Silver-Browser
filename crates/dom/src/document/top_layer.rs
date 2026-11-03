@@ -11,7 +11,7 @@
 //! without events, as HTML's removing steps for a popover and a dialog
 //! say: a moved one (`moveBefore`) keeps it.
 
-use super::{Document, ElementState, NodeId};
+use super::{Change, Document, ElementState, NodeId};
 
 /// The most elements the top layer, the popover lists and the open
 /// dialogs hold each, and the most close watchers: past it the oldest
@@ -92,6 +92,9 @@ pub(super) struct TopLayer {
     groups: Vec<Vec<Watcher>>,
     allowed_groups: usize,
     next_allows_group: bool,
+    /// Whether an HTML `dialog` was ever given an `open` attribute, which
+    /// an insertion then has to look for.
+    open_dialogs_made: bool,
 }
 
 impl Default for TopLayer {
@@ -105,6 +108,7 @@ impl Default for TopLayer {
             groups: Vec::new(),
             allowed_groups: 1,
             next_allows_group: true,
+            open_dialogs_made: false,
         }
     }
 }
@@ -269,6 +273,70 @@ impl Document {
             self.state(element).with(ElementState::POPOVER_OPEN, false),
         );
         Some(popover)
+    }
+
+    /// Whether `element` is an HTML `dialog`.
+    fn is_html_dialog(&self, element: NodeId) -> bool {
+        self.tag(element) == Some("dialog") && self.is_html(element)
+    }
+
+    /// A change to the document: HTML's dialog setup steps for a `dialog`
+    /// that comes to be open in the page's document other than by
+    /// `show()` and `showModal()`, as one the parser opens or an `open`
+    /// attribute set (section 4.11.4): in the open dialogs, non-modal,
+    /// with a close watcher; and its cleanup steps when its `open` goes.
+    pub(super) fn dialogs_changed(&mut self, change: &Change) {
+        match change {
+            Change::AttributeChanged { element, name, old }
+                if name == "open" && self.is_html_dialog(*element) =>
+            {
+                let open = self.attr(*element, "open").is_some();
+                if open {
+                    self.rare.top_layer.open_dialogs_made = true;
+                }
+                match (old.is_some(), open) {
+                    (false, true) => self.dialog_setup(*element),
+                    (true, false) => {
+                        self.close_dialog_state(*element);
+                    }
+                    _ => {}
+                }
+            }
+            Change::Inserted { child, .. } if self.rare.top_layer.open_dialogs_made => {
+                let inserted: Vec<NodeId> = self
+                    .shadow_including_subtree(*child)
+                    .into_iter()
+                    .filter(|&n| self.is_html_dialog(n) && self.attr(n, "open").is_some())
+                    .collect();
+                for element in inserted {
+                    self.dialog_setup(element);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// HTML's "dialog setup steps": an open `dialog` in the page's
+    /// document and not yet in its open dialogs is put there.
+    fn dialog_setup(&mut self, element: NodeId) {
+        if self.dialog(element).is_some() || !self.in_page(element) {
+            return;
+        }
+        self.open_dialog_state(
+            element,
+            Dialog {
+                modal: false,
+                previously_focused: None,
+            },
+        );
+    }
+
+    /// An HTML `dialog` made with its attributes, as a parser or a clone
+    /// makes one: an open one is looked for when it is inserted.
+    pub(super) fn dialog_made(&mut self, element: NodeId) {
+        if self.is_html_dialog(element) && self.attr(element, "open").is_some() {
+            self.rare.top_layer.open_dialogs_made = true;
+        }
     }
 
     /// Sets a showing popover's previously focused element.

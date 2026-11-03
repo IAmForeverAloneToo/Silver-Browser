@@ -191,7 +191,10 @@ impl LayoutObservers {
     /// browser updates them only in a rendered document's lifecycle; one
     /// of an element root finds it outside the root, not intersecting
     /// (Intersection Observer's "update intersection observations", step
-    /// 2.2.1).
+    /// 2.2.1). A target in contents an element skips (`content-visibility`,
+    /// gap batch H) makes no resize observation while it is there, its
+    /// last size kept for when it is shown, and intersects nothing, as
+    /// the reference browser has it.
     pub(crate) fn observed(
         &mut self,
         measured: &HashMap<NodeId, Measured>,
@@ -199,12 +202,15 @@ impl LayoutObservers {
         scale: f32,
         now: f64,
         is_ancestor: impl Fn(NodeId, NodeId) -> bool,
-        of_page: impl Fn(NodeId) -> bool,
+        (of_page, skipped): (impl Fn(NodeId) -> bool, impl Fn(NodeId) -> bool),
     ) -> Option<String> {
         let mut resize = Vec::new();
         for (&observer, targets) in &mut self.resize {
             let mut entries = Vec::new();
             for t in targets.iter_mut() {
+                if skipped(t.node) {
+                    continue;
+                }
                 let m = measured.get(&t.node);
                 let content = m.map_or((0.0, 0.0), Measured::content);
                 let border = m.map_or((0.0, 0.0), |m| m.size);
@@ -253,7 +259,7 @@ impl LayoutObservers {
                 if o.root.is_none() && !of_page(t.0) {
                     continue;
                 }
-                let m = measured.get(&t.0);
+                let m = measured.get(&t.0).filter(|_| !skipped(t.0));
                 let bounds = m.map_or([0.0; 4], |m| m.bounds);
                 let within = o.root.is_none_or(|r| r != t.0 && is_ancestor(r, t.0));
                 // The target's box clipped by the clips around it (an
@@ -350,7 +356,14 @@ mod tests {
         let mut observers = LayoutObservers::default();
         observers.resize_observe(1, a, ObservedBox::Content);
         let mut tell = |m: &HashMap<NodeId, Measured>| {
-            observers.observed(m, (100.0, 100.0), 2.0, 0.0, |_, _| true, |_| true)
+            observers.observed(
+                m,
+                (100.0, 100.0),
+                2.0,
+                0.0,
+                |_, _| true,
+                (|_| true, |_| false),
+            )
         };
         let measured: HashMap<_, _> = [(a, boxed([0.0, 0.0, 20.0, 10.0]))].into();
         let told = tell(&measured).expect("the first size");
@@ -376,7 +389,14 @@ mod tests {
         );
         let mut at = |bounds: [f32; 4]| {
             let measured: HashMap<_, _> = [(a, boxed(bounds))].into();
-            observers.observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| true, |_| true)
+            observers.observed(
+                &measured,
+                (100.0, 100.0),
+                1.0,
+                5.0,
+                |_, _| true,
+                (|_| true, |_| false),
+            )
         };
         // Wholly in view: index 3.
         let told = at([10.0, 10.0, 20.0, 20.0]).unwrap();
@@ -410,7 +430,14 @@ mod tests {
         );
         let measured: HashMap<_, _> = [(a, boxed([10.0, 110.0, 20.0, 20.0]))].into();
         let told = observers
-            .observed(&measured, (100.0, 80.0), 1.0, 5.0, |_, _| true, |_| true)
+            .observed(
+                &measured,
+                (100.0, 80.0),
+                1.0,
+                5.0,
+                |_, _| true,
+                (|_| true, |_| false),
+            )
             .unwrap();
         assert!(
             told.contains("\"root\":[0,0,100,120]") && told.contains("\"intersecting\":true"),
@@ -426,7 +453,14 @@ mod tests {
         observers.intersection_observe(1, a, None, [(0.0, false); 4], vec![0.0]);
         let measured: HashMap<_, _> = [(a, boxed([10.0, 10.0, 20.0, 20.0]))].into();
         let mut tell = |ours: bool| {
-            observers.observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| true, |_| ours)
+            observers.observed(
+                &measured,
+                (100.0, 100.0),
+                1.0,
+                5.0,
+                |_, _| true,
+                (|_| ours, |_| false),
+            )
         };
         assert_eq!(tell(false), None, "nothing while it is another document's");
         let told = tell(true).expect("its first observation once it is the page's");
@@ -436,7 +470,14 @@ mod tests {
         let root = doc.create_element("div").unwrap();
         observers.intersection_observe(2, a, Some(root), [(0.0, false); 4], vec![0.0]);
         let told = observers
-            .observed(&measured, (100.0, 100.0), 1.0, 5.0, |_, _| false, |_| false)
+            .observed(
+                &measured,
+                (100.0, 100.0),
+                1.0,
+                5.0,
+                |_, _| false,
+                (|_| false, |_| false),
+            )
             .expect("an observation of another document's target");
         assert!(told.contains("\"intersecting\":false"), "{told}");
     }

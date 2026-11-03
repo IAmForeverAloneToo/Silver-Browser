@@ -848,27 +848,33 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         self.runtime.run_gc();
     }
 
-    fn sweep(&mut self, host: &mut H) {
-        if self.dead.is_some() {
-            return;
-        }
-        let Some(entries) = self.entries.borrow().clone() else {
+    fn sweep(&mut self, host: &mut H, collect: bool) {
+        let entries = match self.dead {
+            None => self.entries.borrow().clone(),
+            Some(_) => None,
+        };
+        let Some(entries) = entries else {
+            if collect {
+                self.runtime.run_gc();
+            }
             return;
         };
         self.begin(host, false);
-        // The bootstrap's half of the sweep: whether it let go of any.
+        // The bootstrap's half of the sweep: whether the garbage is to be
+        // collected now, with the holds it let go of.
         let half = |realm: &Self, name: &str| {
             realm.context.with(|ctx| {
-                let called = entries
-                    .clone()
-                    .restore(&ctx)
-                    .and_then(|entries| entries.get::<_, Function<'_>>(name)?.call::<_, bool>(()));
+                let called = entries.clone().restore(&ctx).and_then(|entries| {
+                    entries
+                        .get::<_, Function<'_>>(name)?
+                        .call::<_, bool>((collect,))
+                });
                 called.catch(&ctx).unwrap_or(false)
             })
         };
-        if half(self, "sweepPrepare") {
+        if half(self, "sweepPrepare") || collect {
             // Out of the bootstrap's frames, what only the holds it let go
-            // of kept is collected.
+            // of kept is collected, and the trees nothing reaches.
             self.runtime.run_gc();
             half(self, "sweepFinish");
             // The finalization callbacks release what was collected.

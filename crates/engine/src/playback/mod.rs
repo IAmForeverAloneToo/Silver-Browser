@@ -167,6 +167,18 @@ struct Player {
 }
 
 impl Player {
+    /// See [`Players::is_active`].
+    fn active(&self) -> bool {
+        self.network == NETWORK_LOADING
+            || self.pending_fetch.is_some()
+            || self.refused
+            || !self.pending.is_empty()
+            || (!self.paused && !self.ended)
+            // A pipeline still reading the resource, its readiness's
+            // events to come.
+            || (self.pipeline.is_some() && self.ready < HAVE_ENOUGH_DATA)
+    }
+
     fn new(node: NodeId, video: bool, document: &Document) -> Player {
         Player {
             node,
@@ -354,9 +366,48 @@ pub(crate) struct Players {
     /// Whether what an element shows may have changed since the last
     /// frame.
     changed: bool,
+    /// The tasks of events sent to the bindings not yet heard, by the
+    /// element they fire at: it is held until they are.
+    owed: HashMap<NodeId, u32>,
 }
 
 impl Players {
+    /// Whether the element `node` has what HTML keeps a media element
+    /// from being collected for (section 4.8.11.18): a load under way or
+    /// asked for, playback, or a `play()` promise to settle, each of
+    /// which has events to fire at it yet.
+    pub(crate) fn is_active(&self, node: NodeId) -> bool {
+        self.players.get(&node).is_some_and(Player::active) || self.owed.contains_key(&node)
+    }
+
+    /// The elements [`Players::is_active`] holds.
+    pub(crate) fn active(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.players
+            .iter()
+            .filter(|(_, player)| player.active())
+            .map(|(&node, _)| node)
+            .chain(self.owed.keys().copied())
+    }
+
+    /// A task of the events of `node` sent ([`Players::owe`]) was heard.
+    pub(crate) fn heard(&mut self, node: NodeId) {
+        if let Some(count) = self.owed.get_mut(&node) {
+            *count -= 1;
+            if *count == 0 {
+                self.owed.remove(&node);
+            }
+        }
+    }
+
+    /// Sends `actions` as a task of the document's own, each element
+    /// they fire at owed it.
+    fn queue(&mut self, env: &Env<'_>, actions: Vec<Action>) {
+        if let Some(inbox) = &env.inbox {
+            owe(&mut self.owed, &actions);
+            send(inbox, &actions);
+        }
+    }
+
     /// Whether a load asked for a fetch not yet started, or was refused
     /// and has not yet failed.
     pub(crate) fn fetch_pending(&self) -> bool {
@@ -379,6 +430,7 @@ impl Players {
                 let mut out = vec![Action::Event(player.node, "loadstart")];
                 fail(player, unsafe_url(), &mut out);
                 if let Some(inbox) = inbox {
+                    owe(&mut self.owed, &out);
                     send(inbox, &out);
                 }
                 continue;
@@ -390,6 +442,7 @@ impl Players {
             if PIPELINES.load(Ordering::Relaxed) >= MAX_MEDIA_PIPELINES {
                 fail(player, format_error(), &mut out);
                 if let Some(inbox) = inbox {
+                    owe(&mut self.owed, &out);
                     send(inbox, &out);
                 }
                 continue;
@@ -540,7 +593,7 @@ impl Players {
                 }
             }
         }
-        queue(env, queued);
+        self.queue(env, queued);
     }
 
     /// A media key pressed (M40 step 8, Media Session): the session's
@@ -598,7 +651,7 @@ impl Players {
             _ => return false,
         }
         self.changed = true;
-        queue(env, queued);
+        self.queue(env, queued);
         true
     }
 
@@ -724,7 +777,7 @@ impl Players {
             }
             other => return Err(("TypeError", format!("no media call '{other}'"))),
         };
-        queue(env, queued);
+        self.queue(env, queued);
         Ok(answer)
     }
 
@@ -856,7 +909,7 @@ impl Players {
             }
             live
         });
-        queue(env, queued);
+        self.queue(env, queued);
     }
 }
 
@@ -874,10 +927,19 @@ fn set_gain(player: &Player) {
     }
 }
 
-/// Sends `actions` as a task of the document's own.
-fn queue(env: &Env<'_>, actions: Vec<Action>) {
-    if let Some(inbox) = &env.inbox {
-        send(inbox, &actions);
+/// Counts the task of `actions` owed to each element they fire at, once.
+fn owe(owed: &mut HashMap<NodeId, u32>, actions: &[Action]) {
+    let mut nodes: Vec<NodeId> = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Event(node, _) => Some(*node),
+            Action::Settle(..) => None,
+        })
+        .collect();
+    nodes.sort_by_key(|node| node.to_bits());
+    nodes.dedup();
+    for node in nodes {
+        *owed.entry(node).or_default() += 1;
     }
 }
 
@@ -1307,4 +1369,45 @@ fn metadata(player: &mut Player, meta: &Meta, out: &mut Vec<Action>) {
         out.push(Action::Event(node, "resize"));
     }
     out.push(Action::Event(node, "loadedmetadata"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_element_owed_a_task_of_its_events_is_active_until_it_is_heard() {
+        let mut document = Document::new();
+        let node = document.create_element("audio").unwrap();
+        let mut players = Players::default();
+        assert!(!players.is_active(node));
+        // Two tasks sent, each counted once whatever it holds.
+        owe(
+            &mut players.owed,
+            &[
+                Action::Event(node, "loadstart"),
+                Action::Event(node, "error"),
+            ],
+        );
+        owe(&mut players.owed, &[Action::Event(node, "emptied")]);
+        assert!(players.is_active(node));
+        assert_eq!(players.active().collect::<Vec<_>>(), [node]);
+        players.heard(node);
+        assert!(players.is_active(node));
+        players.heard(node);
+        assert!(!players.is_active(node));
+        // A task heard that was never owed changes nothing.
+        players.heard(node);
+        assert!(players.active().next().is_none());
+        // What the elements' algorithms queue is owed as it is sent.
+        let (inbox, _mailbox) = crate::scripts::workers::inbox(None);
+        let env = Env {
+            document: &document,
+            page: None,
+            inbox: Some(inbox),
+            activated: false,
+        };
+        players.queue(&env, vec![Action::Event(node, "pause")]);
+        assert!(players.is_active(node));
+    }
 }

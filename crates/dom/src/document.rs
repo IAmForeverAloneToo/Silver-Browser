@@ -38,6 +38,7 @@ mod attributes;
 mod custom;
 mod details;
 mod documents;
+mod focus_navigation;
 mod live;
 mod references;
 mod shadow;
@@ -49,6 +50,10 @@ pub use custom::{
 };
 pub use details::MAX_DETAILS_TOGGLES;
 pub use documents::{CompatMode, DocumentFacts, DocumentInterface};
+pub use focus_navigation::{
+    FOCUSGROUP_TOKENS, FocusGroup, FocusGroupAttribute, FocusGroupBehavior, StartingPoint,
+    parse_focusgroup,
+};
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
 pub use references::{ELEMENT_REFERENCES, MAX_EXPLICIT_ELEMENTS};
 pub use shadow::{
@@ -903,6 +908,7 @@ impl Document {
         self.rare.shadows.focus_within = within;
         self.focused = Some(element);
         self.within = Some(element);
+        self.focus_navigation_focused(element);
     }
 
     /// The hosts the focus in their shadow trees gave the focus flag
@@ -1353,6 +1359,9 @@ impl Document {
                 if self.connected(parent) && self.has_names(node) {
                     self.index_names(node, true);
                 }
+                if self.in_page(parent) {
+                    self.autofocus_inserted(node);
+                }
                 self.custom_inserted(node, Some(old_owner));
             }
             return Ok(());
@@ -1380,6 +1389,9 @@ impl Document {
         self.observe_insertion(parent, child);
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
+        }
+        if self.in_page(parent) {
+            self.autofocus_inserted(child);
         }
         self.custom_inserted(child, Some(old_owner));
         Ok(())
@@ -1477,6 +1489,9 @@ impl Document {
         self.observe_insertion(parent, child);
         if self.connected(parent) && self.has_names(child) {
             self.index_names(child, true);
+        }
+        if self.in_page(parent) {
+            self.autofocus_inserted(child);
         }
         self.custom_inserted(child, None);
         Ok(())
@@ -2502,6 +2517,10 @@ impl Document {
         // Taken out of another document's tree, it stays that document's.
         let mut owner = None;
         if let Some(parent) = self.link(Some(parent)) {
+            if !self.rare.moving {
+                let index = self.index_of(child);
+                self.starting_point_leaving(parent, child, index);
+            }
             self.live_removing(parent, child);
             owner = self.owner_leaving(parent);
         }
@@ -2603,6 +2622,7 @@ impl Document {
     fn record_change(&mut self, change: Change) {
         self.references_changed(&change);
         self.details_changed(&change);
+        self.dialogs_changed(&change);
         self.version += 1;
         self.custom_changed();
         if self.journal.last() == Some(&Change::Everything) {

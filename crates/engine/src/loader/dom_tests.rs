@@ -110,8 +110,12 @@ fn nodes_scripts_let_go_of_are_freed_and_those_they_hold_are_not() {
                 var inner = held.appendChild(document.createElement('inner')); \
                 body.removeChild(held); held = null;\
                 </script><script>console.log(inner.parentNode.nodeName); inner = null</script>";
-    let (tab, console) = scripted(page, true);
+    let (mut tab, console) = scripted(page, true);
     assert_eq!(console, ["HELD"]);
+    // The objects of `held` and `inner` hold each other, as their tree's
+    // (see the bindings' `wrap`): they go with the collector's pass, and
+    // the nodes with the sweep after the run that hears of it.
+    collected_then(&mut tab, "var after = 1");
     let document = tab.engine.document();
     document.validate().unwrap();
     // The document, html, head, body and p, "x", the scripts and their
@@ -149,6 +153,97 @@ fn a_node_a_live_range_holds_is_kept() {
     tab.engine.document().validate().unwrap();
 }
 
+/// Runs `script` in the tab's page after collecting its realm's garbage,
+/// and the tasks it queued; the console's lines.
+fn collected_then(tab: &mut Tab, script: &str) -> Vec<String> {
+    tab.engine.shown.scripts.collect();
+    tab.engine.evaluate_script(script);
+    tab.engine.run_tasks();
+    tab.engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect()
+}
+
+#[test]
+fn an_object_lives_while_its_tree_can_be_reached() {
+    // Each object here is held only by its tree: a slot's listener, a
+    // node's expando of another document, a template's contents, the
+    // document a node of it reaches, a range's node.
+    let (mut tab, console) = scripted(
+        "<p>x</p><script>\
+         var host = document.createElement('div'); \
+         var root = host.attachShadow({mode: 'closed'}); \
+         var slot = root.appendChild(document.createElement('slot')); slot.name = 'n'; \
+         slot.addEventListener('slotchange', (e) => console.log('slotchange ' + e.target.mark)); \
+         slot.mark = 'kept'; slot = null; root = null; \
+         var parsed = new DOMParser().parseFromString('<p>a</p>', 'text/html'); \
+         parsed.body.firstChild.mark = 'parsed'; \
+         var t = document.createElement('template'); \
+         t.content.appendChild(document.createElement('i')).mark = 'content'; \
+         var other = document.implementation.createHTMLDocument(''); other.mark = 'owner'; \
+         var made = other.createElement('b'); other = null; \
+         var range = document.createRange(); \
+         var start = document.createElement('s'); start.mark = 'range'; \
+         range.setStart(start, 0); start = null; \
+         </script>",
+        true,
+    );
+    assert!(console.is_empty(), "{console:?}");
+    let seen = collected_then(
+        &mut tab,
+        "var s = document.createElement('span'); s.slot = 'n'; host.appendChild(s); \
+         console.log(parsed.body.firstChild.mark, t.content.firstChild.mark, \
+         made.ownerDocument.mark, range.startContainer.mark)",
+    );
+    assert_eq!(seen, ["parsed content owner range", "slotchange kept"]);
+    // Taken out of the document, a node's object keeps with its new tree,
+    // and put back, with the document's.
+    let seen = collected_then(
+        &mut tab,
+        "var outer = document.body.appendChild(document.createElement('div')); \
+         outer.appendChild(document.createElement('em')).mark = 'moved'; \
+         document.body.removeChild(outer);",
+    );
+    assert!(seen.is_empty(), "{seen:?}");
+    let seen = collected_then(
+        &mut tab,
+        "console.log(outer.firstChild.mark); document.body.appendChild(outer); outer = null",
+    );
+    assert_eq!(seen, ["moved"]);
+    let seen = collected_then(&mut tab, "console.log(document.querySelector('em').mark)");
+    assert_eq!(seen, ["moved"]);
+}
+
+#[test]
+fn a_tree_nothing_reaches_is_freed_with_its_objects() {
+    // The objects of a tree out of the document hold each other, their
+    // listeners and expandos among them, and nothing else holds them.
+    let (mut tab, _) = scripted("<p>x</p><script>var a = 1</script>", true);
+    let before = tab.engine.document().len();
+    let seen = collected_then(
+        &mut tab,
+        "(function () { \
+           var host = document.createElement('div'); \
+           var root = host.attachShadow({mode: 'open'}); \
+           var slot = root.appendChild(document.createElement('slot')); \
+           slot.addEventListener('slotchange', () => host.mark = slot); \
+           host.appendChild(document.createElement('span')).mark = host; \
+           var parsed = new DOMParser().parseFromString('<p>a</p>', 'text/html'); \
+           parsed.body.mark = host; host.other = parsed; \
+         })()",
+    );
+    assert!(seen.is_empty(), "{seen:?}");
+    // The collector's pass lets the objects go, the next run tells the
+    // host, and its sweep frees the nodes.
+    collected_then(&mut tab, "var b = 2");
+    collected_then(&mut tab, "var c = 3");
+    let document = tab.engine.document();
+    document.validate().unwrap();
+    assert_eq!(document.len(), before);
+}
+
 #[test]
 fn a_node_the_parser_still_fills_can_be_taken_out_and_freed() {
     // The body is taken out while the parser is inside it, and let go
@@ -168,6 +263,24 @@ fn a_node_the_parser_still_fills_can_be_taken_out_and_freed() {
         .filter_map(|n| document.tag(n))
         .collect();
     assert_eq!(tags, ["html", "head"]);
+}
+
+#[test]
+fn a_script_the_parser_puts_in_a_body_taken_out_does_not_run() {
+    // Held by a script, the body taken out still takes what the parser
+    // inserts, and a script element there is not connected when it is
+    // prepared (HTML section 4.12.1.1): it never runs, as in the
+    // reference browser.
+    let (mut tab, console) = scripted(
+        "<head><script>var log = [];</script></head><body><p>a</p><script>\
+         var html = document.documentElement; \
+         var b = html.removeChild(html.lastChild); log.push('first');</script>\
+         <p>b</p><p>c</p><script>log.push('second')</script><script>log.push('third')</script>",
+        true,
+    );
+    assert!(console.is_empty(), "{console:?}");
+    let seen = collected_then(&mut tab, "console.log(log.join(), b.children.length)");
+    assert_eq!(seen, ["first 6"]);
 }
 
 #[test]

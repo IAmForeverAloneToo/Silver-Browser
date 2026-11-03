@@ -163,16 +163,25 @@ A `[CEReactions]` member the bindings carry out with several natives
 opens one element queue for them all, run as it returns; script it
 calls into (a constructor, a callback, a listener) opens its own. An
 algorithm no such member runs, a reset button's activation, queues on
-the backup element queue. A custom element's object, and the objects
-of the nodes of its tree out of the document, are held until a sweep
-after a task finds that no object of a node of the tree is alive and
-the host holds no node of it (a mutation record's, a live range's, an
-event's to fire): the sweep links each tree's objects to its held ones,
-lets the holds go, collects the garbage, and holds again what lived.
-That is the wrapper lifetime rule for any node out of the document, a
-node's object alive while the node can be reached; work giving every
-detached node's object that rule flags those objects as held, and the
-same sweep frees them.
+the backup element queue. Every node's object lives while its node can
+be reached: the objects of one tree (a shadow-including root's, a
+template's contents with their template's) are a group, which each
+holds and which holds them all, the page's document's held for good
+and each tree's holding its owner document's, so that a tree goes
+whole with the collector's pass once nothing holds any object of it.
+A custom element's object is that rule's like any other, with one
+hold more: a tree such an object joins has its group held besides,
+until a sweep after a task finds nothing else reaches the group and
+the host holds no node of the tree (a mutation record's, a live
+range's, an event's to fire, a media element's with events to come),
+as the host may come to hold one, and the collector run, between two
+sweeps. The sweep lets those holds go, collects the garbage, and holds
+again the groups that lived. It runs once as many groups were held
+since the last as after it (64 at least), else at every sixteenth
+task, and whenever
+the host asks for a collection, which it does as its document's nodes
+double; that collection is the one that frees the trees no custom
+element holds.
 
 ### D71: nesting, `@scope` and `@custom-media` desugared when the sheet is built
 

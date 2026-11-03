@@ -170,6 +170,31 @@ fn slotted_rules_style_the_assigned_elements_and_lose_to_their_own_trees() {
 }
 
 #[test]
+fn a_pseudo_element_after_slotted_styles_the_slotted_elements_own() {
+    // `::slotted(span)::before` styles the `::before` of the assigned
+    // span, not the span itself (CSS Scoping 1 section 3.2.2).
+    let (document, root) = page_with_shadow(
+        "<div id=host><span id=a>a</span><b id=b>b</b></div>",
+        "<slot></slot>",
+    );
+    let a = by_id(&document, document.root(), "a");
+    let b = by_id(&document, document.root(), "b");
+    let tree = "::slotted(span)::before { content: 'x'; color: green } \
+                ::slotted(*) { color: blue }";
+    let styles = cascade(&document, "", &[(root, tree)]);
+    let before = styles
+        .pseudo(a, crate::selector_matching::PseudoElement::Before)
+        .expect("styled");
+    assert_eq!(before.color, GREEN);
+    assert_eq!(color(&styles, a), BLUE);
+    assert!(
+        styles
+            .pseudo(b, crate::selector_matching::PseudoElement::Before)
+            .is_none()
+    );
+}
+
+#[test]
 fn slotted_elements_inherit_through_the_flat_tree() {
     let (document, root) = page_with_shadow(
         "<div id=host style='color: red'><span id=a>a</span><i id=unslotted slot=none>u</i></div>",
@@ -348,6 +373,34 @@ fn host_pseudo_elements_take_the_shadow_trees_rules() {
         .pseudo(host, crate::selector_matching::PseudoElement::Before)
         .expect("generated");
     assert_eq!(before.color, GREEN);
+}
+
+#[test]
+fn a_part_or_a_slotted_elements_pseudo_elements_take_the_rules_after_them() {
+    // `::part(label)::before` and `::slotted(p)::after` (gap batch H):
+    // the pseudo-elements of the element they stand for, its own style
+    // untouched.
+    let (document, root) = page_with_shadow(
+        "<div id=host><p id=light>l</p></div>",
+        "<span id=label part=label>x</span><slot></slot>",
+    );
+    let host = by_id(&document, document.root(), "host");
+    let label = by_id(&document, root, "label");
+    let light = by_id(&document, host, "light");
+    let page = "#host::part(label)::before { content: 'b'; color: green } \
+                #host::part(label) { color: blue } #host::part(label)::marker { color: red }";
+    let tree = "::slotted(p)::after { content: 'a'; color: green }";
+    let styles = cascade(&document, page, &[(root, tree)]);
+    assert_eq!(color(&styles, label), BLUE);
+    let before = styles
+        .pseudo(label, crate::selector_matching::PseudoElement::Before)
+        .expect("generated");
+    assert_eq!(before.color, GREEN);
+    let after = styles
+        .pseudo(light, crate::selector_matching::PseudoElement::After)
+        .expect("generated");
+    assert_eq!(after.color, GREEN);
+    assert_ne!(color(&styles, light), GREEN);
 }
 
 #[test]

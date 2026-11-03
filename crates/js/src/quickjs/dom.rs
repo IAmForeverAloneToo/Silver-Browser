@@ -1098,6 +1098,11 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::SetFocus {
             node: a.maybe_handle(0)?,
             prevent_scroll: a.bool(1),
+            visible: match a.integer(2) as i32 {
+                1 => Some(true),
+                2 => Some(false),
+                _ => None,
+            },
         })
     }),
     ("blurToward", |a| Ok(Call::BlurToward(a.handle(0)?))),

@@ -1318,3 +1318,32 @@ fn a_javascript_url_a_loading_document_runs_replaces_it_with_its_string() {
     assert_eq!(document.text_content(document.root()), "new");
     assert_eq!(tab.engine.load_state(), &crate::LoadState::Loaded);
 }
+
+#[test]
+fn a_fragment_link_followed_while_the_page_parses_stays_in_it() {
+    // HTML's "navigate to a fragment" in the document on its way: its
+    // URL takes the fragment and `hashchange` comes, and it is neither
+    // fetched again nor replaced, as a new navigation would.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<a id=a href='#x'>x</a><script>\
+             onhashchange = function () { console.log('hash ' + location.hash); };\
+             document.getElementById('a').click(); console.log('clicked');</script><p id=x>x</p>",
+        )),
+        _ => None,
+    });
+    let mut tab = scripting();
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| {
+        engine.load_state() == &LoadState::Loaded
+            && engine.url().and_then(net::Url::fragment) == Some("x")
+    });
+    let seen = tab.run_until(|lines| lines.iter().any(|line| line.starts_with("hash")));
+    assert_eq!(seen, ["clicked", "hash #x"]);
+    let fetched = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.target == "/page.html")
+        .count();
+    assert_eq!(fetched, 1);
+}

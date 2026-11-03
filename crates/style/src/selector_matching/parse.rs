@@ -471,8 +471,8 @@ fn parse_complex(c: &mut Cursor, depth: usize, scope: Scope) -> Result<Selector,
 /// there, nothing else.
 fn parse_state_selector(c: &mut Cursor, depth: usize) -> Result<Selector, ParseError> {
     let mut specificity = Specificity::default();
-    let states = parse_states(c, depth, &mut specificity, (false, false))
-        .ok_or(ParseError::InvalidSelector)?;
+    let states =
+        parse_states(c, depth, &mut specificity, false).ok_or(ParseError::InvalidSelector)?;
     if states.is_empty() {
         return Err(ParseError::InvalidSelector);
     }
@@ -695,18 +695,14 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
                         if highlight && matches!(c.peek(), Some(Token::Colon)) {
                             return None;
                         }
-                        let nests = matches!(element, PseudoElement::Slotted | PseudoElement::Part);
                         let part = element == PseudoElement::Part;
-                        let states = parse_states(c, depth, &mut spec, (nests, part))?;
+                        let states = parse_states(c, depth, &mut spec, part)?;
                         // A highlight is in no user-action state (CSS
                         // Pseudo 4 section 3.1).
                         if element == PseudoElement::Highlight && !states.is_empty() {
                             return None;
                         }
-                        let then = match nests {
-                            true => parse_then(c, &mut spec),
-                            false => None,
-                        };
+                        let then = parse_then(c, depth, &mut spec, element, !states.is_empty())?;
                         if simple.is_empty() {
                             simple.push(SimpleSelector::Universal);
                         }
@@ -740,37 +736,76 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
     })
 }
 
-/// The pseudo-element after `::slotted()` or `::part()`, when one the
-/// element they represent has follows (`::before`, `::after`,
-/// `::marker`, CSS Scoping 1 section 3.2.2, CSS Shadow Parts 1 section
-/// 4.2), taken with its specificity.
-fn parse_then(c: &mut Cursor, spec: &mut Specificity) -> Option<PseudoElement> {
-    if !matches!(c.peek(), Some(Token::Colon)) || !matches!(c.peek_ahead(1), Some(Token::Colon)) {
+/// The pseudo-element after the pseudo-element `first`, if `::` is at
+/// the cursor: one of the element `::slotted()` or `::part()` represents
+/// (`::part(label)::before`, `::slotted(dialog)::backdrop`, CSS Scoping 1
+/// section 3.2.2, CSS Shadow Parts 1 section 4.2), or `::before`'s,
+/// `::after`'s or `::details-content`'s `::marker` (CSS Pseudo-Elements 4
+/// section 4), as the reference browser takes them ([`follows`]): after
+/// user-action states only for `::part()`, and with none after it; and
+/// in turn the one after that, each with its specificity. `Some(None)`
+/// for none; `None` for one that may not follow.
+fn parse_then(
+    c: &mut Cursor,
+    depth: usize,
+    spec: &mut Specificity,
+    first: PseudoElement,
+    stated: bool,
+) -> Option<Option<Box<PseudoElementSelector>>> {
+    if !(matches!(c.peek(), Some(Token::Colon)) && matches!(c.peek_ahead(1), Some(Token::Colon))) {
+        return Some(None);
+    }
+    if stated && first != PseudoElement::Part {
         return None;
     }
-    let Some(Token::Ident(name)) = c.peek_ahead(2) else {
+    let Pseudo::Element(element, argument) = parse_pseudo(c, spec, depth, Scope::Nested)? else {
         return None;
     };
-    let element = match name.to_ascii_lowercase().as_str() {
-        "before" => PseudoElement::Before,
-        "after" => PseudoElement::After,
-        "marker" => PseudoElement::Marker,
-        _ => return None,
-    };
-    c.advance();
-    c.advance();
-    c.advance();
-    *spec += Specificity(0, 0, 1);
-    Some(element)
+    if !follows(first, element) {
+        return None;
+    }
+    let then = parse_then(c, depth, spec, element, false)?;
+    Some(Some(Box::new(PseudoElementSelector {
+        element,
+        argument,
+        states: Vec::new(),
+        then,
+    })))
+}
+
+/// Whether the pseudo-element `second` may follow `first` in a selector,
+/// as the reference browser takes them: after `::part()` any but another
+/// part, a slot's and the prefixed; after `::slotted()` the tree-abiding
+/// ones, `::backdrop` and the highlights but `::selection`; after
+/// `::before`, `::after` and `::details-content` their `::marker`.
+fn follows(first: PseudoElement, second: PseudoElement) -> bool {
+    use PseudoElement as P;
+    match first {
+        P::Part => !matches!(second, P::Part | P::Slotted | P::WebkitPrefixed),
+        P::Slotted => matches!(
+            second,
+            P::Before
+                | P::After
+                | P::Marker
+                | P::Placeholder
+                | P::FileSelectorButton
+                | P::DetailsContent
+                | P::DetailsContentBefore
+                | P::DetailsContentAfter
+                | P::Backdrop
+                | P::Highlight
+        ),
+        P::Before | P::After | P::DetailsContent => second == P::Marker,
+        _ => false,
+    }
 }
 
 /// Parses the pseudo-classes after a pseudo-element, or in a list
 /// inside one of them: the user-action ones, and `:is()`, `:where()` and
 /// `:not()` of them (selectors-4 §3.6.3). `None` when another
 /// pseudo-class or a pseudo-element is there; anything else after them
-/// is left for the list, which takes it for an error.
-/// After `::slotted()` or `::part()` (`nests`), they end where the
-/// pseudo-element of the element it represents begins ([`parse_then`]);
+/// is left for the list, which takes it for an error. They end where a
+/// pseudo-element after the one they follow begins ([`parse_then`]);
 /// after `::part()` (`part`), a real element's, the pseudo-classes of its
 /// state that are not structural follow too (CSS Shadow Parts 1 section
 /// 4.2): `:dir()`, `:lang()` and `:defined`.
@@ -778,13 +813,10 @@ fn parse_states(
     c: &mut Cursor,
     depth: usize,
     spec: &mut Specificity,
-    (nests, part): (bool, bool),
+    part: bool,
 ) -> Option<Vec<PseudoClass>> {
     let mut states = Vec::new();
-    while matches!(c.peek(), Some(Token::Colon)) {
-        if nests && matches!(c.peek_ahead(1), Some(Token::Colon)) {
-            break;
-        }
+    while matches!(c.peek(), Some(Token::Colon)) && !matches!(c.peek_ahead(1), Some(Token::Colon)) {
         match parse_pseudo(c, spec, depth, Scope::State)? {
             Pseudo::Class(
                 pc @ (PseudoClass::Hover
@@ -1992,6 +2024,53 @@ mod tests {
     }
 
     #[test]
+    fn pseudo_elements_follow_parts_slots_and_generated_content_as_the_reference_takes_them() {
+        // The reference browser's answers to `CSS.supports(selector())`
+        // (gap batch H).
+        for src in [
+            "::part(x)::before",
+            "::part(x)::highlight(y)",
+            "::part(x)::selection",
+            "::part(x)::first-line",
+            "::part(x)::details-content::before",
+            "::part(x):hover::before",
+            "::part(x)::before::marker",
+            "::slotted(x)::marker",
+            "::slotted(x)::highlight(y)",
+            "::slotted(x)::before::marker",
+            "::before::marker",
+            "::after::marker",
+            "::details-content::marker",
+            "div::part(x)::before",
+        ] {
+            ok(src);
+        }
+        for src in [
+            "::part(x)::part(y)",
+            "::part(x)::slotted(y)",
+            "::part(x)::before:hover",
+            "::part(x)::-webkit-foo",
+            "::slotted(x)::selection",
+            "::slotted(x)::first-line",
+            "::slotted(x):hover::before",
+            "::marker::before",
+            "::before::before",
+            "::before:hover::marker",
+            "::backdrop::marker",
+            "::placeholder::marker",
+        ] {
+            err(src);
+        }
+        let then = ending("::part(a b)::before").unwrap().then.clone().unwrap();
+        assert_eq!(then.element, PseudoElement::Before);
+        // Each pseudo-element counts as a type selector.
+        assert_eq!(
+            ok("::part(x)::before").0[0].specificity,
+            Specificity(0, 0, 2)
+        );
+    }
+
+    #[test]
     fn only_the_css2_pseudo_elements_take_one_colon() {
         err(":marker");
         err(":placeholder");
@@ -2063,6 +2142,8 @@ mod tests {
             ":host(.on)",
             ":host-context(.dark) p",
             ":host(.on)::slotted(span)",
+            "::slotted(dialog)::backdrop",
+            "::slotted(li)::marker",
         ] {
             ok(src);
         }
@@ -2075,9 +2156,22 @@ mod tests {
             ":host()",
             ":host-context(.a > .b)",
             "::slotted(p)::part(x)",
+            "::slotted(p)::first-line",
+            "::slotted(p)::before::after",
+            "::slotted(p)::before:hover",
         ] {
             err(src);
         }
+        // A tree-abiding pseudo-element after `::slotted()` is what the
+        // selector represents, and counts as one.
+        let list = ok("::slotted(dialog)::backdrop");
+        let pseudo = list.0[0].pseudo_element.as_ref().unwrap();
+        assert_eq!(pseudo.element, PseudoElement::Slotted);
+        assert_eq!(
+            pseudo.then.as_ref().map(|then| then.element),
+            Some(PseudoElement::Backdrop)
+        );
+        assert_eq!(list.0[0].specificity, Specificity(0, 0, 3));
         let list = ok("::part(a b)");
         let pseudo = list.0[0].pseudo_element.as_ref().unwrap();
         assert_eq!(pseudo.element, PseudoElement::Part);

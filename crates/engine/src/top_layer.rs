@@ -316,7 +316,39 @@ impl Engine {
         }
         let same = clicked == self.shown.overlays.popover_pressed.take();
         if same {
-            self.hide_all_popovers_until(clicked);
+            self.hide_stacked_until(clicked);
+        }
+    }
+
+    /// HTML's "hide all popovers until" `endpoint` as a press's light
+    /// dismiss and a dialog shown run it, the popovers stacked as the
+    /// reference browser stacks them, the hint list above the auto list:
+    /// until an auto popover, every hint goes too; until a hint, the auto
+    /// popovers above the one its list hangs from, all of them when it
+    /// hangs from none. Every popover for `None`, or one in neither list.
+    fn hide_stacked_until(&mut self, endpoint: Option<NodeId>) {
+        let list = endpoint
+            .and_then(|e| self.shown.document.popover(e))
+            .map(|p| p.list);
+        match list {
+            Some(PopoverList::Auto) => {
+                self.hide_all_popovers_until(endpoint);
+                self.close_popover_list(PopoverList::Hint);
+            }
+            Some(PopoverList::Hint) => {
+                self.hide_all_popovers_until(endpoint);
+                let document = &self.shown.document;
+                let from = document
+                    .popover_list(PopoverList::Hint)
+                    .first()
+                    .and_then(|&bottom| document.popover(bottom))
+                    .and_then(|p| p.anchor);
+                match from {
+                    Some(from) => self.hide_all_popovers_until(Some(from)),
+                    None => self.close_popover_list(PopoverList::Auto),
+                }
+            }
+            _ => self.hide_all_popovers_until(None),
         }
     }
 
@@ -441,9 +473,7 @@ impl Engine {
         popover_attribute(document, popover).is_some()
             && document.popover(popover).is_some() == showing
             && document.in_page(popover)
-            && !(is_dialog(document, popover)
-                && (document.dialog(popover).is_some_and(|d| d.modal)
-                    || (!showing && document.attr(popover, "open").is_some())))
+            && !(is_dialog(document, popover) && document.dialog(popover).is_some_and(|d| d.modal))
     }
 
     /// HTML's "show popover", stacked as the bindings' is, no event.
@@ -611,7 +641,11 @@ impl Engine {
     /// The popover or dialog focusing steps, no event but the focus's:
     /// a dialog's focus delegate, else the dialog; a popover's, if any.
     fn focusing(&mut self, subject: NodeId, dialog: bool) {
-        let dialog = dialog || is_dialog(&self.shown.document, subject);
+        // A dialog shown as a popover with `autofocus` takes the focus
+        // itself, as the reference browser has it.
+        let dialog = dialog
+            || (is_dialog(&self.shown.document, subject)
+                && self.shown.document.attr(subject, "autofocus").is_none());
         let styles = self.fresh_styles().cloned();
         let document = &self.shown.document;
         let control = if dialog {
@@ -624,8 +658,11 @@ impl Engine {
         match control {
             Some(control) => self.focus(Some(control), false, false),
             None if dialog => self.focus(Some(subject), false, false),
-            None => {}
+            None => return,
         }
+        // The document's own autofocus is then not done (its autofocus
+        // processed flag).
+        self.shown.document.set_autofocus_processed();
     }
 
     /// HTML's "show a modal dialog", no event.
@@ -648,7 +685,7 @@ impl Engine {
                 previously_focused: focused,
             },
         );
-        self.hide_all_popovers_until(until);
+        self.hide_stacked_until(until);
         self.focusing(dialog, true);
         self.state_changed();
     }
@@ -660,14 +697,19 @@ impl Engine {
         if document.attr(dialog, "open").is_none() {
             return;
         }
-        let _ = document.remove_attribute(dialog, "open");
+        // What was kept of it, before the attribute's going lets it go.
         let was = document.close_dialog_state(dialog);
+        let _ = document.remove_attribute(dialog, "open");
         let focused = document.focused();
         if let Some(was) = was
             && let Some(previous) = was.previously_focused.filter(|&p| document.contains(p))
             && (was.modal
-                || focused
-                    .is_some_and(|f| document.is_shadow_including_inclusive_ancestor(dialog, f)))
+                || focused.is_some_and(|f| {
+                    // Or in it in the flat tree, as an element slotted
+                    // into it is, as the reference browser has it.
+                    document.is_shadow_including_inclusive_ancestor(dialog, f)
+                        || document.flat_ancestors(f).any(|a| a == dialog)
+                }))
         {
             self.focus(Some(previous), false, false);
         }

@@ -145,13 +145,15 @@ impl Tree {
                 } else {
                     ""
                 };
-                // No prefix, and the page's document.
+                // No prefix, and the page's document; each node a tree of
+                // its own, so that none is held for another.
                 Answer::Strings(vec![
                     name,
-                    String::new(),
+                    h.0.to_string(),
                     ns.to_owned(),
                     n.kind.to_string(),
                     String::new(),
+                    "0".to_owned(),
                 ])
             }
             Call::Children(h) => {
@@ -160,7 +162,7 @@ impl Tree {
                 Answer::Nodes(children.map(|&c| Handle(c as u64)).collect())
             }
             Call::Version => Answer::Number(0.0),
-            Call::TakePins => Answer::Pins(Vec::new()),
+            Call::TakePins => Answer::Nodes(Vec::new()),
             Call::Kind(h) => Answer::Number(f64::from(self.nodes[self.node(h)?].kind)),
             Call::Tag(h) => Answer::String(self.nodes[self.node(h)?].tag.clone()),
             Call::Parent(h) => {

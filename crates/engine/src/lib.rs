@@ -110,6 +110,7 @@ pub mod downloads;
 mod downloads_tests;
 mod editing;
 mod focus;
+mod focus_group;
 mod frames;
 mod geometry;
 pub mod gpu;
@@ -644,6 +645,11 @@ struct Shown {
     /// The scroll containers a pan moved whose scroll has not ended: their
     /// `scrollend` waits for the touch to be lifted and their snap.
     unended: HashSet<scroll_state::Scroller>,
+    /// The scroll containers a precise scroll (a touchpad's, WebDriver's
+    /// wheel) moved at once since their last snap: until that snap, the
+    /// scroll is on its way, which the scripts' reads of the offsets do
+    /// not snap.
+    precise_unsnapped: HashSet<scroll_state::Scroller>,
     /// The initial `about:blank` of a new engine, which the first
     /// navigation replaces (HTML's "is initial about:blank").
     initial: bool,
@@ -712,14 +718,11 @@ struct Shown {
     pressed: [Option<NodeId>; 5],
     active: Vec<NodeId>,
     no_mouse: bool,
-    /// The element a Space press is to click when it comes up (M26.6);
-    /// whether an `autofocus` element has had the focus, and the version
-    /// of the document the styles were last brought up to, and was when
-    /// one was last looked for.
+    /// The element a Space press is to click when it comes up (M26.6),
+    /// and the version of the document the styles were last brought up
+    /// to.
     space: Option<NodeId>,
-    autofocused: bool,
     styled_at: u64,
-    autofocus_seen: Option<u64>,
     /// The text control a press began a selection in, which the pointer
     /// drags while the primary button is held (M26.8).
     selecting: Option<NodeId>,
@@ -831,6 +834,7 @@ impl Shown {
             moved: HashSet::new(),
             pan: None,
             unended: HashSet::new(),
+            precise_unsnapped: HashSet::new(),
             initial: false,
             salvageable: true,
             failure: None,
@@ -857,9 +861,7 @@ impl Shown {
             active: Vec::new(),
             no_mouse: false,
             space: None,
-            autofocused: false,
             styled_at: 0,
-            autofocus_seen: None,
             selecting: None,
             popup: None,
             frames: HashMap::new(),
@@ -2011,6 +2013,18 @@ impl Engine {
         let fragment = url.fragment().unwrap_or_default().to_owned();
         self.shown.page.set_url(url.clone());
         if scripted.is_none() {
+            // The part indicated takes the focus when it can, else the
+            // viewport does; and it is the sequential focus navigation
+            // starting point either way (HTML's "scroll to the fragment",
+            // gap batch H).
+            if let Some(Indicated::Element(node)) = indicated_part(&self.shown.document, &fragment)
+            {
+                self.cached_styles();
+                let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+                let takes = focus::focus_area(&self.shown.document, styles, node);
+                self.focus(takes.then_some(node), false, false);
+                self.shown.document.set_starting_point(node);
+            }
             // An element indicated in the document shown is scrolled to
             // as its containers' `scroll-behavior` says (HTML's "scroll to
             // the fragment"), its scroll ending with `scrollend`.
@@ -2187,6 +2201,38 @@ impl Engine {
         let Some(url) = navigation.url.filter(|_| !navigation.reload) else {
             return;
         };
+        // A link or a script of the document on its way to a fragment of
+        // its own URL: HTML's "navigate to a fragment" in it, not a new
+        // navigation in its place (which would bring it again and again).
+        // Its URL is the new one, its entry's once shown, where it is
+        // scrolled to the fragment, and `hashchange` is queued at its
+        // window.
+        let now = self.now();
+        if url.fragment().is_some()
+            && navigation.post.is_none()
+            && !navigation.form
+            && let Some(Navigation {
+                incoming: Incoming::Parsing { page, parsing, .. },
+                ..
+            }) = &mut self.navigation
+            && let Some(old) = page.url().cloned()
+            && old.without_fragment() == url.without_fragment()
+        {
+            page.set_url(url.clone());
+            if old.fragment() != url.fragment() {
+                let event = js::EventInit::new("HashChangeEvent", "hashchange")
+                    .with("oldURL", js::Field::String(old.to_string()))
+                    .with("newURL", js::Field::String(url.to_string()));
+                parsing.scripts.post(
+                    now,
+                    js::Task::Dispatch {
+                        target: js::Target::Window,
+                        event,
+                    },
+                );
+            }
+            return;
+        }
         let Some(current) = &self.navigation else {
             return;
         };
@@ -2406,8 +2452,15 @@ impl Engine {
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
             // A touch's pan or the thumb held is a scroll on its way too,
-            // which the scripts' reads do not snap.
-            scrolling: self.animating() || self.shown.pan.is_some(),
+            // which the scripts' reads do not snap, and so is a precise
+            // scroll with its snap to come.
+            scrolling: self.animating()
+                || self.shown.pan.is_some()
+                || self
+                    .shown
+                    .precise_unsnapped
+                    .iter()
+                    .any(|scroller| self.shown.snaps.contains_key(scroller)),
             scrolled: Arc::new(self.shown.scrolled.clone()),
             snaps: Arc::new(self.shown.snaps.clone()),
             target: self.shown.target,
@@ -2768,7 +2821,9 @@ impl Engine {
         self.buttons |= button.bit();
         self.shown.pressed[button.number() as usize] = target;
         if button == Button::Primary {
-            let chain = target.map(|node| self.chain(node)).unwrap_or_default();
+            let chain = target
+                .map(|node| self.hover_chain(node))
+                .unwrap_or_default();
             self.set_flag(ElementState::ACTIVE, chain);
         }
         let Some(target) = target else {
@@ -2825,6 +2880,10 @@ impl Engine {
             let area = focus::click_focus_target(&self.shown.document, styles, target);
             let visible =
                 area.is_some_and(|area| dom::forms::is_text_control(&self.shown.document, area));
+            // The press is the sequential focus navigation starting point
+            // (HTML section 6.6.3), unless the focus moves, which makes
+            // the element focused it.
+            self.shown.document.set_starting_point(target);
             self.focus(area, visible, false);
             if button == Button::Primary
                 && let Some(area) = area
@@ -2986,7 +3045,11 @@ impl Engine {
     /// Moves the focus from `current` to the next area of the sequential
     /// order, or the previous for `backward`: an `iframe` with a frame
     /// passed to the frame's first or last area (M33.2), or passed over
-    /// when it has none. Past the end, the page gives up the focus.
+    /// when it has none. Past the end, the page gives up the focus. With
+    /// nothing focused, or the sequential focus navigation starting point
+    /// in the element focused (HTML section 6.6.3, gap batch H), Tab goes
+    /// from the starting point; and focusgroups make each of their
+    /// segments one stop (gap batch H).
     fn focus_from(&mut self, current: Option<NodeId>, backward: bool) -> bool {
         self.cached_styles();
         // As laid out now: which scrollers can scroll, and where reading
@@ -3000,34 +3063,74 @@ impl Engine {
             .layout
             .as_ref()
             .map(|cached| focus::Laid::of(&cached.layout));
+        let document = &self.shown.document;
         let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
-        let order = focus::sequential_order(&self.shown.document, styles, laid.as_ref());
-        let mut at = current.and_then(|current| order.iter().position(|&node| node == current));
-        // An element focused that is not in the order (a negative
-        // `tabindex`, or in a scope skipped so, D68) is left for the area
-        // after it in its scope, or the scopes around it.
-        let mut beside = None;
-        if at.is_none()
-            && let Some(current) = current.filter(|&c| self.shown.document.contains(c))
-        {
-            beside = Some(focus::navigate_from(
-                &self.shown.document,
-                styles,
-                laid.as_ref(),
-                current,
-                backward,
-            ));
-        }
+        let order = focus::sequential_order(document, styles, laid.as_ref());
+        let context = focus_group::Context {
+            document,
+            styles,
+            laid: laid.as_ref(),
+        };
+        let current = current.filter(|&c| document.contains(c));
+        // The starting point, when it is not the element focused but in
+        // it, or when nothing is.
+        let start = document
+            .starting_point()
+            .filter(|&start| match (start, current) {
+                (_, None) => true,
+                (dom::StartingPoint::Node(node), Some(current)) => {
+                    node != current
+                        && document.is_shadow_including_inclusive_ancestor(current, node)
+                }
+                (dom::StartingPoint::Point { .. }, Some(_)) => false,
+            });
+        let stops = focus_group::TabStops::new(&context, &order, current);
+        let mut from = current;
+        let mut origin = match (current, start) {
+            (_, Some(start)) => {
+                let beside =
+                    focus::navigate_from_start(document, styles, laid.as_ref(), start, backward);
+                if let dom::StartingPoint::Node(node) = start {
+                    from = Some(node);
+                }
+                Self::beside(&order, beside)
+            }
+            (Some(current), None) => match order.iter().position(|&node| node == current) {
+                Some(at) => focus_group::Origin::At(at),
+                // An element focused that is not in the order (a negative
+                // `tabindex`, or in a scope skipped so, D68) is left for
+                // the area after it in its scope, or the scopes around it.
+                None => {
+                    let beside =
+                        focus::navigate_from(document, styles, laid.as_ref(), current, backward);
+                    Self::beside(&order, beside)
+                }
+            },
+            (None, None) => focus_group::Origin::Nothing,
+        };
         loop {
-            let next = match (at, backward) {
-                (Some(i), false) => order.get(i + 1).copied(),
-                (Some(i), true) => i.checked_sub(1).map(|i| order[i]),
-                (None, _) if beside.is_some() => beside.take().flatten(),
-                (None, false) => order.first().copied(),
-                (None, true) => order.last().copied(),
+            let context = focus_group::Context {
+                document: &self.shown.document,
+                styles: self.shown.styled.as_ref().map(|styled| &styled.styles),
+                laid: laid.as_ref(),
+            };
+            let next = match &stops {
+                Some(stops) => stops.next(&context, &order, from, origin, backward),
+                None => match (origin, backward) {
+                    (focus_group::Origin::At(i), false) => order.get(i + 1).copied(),
+                    (focus_group::Origin::At(i), true) => i.checked_sub(1).map(|i| order[i]),
+                    (focus_group::Origin::Beside(j), _) => order.get(j).copied(),
+                    (focus_group::Origin::Nothing, false) => order.first().copied(),
+                    (focus_group::Origin::Nothing, true) => order.last().copied(),
+                    (focus_group::Origin::Direct(node), _) => Some(node),
+                    (focus_group::Origin::Past, _) => None,
+                },
             };
             let Some(next) = next else {
+                // Past the end the page gives up the focus, and the next
+                // Tab into it starts from its edge.
                 self.focus(None, false, false);
+                self.shown.document.clear_starting_point();
                 return false;
             };
             if self.shown.frames.contains_key(&next) {
@@ -3039,10 +3142,32 @@ impl Engine {
                     self.focus_frame(next);
                     return true;
                 }
-                at = order.iter().position(|&node| node == next);
+                // Passed over: on from it.
+                from = Some(next);
+                origin = match order.iter().position(|&node| node == next) {
+                    Some(at) => focus_group::Origin::At(at),
+                    None => {
+                        self.focus(None, false, false);
+                        return false;
+                    }
+                };
                 continue;
             }
             return self.focus_area(next);
+        }
+    }
+
+    /// Where Tab goes on from in the sequential order `order` when it
+    /// starts beside it: at the area `beside` plain navigation found, that
+    /// area itself when the order does not have it (one in a scope a
+    /// `tabindex` keeps out), or past the end when it found none.
+    fn beside(order: &[NodeId], beside: Option<NodeId>) -> focus_group::Origin {
+        match beside {
+            Some(b) => match order.iter().position(|&node| node == b) {
+                Some(at) => focus_group::Origin::Beside(at),
+                None => focus_group::Origin::Direct(b),
+            },
+            None => focus_group::Origin::Past,
         }
     }
 
@@ -3206,8 +3331,24 @@ impl Engine {
         if key.key == "Escape" && plain && self.close_request() {
             return KeyOutcome::Taken;
         }
+        // The arrow keys in a radio group, then in a focusgroup (gap batch
+        // H).
+        if plain && !m.shift {
+            if let Some(outcome) = self.radio_key(key) {
+                return outcome;
+            }
+            if let Some(outcome) = self.focus_group_key(key) {
+                return outcome;
+            }
+        }
         let scrolls = self.viewport_takes_user_scrolls();
         let focused = self.shown.document.focused();
+        // The keys scroll around the focus, or with none around HTML's
+        // sequential focus navigation starting point, where a press left it.
+        let origin = focused.or(match self.shown.document.starting_point() {
+            Some(dom::StartingPoint::Node(node)) => Some(node),
+            _ => None,
+        });
         let document = &self.shown.document;
         let text_control = focused.is_some_and(|node| dom::forms::is_text_control(document, node));
         let clicks = |space| focused.filter(|&node| key_clicks(document, node, space));
@@ -3232,7 +3373,7 @@ impl Engine {
             _ if text_control => KeyOutcome::Ignored,
             "ArrowLeft" | "ArrowRight" if plain => {
                 let way = if key.key == "ArrowLeft" { -1.0 } else { 1.0 };
-                match self.key_scroller(focused, 0, way) {
+                match self.key_scroller(origin, 0, way) {
                     Some(node) => self.scroll_element_across_by(node, way * SCROLL_STEP),
                     None if scrolls => self.scroll_across_by(way * SCROLL_STEP),
                     None => return KeyOutcome::Ignored,
@@ -3247,13 +3388,13 @@ impl Engine {
                     " " if m.shift => -1.0,
                     _ => 1.0,
                 };
-                match self.key_scroller(focused, 1, way) {
+                match self.key_scroller(origin, 1, way) {
                     // A scroll container around the focus takes it (CSSOM
                     // View section 13's keyboard scrolling, as the
                     // reference browser scrolls), a page being seven
-                    // eighths of its height.
+                    // eighths of its height less its scroll padding.
                     Some(node) => {
-                        let page = self.element_client_height(node) * 0.875;
+                        let page = self.element_page_step(node);
                         match key.key.as_str() {
                             "ArrowDown" | "ArrowUp" => {
                                 self.scroll_element_by(node, way * SCROLL_STEP);
@@ -3262,7 +3403,7 @@ impl Engine {
                                 let before = self.scroll_targets(Some(node));
                                 let to = if way < 0.0 { 0.0 } else { f32::INFINITY };
                                 self.scroll_element_to(node, to);
-                                self.note_relative_scroll(Some(node), before);
+                                self.note_scroll(Some(node), before, false);
                             }
                             _ => {
                                 self.scroll_element_by(node, way * page.max(SCROLL_STEP));
@@ -3277,7 +3418,7 @@ impl Engine {
                             "Home" | "End" => {
                                 let before = self.scroll_targets(None);
                                 self.scroll_to(if way < 0.0 { 0.0 } else { f32::INFINITY });
-                                self.note_relative_scroll(None, before);
+                                self.note_scroll(None, before, false);
                             }
                             _ => {
                                 self.scroll_by(way * page);
@@ -3294,7 +3435,8 @@ impl Engine {
     }
 
     /// The scroll container a key scrolls in `axis` (0 across, 1 down),
-    /// `way` its direction: the `focused` element, or the nearest element
+    /// `way` its direction: the `focused` element (or the node of the
+    /// sequential focus navigation starting point), or the nearest element
     /// around it in the flat tree, that the user can scroll in that axis
     /// (`overflow` `auto` or `scroll` there) and that can still move that
     /// way, as the reference browser picks it; `None` for the viewport.
@@ -3337,17 +3479,91 @@ impl Engine {
         })
     }
 
-    /// The height of the element's padding box, its scrollport's, as
-    /// laid out; 0 for one with no box.
-    fn element_client_height(&mut self, node: NodeId) -> f32 {
+    /// A page's scroll of a scroll container by a key: seven eighths of
+    /// the height of its padding box, its scrollport's, as laid out, less
+    /// its `scroll-padding` above and below, which a page leaves out (CSS
+    /// Scroll Snap 1 section 4.1), as the reference browser's does; 0 for
+    /// one with no box.
+    fn element_page_step(&mut self, node: NodeId) -> f32 {
         let width = self.viewport.0 as f32;
         if width == 0.0 {
             return 0.0;
         }
         fragment_of(&self.layout(width).roots, node).map_or(0.0, |f| {
-            let [top, _, bottom, _] = f.style.used_border_width();
-            (f.h - top - bottom).max(0.0)
+            let [top, right, bottom, left] = f.style.used_border_width();
+            let port = ((f.w - left - right).max(0.0), (f.h - top - bottom).max(0.0));
+            let [above, _, below, _] = scroll_snap::scroll_padding(&f.style, port);
+            port.1 * 0.875 - above - below
         })
+    }
+
+    /// An arrow key at a radio button focused (HTML leaves it to the user
+    /// agent): the next radio button of its group that can take the
+    /// focus, or the previous for Left and Up (Right and Left swapped
+    /// right to left), round to the first, is focused and clicked, which
+    /// checks it, as the reference browser does. `None` for another key
+    /// or element.
+    fn radio_key(&mut self, key: &Key) -> Option<KeyOutcome> {
+        let document = &self.shown.document;
+        let radio = document.focused().filter(|&node| {
+            document.tag(node) == Some("input") && dom::forms::input_type(document, node) == "radio"
+        })?;
+        let rtl = self
+            .shown
+            .styled
+            .as_ref()
+            .and_then(|styled| styled.styles.get(radio))
+            .is_some_and(|style| style.direction == style::computed::Direction::Rtl);
+        let forward = match key.key.as_str() {
+            "ArrowDown" => true,
+            "ArrowUp" => false,
+            "ArrowRight" => !rtl,
+            "ArrowLeft" => rtl,
+            _ => return None,
+        };
+        self.cached_styles();
+        let document = &self.shown.document;
+        let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+        let group = dom::forms::radio_group(document, radio);
+        let at = group.iter().position(|&node| node == radio)?;
+        let n = group.len();
+        let next = (1..n)
+            .map(|step| match forward {
+                true => group[(at + step) % n],
+                false => group[(at + n - step) % n],
+            })
+            .find(|&node| focus::focusable(document, styles, node))?;
+        self.focus(Some(next), true, true);
+        self.key_click(next);
+        Some(KeyOutcome::Taken)
+    }
+
+    /// An arrow key, Home or End in a focusgroup (gap batch H): the focus
+    /// moves to the item it says, if any. `None` when the focusgroup does
+    /// not take the key there.
+    fn focus_group_key(&mut self, key: &Key) -> Option<KeyOutcome> {
+        let focused = self.shown.document.focused()?;
+        self.shown.document.focus_group_owner(focused)?;
+        self.cached_styles();
+        let (width, _) = self.viewport;
+        if width > 0 {
+            self.layout(width as f32);
+        }
+        let laid = self
+            .shown
+            .layout
+            .as_ref()
+            .map(|cached| focus::Laid::of(&cached.layout));
+        let context = focus_group::Context {
+            document: &self.shown.document,
+            styles: self.shown.styled.as_ref().map(|styled| &styled.styles),
+            laid: laid.as_ref(),
+        };
+        let target = context.directional_target(focused, &key.key)?;
+        if let Some(target) = target {
+            self.focus(Some(target), true, true);
+        }
+        Some(KeyOutcome::Taken)
     }
 
     /// A page's scroll by a key: the viewport's height less a line, so a
@@ -3526,9 +3742,6 @@ impl Engine {
             None,
         );
         self.fire(js::Target::Node(scripts::handle(target)), event);
-        if button == Button::Primary && self.shown.document.contains(target) {
-            self.light_dismiss(target, true, x, y);
-        }
         if !no_mouse && self.shown.document.contains(target) {
             let event = self.mouse_event(
                 "MouseEvent",
@@ -3539,6 +3752,11 @@ impl Engine {
                 None,
             );
             self.fire(js::Target::Node(scripts::handle(target)), event);
+        }
+        // The release's light dismiss, after its `mouseup` and before the
+        // click, as the reference browser orders them.
+        if button == Button::Primary && self.shown.document.contains(target) {
+            self.light_dismiss(target, true, x, y);
         }
         let Some(clicked) = pressed.and_then(|pressed| self.common_ancestor(pressed, target))
         else {
@@ -3779,6 +3997,25 @@ impl Engine {
             .collect()
     }
 
+    /// The elements `:hover` and `:active` reach from `node`: it and its
+    /// flat tree ancestors, up to the first in the top layer, whose box
+    /// is the viewport's and not its ancestors' (gap batch H), as the
+    /// reference browser stops them.
+    fn hover_chain(&self, node: NodeId) -> Vec<NodeId> {
+        let document = &self.shown.document;
+        let mut chain = Vec::new();
+        for at in std::iter::once(node).chain(document.flat_ancestors(node)) {
+            if !document.is_element(at) {
+                continue;
+            }
+            chain.push(at);
+            if document.in_top_layer(at) {
+                break;
+            }
+        }
+        chain
+    }
+
     /// The nearest element that is an inclusive ancestor of both, where a
     /// click goes (UI Events section 4.3.3).
     fn common_ancestor(&self, a: NodeId, b: NodeId) -> Option<NodeId> {
@@ -3908,13 +4145,18 @@ impl Engine {
     /// The hovered elements as the pointer and the page now stand: the
     /// element under the pointer and its ancestors.
     fn update_hover(&mut self) {
-        let hit = self.pointer.and_then(|(x, y)| self.hit_test(x, y));
-        let document = &self.shown.document;
-        let chain: Vec<NodeId> = hit
-            .into_iter()
-            .flat_map(|node| std::iter::once(node).chain(document.flat_ancestors(node)))
-            .filter(|&node| document.is_element(node))
-            .collect();
+        // A point in the viewport that hits nothing, past the root's box
+        // or on what is inert, is the root element's, as the reference
+        // browser and CSSOM View's `elementsFromPoint` have it.
+        let (width, height) = self.viewport;
+        let hit = self.pointer.and_then(|(x, y)| {
+            self.hit_test(x, y).or_else(|| {
+                (x >= 0.0 && y >= 0.0 && x < width as f32 && y < height as f32)
+                    .then(|| self.shown.document.document_element())
+                    .flatten()
+            })
+        });
+        let chain = hit.map(|node| self.hover_chain(node)).unwrap_or_default();
         self.set_hovered(chain);
     }
 
@@ -3991,11 +4233,12 @@ impl Engine {
         }
     }
 
-    /// HTML's focus fixup (section 6.6.4) at a rendering (M26.6): an
-    /// element focused that can no longer take the focus, disabled or no
-    /// longer rendered by the last frame's styles, loses it, with `blur`.
-    /// The styles are not brought up to date here, so that the frame's
-    /// own style stage makes its animations.
+    /// HTML's focus fixup (section 6.6.4) at the end of a rendering
+    /// update (M26.6): an element focused that can no longer take the
+    /// focus, disabled or no longer rendered by the frame's styles, loses
+    /// it, with `blur`. Those it is not focusable by are brought up to
+    /// what the frame's callbacks and observers changed, and the layout
+    /// with them, before it does.
     fn focus_fixup(&mut self) {
         let Some(focused) = self.shown.document.focused() else {
             return;
@@ -4006,14 +4249,19 @@ impl Engine {
         if focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
             return;
         }
-        // Not by the last frame's styles: by the styles as they now are,
-        // which an element a script inserted, or a popover shown, since
-        // has, before it loses the focus.
+        // Not by the frame's styles: by the styles as they now are, which
+        // an element a script inserted, or a popover shown, since has,
+        // before it loses the focus.
         self.cached_styles();
+        // A scroller keeps the focus while it can scroll (gap batch H), as
+        // laid out by those styles.
+        let (width, _) = self.viewport;
+        if width > 0 {
+            self.layout(width as f32);
+        }
         let Some(styled) = &self.shown.styled else {
             return;
         };
-        // A scroller keeps the focus while it can scroll (gap batch H).
         let laid = self
             .shown
             .layout
@@ -4029,38 +4277,45 @@ impl Engine {
         }
     }
 
-    /// HTML's autofocus (section 6.6.5) at a rendering (M26.6): the first
-    /// element with `autofocus` that the last frame's styles render and
-    /// that can take the focus takes it, shown, once a document, unless
-    /// something has had it first. Looked for again only when the styles
-    /// have been brought up to a new version of the document.
+    /// HTML's "flush autofocus candidates" (section 6.6.5) at a rendering
+    /// (M26.6), before the animation frame callbacks: unless the document
+    /// has processed autofocus, with something focused it has, and none
+    /// is taken; else the candidates the document keeps, in the order
+    /// they were inserted, are taken from the first: the first that is a
+    /// focusable area as styled now, or has a focus delegate, gets the
+    /// focus, shown, and the document has processed autofocus. Those that
+    /// cannot are dropped.
     fn autofocus(&mut self) {
-        if self.shown.autofocused {
+        let document = &mut self.shown.document;
+        if document.autofocus_processed() || document.autofocus_candidates().is_empty() {
             return;
         }
-        if self.shown.document.focused().is_some() {
-            self.shown.autofocused = true;
+        if document.focused().is_some() {
+            document.set_autofocus_processed();
             return;
         }
-        let Some(styled) = &self.shown.styled else {
-            return;
-        };
-        if self.shown.autofocus_seen == Some(self.shown.styled_at) {
-            return;
-        }
-        self.shown.autofocus_seen = Some(self.shown.styled_at);
+        self.cached_styles();
         let document = &self.shown.document;
-        // A shadow tree's elements are candidates too (D68).
-        let candidate = document
-            .shadow_including_subtree(document.root())
-            .into_iter()
-            .find(|&node| {
-                document.attr(node, "autofocus").is_some()
-                    && focus::focusable(document, Some(&styled.styles), node)
-            });
-        if let Some(candidate) = candidate {
-            self.shown.autofocused = true;
-            self.focus(Some(candidate), true, true);
+        let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+        let mut dropped = Vec::new();
+        let mut found = None;
+        for candidate in document.autofocus_candidates() {
+            dropped.push(candidate);
+            let target = match focus::focus_area(document, styles, candidate) {
+                true => Some(candidate),
+                false => focus::focus_delegate(document, styles, candidate),
+            };
+            if target.is_some() {
+                found = target;
+                break;
+            }
+        }
+        for candidate in dropped {
+            self.shown.document.drop_autofocus_candidate(candidate);
+        }
+        if let Some(target) = found {
+            self.shown.document.set_autofocus_processed();
+            self.focus(Some(target), true, true);
         }
     }
 
@@ -4278,7 +4533,6 @@ impl Engine {
         let (width, height) = self.css_size(width, height);
         self.viewport = (width, height);
         let events = std::mem::take(&mut self.pending_events);
-        self.focus_fixup();
         self.autofocus();
         if !self.scripts_run() || self.shown.made {
             return;
@@ -7880,7 +8134,21 @@ impl Engine {
         else {
             return false;
         };
-        !focus::focusable(&self.shown.document, Some(&styled.styles), focused)
+        if focus::focusable(&self.shown.document, Some(&styled.styles), focused) {
+            return false;
+        }
+        // A scroller that can scroll, by the last frame's layout, keeps it.
+        let laid = self
+            .shown
+            .layout
+            .as_ref()
+            .map(|cached| focus::Laid::of(&cached.layout));
+        !focus::focusable_in(
+            &self.shown.document,
+            Some(&styled.styles),
+            laid.as_ref(),
+            focused,
+        )
     }
 
     /// When a frame is next wanted, on the clock [`Engine::frame_at`] is
@@ -8718,6 +8986,9 @@ impl Engine {
         // user (gap batch H), their changes the next frame's too.
         self.observe_layout(time.now);
         self.update_relevance();
+        // The focus fixup ends the rendering update, after the animation
+        // frame callbacks and the observers (HTML section 8.1.7.3).
+        self.focus_fixup();
         self.drawing_at = None;
         if empty {
             return &[];
@@ -9105,6 +9376,7 @@ impl Engine {
         }
         self.shown.snaps = snaps;
         self.shown.snap_direction.clear();
+        self.shown.precise_unsnapped.clear();
     }
 
     /// Moves the target of the viewport (`None`) or a scroll container to
@@ -9445,16 +9717,25 @@ impl Engine {
     /// Conditional 5 section 7.4.4, D72) and its next snap goes in. A
     /// scroll that moved nothing changes nothing.
     fn note_relative_scroll(&mut self, scroller: Option<NodeId>, before: (f32, f32)) {
+        self.note_scroll(scroller, before, true);
+    }
+
+    /// [`Engine::note_relative_scroll`] of a scroll that is `relative`,
+    /// or of an absolute one by a key, Home or End, which its snap goes
+    /// in the direction of but `scroll-state(scrolled)` does not read.
+    fn note_scroll(&mut self, scroller: Option<NodeId>, before: (f32, f32), relative: bool) {
         let after = self.scroll_targets(scroller);
         let moved = way(before, after);
         if moved == [0, 0] {
             return;
         }
         self.shown.moved.insert(scroller);
-        let scrolled = self.shown.scrolled.entry(scroller).or_default();
-        for (axis, &way) in moved.iter().enumerate() {
-            if way != 0 {
-                scrolled[axis] = way;
+        if relative {
+            let scrolled = self.shown.scrolled.entry(scroller).or_default();
+            for (axis, &way) in moved.iter().enumerate() {
+                if way != 0 {
+                    scrolled[axis] = way;
+                }
             }
         }
         let pending = self.shown.snap_direction.entry(scroller).or_default();
@@ -9522,7 +9803,14 @@ impl Engine {
     /// else the next one out, else the viewport. Only `overflow: auto`
     /// and `scroll` containers take the wheel.
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) {
-        self.wheel_taken(x, y, dy);
+        self.wheel_taken(x, y, dy, false);
+    }
+
+    /// [`Engine::wheel`] of a precise device, a touchpad's or a WebDriver
+    /// wheel action's as the reference browser takes one: the scroll it
+    /// makes is applied at once, not animated over the frames to come.
+    pub fn wheel_precise(&mut self, x: f32, y: f32, dy: f32) {
+        self.wheel_taken(x, y, dy, true);
     }
 
     /// A wheel turn of `dx` px across (right when positive) at the
@@ -9530,13 +9818,23 @@ impl Engine {
     /// down: the innermost scroll container under the pointer that can
     /// still move that way, else the viewport.
     pub fn wheel_across(&mut self, x: f32, y: f32, dx: f32) {
+        self.wheel_across_taken(x, y, dx, false);
+    }
+
+    /// [`Engine::wheel_across`] of a precise device, applied at once as
+    /// [`Engine::wheel_precise`] is.
+    pub fn wheel_across_precise(&mut self, x: f32, y: f32, dx: f32) {
+        self.wheel_across_taken(x, y, dx, true);
+    }
+
+    fn wheel_across_taken(&mut self, x: f32, y: f32, dx: f32, precise: bool) {
         if !dx.is_finite() || dx == 0.0 {
             return;
         }
         self.close_popup();
         if let Some((node, fx, fy)) = self.frame_under(x, y) {
             if let Some(child) = self.frame_engine(node) {
-                child.wheel_across(fx, fy, dx);
+                child.wheel_across_taken(fx, fy, dx, precise);
             }
             return;
         }
@@ -9558,13 +9856,44 @@ impl Engine {
             if (dx > 0.0 && target < max) || (dx < 0.0 && target > min) {
                 self.scroll_element_across_by(node, dx);
                 self.snap_way(Some(node), 2);
+                if precise {
+                    self.precise_scroll_done(Some(node));
+                }
                 return;
             }
         }
         if self.viewport_takes_user_scrolls() {
             self.scroll_across_by(dx);
             self.snap_way(None, 2);
+            if precise {
+                self.precise_scroll_done(None);
+            }
         }
+    }
+
+    /// Finishes a precise scroll of the viewport (`None`) or a scroll
+    /// container at once: its offsets jump to the targets the scroll set,
+    /// with no layout in between; it snaps with the next frame, in its
+    /// direction, its `scrollend` waiting for that snap, as a pan's does.
+    fn precise_scroll_done(&mut self, scroller: scroll_state::Scroller) {
+        let shown = &mut self.shown;
+        match scroller {
+            None => {
+                self.changed |= shown.scroll_y != shown.scroll_target
+                    || shown.scroll_x != shown.scroll_target_x;
+                shown.scroll_y = shown.scroll_target;
+                shown.scroll_x = shown.scroll_target_x;
+            }
+            Some(node) => {
+                if let Some(scroll) = shown.element_scroll.get_mut(&node) {
+                    self.changed |= scroll.y != scroll.target || scroll.x != scroll.target_x;
+                    scroll.y = scroll.target;
+                    scroll.x = scroll.target_x;
+                }
+            }
+        }
+        shown.precise_unsnapped.insert(scroller);
+        shown.unended.insert(scroller);
     }
 
     /// A touch went down at the viewport point `(x, y)` (as a
@@ -9735,7 +10064,7 @@ impl Engine {
     /// canceled, or something scrolled. Over a frame (M33.2), the frame
     /// takes it first, and what it cannot take goes to the scroll chain
     /// around its `iframe`.
-    fn wheel_taken(&mut self, x: f32, y: f32, dy: f32) -> bool {
+    fn wheel_taken(&mut self, x: f32, y: f32, dy: f32, precise: bool) -> bool {
         if !dy.is_finite() || dy == 0.0 {
             return false;
         }
@@ -9744,7 +10073,7 @@ impl Engine {
         if let Some((node, fx, fy)) = self.frame_under(x, y) {
             if self
                 .frame_engine(node)
-                .is_some_and(|child| child.wheel_taken(fx, fy, dy))
+                .is_some_and(|child| child.wheel_taken(fx, fy, dy, precise))
             {
                 return true;
             }
@@ -9763,6 +10092,9 @@ impl Engine {
             if (dy > 0.0 && target < max) || (dy < 0.0 && target > 0.0) {
                 self.scroll_element_by(node, dy);
                 self.snap_way(Some(node), 2);
+                if precise {
+                    self.precise_scroll_done(Some(node));
+                }
                 return true;
             }
         }
@@ -9772,6 +10104,9 @@ impl Engine {
         let before = self.shown.scroll_target;
         self.scroll_by(dy);
         self.snap_way(None, 2);
+        if precise {
+            self.precise_scroll_done(None);
+        }
         self.shown.scroll_target != before
     }
 
@@ -9817,6 +10152,23 @@ impl Engine {
         }
         let targets = self.shown.scripts.layout_targets();
         let measured = self.measure(&targets);
+        // The targets in contents an element skips (`content-visibility`,
+        // gap batch H).
+        let skipped: HashSet<NodeId> = match self.shown.styled.as_ref() {
+            Some(styled) => targets
+                .iter()
+                .copied()
+                .filter(|&target| {
+                    self.shown.document.flat_ancestors(target).any(|a| {
+                        styled
+                            .styles
+                            .get(a)
+                            .is_some_and(|style| style.skips_contents())
+                    })
+                })
+                .collect(),
+            None => HashSet::new(),
+        };
         let origin = self
             .shown
             .scripts
@@ -9841,7 +10193,7 @@ impl Engine {
         };
         shown
             .scripts
-            .observe_layout(&mut lent, &measured, viewport, scale, time);
+            .observe_layout(&mut lent, (&measured, &skipped), viewport, scale, time);
         self.scripts_ran();
     }
 

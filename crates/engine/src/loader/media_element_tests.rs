@@ -151,6 +151,43 @@ addEventListener('keydown', async () => {{
 }
 
 #[test]
+fn an_element_let_go_of_while_it_loads_keeps_its_object_and_listeners() {
+    // Nothing holds the element but its load, whose events are yet to
+    // fire at it (HTML section 4.8.11.18): its object, with its
+    // listeners and expandos, outlives the collector's passes, each of
+    // its events heard.
+    let page = server(
+        "log('ready');\
+         (() => { const a = new Audio('/media/tone.wav'); a.mark = 'kept';\
+           ['loadstart', 'progress', 'suspend', 'loadedmetadata', 'loadeddata', 'canplay',\
+            'canplaythrough'].forEach((t) => a.addEventListener(t, (e) => \
+              log(t + ' ' + e.target.mark))); })();",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(page.url("/page.html"));
+    tab.run_until(|lines| lines.iter().any(|l| l == "ready"));
+    let mut heard: Vec<String> = Vec::new();
+    while !heard.iter().any(|l| l.starts_with("canplaythrough")) {
+        tab.engine.shown.scripts.collect();
+        tab.engine.evaluate_script("var garbage = [];");
+        heard.extend(tab.run_until(|lines| !lines.is_empty()));
+    }
+    assert_eq!(
+        heard,
+        [
+            "loadstart kept",
+            "progress kept",
+            "suspend kept",
+            "loadedmetadata kept",
+            "loadeddata kept",
+            "canplay kept",
+            "canplaythrough kept",
+        ]
+    );
+}
+
+#[test]
 fn sound_alone_loads_as_the_reference_shows() {
     let page = server(&format!(
         "{WATCH}

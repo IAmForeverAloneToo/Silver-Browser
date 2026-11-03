@@ -89,19 +89,21 @@ pub enum Call {
     Document,
     /// The bindings make an object for the node, which the host then
     /// holds until it is released: the node's name (its `nodeName`, an
-    /// element's qualified name); `connected` or empty; an element's
-    /// namespace's URI, or empty (M32); its `nodeType` (D58); for an
-    /// element whose name has a prefix that prefix, for a document the
-    /// interface its object is of (`Document`, `HTMLDocument` or
+    /// element's qualified name); the handle of the root of the tree its
+    /// object keeps with, in decimal (the bindings' groups of objects); an
+    /// element's namespace's URI, or empty (M32); its `nodeType` (D58);
+    /// for an element whose name has a prefix that prefix, for a document
+    /// the interface its object is of (`Document`, `HTMLDocument` or
     /// `XMLDocument`, D67), for a shadow root `ShadowRoot` (D68), else
-    /// empty; then the names of its attributes
-    /// that start with `on`, which may be event handlers (M26), as
-    /// strings.
+    /// empty; the handle of that root's owner document, in decimal; then
+    /// the names of its attributes that start with `on`, which may be
+    /// event handlers (M26), as strings.
     Wrap(Handle),
-    /// The nodes scripts hold whose place in the document changed since
-    /// this was last asked, each with whether it is now in the document:
-    /// the bindings hold the object of a node in the document as the
-    /// document does, and let go of it when it leaves.
+    /// The nodes scripts hold that went into another tree or out of one
+    /// since this was last asked, each followed by the root of the tree
+    /// it is in now and that root's owner document: the bindings keep a
+    /// node's object as long as any object of its tree is kept, and hold
+    /// the page's document's tree's for good.
     TakePins,
     /// The node's `nodeType`.
     Kind(Handle),
@@ -984,12 +986,14 @@ pub enum Call {
     Tabbable(Handle),
     /// The focused element, if any.
     Focused,
-    /// Focuses the element, or nothing; the host decides whether the
-    /// focus is to be shown, and scrolls the element into view after the
-    /// run unless `prevent_scroll`. The bindings fire the events.
+    /// Focuses the element, or nothing; `visible` says whether the focus
+    /// is to be shown (`FocusOptions.focusVisible`), else the host
+    /// decides; and scrolls the element into view after the run unless
+    /// `prevent_scroll`. The bindings fire the events.
     SetFocus {
         node: Option<Handle>,
         prevent_scroll: bool,
+        visible: Option<bool>,
     },
     /// The focused element loses the focus on its way to the element
     /// (M26.11): `focus-within` stays with the ancestors they share
@@ -1268,10 +1272,11 @@ pub enum CustomCall {
     /// for, each with its definition's number.
     Initialize { root: Handle, registry: u32 },
     /// The roots among `roots`, each of a tree out of the document, whose
-    /// trees hold a node the host holds (a mutation record's, a live
-    /// range's or iterator's, one an event is to be fired at): the sweep
-    /// of the objects held out of the document lets go of none of
-    /// theirs.
+    /// trees, their shadow trees and templates' contents with them, hold
+    /// a node the host holds (a mutation record's, a live range's or
+    /// iterator's, one an event is to be fired at, a media element with
+    /// events to come): the sweep of the trees' groups of objects held
+    /// for custom elements lets go of none of theirs.
     Kept(Vec<Handle>),
     /// Gives an element `createElementNS()` made a custom one of the
     /// prefix its qualified name had, once constructed.

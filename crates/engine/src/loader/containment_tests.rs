@@ -509,6 +509,8 @@ fn tab_reaches_a_scroller_with_nothing_focusable_in_it() {
     assert_eq!(console, ["n2 -1", "n2", "n1", "n1"]);
     frame_at(&mut tab, &clock, 16);
     tab.engine.focus(None, false, false);
+    // From the document's start, not from the element last focused.
+    tab.engine.shown.document.clear_starting_point();
     assert_eq!(tab_order(&mut tab), ["start", "t0", "a", "b", "n2", "end"]);
 }
 

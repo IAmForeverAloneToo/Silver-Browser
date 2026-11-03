@@ -15,7 +15,7 @@ use style::computed::{ComputedStyle, Display, DominantBaseline, TextAnchor, Text
 use text::FontCollection;
 
 use crate::syntax::{Axis, Viewport, parse_lengths};
-use crate::tree::{Builder, Glyphs, Outline};
+use crate::tree::{Builder, CharCell, Glyphs, Outline};
 
 /// One run of a text's characters laid out: an element's, shaped
 /// together, its glyphs' outlines in `path` in the text's user units.
@@ -28,6 +28,8 @@ pub(crate) struct Run<'a> {
     pub(crate) path: Path,
     /// The run's box: its advance by the font's ascent and descent.
     pub(crate) bounds: [f64; 4],
+    /// Its characters' cells, in a tree built for scripts' questions.
+    pub(crate) chars: Vec<CharCell>,
 }
 
 /// An element a text's characters are in, and where they are.
@@ -189,11 +191,23 @@ impl<'a> Builder<'a> {
                 );
                 path.add_outline(&curves, &at);
             }
+            let chars = match self.queries() {
+                true => cells(
+                    fonts,
+                    &run.text,
+                    &owner.style,
+                    x,
+                    baseline,
+                    (ascent, descent),
+                ),
+                false => Vec::new(),
+            };
             out.push(Run {
                 node: owner.node,
                 style: owner.style.clone(),
                 path,
                 bounds: [x, baseline - ascent, advance, ascent + descent],
+                chars,
             });
         }
         Some(out)
@@ -325,6 +339,49 @@ fn collapse<'a>(
         owner.end = before[owner.end].min(total);
     }
     (kept, owners)
+}
+
+/// The cells of a run's characters `text` of `style`, starting at `x` on
+/// `baseline`, the font's `ascent` and `descent` their height: each
+/// character's start the width of the text before it as shaped, with
+/// the spacing after each.
+fn cells(
+    fonts: &FontCollection,
+    text: &str,
+    style: &ComputedStyle,
+    x: f64,
+    baseline: f64,
+    (ascent, descent): (f64, f64),
+) -> Vec<CharCell> {
+    let size = style.font_size_px;
+    let mut out = Vec::new();
+    let mut spacing = 0.0;
+    let mut start = x;
+    for (at, c) in text.char_indices() {
+        let end_at = at + c.len_utf8();
+        if c == ' ' {
+            spacing += f64::from(style.word_spacing);
+        }
+        spacing += f64::from(style.letter_spacing);
+        let end = x + f64::from(fonts.measure(&text[..end_at], size)) + spacing;
+        let cell = CharCell {
+            x: start,
+            baseline,
+            advance: end - start,
+            top: baseline - ascent,
+            height: ascent + descent,
+        };
+        out.push(cell);
+        if c.len_utf16() == 2 {
+            out.push(CharCell {
+                x: end,
+                advance: 0.0,
+                ..cell
+            });
+        }
+        start = end;
+    }
+    out
 }
 
 /// A run's advance: its shaped width, and its spacing after each

@@ -3948,9 +3948,9 @@ fn declarations_for<'a>(
             (matcher, candidates),
             (element, svg),
             (author, shadow),
-            &mut order,
-            &mut out,
+            (&mut order, &mut out),
             containers,
+            None,
         );
     }
     matcher.set_shadow_scope(None);
@@ -3989,15 +3989,17 @@ fn declarations_for<'a>(
 /// The declarations other trees' rules give `element` (CSS Scoping 1,
 /// CSS Shadow Parts 1, D69): its shadow tree's by `:host`, its slots'
 /// trees' by `::slotted()`, and the trees its parts reach by `::part()`,
-/// each in its tree's context.
+/// each in its tree's context; and its pseudo-elements' by those
+/// followed by one (`::part(x)::before`). With `highlight`, those of its
+/// `::highlight()` of that name alone, in the element's place.
 fn scoped_declarations<'a>(
     document: &Document,
     (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
     (element, svg): (NodeId, bool),
     (author, shadow): (&InForce<'a>, &HashMap<NodeId, InForce<'a>>),
-    order: &mut u32,
-    out: &mut Matched<'a>,
+    (order, out): (&mut u32, &mut Matched<'a>),
     containers: Option<&Containers<'_>>,
+    highlight: Option<HighlightName>,
 ) {
     // A host: its shadow tree's rules, which match it featureless, by
     // `:host` alone, and its pseudo-elements by `:host::before`.
@@ -4006,7 +4008,7 @@ fn scoped_declarations<'a>(
     {
         matcher.set_shadow_scope(Some(root));
         rules.candidates(document, element, candidates);
-        collect_from_sheet(
+        collect_from_sheet_for(
             matcher,
             (element, svg),
             (rules, candidates),
@@ -4014,9 +4016,9 @@ fn scoped_declarations<'a>(
                 TierBase::AuthorSheet,
                 (tree_depth(document, root), Some(root)),
             ),
-            order,
-            out,
+            (order, out),
             containers,
+            highlight,
         );
     }
     // Slotted: the rules of each slot's tree, the slot itself slotted
@@ -4037,6 +4039,7 @@ fn scoped_declarations<'a>(
                 (element, containers, None),
                 order,
                 out,
+                (document, highlight),
                 |selector| matcher.matches_slotted(element, at, selector),
             );
         }
@@ -4069,6 +4072,7 @@ fn scoped_declarations<'a>(
             (element, containers, Some(at)),
             order,
             out,
+            (document, highlight),
             |selector| matcher.matches_part(element, at, &seen, selector),
         );
     }
@@ -4100,6 +4104,7 @@ fn scoped_declarations<'a>(
                 (element, containers, Some(at)),
                 order,
                 out,
+                (document, highlight),
                 |selector| matcher.matches_part(element, at, &seen, selector),
             );
         }
@@ -4135,16 +4140,20 @@ fn exported_parts(exportparts: Option<&str>, names: &[String]) -> Vec<String> {
 /// for its pseudo-element the selector names after them
 /// (`::part(x)::before`), with the highest specificity among those of a
 /// rule that match for each, `base`'s tier and the context given; for
-/// `::part()`, the host `originating` it is a part of.
+/// `::part()`, the host `originating` it is a part of. With
+/// `highlight`, those followed by its `::highlight()` of that name
+/// alone, in the element's place.
 fn collect_scoped<'a>(
     (sheet, candidates): (&InForce<'a>, &[(u32, u32)]),
     (base, (context, tree)): (TierBase, (u32, Option<NodeId>)),
     (element, containers, originating): (NodeId, Option<&Containers<'_>>, Option<NodeId>),
     order: &mut u32,
     out: &mut Matched<'a>,
+    (document, highlight): (&Document, Option<HighlightName>),
     mut matches: impl FnMut(&'a Selector) -> bool,
 ) {
     let parent = containers.and_then(|containers| containers.document.flat_parent_element(element));
+    let details = document.tag(element) == Some("details");
     let mut next = 0;
     while next < candidates.len() {
         let place = candidates[next].0;
@@ -4162,13 +4171,30 @@ fn collect_scoped<'a>(
             }) else {
                 continue;
             };
-            let target = match ending.then {
-                Some(pseudo) => Target::of(pseudo),
-                None => Some(Target::Element),
+            let target = match (ending.then.as_deref(), highlight) {
+                (None, None) => Target::Element,
+                (Some(then), None) if then.then.is_none() => {
+                    let of_details = matches!(
+                        then.element,
+                        PseudoElement::DetailsContent
+                            | PseudoElement::DetailsContentBefore
+                            | PseudoElement::DetailsContentAfter
+                    );
+                    match Target::of(then.element) {
+                        Some(target) if details || !of_details => target,
+                        // One matched and set aside: nothing draws it yet.
+                        _ => continue,
+                    }
+                }
+                // The highlight asked for, in the element's place.
+                (Some(then), Some(name))
+                    if then.then.is_none() && then.argument == PseudoArgument::Highlight(name) =>
+                {
+                    Target::Element
+                }
+                _ => continue,
             };
-            if let Some(target) = target
-                && matches(selector)
-            {
+            if matches(selector) {
                 let at = target as usize;
                 best[at] = best[at].max(Some(selector.specificity));
             }
@@ -4266,6 +4292,19 @@ fn highlight_declarations<'a>(
             (element, svg),
             (rules, candidates),
             (TierBase::AuthorSheet, (own, own_root)),
+            (&mut order, &mut out),
+            containers,
+            Some(name),
+        );
+    }
+    // The trees around and below it, by `::part()::highlight()` and
+    // `::slotted()::highlight()` (gap batch H).
+    if document.has_shadow_roots() {
+        scoped_declarations(
+            document,
+            (matcher, candidates),
+            (element, svg),
+            (author, shadow),
             (&mut order, &mut out),
             containers,
             Some(name),

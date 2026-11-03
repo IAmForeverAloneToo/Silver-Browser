@@ -396,6 +396,73 @@ fn a_custom_elements_object_lives_while_its_tree_is_reached() {
 }
 
 #[test]
+fn a_custom_element_a_mutation_record_holds_keeps_its_object() {
+    // Taken out of the document with nothing of a script's holding it, a
+    // custom element's object stays the node's while the host holds the
+    // node, here for a mutation record: its tree's group is held (D70).
+    let console = said(
+        "<script>\
+         class E extends HTMLElement {\
+           constructor() { super(); this.made = 'by its constructor'; }\
+         }\
+         customElements.define('x-e', E);\
+         const box = document.createElement('div');\
+         document.documentElement.append(box);\
+         new MutationObserver((records) => {\
+           const gone = records[records.length - 1].removedNodes[0];\
+           console.log(gone instanceof E, gone.made);\
+         }).observe(box, {childList: true});\
+         (function () { const e = new E(); box.append(e); box.removeChild(e); })();\
+         </script>",
+    );
+    assert_eq!(console, ["true by its constructor"]);
+}
+
+#[test]
+fn a_sweep_keeps_a_custom_elements_tree_the_host_holds_a_node_of() {
+    // A sweep comes after this task (as many trees held as it takes);
+    // the script in the custom element's tree has its `error` event yet
+    // to fire then, which the host holds it for: the tree stays held,
+    // and the event reaches the listener on its object.
+    let console = said(
+        "<script>\
+         class E extends HTMLElement {}\
+         customElements.define('x-e', E);\
+         for (let i = 0; i < 100; i++) new E();\
+         (function () {\
+           const e = new E();\
+           const s = document.createElement('script');\
+           s.addEventListener('error', () => console.log('error heard'));\
+           s.src = '';\
+           document.documentElement.append(s);\
+           e.append(s);\
+         })();\
+         </script>",
+    );
+    assert_eq!(console, ["error heard"]);
+}
+
+#[test]
+fn the_collection_the_documents_growth_asks_for_sweeps_too() {
+    // One custom element's tree held is no cause for a sweep yet; the
+    // collection the host asks for as its document's nodes double sweeps
+    // the trees held for custom elements with it, after that task.
+    let (mut tab, _) = scripted(
+        "<script>\
+         class E extends HTMLElement {}\
+         customElements.define('x-e', E);\
+         const gone = new WeakRef(new E());\
+         const kept = document.createDocumentFragment();\
+         for (let i = 0; i < 17000; i++) kept.appendChild(document.createElement('i'));\
+         setTimeout(() => console.log(gone.deref() === undefined, kept.childNodes.length), 0);\
+         </script>",
+        true,
+    );
+    let console = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(console, ["true 17000"]);
+}
+
+#[test]
 fn clones_and_imports_keep_their_registries_or_take_the_fallback() {
     // An element with no registry imported with a scoped one takes it;
     // one a script gave none keeps none, cloned and inserted alike; a

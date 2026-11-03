@@ -1,7 +1,9 @@
 //! What scripts ask of an SVG element's geometry (SVG 2 sections 5.11,
-//! 9.6 and 11.11): its bounding box, its matrix to its outer `<svg>`'s
-//! viewport, its text's length, its path's length and points, whether a
-//! point is in its fill or its stroke. Answered from a render tree built
+//! 5.14, 9.6 and 11.11): its bounding box, its matrix to its outer
+//! `<svg>`'s viewport, its text's length and characters, its path's
+//! length and points, whether a point is in its fill or its stroke, and
+//! the box it paints, which `checkIntersection()` and its kin compare
+//! with a rectangle. Answered from a render tree built
 //! for the asking, which keeps the shapes that paint nothing, at the
 //! outer `<svg>`'s size as its style gives it (a percentage of what
 //! layout decides is 300 by 150 here, until scripts can ask layout,
@@ -13,7 +15,8 @@ use style::computed::Size;
 
 use crate::syntax::Viewport;
 use crate::tree::{
-    Context, Item, Tree, build_queries, children_bounds, geometry, item_bounds, use_offset,
+    CharCell, Context, Item, Tree, build_queries, children_bounds, geometry, item_bounds,
+    use_offset,
 };
 
 /// A question about an element's geometry.
@@ -35,6 +38,22 @@ pub enum Query {
     InFill(f64, f64),
     /// `isPointInStroke()`: 1 or 0.
     InStroke(f64, f64),
+    /// `getNumberOfChars()`: the UTF-16 code units of its characters
+    /// laid out.
+    NumberOfChars,
+    /// `getCharNumAtPosition()`: the index among them of the one whose
+    /// cell holds the point of its user units, or -1.
+    CharAt(f64, f64),
+    /// The cell of its character of this index: `[x, baseline, advance,
+    /// top, height]`, `getStartPositionOfChar()` and its kin's.
+    Char(f64),
+    /// `getSubStringLength()`: the advance of so many characters from
+    /// the one of this index, as many as there are.
+    SubStringLength(f64, f64),
+    /// The box it paints, its stroke's half width around its geometry,
+    /// in its outer `<svg>`'s user units: `[x, y, width, height]`, of
+    /// what `checkIntersection()` and `checkEnclosure()` compare.
+    PaintedBox,
 }
 
 /// The outer `<svg>` the element `node` is drawn in: itself or its
@@ -95,6 +114,17 @@ pub fn query_in(context: Context<'_>, tree: &Tree, node: NodeId, query: Query) -
             Query::Ctm => Some(vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
             _ => None,
         };
+    }
+    match query {
+        Query::NumberOfChars | Query::CharAt(..) | Query::Char(_) | Query::SubStringLength(..) => {
+            return text_query(context, tree, node, query);
+        }
+        Query::PaintedBox => {
+            let (item, parent) = find(&tree.root.children, &Matrix::IDENTITY, node)?;
+            let [l, t, r, b] = painted_box(item, &parent)?;
+            return Some(vec![l, t, r - l, b - t]);
+        }
+        _ => {}
     }
     let Some((item, parent)) = find(&tree.root.children, &tree.root.transform, node) else {
         // Drawn nowhere (under `display: none`, say): a shape answers
@@ -177,6 +207,92 @@ pub fn query_in(context: Context<'_>, tree: &Tree, node: NodeId, query: Query) -
 
 fn matrix(m: &Matrix) -> Vec<f64> {
     vec![m.a, m.b, m.c, m.d, m.e, m.f]
+}
+
+/// The box `item` paints through `m`, its parent's matrix, as `[left,
+/// top, right, bottom]`: a shape's geometry with its stroke's half width
+/// around (and a square cap's or a miter's reach not counted), each
+/// corner mapped; a group's its children's together.
+fn painted_box(item: &Item, m: &Matrix) -> Option<[f64; 4]> {
+    match item {
+        Item::Shape(shape) => {
+            let [x, y, w, h] = shape.bounds;
+            let out = shape
+                .stroke
+                .as_ref()
+                .map_or(0.0, |stroke| stroke.width / 2.0);
+            let (l, t, r, b) = (x - out, y - out, x + w + out, y + h + out);
+            let corners = [(l, t), (r, t), (l, b), (r, b)].map(|(x, y)| m.apply(x, y));
+            Some(corners.iter().fold(
+                [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                |[l, t, r, b], &(x, y)| [l.min(x), t.min(y), r.max(x), b.max(y)],
+            ))
+        }
+        Item::Group(group) => {
+            let inner = m.then(&group.transform);
+            group
+                .children
+                .iter()
+                .filter_map(|child| painted_box(child, &inner))
+                .reduce(|[l, t, r, b], [l2, t2, r2, b2]| {
+                    [l.min(l2), t.min(t2), r.max(r2), b.max(b2)]
+                })
+        }
+    }
+}
+
+/// A question about the characters of `node`, a `<text>` or one of the
+/// elements in it: answered from the cells of its text's runs that are
+/// its or its descendants', in order.
+fn text_query(context: Context<'_>, tree: &Tree, node: NodeId, query: Query) -> Option<Vec<f64>> {
+    let document = context.document;
+    let text = std::iter::once(node)
+        .chain(document.ancestors(node))
+        .find(|&n| document.svg_tag(n) == Some("text"))?;
+    let (item, _) = find(&tree.root.children, &tree.root.transform, text)?;
+    let mut cells: Vec<CharCell> = Vec::new();
+    let mut stack = vec![item];
+    while let Some(item) = stack.pop() {
+        match item {
+            Item::Group(group) => stack.extend(group.children.iter().rev()),
+            Item::Shape(shape) if document.is_inclusive_ancestor(node, shape.node) => {
+                cells.extend(shape.chars.iter().flat_map(|chars| chars.iter().copied()));
+            }
+            Item::Shape(_) => {}
+        }
+    }
+    let index = |at: f64| (at >= 0.0 && at.fract() == 0.0).then_some(at as usize);
+    match query {
+        Query::NumberOfChars => Some(vec![cells.len() as f64]),
+        Query::CharAt(x, y) => {
+            let found = cells.iter().position(|c| {
+                (c.x..=c.x + c.advance).contains(&x) && (c.top..=c.top + c.height).contains(&y)
+            });
+            Some(vec![found.map_or(-1.0, |at| at as f64)])
+        }
+        Query::Char(at) => {
+            let c = cells.get(index(at)?)?;
+            Some(vec![c.x, c.baseline, c.advance, c.top, c.height])
+        }
+        Query::SubStringLength(start, count) => {
+            let start = index(start)?;
+            let count = index(count)?;
+            Some(vec![
+                cells
+                    .iter()
+                    .skip(start)
+                    .take(count)
+                    .map(|c| c.advance)
+                    .sum(),
+            ])
+        }
+        _ => None,
+    }
 }
 
 /// The item `node` draws as, and the matrix from its parent's user units

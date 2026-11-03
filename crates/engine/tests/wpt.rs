@@ -2085,11 +2085,13 @@ fn key_actions(engine: &mut Engine, actions: &str, now: Duration) {
             Some(("w", rest)) => {
                 if let [x, y, dx, dy] = numbers(rest)[..] {
                     engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
+                    // A precise wheel, its scroll at once, as the reference
+                    // browser takes WebDriver's.
                     if dy != 0.0 {
-                        engine.wheel(x, y, dy);
+                        engine.wheel_precise(x, y, dy);
                     }
                     if dx != 0.0 {
-                        engine.wheel_across(x, y, dx);
+                        engine.wheel_across_precise(x, y, dx);
                     }
                 }
                 continue;

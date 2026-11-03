@@ -641,6 +641,11 @@ pub(crate) fn prepare_element(
     if src.is_none() && text.is_empty() {
         return Prepared::NotYet;
     }
+    // One not connected, as one the parser put in a body a script took
+    // out, is not started (step 7).
+    if !document.in_page(element) {
+        return Prepared::NotYet;
+    }
     match kind {
         ScriptType::Module => {
             return prepare_module(page, document, element, line, parser_inserted);
@@ -860,6 +865,8 @@ pub(crate) struct Scripts {
     /// apply, and the document's URL before they first changed it.
     history: Vec<HistoryOp>,
     history_base: Option<Url>,
+    /// Whether a script focused an element since this was last asked.
+    focused: bool,
     /// The scroll offsets scripts set (D65), the viewport's as `None`.
     scrolls: Vec<ScriptScroll>,
     /// The custom highlights its scripts registered (gap batch H).
@@ -946,6 +953,7 @@ impl Scripts {
             events: VecDeque::new(),
             handlers: None,
             snapped: HashMap::new(),
+            focused: false,
             scrolls: Vec::new(),
             highlights: Vec::new(),
             selection: None,
@@ -1033,6 +1041,11 @@ impl Scripts {
     /// snapped to since this was last asked (CSS Scroll Snap 1).
     pub(crate) fn take_snapped(&mut self) -> crate::scroll_snap::Snaps {
         std::mem::take(&mut self.snapped)
+    }
+
+    /// Whether a script focused an element since this was last asked.
+    pub(crate) fn take_focused(&mut self) -> bool {
+        std::mem::take(&mut self.focused)
     }
 
     /// The scroll offsets scripts set since this was last asked (D65).
@@ -1999,11 +2012,15 @@ impl Scripts {
     }
 
     /// The observers' turn in a frame, after layout (D45): the entries
-    /// `measured` makes, given to the realm as a task.
+    /// `measured` makes, `skipped` the targets in contents an element
+    /// skips, given to the realm as a task.
     pub(crate) fn observe_layout(
         &mut self,
         lent: &mut Lent<'_>,
-        measured: &std::collections::HashMap<NodeId, Measured>,
+        (measured, skipped): (
+            &std::collections::HashMap<NodeId, Measured>,
+            &std::collections::HashSet<NodeId>,
+        ),
         viewport: (f32, f32),
         scale: f32,
         time: f64,
@@ -2015,7 +2032,10 @@ impl Scripts {
             scale,
             time,
             |ancestor, node| document.is_inclusive_ancestor(ancestor, node),
-            |node| document.owner_document(node) == document.root(),
+            (
+                |node| document.owner_document(node) == document.root(),
+                |node| skipped.contains(&node),
+            ),
         );
         if let Some(told) = told {
             self.enter(lent, &js::Task::Observations(told), 0);
@@ -2104,7 +2124,11 @@ impl Scripts {
         let result = run(realm.as_mut(), host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
-        realm.sweep(host);
+        // The sweep of the trees held for custom elements, and the
+        // collection the document's growth asks for, before the host
+        // frees what they released.
+        let collect = host.collection_due();
+        realm.sweep(host, collect);
         host.sweep();
         let outputs = host.give_back(lent);
         if insertion_point
@@ -2146,6 +2170,7 @@ impl Scripts {
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
+        self.focused |= outputs.focused;
         self.scrolls.extend(outputs.scrolls);
         if let Some(highlights) = outputs.highlights {
             self.highlights = highlights;
@@ -2241,7 +2266,8 @@ impl Scripts {
         let result = realm.enter(task, host);
         let errors = realm.checkpoint(host);
         let dead = realm.dead().is_some();
-        realm.sweep(host);
+        let collect = host.collection_due();
+        realm.sweep(host, collect);
         host.sweep();
         let outputs = host.give_back(lent);
         for entry in outputs.console {
@@ -2278,6 +2304,7 @@ impl Scripts {
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
+        self.focused |= outputs.focused;
         self.scrolls.extend(outputs.scrolls);
         if let Some(highlights) = outputs.highlights {
             self.highlights = highlights;
@@ -3604,6 +3631,27 @@ mod tests {
         set_document_title(&mut document, "new");
         assert_eq!(document.len(), before);
         document.validate().unwrap();
+    }
+
+    #[test]
+    fn the_realms_garbage_is_due_as_the_documents_nodes_double() {
+        // Objects of trees out of the document hold each other and go only
+        // with the collector's pass: it is asked for as the nodes grow.
+        let mut host = DocumentHost::default();
+        host.document = parsed("<p>x");
+        let grow = |host: &mut DocumentHost, to: usize| {
+            while host.document.len() < to {
+                host.document.create_element("p").unwrap();
+            }
+        };
+        assert!(!host.collection_due());
+        grow(&mut host, 1 << 14);
+        assert!(host.collection_due());
+        assert!(!host.collection_due());
+        grow(&mut host, (1 << 15) - 1);
+        assert!(!host.collection_due());
+        grow(&mut host, 1 << 15);
+        assert!(host.collection_due());
     }
 
     #[test]

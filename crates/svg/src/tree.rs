@@ -99,6 +99,24 @@ pub struct Shape {
     /// Whether its edges are smoothed (`shape-rendering` other than
     /// `crispEdges` and `optimizeSpeed`).
     pub anti_alias: bool,
+    /// A text run's characters as laid out, in a tree built for scripts'
+    /// questions: one cell for each UTF-16 code unit.
+    pub chars: Option<Arc<[CharCell]>>,
+}
+
+/// One UTF-16 code unit of a text run as laid out (SVG 2 section 11.11's
+/// typographic characters, as the reference browser counts them), in
+/// its text's user units: where its glyph starts on the baseline, its
+/// advance, and its cell's top and height, the font's ascent and
+/// descent. The second unit of a pair takes no advance, at the first's
+/// end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharCell {
+    pub x: f64,
+    pub baseline: f64,
+    pub advance: f64,
+    pub top: f64,
+    pub height: f64,
 }
 
 /// What a fill or a stroke paints with.
@@ -313,6 +331,13 @@ pub(crate) type Glyphs = Arc<[(text::Script, text::ShapedGlyph)]>;
 
 /// A glyph's outline; `None` for a glyph with none.
 pub(crate) type Outline = Option<Arc<[text::Curve]>>;
+
+impl Builder<'_> {
+    /// Whether the tree is built for scripts' questions.
+    pub(crate) fn queries(&self) -> bool {
+        self.queries
+    }
+}
 
 impl<'a> Builder<'a> {
     /// The element a fragment reference (`#id`) names in the document.
@@ -668,6 +693,7 @@ impl<'a> Builder<'a> {
             path,
             bounds,
             stroke_first: at(PaintLayer::Stroke) < at(PaintLayer::Fill),
+            chars: None,
             opacity: 1.0,
             anti_alias: !matches!(
                 svg.shape_rendering,
@@ -696,9 +722,12 @@ impl<'a> Builder<'a> {
                 None => [x, y, x + w, y + h],
                 Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x + w), b.max(y + h)],
             });
-            if let Some(shape) =
+            if let Some(mut shape) =
                 self.painted(run.node, run.path, run.bounds, &run.style, viewport, true)
             {
+                if !run.chars.is_empty() {
+                    shape.chars = Some(run.chars.into());
+                }
                 children.push(Item::Shape(Box::new(shape)));
             }
         }

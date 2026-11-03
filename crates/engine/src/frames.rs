@@ -1730,8 +1730,32 @@ impl Engine {
                 wants |= frame.engine.poll_network();
             }
         }
+        // Before the loads are told, which may fire this document's own
+        // `load`.
+        self.frames_focused();
         self.tell_frame_loads();
         wants
+    }
+
+    /// A frame whose script focused an element of its document takes the
+    /// focus here, its element focused, as HTML's focusing steps move
+    /// the focus chain through it (gap batch H).
+    fn frames_focused(&mut self) {
+        for node in self.frames_in_run_order() {
+            let focused = self
+                .shown
+                .frames
+                .get_mut(&node)
+                .is_some_and(|frame| frame.engine.shown.scripts.take_focused());
+            if focused
+                && self.shown.document.contains(node)
+                && self
+                    .frame_engine(node)
+                    .is_some_and(|child| child.shown.document.focused().is_some())
+            {
+                self.focus_frame(node);
+            }
+        }
     }
 
     /// Runs the frames' tasks that are due, then tells the elements of
@@ -1743,6 +1767,9 @@ impl Engine {
                 wants |= frame.engine.run_tasks();
             }
         }
+        // Before the loads are told, which may fire this document's own
+        // `load`.
+        self.frames_focused();
         self.tell_frame_loads();
         wants
     }

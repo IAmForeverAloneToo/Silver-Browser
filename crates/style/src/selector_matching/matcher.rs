@@ -389,7 +389,9 @@ impl<'a> Matcher<'a> {
     /// Whether `selector` represents the `pseudo` pseudo-element of
     /// `element`: it ends in that pseudo-element, the pseudo-classes
     /// after it hold, and its compounds match `element` as the
-    /// originating element. A `::-webkit-` one never matches.
+    /// originating element. A `::-webkit-` one never matches, nor one
+    /// another pseudo-element follows (`::before::marker`), which nothing
+    /// draws yet.
     pub fn matches_pseudo_element(
         &mut self,
         element: NodeId,
@@ -408,6 +410,7 @@ impl<'a> Matcher<'a> {
                 | PseudoElement::DetailsContentAfter
         );
         ending.element == pseudo
+            && ending.then.is_none()
             && !matches!(
                 pseudo,
                 PseudoElement::WebkitPrefixed | PseudoElement::TextHighlight

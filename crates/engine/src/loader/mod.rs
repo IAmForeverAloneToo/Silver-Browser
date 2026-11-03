@@ -37,6 +37,8 @@ mod event_tests;
 #[cfg(test)]
 mod fetch_tests;
 #[cfg(test)]
+mod focus_group_tests;
+#[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
 mod frame_script_tests;

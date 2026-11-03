@@ -91,6 +91,9 @@ pub(super) struct Live {
     pub(super) references: HashMap<(NodeId, Box<str>), Vec<NodeId>>,
     /// The `details` elements' toggles owed (gap batch H).
     pub(super) details: super::details::DetailsState,
+    /// The sequential focus navigation starting point and the
+    /// focusgroups' memories (gap batch H).
+    pub(super) focus: super::focus_navigation::FocusNavigation,
     /// The custom elements' states, definitions and reactions (D70).
     pub(super) custom: super::custom::Custom,
     /// The form owners the parser's form element pointer gave controls it

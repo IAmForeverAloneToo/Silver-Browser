@@ -155,6 +155,10 @@ impl DocumentHost {
                     .filter(|&p| self.document.contains(p));
                 self.give(previous)
             }
+            "autofocusProcessed" => {
+                self.document.set_autofocus_processed();
+                Answer::Nothing
+            }
             "setFocus" => {
                 let node = self.top_layer_needs(nodes, 0)?;
                 let focused = self.top_layer_node(nodes, 1)?;

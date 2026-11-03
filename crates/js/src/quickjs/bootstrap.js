@@ -466,25 +466,27 @@
   // ---- Nodes and their objects --------------------------------------
 
   // One object per node while it lives: handle to a weak reference to
-  // it, and to the object itself while the node is in the document, which
-  // holds it as the document holds its nodes (so that what a script set
-  // on it, its listeners and expandos, stays). When one out of the
-  // document is collected and no newer one has been made since, the host
-  // hears the handle is released, and may free the node once it is out
-  // of the tree. An object `held` out of the document (a custom
-  // element's, D70) is held until a sweep finds nothing reaches it.
+  // it. An object lives as long as its node can be reached from what a
+  // script holds, as browsers keep a node's object while the node lives
+  // (so that what a script set on it, its listeners, expandos and
+  // identity, stays): the objects of the nodes of one tree are a group,
+  // which each of them holds and which holds them all once there are
+  // two, so that one object held keeps every other of its tree, and
+  // none held lets the group go with the collector's next pass (a lone
+  // object, which keeps no other, as soon as nothing holds it). A tree
+  // is a node's shadow-including root's, a template's contents counting
+  // with their template; the page's document's group is held for good,
+  // and a tree's group holds its owner document's, which
+  // `ownerDocument` reaches. A tree a custom element's object is in
+  // (D70) has its group held besides, until a sweep finds nothing else
+  // reaches it (`sweepPrepare`). When one is collected and no newer one
+  // has been made since, the host hears the handle is released, and may
+  // free the node once it is out of the tree.
   const objects = new $Map();
-  // The objects of nodes with event listeners out of the document, each
-  // held by the object of the nearest node around it that has one
-  // (`holdForListeners`).
-  const listenerHolds = new $WeakMap();
   const registry = new $FinalizationRegistry((handle) => {
-    const entry = MapGet(objects, handle);
-    if (entry !== undefined && WeakRefDeref(entry.ref) !== undefined) {
+    const ref = MapGet(objects, handle);
+    if (ref !== undefined && WeakRefDeref(ref) !== undefined) {
       return;
-    }
-    if (entry !== undefined && entry.custom) {
-      customHeld--;
     }
     MapDelete(objects, handle);
     native.released(handle);
@@ -495,33 +497,129 @@
   const opaqueControls = new $Map();
   const opaqueControlCount = uncurry(getOwnPropertyDescriptor(Map.prototype, "size").get);
 
-  // Holds or lets go of the objects of the nodes that came into the
-  // document or left it, as the host says.
+  // The groups by the handle of their tree's root, weakly; the page's
+  // document's, held, and its handle once known.
+  const groups = new $Map();
+  const groupGone = new $FinalizationRegistry((root) => {
+    const ref = MapGet(groups, root);
+    if (ref !== undefined && WeakRefDeref(ref) === undefined) {
+      MapDelete(groups, root);
+    }
+  });
+  const pageGroup = { root: null, members: new $Map(), lone: null, owner: null, shared: true };
+  let pageRoot;
+
+  // The group of the tree whose root `root` names, made if it has none.
+  function groupFor(root) {
+    if (pageRoot === undefined) {
+      pageRoot = native.document();
+    }
+    if (root === pageRoot) {
+      return pageGroup;
+    }
+    const ref = MapGet(groups, root);
+    let group = ref === undefined ? undefined : WeakRefDeref(ref);
+    if (group === undefined) {
+      group = { root, members: new $Map(), lone: null, owner: null, shared: false };
+      MapSet(groups, root, new $WeakRef(group));
+      Register(groupGone, group, root);
+    }
+    return group;
+  }
+
+  // Puts `object` in the group of the tree whose root is `root`, owned
+  // by the document `owner`; a custom element's object holds the group.
+  function joinGroup(object, root, owner) {
+    const group = groupFor(root);
+    const old = groupOf(object);
+    if (old !== group) {
+      if (old !== null) {
+        leaveGroup(old, object);
+      }
+      enterGroup(group, object);
+      setGroupOf(object, group);
+    }
+    if (group !== pageGroup) {
+      group.owner = owner === root ? null : shareGroup(groupFor(owner));
+      if (WeakSetHas(customObjects, object)) {
+        holdGroup(group);
+      }
+    }
+  }
+
+  // A group another holds, as its owner document's: it holds even a lone
+  // object, so that the one holding it keeps that object.
+  function shareGroup(group) {
+    if (!group.shared) {
+      group.shared = true;
+      const lone = group.lone === null ? undefined : WeakRefDeref(group.lone);
+      group.lone = null;
+      if (lone !== undefined) {
+        MapSet(group.members, lone, true);
+      }
+    }
+    return group;
+  }
+
+  // A group's objects: held once there are two (a shared group's
+  // always), a lone one only weakly.
+  function enterGroup(group, object) {
+    if (group.shared || MapSize(group.members) > 0) {
+      MapSet(group.members, object, true);
+      return;
+    }
+    const lone = group.lone === null ? undefined : WeakRefDeref(group.lone);
+    if (lone === undefined || lone === object) {
+      group.lone = new $WeakRef(object);
+      return;
+    }
+    group.lone = null;
+    MapSet(group.members, lone, true);
+    MapSet(group.members, object, true);
+  }
+
+  function leaveGroup(group, object) {
+    if (group.lone !== null && WeakRefDeref(group.lone) === object) {
+      group.lone = null;
+      return;
+    }
+    MapDelete(group.members, object);
+    if (!group.shared && MapSize(group.members) === 1) {
+      let rest;
+      MapForEach(group.members, (_, member) => {
+        rest = member;
+      });
+      MapClear(group.members);
+      group.lone = new $WeakRef(rest);
+    }
+  }
+
+  // Moves the objects of the nodes that went into another tree, or out
+  // of one, to their trees' groups, as the host says. All are taken
+  // first, so that none is let go of while the group that held it gives
+  // way to the next.
   function applyPins() {
     const pins = native.takePins();
-    for (let i = 0; i < pins.length; i += 2) {
-      // A text control leaving the document disconnects its OpaqueRanges.
-      if (!pins[i + 1] && opaqueControlCount(opaqueControls) > 0) {
-        opaqueControlLeft(pins[i]);
+    if (pins.length > 0 && pageRoot === undefined) {
+      pageRoot = native.document();
+    }
+    const moved = [];
+    for (let i = 0; i < pins.length; i += 3) {
+      const ref = MapGet(objects, pins[i]);
+      ArrayPush(moved, ref === undefined ? undefined : WeakRefDeref(ref));
+    }
+    for (let i = 0; i < moved.length; i++) {
+      const handle = pins[3 * i];
+      // A text control leaving the document disconnects its OpaqueRanges:
+      // one out of the page's tree, or in a template's contents there.
+      if (
+        opaqueControlCount(opaqueControls) > 0 &&
+        (pins[3 * i + 1] !== pageRoot || !native.connected(handle))
+      ) {
+        opaqueControlLeft(handle);
       }
-      const entry = MapGet(objects, pins[i]);
-      if (entry === undefined) {
-        continue;
-      }
-      const object = WeakRefDeref(entry.ref);
-      // Once custom elements' objects are held (D70), an object leaving
-      // the document is held as theirs are, until a sweep: it may be one
-      // of a custom element's tree, whose constructor set what it holds.
-      if (!pins[i + 1] && object !== undefined && customHeld > 0 && !entry.custom) {
-        entry.custom = true;
-        customHeld++;
-        heldSince++;
-      }
-      entry.strong = (pins[i + 1] || entry.custom) && object !== undefined ? object : null;
-      // Out of the document, a node with listeners lives as long as the
-      // tree it is in, which a node around it with an object stands for.
-      if (!pins[i + 1] && object !== undefined && entry.listened) {
-        holdForListeners(object);
+      if (moved[i] !== undefined) {
+        joinGroup(moved[i], pins[3 * i + 1], pins[3 * i + 2]);
       }
     }
   }
@@ -560,200 +658,160 @@
     if (handle === null) {
       return null;
     }
-    const entry = MapGet(objects, handle);
-    if (entry !== undefined) {
-      const object = WeakRefDeref(entry.ref);
+    const ref = MapGet(objects, handle);
+    if (ref !== undefined) {
+      const object = WeakRefDeref(ref);
       if (object !== undefined) {
         return object;
       }
     }
     const answer = native.wrap(handle);
     const object = make(handle, answer[0], answer[2], +answer[3], answer[4]);
-    // Out of the document, in the tree of a custom element, it is held
-    // as that element is (D70): what its constructor set on its shadow
-    // tree's nodes before it was connected stays.
-    const held = answer[1] !== "" || (customHeld > 0 && heldByCustom(handle));
-    const custom = held && answer[1] === "";
-    MapSet(objects, handle, {
-      ref: new $WeakRef(object),
-      strong: held ? object : null,
-      custom,
-    });
-    if (custom) {
-      customHeld++;
-      heldSince++;
-    }
+    MapSet(objects, handle, new $WeakRef(object));
     Register(registry, object, handle);
-    for (let i = 5; i < answer.length; i++) {
+    joinGroup(object, +answer[1], +answer[5]);
+    for (let i = 6; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
     return object;
   }
 
-  // How many objects are held out of the document as custom elements'
-  // and their trees' (D70): until one is, no detached node's object is
-  // looked at for it.
-  let customHeld = 0;
-  // How many such objects were held since the last sweep, how many were
-  // held after it, and how many chances to sweep went by since.
+  // The objects that are custom elements' (D70), and the groups held for
+  // them, by their roots' handles: a custom element's object is what its
+  // constructor set on it, so that it, and every object of its tree out
+  // of the document, is kept while a script may reach the tree, which is
+  // while any object of the tree lives or the host holds a node of it (a
+  // mutation record's, a live range's or iterator's, an event's to
+  // fire). The group holds them; it is held besides from when such an
+  // object joins it until a sweep finds nothing else reaches it, as the
+  // host may come to hold a node of the tree, and the collector run, in
+  // between.
+  const customObjects = new $WeakSet();
+  const heldGroups = new $Map();
+  // How many groups were held since the last sweep, how many were held
+  // after it, and how many chances to sweep went by since.
   let heldSince = 0;
   let heldAtSweep = 0;
   let sweepsSkipped = 0;
+
+  // Holds `group`, a tree's out of the document, so that it holds a lone
+  // object too.
+  function holdGroup(group) {
+    if (MapGet(heldGroups, group.root) !== group) {
+      MapSet(heldGroups, group.root, shareGroup(group));
+      heldSince++;
+    }
+  }
 
   // Makes `object`, which a custom element's constructor made (D70), the
   // object of the node `handle` names, held while a script may reach the
   // node: what the constructor set on it is the element's.
   function adoptObject(handle, object) {
-    native.wrap(handle);
-    const entry = MapGet(objects, handle);
-    if (entry !== undefined && entry.custom) {
-      customHeld--;
+    const answer = native.wrap(handle);
+    const ref = MapGet(objects, handle);
+    const old = ref === undefined ? undefined : WeakRefDeref(ref);
+    // An object made for it before is no longer the node's, nor its
+    // tree's.
+    if (old !== undefined && old !== object && groupOf(old) !== null) {
+      leaveGroup(groupOf(old), old);
+      setGroupOf(old, null);
     }
-    MapSet(objects, handle, { ref: new $WeakRef(object), strong: object, custom: true });
+    MapSet(objects, handle, new $WeakRef(object));
     Register(registry, object, handle);
-    customHeld++;
-    heldSince++;
+    WeakSetAdd(customObjects, object);
+    joinGroup(object, +answer[1], +answer[5]);
   }
 
   // Holds the object of the node `handle` names while a script may reach
   // the node: it is a custom element's now (D70).
   function holdObject(handle) {
-    const entry = MapGet(objects, handle);
-    if (entry !== undefined) {
-      if (!entry.custom) {
-        customHeld++;
+    const ref = MapGet(objects, handle);
+    const object = ref === undefined ? undefined : WeakRefDeref(ref);
+    if (object !== undefined) {
+      WeakSetAdd(customObjects, object);
+      const group = groupOf(object);
+      if (group !== null && group !== pageGroup) {
+        holdGroup(group);
       }
-      entry.custom = true;
-      entry.strong = WeakRefDeref(entry.ref) || null;
-      heldSince++;
     }
   }
 
-  // The sweep of the objects held out of the document (D70): an object
-  // so held is the node's own for as long as a script may reach the
-  // node, which is while any object of a node of its tree lives (a tree
-  // is reached through any of its nodes) or the host holds a node of it
-  // (a mutation record's, a live range's or iterator's, an event's to
-  // fire). The objects of each tree holding one are linked to the held
-  // ones of the tree (`setKeepOf`), the holds let go, the garbage
-  // collected (by the realm, between `sweepPrepare` and `sweepFinish`),
-  // and what lived is held again, its links cut; what did not is
-  // released, and its nodes freed. It runs once as many objects were
-  // held since the last as were held after it (and `SWEEP_AT` at
+  // The sweep of the groups held for custom elements (D70): the groups of
+  // the trees the host holds a node of stay held; the others are let go
+  // of, the garbage collected (by the realm, between `sweepPrepare` and
+  // `sweepFinish`), and those that lived, which something else reaches,
+  // are held again; those that did not went with their objects, which
+  // are released, and their nodes freed. It runs once as many groups
+  // were held since the last as were held after it (and `SWEEP_AT` at
   // least), so that its work is in proportion to what it may free, and
   // else at every `SWEEP_EVERY`th chance, as what reaches a tree changes
-  // with no tree changing.
+  // with no tree changing; and whenever the host asks for the collection
+  // (`collect`), as its document's nodes grow (the realm's `sweep`),
+  // which frees the groups nothing reaches that no custom element holds.
   const SWEEP_AT = 64;
   const SWEEP_EVERY = 16;
-  // The handles whose holds the sweep let go, and the objects it linked,
-  // weakly.
-  let sweptHandles = null;
-  let sweptLinks = null;
+  // The roots' handles of the groups the sweep let go of.
+  let sweptGroups = null;
 
-  function sweepPrepare() {
-    if (customHeld === 0) {
+  function sweepPrepare(collect) {
+    if (MapSize(heldGroups) === 0) {
       return false;
     }
     const grown = heldSince > 0 && heldSince >= heldAtSweep && heldSince >= SWEEP_AT;
-    if (!grown && ++sweepsSkipped < SWEEP_EVERY) {
+    if (collect !== true && !grown && ++sweepsSkipped < SWEEP_EVERY) {
       return false;
     }
     heldSince = 0;
     sweepsSkipped = 0;
-    // The detached trees, by their shadow-including roots, and the held
-    // objects' handles in each.
-    const trees = new $Map();
-    MapForEach(objects, (entry, handle) => {
-      if (entry.custom && entry.strong !== null && !native.connected(handle)) {
-        const root = native.rootNode(handle, true);
-        const held = MapGet(trees, root);
-        if (held === undefined) {
-          MapSet(trees, root, [handle]);
-        } else {
-          ArrayPush(held, handle);
-        }
-      }
-    });
+    // A group none of whose objects is left in it, all moved to other
+    // trees, holds nothing any more.
     const roots = [];
-    MapForEach(trees, (_, root) => ArrayPush(roots, root));
-    if (roots.length === 0) {
-      return false;
-    }
-    // Those of a node the host holds stay as they are.
-    const kept = native.ceKept(roots);
-    for (let i = 0; i < kept.length; i++) {
-      MapDelete(trees, kept[i]);
-    }
-    // Each tree's held objects, which each object of the tree keeps.
-    const keeps = new $Map();
-    MapForEach(trees, (handles, root) => {
-      const held = [];
-      for (let i = 0; i < handles.length; i++) {
-        ArrayPush(held, MapGet(objects, handles[i]).strong);
-      }
-      MapSet(keeps, root, held);
-    });
-    sweptLinks = [];
-    MapForEach(objects, (entry, handle) => {
-      const object = WeakRefDeref(entry.ref);
-      // An object held for the document is of a node in it.
-      if (object === undefined || (entry.strong !== null && !entry.custom)) {
-        return;
-      }
-      const held = MapGet(keeps, native.rootNode(handle, true));
-      if (held !== undefined) {
-        setKeepOf(object, held);
-        ArrayPush(sweptLinks, new $WeakRef(object));
-      }
-    });
-    sweptHandles = [];
-    MapForEach(trees, (handles) => {
-      for (let i = 0; i < handles.length; i++) {
-        MapGet(objects, handles[i]).strong = null;
-        ArrayPush(sweptHandles, handles[i]);
-      }
-    });
-    return sweptHandles.length > 0;
-  }
-
-  function sweepFinish() {
-    const handles = sweptHandles;
-    const links = sweptLinks;
-    sweptHandles = null;
-    sweptLinks = null;
-    if (handles === null) {
-      return false;
-    }
-    let collected = 0;
-    for (let i = 0; i < handles.length; i++) {
-      const entry = MapGet(objects, handles[i]);
-      const object = entry === undefined ? undefined : WeakRefDeref(entry.ref);
-      if (object !== undefined) {
-        entry.strong = object;
+    MapForEach(heldGroups, (group, root) => {
+      const lone = group.lone === null ? undefined : WeakRefDeref(group.lone);
+      if (MapSize(group.members) === 0 && lone === undefined) {
+        MapDelete(heldGroups, root);
       } else {
-        collected++;
+        ArrayPush(roots, root);
+      }
+    });
+    // Those of a tree whose node the host holds stay as they are.
+    const kept = native.ceKept(roots);
+    const keep = new $Set();
+    for (let i = 0; i < kept.length; i++) {
+      SetAdd(keep, kept[i]);
+    }
+    sweptGroups = [];
+    for (let i = 0; i < roots.length; i++) {
+      if (!SetHas(keep, roots[i])) {
+        ArrayPush(sweptGroups, roots[i]);
+        MapDelete(heldGroups, roots[i]);
       }
     }
-    for (let i = 0; i < links.length; i++) {
-      const object = WeakRefDeref(links[i]);
-      if (object !== undefined) {
-        setKeepOf(object, null);
-      }
+    if (sweptGroups.length === 0) {
+      sweptGroups = null;
+      heldAtSweep = MapSize(heldGroups);
+      return false;
     }
-    // The collected ones' entries go as the registry hears of them.
-    heldAtSweep = customHeld - collected;
     return true;
   }
 
-  // Whether the detached node `handle` names is in the tree, or the
-  // shadow tree, of a custom element whose object is held.
-  function heldByCustom(handle) {
-    const root = native.rootNode(handle, true);
-    if (root === handle) {
+  function sweepFinish() {
+    const swept = sweptGroups;
+    sweptGroups = null;
+    if (swept === null) {
       return false;
     }
-    const entry = MapGet(objects, root);
-    return entry !== undefined && entry.custom === true;
+    // Each group is found by the weak reference `groups` has to it.
+    for (let i = 0; i < swept.length; i++) {
+      const ref = MapGet(groups, swept[i]);
+      const group = ref === undefined ? undefined : WeakRefDeref(ref);
+      if (group !== undefined) {
+        MapSet(heldGroups, swept[i], group);
+      }
+    }
+    // The collected ones' objects go as the registry hears of them.
+    heldAtSweep = MapSize(heldGroups);
+    return true;
   }
 
   // Whether a document beside the page's has had an object made (D67):
@@ -990,45 +1048,6 @@
     ArrayPush(listeners, listener);
     if (flags.signal !== null) {
       ArrayPush(signalOf(flags.signal).algorithms, () => removeListener(listeners, listener));
-    }
-    if (target !== global && isNode(target)) {
-      const entry = MapGet(objects, handleOf(target));
-      if (entry !== undefined && !entry.listened) {
-        entry.listened = true;
-        holdForListeners(target);
-      }
-    }
-  }
-
-  // A node's object with listeners, out of the document, is held by the
-  // objects of the nodes around it in its tree, shadow-including, that
-  // have one: its listeners live as long as a script holds the tree by
-  // any of them, as a slot's whose `slotchange` is yet to come (gap
-  // batch H).
-  function holdForListeners(target) {
-    let at = handleOf(target);
-    // The DOM's depth cap bounds the walk.
-    for (let depth = 0; depth < 4096; depth++) {
-      let up = native.parent(at);
-      if (up === null && native.kind(at) === 11) {
-        up = native.shadowHost(at);
-      }
-      if (up === null) {
-        return;
-      }
-      const entry = MapGet(objects, up);
-      const holder = entry === undefined ? undefined : WeakRefDeref(entry.ref);
-      if (holder !== undefined) {
-        let held = WeakMapGet(listenerHolds, holder);
-        if (held === undefined) {
-          held = [];
-          WeakMapSet(listenerHolds, holder, held);
-        }
-        if (!ArrayIncludes(held, target)) {
-          ArrayPush(held, target);
-        }
-      }
-      at = up;
     }
   }
 
@@ -3037,11 +3056,13 @@
       }
     }
     // The dialog method closes the form's dialog, its result the
-    // submitter's value (HTML section 4.10.21.3, gap batch H).
+    // submitter's value (HTML section 4.10.21.3, gap batch H); with no
+    // submitter, as `submit()` makes it, the empty string, as the
+    // reference browser has it.
     if (formMethod(form, submitter) === "dialog") {
       const dialog = dialogAround(form);
       if (dialog !== null) {
-        const value = submitter === null ? null : native.attribute(submitter, "value");
+        const value = submitter === null ? "" : native.attribute(submitter, "value");
         closeDialog(dialog, value, null);
       }
       return;
@@ -7897,7 +7918,6 @@
   // and a node's kind and name. Set from inside Node's body, where its
   // private fields are seen.
   let handleOf;
-  let setKeepOf;
   let setNameOf;
   let isNode;
   let kindOf;
@@ -7906,6 +7926,8 @@
   let setNsOf;
   let prefixOf;
   let setPrefixOf;
+  let groupOf;
+  let setGroupOf;
   let childList;
   let elementList;
   let tokensOf;
@@ -7929,9 +7951,8 @@
     #tokens = null;
     #style = null;
     #dataset = null;
-    // The objects a sweep of those held out of the document (D70) found
-    // in its tree, which it keeps while the sweep's collection runs.
-    #keep = null;
+    // The group of its tree's objects it is in (see `wrap`).
+    #group = null;
 
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
@@ -7945,9 +7966,6 @@
 
     static {
       handleOf = (node) => node.#handle;
-      setKeepOf = (node, keep) => {
-        node.#keep = keep;
-      };
       isNode = (value) => typeof value === "object" && value !== null && #handle in value;
       kindOf = (node) => node.#kind;
       nameOf = (node) => node.#name;
@@ -7957,6 +7975,10 @@
       nsOf = (node) => node.#ns;
       setNsOf = (node, ns) => {
         node.#ns = ns;
+      };
+      groupOf = (node) => node.#group;
+      setGroupOf = (node, group) => {
+        node.#group = group;
       };
       prefixOf = (node) => node.#prefix;
       setPrefixOf = (node, prefix) => {
@@ -9151,11 +9173,23 @@
       throw failed(error, method, "Element");
     }
     attributeHandler(wrap(handle), name, true, true);
+    if (name === "src") holdLoadingMedia(handle);
   }
 
   function removeAttribute(handle, name) {
     native.removeAttribute(handle, name);
     attributeHandler(wrap(handle), name, false);
+    if (name === "src") holdLoadingMedia(handle);
+  }
+
+  // A media element whose `src` changed loads again once the task is
+  // done, its events to come (HTML section 4.8.11.18): its object held
+  // from now, until its events' task says how it stands.
+  function holdLoadingMedia(handle) {
+    const tag = native.tag(handle);
+    if ((tag === "audio" || tag === "video") && !MapHas(mediaHeld, handle)) {
+      MapSet(mediaHeld, handle, wrap(handle));
+    }
   }
 
   // The position an insertAdjacent method names, lowercased; or the
@@ -11057,9 +11091,31 @@
         Register(gone, object, id);
         return id;
       },
+      // The object of the id `id`, if it still has one.
+      objectOf(id) {
+        const ref = MapGet(refs, id);
+        return ref === undefined ? undefined : WeakRefDeref(ref);
+      },
     };
   }
   const liveRanges = liveObjects((id) => native.dropRange(id));
+
+  // The node a range's boundary was last set in, held by the range so
+  // that the tree it reaches keeps its objects (see `wrap`): a live
+  // range's, as each setting of its boundary points names it; a static
+  // range's two containers.
+  const rangeHolds = new $WeakMap();
+  {
+    const setRange = native.setRange;
+    native.setRange = function (id, startNode, startOffset, endNode, endOffset) {
+      const result = setRange(id, startNode, startOffset, endNode, endOffset);
+      const range = liveRanges.objectOf(id);
+      if (range !== undefined && startNode !== -1) {
+        WeakMapSet(rangeHolds, range, wrap(startNode));
+      }
+      return result;
+    };
+  }
 
   // A new live range of the document `document` names, collapsed at its
   // start (`createRange`, the Range constructor).
@@ -11071,6 +11127,7 @@
       throw failed(error, "Range", "Range");
     }
     WeakMapSet(rangeIds, range, id);
+    WeakMapSet(rangeHolds, range, wrap(document));
   }
 
   // A range's boundary points: start node, start offset, end node, end
@@ -11180,6 +11237,7 @@
         );
       }
       const points = [];
+      const held = [];
       const names = ["startContainer", "startOffset", "endContainer", "endOffset"];
       for (let i = 0; i < 4; i++) {
         const value = init[names[i]];
@@ -11206,11 +11264,13 @@
             );
           }
           ArrayPush(points, handleOf(value));
+          ArrayPush(held, value);
         } else {
           ArrayPush(points, unsigned(value));
         }
       }
       WeakMapSet(staticBounds, this, points);
+      WeakMapSet(rangeHolds, this, held);
     }
   }
 
@@ -18312,18 +18372,23 @@
     enumerable: true,
     configurable: true,
   });
-  defineProperty(htmlPrototype, "contentEditable", {
-    // `contenteditable`'s state's keyword (section 6.8.1), `inherit` for
-    // none; the setter takes the four, `inherit` taking it away.
-    get() {
-      const value = native.attribute(self(this), "contenteditable");
-      if (value === null) {
-        return "inherit";
-      }
-      const lower = ToLowerCase(value);
-      if (lower === "" || lower === "true") return "true";
-      if (lower === "false" || lower === "plaintext-only") return lower;
+  // The keyword of the state of the `contenteditable` of the element
+  // `handle` names (section 6.8.1), `inherit` for none or an invalid one.
+  function editableState(handle) {
+    const value = native.attribute(handle, "contenteditable");
+    if (value === null) {
       return "inherit";
+    }
+    const lower = ToLowerCase(value);
+    if (lower === "" || lower === "true") return "true";
+    if (lower === "false" || lower === "plaintext-only") return lower;
+    return "inherit";
+  }
+  defineProperty(htmlPrototype, "contentEditable", {
+    // `contenteditable`'s state's keyword, `inherit` for none; the setter
+    // takes the four, `inherit` taking it away.
+    get() {
+      return editableState(self(this));
     },
     set(value) {
       const handle = self(this);
@@ -18633,6 +18698,252 @@
     const n = svgAsk(this, "inStroke", p[0], p[1]);
     return n !== null && n[0] === 1;
   });
+
+  // SVG 2's geometry types (section 4.6, gap batch H), the reference
+  // browser's own interfaces: a rectangle and a point of plain numbers,
+  // and an affine matrix, each changed in place.
+  const svgValues = new $WeakMap();
+  const SVG_DEGREE = Math.PI / 180;
+  function svgValue(object, iface) {
+    const value = WeakMapGet(svgValues, object);
+    if (value === undefined) {
+      throw illegalInvocation();
+    }
+    return value;
+  }
+  function svgFields(cls, iface, names) {
+    for (let i = 0; i < names.length; i++) {
+      const at = i;
+      defineProperty(cls.prototype, names[i], {
+        get() {
+          return svgValue(this, iface)[at];
+        },
+        set(value) {
+          svgValue(this, iface)[at] = $Number(value);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  }
+  class SVGRect {
+    constructor() {
+      throw illegalConstructor("SVGRect");
+    }
+  }
+  svgFields(SVGRect, "SVGRect", ["x", "y", "width", "height"]);
+  expose(SVGRect, "SVGRect");
+  class SVGPoint {
+    constructor() {
+      throw illegalConstructor("SVGPoint");
+    }
+    matrixTransform(matrix) {
+      const p = svgValue(this, "SVGPoint");
+      const m = svgValue(matrix, "SVGMatrix");
+      return svgPoint(m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]);
+    }
+  }
+  svgFields(SVGPoint, "SVGPoint", ["x", "y"]);
+  expose(SVGPoint, "SVGPoint");
+  // A matrix's numbers a to f, and `other` after it.
+  function svgTimes(m, n) {
+    return svgMatrix([
+      m[0] * n[0] + m[2] * n[1],
+      m[1] * n[0] + m[3] * n[1],
+      m[0] * n[2] + m[2] * n[3],
+      m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4],
+      m[1] * n[4] + m[3] * n[5] + m[5],
+    ]);
+  }
+  class SVGMatrix {
+    constructor() {
+      throw illegalConstructor("SVGMatrix");
+    }
+    multiply(other) {
+      return svgTimes(svgValue(this, "SVGMatrix"), svgValue(other, "SVGMatrix"));
+    }
+    inverse() {
+      const m = svgValue(this, "SVGMatrix");
+      const det = m[0] * m[3] - m[1] * m[2];
+      if (det === 0 || !$NumberIsFinite(det)) {
+        throw domError("InvalidStateError", "The matrix is not invertible.", "inverse", "SVGMatrix");
+      }
+      return svgMatrix([
+        m[3] / det,
+        -m[1] / det,
+        -m[2] / det,
+        m[0] / det,
+        (m[2] * m[5] - m[3] * m[4]) / det,
+        (m[1] * m[4] - m[0] * m[5]) / det,
+      ]);
+    }
+    translate(x, y) {
+      return svgTimes(svgValue(this, "SVGMatrix"), [1, 0, 0, 1, $Number(x), $Number(y)]);
+    }
+    scale(factor) {
+      const f = $Number(factor);
+      return svgTimes(svgValue(this, "SVGMatrix"), [f, 0, 0, f, 0, 0]);
+    }
+    scaleNonUniform(x, y) {
+      return svgTimes(svgValue(this, "SVGMatrix"), [$Number(x), 0, 0, $Number(y), 0, 0]);
+    }
+    rotate(angle) {
+      const r = $Number(angle) * SVG_DEGREE;
+      const c = MathCos(r);
+      const s = MathSin(r);
+      return svgTimes(svgValue(this, "SVGMatrix"), [c, s, -s, c, 0, 0]);
+    }
+    rotateFromVector(x, y) {
+      x = $Number(x);
+      y = $Number(y);
+      if (x === 0 || y === 0) {
+        throw domError("InvalidAccessError", "Arguments cannot be zero.", "rotateFromVector", "SVGMatrix");
+      }
+      const r = MathAtan2(y, x);
+      const c = MathCos(r);
+      const s = MathSin(r);
+      return svgTimes(svgValue(this, "SVGMatrix"), [c, s, -s, c, 0, 0]);
+    }
+    flipX() {
+      return svgTimes(svgValue(this, "SVGMatrix"), [-1, 0, 0, 1, 0, 0]);
+    }
+    flipY() {
+      return svgTimes(svgValue(this, "SVGMatrix"), [1, 0, 0, -1, 0, 0]);
+    }
+    skewX(angle) {
+      const t = MathTan($Number(angle) * SVG_DEGREE);
+      return svgTimes(svgValue(this, "SVGMatrix"), [1, 0, t, 1, 0, 0]);
+    }
+    skewY(angle) {
+      const t = MathTan($Number(angle) * SVG_DEGREE);
+      return svgTimes(svgValue(this, "SVGMatrix"), [1, t, 0, 1, 0, 0]);
+    }
+  }
+  svgFields(SVGMatrix, "SVGMatrix", ["a", "b", "c", "d", "e", "f"]);
+  expose(SVGMatrix, "SVGMatrix");
+  function svgMake(cls, values) {
+    const object = ObjectCreate(cls.prototype);
+    WeakMapSet(svgValues, object, values);
+    return object;
+  }
+  function svgRect(x, y, width, height) {
+    return svgMake(SVGRect, [x, y, width, height]);
+  }
+  function svgPoint(x, y) {
+    return svgMake(SVGPoint, [x, y]);
+  }
+  function svgMatrix(values) {
+    return svgMake(SVGMatrix, values);
+  }
+
+  // `getScreenCTM()` (SVG 2 section 5.14): the matrix to the outer
+  // `<svg>`'s viewport, then to the page's viewport, where its content
+  // box is.
+  svgMethod(SVGGraphicsElement, "getScreenCTM", function getScreenCTM() {
+    const n = svgAsk(this, "ctm", 0, 0);
+    if (n === null) {
+      return null;
+    }
+    let outer = this;
+    for (let up = outer.parentNode; up !== null && up instanceof SVGElement; up = up.parentNode) {
+      outer = up;
+    }
+    const g = geometryOf(outer, true);
+    const x = g.length === 0 ? 0 : g[0] + g[G_BORDER + 3] + g[G_PADDING + 3];
+    const y = g.length === 0 ? 0 : g[1] + g[G_BORDER] + g[G_PADDING];
+    return new DOMMatrix([n[0], n[1], n[2], n[3], n[4] + x, n[5] + y]);
+  });
+
+  // The characters of a text (SVG 2 section 11.11): counted in UTF-16
+  // code units, each asked by its index, one past them refused.
+  function charCount(element) {
+    const n = svgAsk(element, "numberOfChars", 0, 0);
+    return n === null ? 0 : n[0];
+  }
+  function charCell(element, index, method) {
+    const at = $Number(index) >>> 0;
+    const cell = at < charCount(element) ? svgAsk(element, "char", at, 0) : null;
+    if (cell === null) {
+      throw domError("IndexSizeError", "The charnum provided (" + at + ") is greater than or equal to the maximum bound (" + charCount(element) + ").", method, "SVGTextContentElement");
+    }
+    return cell;
+  }
+  svgMethod(SVGTextContentElement, "getNumberOfChars", function getNumberOfChars() {
+    return charCount(this);
+  });
+  svgMethod(SVGTextContentElement, "getCharNumAtPosition", function getCharNumAtPosition(point) {
+    need(arguments.length, 1, "getCharNumAtPosition", "SVGTextContentElement");
+    const p = pointInit(point, "getCharNumAtPosition", "SVGTextContentElement");
+    const n = svgAsk(this, "charAt", p[0], p[1]);
+    return n === null ? -1 : n[0];
+  });
+  svgMethod(SVGTextContentElement, "getSubStringLength", function getSubStringLength(start, count) {
+    need(arguments.length, 2, "getSubStringLength", "SVGTextContentElement");
+    const from = $Number(start) >>> 0;
+    charCell(this, from, "getSubStringLength");
+    const n = svgAsk(this, "subStringLength", from, $Number(count) >>> 0);
+    return n === null ? 0 : n[0];
+  });
+  svgMethod(SVGTextContentElement, "getStartPositionOfChar", function getStartPositionOfChar(index) {
+    need(arguments.length, 1, "getStartPositionOfChar", "SVGTextContentElement");
+    const c = charCell(this, index, "getStartPositionOfChar");
+    return svgPoint(c[0], c[1]);
+  });
+  svgMethod(SVGTextContentElement, "getEndPositionOfChar", function getEndPositionOfChar(index) {
+    need(arguments.length, 1, "getEndPositionOfChar", "SVGTextContentElement");
+    const c = charCell(this, index, "getEndPositionOfChar");
+    return svgPoint(c[0] + c[2], c[1]);
+  });
+  svgMethod(SVGTextContentElement, "getExtentOfChar", function getExtentOfChar(index) {
+    need(arguments.length, 1, "getExtentOfChar", "SVGTextContentElement");
+    const c = charCell(this, index, "getExtentOfChar");
+    return svgRect(c[0], c[3], c[2], c[4]);
+  });
+  // No glyph is rotated here (`rotate` is G87's).
+  svgMethod(SVGTextContentElement, "getRotationOfChar", function getRotationOfChar(index) {
+    need(arguments.length, 1, "getRotationOfChar", "SVGTextContentElement");
+    charCell(this, index, "getRotationOfChar");
+    return 0;
+  });
+  // The characters selected: the document's selection over them, its
+  // text nodes' code units taken for its characters, as the reference
+  // browser selects them.
+  svgMethod(SVGTextContentElement, "selectSubString", function selectSubString(start, count) {
+    need(arguments.length, 2, "selectSubString", "SVGTextContentElement");
+    charCell(this, start, "selectSubString");
+    // Its text nodes in tree order; the DOM's depth cap bounds the walk.
+    const texts = [];
+    const collect = (node) => {
+      for (let c = node.firstChild; c !== null; c = c.nextSibling) {
+        if (c.nodeType === 3) {
+          ArrayPush(texts, c);
+        } else if (c.nodeType === 1) {
+          collect(c);
+        }
+      }
+    };
+    collect(this);
+    const selection = getSelection();
+    if (selection === null || texts.length === 0) {
+      return;
+    }
+    const at = (index) => {
+      let left = index;
+      for (let i = 0; i < texts.length; i++) {
+        if (left <= texts[i].data.length) {
+          return [texts[i], left];
+        }
+        left -= texts[i].data.length;
+      }
+      const last = texts[texts.length - 1];
+      return [last, last.data.length];
+    };
+    const from = $Number(start) >>> 0;
+    const [a, ao] = at(from);
+    const [b, bo] = at(from + ($Number(count) >>> 0));
+    selection.setBaseAndExtent(a, ao, b, bo);
+  });
   const SVG_ELEMENTS = [
     ["SVGSVGElement", ["svg"], SVGGraphicsElement],
     ["SVGGElement", ["g"], SVGGraphicsElement],
@@ -18671,6 +18982,117 @@
   for (let i = 0; i < SVG_ELEMENTS.length; i++) {
     svgElement(SVG_ELEMENTS[i][0], SVG_ELEMENTS[i][1], SVG_ELEMENTS[i][2]);
   }
+
+  // SVGSVGElement's geometry (SVG 2 section 5.11.1, gap batch H): the
+  // geometry types made, and the elements whose painted boxes meet or
+  // lie within a rectangle of its user units, as the reference browser
+  // compares them: a graphics element that pointer events reach, by the
+  // box its geometry and stroke paint, edges that touch meeting.
+  const SVGSVGElement = MapGet(svgInterfaces, "svg");
+  const SVG_GRAPHICS = ["rect", "circle", "ellipse", "line", "polyline", "polygon", "path",
+    "text", "image", "foreignObject"];
+  function svgRectArgument(rect, method) {
+    const r = WeakMapGet(svgValues, rect);
+    if (r === undefined || !(rect instanceof SVGRect)) {
+      throw new $TypeError(prefix(method, "SVGSVGElement") + "parameter 2 is not of type 'SVGRect'.");
+    }
+    return r;
+  }
+  // Whether `element`'s painted box meets `r` (`enclosed`: lies within
+  // it), in the user units of the outer svg `svg`.
+  function svgMeets(svg, element, r, enclosed) {
+    if (element === svg || !svgContains(svg, element)) {
+      return false;
+    }
+    if (native.computedValue(self(element), "", "pointer-events") === "none") {
+      return false;
+    }
+    const b = svgAsk(element, "paintedBox", 0, 0);
+    if (b === null) {
+      return false;
+    }
+    const [x, y, w, h] = r;
+    if (enclosed) {
+      return b[0] >= x && b[1] >= y && b[0] + b[2] <= x + w && b[1] + b[3] <= y + h;
+    }
+    return b[0] <= x + w && b[0] + b[2] >= x && b[1] <= y + h && b[1] + b[3] >= y;
+  }
+  function svgContains(svg, element) {
+    for (let at = element; at !== null; at = at.parentNode) {
+      if (at === svg) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function svgList(svg, r, reference, enclosed) {
+    const root = reference === null || reference === undefined ? svg : reference;
+    const found = [];
+    const handles = native.query(self(root), ArrayJoin(SVG_GRAPHICS, ","), true);
+    for (let i = 0; i < handles.length; i++) {
+      if (svgMeets(svg, wrap(handles[i]), r, enclosed)) {
+        ArrayPush(found, handles[i]);
+      }
+    }
+    return snapshot(NodeList, found);
+  }
+  include(
+    {
+      createSVGRect() {
+        self(this);
+        return svgRect(0, 0, 0, 0);
+      },
+      createSVGPoint() {
+        self(this);
+        return svgPoint(0, 0);
+      },
+      createSVGMatrix() {
+        self(this);
+        return svgMatrix([1, 0, 0, 1, 0, 0]);
+      },
+      checkIntersection(element, rect) {
+        need(arguments.length, 2, "checkIntersection", "SVGSVGElement");
+        return svgMeets(this, element, svgRectArgument(rect, "checkIntersection"), false);
+      },
+      checkEnclosure(element, rect) {
+        need(arguments.length, 2, "checkEnclosure", "SVGSVGElement");
+        return svgMeets(this, element, svgRectArgument(rect, "checkEnclosure"), true);
+      },
+      getIntersectionList(rect, reference) {
+        need(arguments.length, 2, "getIntersectionList", "SVGSVGElement");
+        return svgList(this, svgRectArgument(rect, "getIntersectionList"), reference, false);
+      },
+      getEnclosureList(rect, reference) {
+        need(arguments.length, 2, "getEnclosureList", "SVGSVGElement");
+        return svgList(this, svgRectArgument(rect, "getEnclosureList"), reference, true);
+      },
+    },
+    [SVGSVGElement.prototype],
+  );
+  // SVGElement's `ownerSVGElement`, its nearest `<svg>` ancestor, and
+  // `viewportElement`, the element that gives it its viewport: the same,
+  // as no other element establishes one here.
+  include(
+    {
+      get ownerSVGElement() {
+        for (let at = this.parentNode; at !== null && at instanceof SVGElement; at = at.parentNode) {
+          if (at instanceof SVGSVGElement) {
+            return at;
+          }
+        }
+        return null;
+      },
+      get viewportElement() {
+        for (let at = this.parentNode; at !== null && at instanceof SVGElement; at = at.parentNode) {
+          if (at instanceof SVGSVGElement) {
+            return at;
+          }
+        }
+        return null;
+      },
+    },
+    [SVGElement.prototype],
+  );
   // An SVG script's `type` and `crossOrigin` (SVG 2's SVGScriptElement).
   reflect(MapGet(svgInterfaces, "script").prototype, "type", "type", "string");
   reflect(MapGet(svgInterfaces, "script").prototype, "crossOrigin", "crossorigin", "cors");
@@ -23727,7 +24149,9 @@
   // `focusout`, then this one gains it, with `focus` and `focusin`, each
   // naming the other. Nothing for an element that cannot take the
   // focus, or has it.
-  function focusElement(handle, preventScroll) {
+  // `visible` says whether the focus is shown: 1 it is, 2 it is not, 0
+  // as the host decides.
+  function focusElement(handle, preventScroll, visible = 0) {
     // A shadow host that delegates focus gives it to its focus delegate,
     // unless the focus is in it already (the focusing steps' step 2, D68).
     if (delegatesFocus(handle)) {
@@ -23769,7 +24193,7 @@
       native.setFocus(null, true);
       return;
     }
-    native.setFocus(handle, preventScroll);
+    native.setFocus(handle, preventScroll, visible);
     fireFocus("focus", element, before);
     fireFocus("focusin", element, before);
   }
@@ -23794,6 +24218,17 @@
     return false;
   }
 
+  // Whether `node` is `ancestor` or in it in the flat tree (D68), its
+  // slots and hosts walked up.
+  function flatIncludes(ancestor, node) {
+    for (let at = node; at !== null; at = flatParent(at)) {
+      if (at === ancestor) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // HTML's unfocusing steps: the element loses the focus, to the
   // viewport; a shadow host's blur blurs the focus in its tree (D68).
   function blurElement(handle) {
@@ -23811,12 +24246,82 @@
     fireFocus("focusout", element, null);
   }
 
+  // `isContentEditable` (HTML section 6.8.1, gap batch H): whether the
+  // element is editable or an editing host, by the nearest element up
+  // whose `contenteditable` state is other than inherit
+  // (`editableState`, `contentEditable`'s).
   include(
     {
+      get isContentEditable() {
+        for (let at = self(this); at !== null; at = native.parent(at)) {
+          if (native.kind(at) !== 1) {
+            return false;
+          }
+          const state = editableState(at);
+          if (state !== "inherit") {
+            return state !== "false";
+          }
+        }
+        return false;
+      },
+    },
+    [HTMLElement.prototype],
+  );
+
+  // The tokens `focusGroup.supports()` takes (gap batch H), as the
+  // reference browser has them.
+  const FOCUSGROUP_TOKENS = [
+    "toolbar", "tablist", "radiogroup", "listbox", "menu", "menubar", "wrap", "nowrap",
+    "inline", "block", "nomemory", "none", "feed", "grid", "itemcontrols", "noitemcontrols",
+    "manual", "rowwrap", "colwrap", "flow", "rowflow", "colflow",
+  ];
+  const focusGroupLists = new $WeakMap();
+
+  include(
+    {
+      // FocusOptions' `preventScroll`, and `focusVisible`, which when
+      // given decides whether the focus is shown.
       focus(options) {
+        let handle = self(this);
+        const given = typeof options === "object" && options !== null;
+        const prevent = given && !!options.preventScroll;
+        const visible = given ? options.focusVisible : undefined;
+        // A label that takes no focus itself gives it to its control, an
+        // inert label's too, as the reference browser has it.
+        if (native.tag(handle) === "label" && isHtmlElement(handle) && !native.focusable(handle)) {
+          const control = native.labeledControl(handle);
+          if (control !== null) handle = control;
+        }
+        focusElement(handle, prevent, visible === undefined ? 0 : visible ? 1 : 2);
+      },
+
+      // The `focusgroup` attribute as a token list (gap batch H), set
+      // through its value (`[PutForwards=value]`).
+      get focusGroup() {
         const handle = self(this);
-        const prevent = typeof options === "object" && options !== null && !!options.preventScroll;
-        focusElement(handle, prevent);
+        let list = WeakMapGet(focusGroupLists, this);
+        if (list === undefined) {
+          list = tokenList(this, handle, "focusgroup", FOCUSGROUP_TOKENS);
+          WeakMapSet(focusGroupLists, this, list);
+        }
+        return list;
+      },
+
+      set focusGroup(value) {
+        setAttribute(self(this), "focusgroup", str(value), "focusGroup");
+      },
+
+      get focusGroupStart() {
+        return native.attribute(self(this), "focusgroupstart") !== null;
+      },
+
+      set focusGroupStart(value) {
+        const handle = self(this);
+        if (value) {
+          setAttribute(handle, "focusgroupstart", "", "focusGroupStart");
+        } else {
+          removeAttribute(handle, "focusgroupstart");
+        }
       },
 
       blur() {
@@ -23865,9 +24370,12 @@
 
   // The elements whose popover is being shown or hidden (HTML's
   // "popover showing or hiding"), and the `toggle` tasks queued, each's
-  // id and the old state it carries ("toggle task tracker"), by handle.
+  // id and the old state it carries, by handle: a popover's ("popover
+  // toggle task tracker") and a dialog's ("dialog toggle task tracker")
+  // apart, so that a dialog shown as both fires one of each.
   const popoverBusy = new $Map();
   const toggleTasks = new $Map();
+  const dialogToggleTasks = new $Map();
   // A dialog's `returnValue`, by its object.
   const returnValues = new $WeakMap();
 
@@ -23932,7 +24440,7 @@
     if ((popoverShown(handle) !== null) !== showing) return false;
     const unfit = !native.connected(handle) ||
       !isPage(native.ownerDocument(handle)) ||
-      (isDialog(handle) && (dialogShown(handle) === "modal" || (!showing && hasOpen(handle))));
+      (isDialog(handle) && dialogShown(handle) === "modal");
     if (unfit) {
       if (throws) {
         throw domError("InvalidStateError", "Invalid on disconnected popover elements.", method,
@@ -23958,10 +24466,11 @@
   }
 
   // HTML's "queue a popover toggle event task" and "queue a dialog toggle
-  // event task": a `toggle` queued, one queued already taken back and
-  // its old state kept, so that a run of changes makes one event.
-  function queueToggle(handle, oldState, newState, source) {
-    const queued = MapGet(toggleTasks, handle);
+  // event task" (`tasks` the tracker): a `toggle` queued, one queued
+  // already taken back and its old state kept, so that a run of changes
+  // makes one event.
+  function queueToggle(handle, oldState, newState, source, tasks = toggleTasks) {
+    const queued = MapGet(tasks, handle);
     if (queued !== undefined) {
       oldState = queued.oldState;
       cancelTask(queued.id);
@@ -23969,7 +24478,7 @@
     const element = wrap(handle);
     const from = source === null ? null : wrap(source);
     const id = queueTask(function* () {
-      MapDelete(toggleTasks, handle);
+      MapDelete(tasks, handle);
       const event = new ToggleEvent("toggle", made(TOGGLE_INIT, [
         "composed", from !== null,
         "newState", newState,
@@ -23979,7 +24488,7 @@
       eventState(event).trusted = true;
       yield* dispatching(element, event);
     }, 0, true);
-    MapSet(toggleTasks, handle, { id, oldState });
+    MapSet(tasks, handle, { id, oldState });
   }
 
   // The `toggle` tasks of `details` elements, by element: HTML's details
@@ -24117,6 +24626,33 @@
     hideStackUntil(endpoint, shown[1], focusPrevious, fireEvents);
   }
 
+  // HTML's "hide all popovers until" `endpoint` as a press's light
+  // dismiss and a dialog shown run it, the popovers stacked as the
+  // reference browser stacks them, the hint list above the auto list:
+  // until an auto popover, every hint goes too; until a hint, the auto
+  // popovers above the one its list hangs from, all of them when it
+  // hangs from none. Every popover for ALL_POPOVERS, or one not in
+  // either list.
+  function hideStackedUntil(endpoint) {
+    const shown = endpoint === ALL_POPOVERS ? null : popoverShown(endpoint);
+    if (shown === null || shown[1] === "none") {
+      hideAllPopoversUntil(ALL_POPOVERS, false, true);
+      return;
+    }
+    hideStackUntil(endpoint, shown[1], false, true);
+    if (shown[1] === "auto") {
+      closeEntireList("hint", false, true);
+      return;
+    }
+    const hints = popoverList("hint");
+    const from = hints.length === 0 ? null : topLayer("anchor", hints[0]);
+    if (from === null) {
+      closeEntireList("auto", false, true);
+    } else {
+      hideStackUntil(from, "auto", false, true);
+    }
+  }
+
   // HTML's "show popover", as the reference browser stacks a hint: an
   // auto popover closes the hint list and the auto popovers it is not
   // in; a hint closes the other hints, and hangs from the auto popover
@@ -24126,6 +24662,15 @@
   function showPopover(handle, throws, source, method) {
     if (!popoverValid(handle, false, throws, method)) return;
     const nested = MapHas(popoverBusy, handle);
+    // While another popover is being shown or hidden, its `beforetoggle`
+    // under way, none other is shown, as the reference browser has it.
+    if (!nested && MapSize(popoverBusy) > 0) {
+      if (throws) {
+        throw domError("InvalidStateError",
+          "Invalid to show a popover during another show operation", method, "HTMLElement");
+      }
+      return;
+    }
     const fireEvents = !nested;
     MapSet(popoverBusy, handle, true);
     try {
@@ -24245,21 +24790,29 @@
   }
 
   // HTML's "popover focusing steps": a dialog's own; else the popover
-  // itself with `autofocus`, or the first focusable descendant with it.
+  // itself with `autofocus`, or the first focusable descendant with it,
+  // the document's own autofocus then not done (its autofocus
+  // processed flag).
   function popoverFocusing(handle) {
-    if (isDialog(handle)) {
+    // One with `autofocus` takes the focus itself, a dialog too, as the
+    // reference browser has it.
+    if (isDialog(handle) && native.attribute(handle, "autofocus") === null) {
       dialogFocusing(handle);
       return;
     }
     const control = topLayer("delegate", handle, null, null, null, "popover");
-    if (control !== null) focusElement(control, false);
+    if (control === null) return;
+    focusElement(control, false);
+    topLayer("autofocusProcessed");
   }
 
   // HTML's "dialog focusing steps", as the reference browser has them:
-  // its focus delegate, else the dialog.
+  // its focus delegate, else the dialog; the document's own autofocus
+  // then not done.
   function dialogFocusing(handle) {
     const control = topLayer("delegate", handle, null, null, null, "dialog");
     focusElement(control === null ? handle : control, false);
+    topLayer("autofocusProcessed");
   }
 
   // The popover attribute changed (HTML's popover attribute change
@@ -24291,10 +24844,10 @@
       );
     }
     if (!fireBeforeToggle(handle, "closed", "open", null, true) || hasOpen(handle)) return;
-    queueToggle(handle, "closed", "open", null);
+    queueToggle(handle, "closed", "open", null, dialogToggleTasks);
     setAttribute(handle, "open", "", "show");
     topLayer("openDialog", handle, native.focused(), null, null, "open");
-    hideAllPopoversUntil(dialogHideUntil(handle), false, true);
+    hideStackedUntil(dialogHideUntil(handle));
     dialogFocusing(handle);
   }
 
@@ -24319,11 +24872,17 @@
     }
     if (!fireBeforeToggle(handle, "closed", "open", source, true)) return;
     if (hasOpen(handle) || !native.connected(handle) || popoverShown(handle) !== null) return;
-    queueToggle(handle, "closed", "open", source);
+    queueToggle(handle, "closed", "open", source, dialogToggleTasks);
     setAttribute(handle, "open", "", "showModal");
     topLayer("openDialog", handle, native.focused(), null, null, "modal");
-    hideAllPopoversUntil(dialogHideUntil(handle), false, true);
+    hideStackedUntil(dialogHideUntil(handle));
     dialogFocusing(handle);
+    // The focus left on what the dialog made inert, as when the dialog
+    // is inert itself and its focusing steps did nothing, goes to the
+    // viewport (HTML's focus fixup rule), with no event, as the
+    // reference browser has it.
+    const focused = native.focused();
+    if (focused !== null && !native.focusable(focused)) native.setFocus(null, true);
   }
 
   // HTML's "close the dialog": `result`, unless null, its return value;
@@ -24333,15 +24892,19 @@
     if (!hasOpen(handle)) return;
     fireBeforeToggle(handle, "open", "closed", source, false);
     if (!hasOpen(handle)) return;
-    queueToggle(handle, "open", "closed", source);
-    removeAttribute(handle, "open");
+    queueToggle(handle, "open", "closed", source, dialogToggleTasks);
+    // What was kept of it, before the attribute's going lets it go.
     const wasModal = dialogShown(handle) === "modal";
     const previous = topLayer("closeDialog", handle);
+    removeAttribute(handle, "open");
     const element = wrap(handle);
     if (result !== null) WeakMapSet(returnValues, element, result);
     if (previous !== null) {
       const focused = native.focused();
-      if (wasModal || (focused !== null && shadowIncludes(handle, focused))) {
+      // Inside it in the flat tree, as an element slotted into it is,
+      // as the reference browser has it.
+      if (wasModal || (focused !== null && (shadowIncludes(handle, focused) ||
+        flatIncludes(handle, focused)))) {
         focusElement(previous, true);
       }
     }
@@ -24392,7 +24955,11 @@
   // HTML's "request close the dialog": its close watcher asked to close,
   // `cancel` first; a dialog the parser opened, which has none, closed.
   function requestCloseDialog(handle, result, source) {
-    if (!hasOpen(handle) || !native.connected(handle)) return;
+    // Nor one of a document that is not fully active, as one of no
+    // browsing context is not.
+    if (!hasOpen(handle) || !native.connected(handle) || !isPage(native.ownerDocument(handle))) {
+      return;
+    }
     // A request while its `cancel` runs does nothing (the close
     // watcher's "is running cancel action").
     if (MapHas(cancelling, handle)) return;
@@ -24660,7 +25227,7 @@
     const ancestor = topmostClickedPopover(target);
     const same = ancestor === popoverPressed;
     popoverPressed = null;
-    if (same) hideAllPopoversUntil(ancestor === null ? ALL_POPOVERS : ancestor, false, true);
+    if (same) hideStackedUntil(ancestor === null ? ALL_POPOVERS : ancestor);
   }
 
   // HTML's "topmost clicked popover".
@@ -30941,6 +31508,14 @@
   const mediaErrors = new $WeakMap();
   const mediaPitch = new $WeakMap();
 
+  // The objects of the elements with events yet to fire, by handle: a
+  // load under way, playback, a `play()` to settle (HTML section
+  // 4.8.11.18), held whatever holds them else, so that an element out of
+  // the document a script let go of plays on, its listeners with it.
+  // Each call of an element's that finds it so holds it; each task of
+  // its events, once they are fired, lets it go when it no longer is.
+  const mediaHeld = new $Map();
+
   function mediaCall(op, words) {
     const answer = JSONParse(native.media(JSONStringify(op)));
     if (answer.error !== undefined) {
@@ -30948,7 +31523,28 @@
       if (e.name === "TypeError") throw new $TypeError(words + e.message);
       throw new $DOMException(e.message, e.name);
     }
+    if (answer.active === true && !MapHas(mediaHeld, op.node)) {
+      MapSet(mediaHeld, op.node, wrap(op.node));
+    }
     return answer.result;
+  }
+
+  // After a task of an element's events, `delivered` when the engine
+  // sent them (not a pipeline's report heard now): let go of it when it
+  // has none yet to fire.
+  function settleMediaHold(handle, delivered) {
+    let active = false;
+    try {
+      const op = { op: "state", node: handle, delivered };
+      active = JSONParse(native.media(JSONStringify(op))).active;
+    } catch {
+      active = false;
+    }
+    if (active !== true) {
+      MapDelete(mediaHeld, handle);
+    } else if (!MapHas(mediaHeld, handle)) {
+      MapSet(mediaHeld, handle, wrap(handle));
+    }
   }
 
   function mediaState(element) {
@@ -31187,6 +31783,20 @@
     if (told.report !== undefined) {
       actions = mediaCall({ op: "report", node: told.node, generation: told.generation, report: told.report }, "");
     }
+    // The elements whose events these are, asked after them whether
+    // they are still to be held.
+    const touched = told.node === undefined ? [] : [told.node];
+    try {
+      yield* mediaActions(actions, touched);
+    } finally {
+      for (let i = 0; i < touched.length; i++) {
+        settleMediaHold(touched[i], told.report === undefined);
+      }
+    }
+    return false;
+  }
+
+  function* mediaActions(actions, touched) {
     for (let i = 0; i < actions.length; i++) {
       const action = actions[i];
       if (action.promise !== undefined) {
@@ -31203,13 +31813,19 @@
         yield;
         continue;
       }
-      const target = wrap(action.node);
+      if (!ArrayIncludes(touched, action.node)) ArrayPush(touched, action.node);
+      // An element freed meanwhile hears nothing.
+      let target = null;
+      try {
+        target = wrap(action.node);
+      } catch {
+        continue;
+      }
       if (target === null || target === undefined) continue;
       const event = new Event(action.event);
       eventState(event).trusted = true;
       yield* dispatching(target, event);
     }
-    return false;
   }
 
   // ---- Media Session (M40) --------------------------------------------------
@@ -31773,7 +32389,7 @@
     },
     reactions: reactionsTask,
     reactionsQueued,
-    // The sweep of the objects held out of the document (D70), the
+    // The sweep of the trees' groups held for custom elements (D70), the
     // realm collecting the garbage between its two halves.
     sweepPrepare,
     sweepFinish,

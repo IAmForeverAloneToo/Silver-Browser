@@ -90,6 +90,9 @@ pub(crate) struct Outputs {
     /// The events to fire at elements after the run (M26): a script
     /// element's `error` for a `src` that cannot be fetched.
     pub(crate) events: Vec<(NodeId, &'static str)>,
+    /// Whether a script focused an element, which in a frame focuses the
+    /// frame's element in the document around it (gap batch H).
+    pub(crate) focused: bool,
     /// The scroll offsets scripts set (D65), in order.
     pub(crate) scrolls: Vec<ScriptScroll>,
     /// What each snapping scroll container the run scrolled or read is
@@ -274,6 +277,9 @@ pub(crate) struct DocumentHost {
     /// The roots of the subtrees scripts made or took out of the tree,
     /// freed once out of it with nothing in them exposed.
     detached: Vec<NodeId>,
+    /// The number of nodes past which the realm's garbage is collected
+    /// next ([`DocumentHost::collection_due`]).
+    collect_at: usize,
     /// The work done since the realm last asked.
     work: u64,
     /// The handlers the parser set, by element and text, whose refusal
@@ -330,9 +336,11 @@ pub(crate) struct DocumentHost {
     started: HashSet<NodeId>,
     /// Made scripts whose "force async" flag was cleared by `async`.
     not_forced: HashSet<NodeId>,
-    /// The nodes scripts hold that came into the document or left it,
-    /// in order, for the bindings to hold their objects or let them go.
-    pins: Vec<(NodeId, bool)>,
+    /// The nodes scripts hold that went into another tree or out of one,
+    /// in order, each with the root of the tree it is in now and that
+    /// root's owner document, for the bindings to keep their objects with
+    /// that tree's.
+    pins: Vec<(NodeId, NodeId, NodeId)>,
     /// The custom element the parser stopped for in what a script wrote
     /// (D70): its local name and `is` value, for the realm to construct.
     construct: Option<(String, Option<String>)>,
@@ -432,6 +440,10 @@ pub(crate) struct DocumentHost {
 /// The most sets of script fetch options a document numbers: past them
 /// a script's `import()`s fetch with the defaults.
 const MAX_SCRIPT_OPTIONS: usize = 1024;
+
+/// The fewest nodes a document gains between two collections of its
+/// realm's garbage ([`DocumentHost::collection_due`]).
+const COLLECT_STEP: usize = 1 << 14;
 
 impl DocumentHost {
     /// The number the realm knows `options` by: 0 for the defaults.
@@ -825,7 +837,9 @@ impl DocumentHost {
                     }
                     NodeData::Document => ("#document".to_owned(), String::new()),
                 };
-                let connected = if self.connected(id) { "connected" } else { "" };
+                // The tree its object keeps with, and that tree's owner.
+                let root = self.group_root(id);
+                let owner = self.document.owner_document(root);
                 // An element's prefix, a document's interface (D67), or a
                 // shadow root's (D68).
                 let extra = match self.document.document_facts(id) {
@@ -837,7 +851,14 @@ impl DocumentHost {
                     None if self.document.is_shadow_root(id) => "ShadowRoot",
                     None => self.document.element_prefix(id).unwrap_or_default(),
                 };
-                let mut answer = vec![name, connected.to_owned(), ns, kind, extra.to_owned()];
+                let mut answer = vec![
+                    name,
+                    handle(root).0.to_string(),
+                    ns,
+                    kind,
+                    extra.to_owned(),
+                    handle(owner).0.to_string(),
+                ];
                 // The attributes that may be event handlers (M26).
                 answer.extend(
                     self.document
@@ -861,9 +882,10 @@ impl DocumentHost {
             }
             Call::TakePins => {
                 let pins = std::mem::take(&mut self.pins);
-                Ok(Answer::Pins(
+                Ok(Answer::Nodes(
                     pins.into_iter()
-                        .map(|(node, connected)| (handle(node), connected))
+                        .flat_map(|(node, root, owner)| [node, root, owner])
+                        .map(handle)
                         .collect(),
                 ))
             }
@@ -1268,6 +1290,9 @@ impl DocumentHost {
                 self.document.adopt(node, document).map_err(refused)?;
                 if had_parent {
                     self.taken_out(node);
+                } else {
+                    // Its tree's owner is another document now.
+                    self.put_in(node);
                 }
                 Ok(Answer::Nothing)
             }
@@ -2959,6 +2984,13 @@ impl DocumentHost {
                     "pointAtLength" => svg::Query::PointAtLength(a.unwrap_or(0.0)),
                     "inFill" => svg::Query::InFill(a.unwrap_or(0.0), b.unwrap_or(0.0)),
                     "inStroke" => svg::Query::InStroke(a.unwrap_or(0.0), b.unwrap_or(0.0)),
+                    "numberOfChars" => svg::Query::NumberOfChars,
+                    "charAt" => svg::Query::CharAt(a.unwrap_or(0.0), b.unwrap_or(0.0)),
+                    "char" => svg::Query::Char(a.unwrap_or(0.0)),
+                    "subStringLength" => {
+                        svg::Query::SubStringLength(a.unwrap_or(0.0), b.unwrap_or(0.0))
+                    }
+                    "paintedBox" => svg::Query::PaintedBox,
                     _ => return Ok(Answer::Numbers(Vec::new())),
                 };
                 if !self.connected(node) {
@@ -3121,13 +3153,22 @@ impl DocumentHost {
             Call::SetFocus {
                 node,
                 prevent_scroll,
+                visible,
             } => {
                 let node = node.map(|node| self.node(node)).transpose()?;
-                // A focus a script gives is shown after a key, and in a
-                // text control always, as the reference browser decides.
-                let visible = self.window.keyboard
-                    || node.is_some_and(|node| forms::is_text_control(&self.document, node));
+                // A focus a script gives is shown as `focusVisible` says;
+                // else after a key, and in an element that takes text (a
+                // text control, an editing host) always, as the reference
+                // browser decides (`:focus-visible`'s heuristics).
+                let visible = visible.unwrap_or_else(|| {
+                    self.window.keyboard
+                        || node.is_some_and(|node| {
+                            forms::is_text_control(&self.document, node)
+                                || crate::focus::editable(&self.document, node)
+                        })
+                });
                 self.document.set_focus(node, visible);
+                self.outputs.focused |= node.is_some();
                 // Scrolled into view at once, as the reference browser's
                 // focus scrolls (HTML section 6.6.4's "focusing steps"):
                 // centred where it does not show, to its nearer edge
@@ -3558,15 +3599,33 @@ impl DocumentHost {
                         .and_then(devtools::Json::as_f64)
                         .unwrap_or(0.0) as u64;
                     let report = op.get("report").cloned().unwrap_or(devtools::Json::Null);
-                    return Ok(match node {
-                        Some(node) => self.media.report(node, generation, &report, &env),
-                        None => devtools::Json::Array(Vec::new()),
-                    });
+                    return Ok((
+                        match node {
+                            Some(node) => self.media.report(node, generation, &report, &env),
+                            None => devtools::Json::Array(Vec::new()),
+                        },
+                        node,
+                    ));
                 }
-                self.media.call(&op, &env, node)
+                // The task of its events the bindings were sent is heard.
+                if let Some(node) = node
+                    && op.get("delivered").and_then(devtools::Json::as_bool) == Some(true)
+                {
+                    self.media.heard(node);
+                }
+                self.media
+                    .call(&op, &env, node)
+                    .map(|result| (result, node))
             });
         match answer {
-            Ok(result) => devtools::Json::object([("result", result)]).write(),
+            // Whether the element is active after, which the bindings hold
+            // its object for (HTML section 4.8.11.18).
+            Ok((result, Some(node))) => devtools::Json::object([
+                ("result", result),
+                ("active", devtools::Json::from(self.media.is_active(node))),
+            ])
+            .write(),
+            Ok((result, None)) => devtools::Json::object([("result", result)]).write(),
             Err((name, message)) => devtools::Json::object([(
                 "error",
                 devtools::Json::object([
@@ -3952,7 +4011,9 @@ impl DocumentHost {
     /// Runs the activation behaviour of `element` (HTML section 6.5), a
     /// click at it not canceled: a link is followed.
     fn activate(&mut self, element: NodeId) {
-        if matches!(self.document.tag(element), Some("a" | "area")) {
+        if matches!(self.document.tag(element), Some("a" | "area"))
+            || self.document.svg_tag(element) == Some("a")
+        {
             self.follow_hyperlink(element);
         }
     }
@@ -3965,7 +4026,7 @@ impl DocumentHost {
         if !self.connected(element) {
             return;
         }
-        let Some(href) = self.document.attr(element, "href") else {
+        let Some(href) = link_href(&self.document, element) else {
             return;
         };
         let Some(url) = self
@@ -7553,40 +7614,50 @@ impl DocumentHost {
     }
 
     /// `node` was taken out of its parent by a script: its subtree may be
-    /// freed once let go of, and the bindings let go of the objects of the
-    /// nodes in it they hold for the document.
+    /// freed once let go of, and the bindings keep the objects of the
+    /// nodes in it with its own tree's.
     fn taken_out(&mut self, node: NodeId) {
         self.detached.push(node);
-        self.pin(node, false);
+        self.pin(node);
     }
 
-    /// `node` was put somewhere by a script: the bindings hold the objects
-    /// of the nodes in its subtree if it is now in the document, and let
-    /// them go if it is not.
+    /// `node` was put somewhere by a script, or given to another
+    /// document: the bindings keep the objects of the nodes in its
+    /// subtree with the tree it is in now.
     fn put_in(&mut self, node: NodeId) {
-        let connected = self.connected(node);
-        self.pin(node, connected);
+        self.pin(node);
         // Its elements' nonces hidden, now they are connected.
-        if connected && let Some(page) = self.page.as_mut() {
+        if self.connected(node)
+            && let Some(page) = self.page.as_mut()
+        {
             page.hide_nonces_under(&mut self.document, node);
         }
     }
 
-    /// Notes that the nodes scripts hold in `root`'s subtree are, or are
-    /// not, in the document.
-    fn pin(&mut self, root: NodeId, connected: bool) {
+    /// The root of the tree `node` is in, as the bindings group their
+    /// objects by it: its shadow-including root, a template's contents
+    /// taken as part of their template's tree, which reaches them.
+    fn group_root(&self, node: NodeId) -> NodeId {
+        let mut root = self.document.shadow_including_root(node);
+        while let Some(template) = self.document.template_host(root) {
+            root = self.document.shadow_including_root(template);
+        }
+        root
+    }
+
+    /// Notes the tree the nodes scripts hold in `root`'s subtree are in
+    /// now, its shadow trees and its templates' contents with it.
+    fn pin(&mut self, root: NodeId) {
         if self.exposed.is_empty() {
             return;
         }
-        // The shadow trees in it come and go with it (D68).
-        let nodes = match self.document.has_shadow_roots() {
-            true => self.document.shadow_including_subtree(root),
-            false => self.document.subtree(root).collect(),
-        };
+        let tree = self.group_root(root);
+        let owner = self.document.owner_document(tree);
+        let nodes = self.document.subtree_with_contents(root);
+        self.work += nodes.len() as u64;
         for node in nodes {
-            self.work += 1;
             if self.exposed.contains(&node) {
-                self.pins.push((node, connected));
+                self.pins.push((node, tree, owner));
             }
         }
     }
@@ -7801,10 +7872,14 @@ impl DocumentHost {
     pub(crate) fn sweep(&mut self) {
         let document = &mut self.document;
         let exposed = &self.exposed;
-        // The nodes mutation records name are kept too, and those live
-        // ranges and iterators hold.
+        // The nodes mutation records name are kept too, those live
+        // ranges and iterators hold, those the run's events are to be
+        // fired at, and the media elements with events yet to fire (HTML
+        // section 4.8.11.18).
         let mut held = self.mutations.held();
         held.extend(document.live_nodes());
+        held.extend(self.outputs.events.iter().map(|&(node, _)| node));
+        held.extend(self.media.active());
         self.detached.retain(|&root| {
             if !document.contains(root)
                 || root == document.root()
@@ -7845,6 +7920,24 @@ impl DocumentHost {
         }
         let document = &self.document;
         self.canvases.retain(|node| document.contains(node));
+    }
+
+    /// Whether the realm's garbage should be collected now whatever the
+    /// bindings hold, which this then takes as done: the objects of a tree
+    /// out of the document hold each other, and go only with the
+    /// collector's pass, so that the nodes they hold are freed only after
+    /// it (see the bindings' `wrap`); the bindings' sweep of the trees
+    /// held for custom elements (D70) runs with it. It comes as the
+    /// document's nodes reach twice as many as at the last one, and at
+    /// least [`COLLECT_STEP`] more (the first at that many), so that its
+    /// cost keeps in proportion to the nodes a page makes.
+    pub(crate) fn collection_due(&mut self) -> bool {
+        let nodes = self.document.len();
+        if nodes < self.collect_at.max(COLLECT_STEP) {
+            return false;
+        }
+        self.collect_at = nodes.saturating_add(nodes.max(COLLECT_STEP));
+        true
     }
 
     /// The realm is gone, and with it every object a script held, and
@@ -8077,6 +8170,15 @@ fn handle(node: NodeId) -> Handle {
     Handle(node.to_bits())
 }
 
+/// A link's `href`: an SVG `a`'s, or XLink's (M32).
+fn link_href(document: &Document, link: NodeId) -> Option<&str> {
+    document.attr(link, "href").or_else(|| {
+        (document.svg_tag(link) == Some("a"))
+            .then(|| document.attr(link, "xlink:href"))
+            .flatten()
+    })
+}
+
 /// Whether `node` is an element with an activation behaviour (HTML
 /// section 6.5): a link, `a` or `area`.
 fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
@@ -8091,8 +8193,14 @@ fn has_activation_behaviour(document: &Document, node: NodeId) -> bool {
     if crate::top_layer::is_invoker(document, node) {
         return true;
     }
+    // An SVG link (M32), with an `href` or XLink's.
+    if document.svg_tag(node) == Some("a") {
+        return link_href(document, node).is_some();
+    }
     match document.tag(node) {
-        Some("a" | "area") => true,
+        // A link: one with no `href` has none, its click going on to
+        // what is around it, as the reference browser has it.
+        Some("a" | "area") => document.attr(node, "href").is_some(),
         // A checkbox or a radio button not disabled (M26.8), and a label
         // with a control.
         Some("input") => {

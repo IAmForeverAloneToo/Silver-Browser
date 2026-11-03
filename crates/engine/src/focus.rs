@@ -11,20 +11,30 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dom::{Document, NodeId, forms};
+use dom::{Document, NodeId, StartingPoint, forms};
 use layout::{DocumentLayout, FragmentKind};
 use style::Styles;
-use style::computed::{ContentVisibility, Display, FlexDirection, Overflow, ReadingFlow};
+use style::computed::{
+    ContentVisibility, Display, FlexDirection, Overflow, ReadingFlow, Visibility,
+};
 
 /// What the focus rules read of a layout: each element's first box, its
-/// border box on the page, and the scroll containers that can scroll.
+/// border box on the page, and the scroll containers that can scroll,
+/// with the axes a user can scroll them in, across and down.
 #[derive(Debug, Default)]
 pub(crate) struct Laid {
     boxes: HashMap<NodeId, [f32; 4]>,
     scrollers: HashSet<NodeId>,
+    scroll_axes: HashMap<NodeId, (bool, bool)>,
 }
 
 impl Laid {
+    /// The axes a user can scroll `element` in, across and down, when it
+    /// is a scroll container that can scroll.
+    pub(crate) fn scroll_axes(&self, element: NodeId) -> Option<(bool, bool)> {
+        self.scroll_axes.get(&element).copied()
+    }
+
     /// What `layout` says.
     pub(crate) fn of(layout: &DocumentLayout) -> Laid {
         let mut laid = Laid::default();
@@ -39,10 +49,11 @@ impl Laid {
             // A user can scroll it: its `overflow` in an axis it overflows
             // is `auto` or `scroll`.
             let user = |o: Overflow| matches!(o, Overflow::Auto | Overflow::Scroll);
-            let scrolls = (user(f.style.overflow_y) && f.max_scroll() > 0.0)
-                || (user(f.style.overflow_x) && crate::geometry::max_scroll_x(f) > 0.0);
-            if f.clips() && scrolls && !f.style.root {
+            let down = user(f.style.overflow_y) && f.max_scroll() > 0.0;
+            let across = user(f.style.overflow_x) && crate::geometry::max_scroll_x(f) > 0.0;
+            if f.clips() && (down || across) && !f.style.root {
                 laid.scrollers.insert(f.node);
+                laid.scroll_axes.entry(f.node).or_insert((across, down));
             }
         }
         laid
@@ -79,26 +90,10 @@ pub(crate) fn natively_focusable(document: &Document, element: NodeId) -> bool {
         // The summary of its `details`, which it opens and closes (gap
         // batch H).
         Some("summary") => document.summary_details(element).is_some(),
-        // An editing host (HTML section 6.8.1).
-        _ => editing_host(document, element),
+        // An editing host, which takes the focus though what it holds is
+        // not edited here (G59).
+        _ => is_editing_host(document, element),
     }
-}
-
-/// Whether `element` is an editing host: `contenteditable` true or
-/// plaintext-only, its parent not editable.
-fn editing_host(document: &Document, element: NodeId) -> bool {
-    let editable = |e: NodeId| {
-        document.attr(e, "contenteditable").is_some_and(|v| {
-            v.is_empty()
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("plaintext-only")
-        })
-    };
-    editable(element)
-        && !document
-            .parent(element)
-            .filter(|&p| document.is_element(p))
-            .is_some_and(editable)
 }
 
 /// Whether `element` is in the content of a `details` element that is
@@ -118,6 +113,42 @@ fn in_closed_details(document: &Document, element: NodeId) -> bool {
     false
 }
 
+/// An HTML element's `contenteditable` state (HTML section 6.8.1):
+/// `Some(true)` for the true and plaintext-only states, `Some(false)` for
+/// the false one, `None` for none or an invalid value, which inherits.
+fn content_editable(document: &Document, element: NodeId) -> Option<bool> {
+    if !document.is_html(element) {
+        return None;
+    }
+    let value = document.attr(element, "contenteditable")?;
+    match value.to_ascii_lowercase().as_str() {
+        "" | "true" | "plaintext-only" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether `element` is editable or an editing host (HTML section
+/// 6.8.1): the nearest of it and the elements around it whose
+/// `contenteditable` says either way says true or plaintext-only.
+pub(crate) fn editable(document: &Document, element: NodeId) -> bool {
+    std::iter::once(element)
+        .chain(document.ancestors(element))
+        .filter(|&node| document.is_element(node))
+        .find_map(|node| content_editable(document, node))
+        .unwrap_or(false)
+}
+
+/// Whether the element is an editing host (HTML section 6.8.1): its
+/// `contenteditable` in the true or plaintext-only state, and its parent
+/// not [`editable`].
+pub(crate) fn is_editing_host(document: &Document, element: NodeId) -> bool {
+    content_editable(document, element) == Some(true)
+        && !document
+            .parent(element)
+            .is_some_and(|parent| editable(document, parent))
+}
+
 /// Whether the element is a focusable area (HTML section 6.6.2): one
 /// that can take the focus as it is, or has a `tabindex`, and is being
 /// rendered, by `styles`, which say it is when they are not given; a
@@ -129,9 +160,11 @@ pub(crate) fn focusable(document: &Document, styles: Option<&Styles>, element: N
     if !document.is_element(element) || !rendered(document, styles, element) {
         return false;
     }
+    // An inert element does not take it (gap batch H), nor an invisible
+    // one, as the reference browser has it.
     if styles
         .and_then(|styles| styles.get(element))
-        .is_some_and(|style| style.inert)
+        .is_some_and(|style| style.inert || style.visibility != Visibility::Visible)
     {
         return false;
     }
@@ -143,16 +176,20 @@ pub(crate) fn focusable(document: &Document, styles: Option<&Styles>, element: N
         || is_open_dialog(document, element)
 }
 
-/// Whether the element is a `dialog` with an `open` attribute.
+/// Whether the element is a `dialog` shown: one with an `open`
+/// attribute, or showing as a popover.
 fn is_open_dialog(document: &Document, element: NodeId) -> bool {
-    document.tag(element) == Some("dialog") && document.attr(element, "open").is_some()
+    document.tag(element) == Some("dialog")
+        && (document.attr(element, "open").is_some() || document.popover(element).is_some())
 }
 
 /// Whether the element is focusable only as an open dialog, with no
-/// `tabindex`: what the dialog focusing steps and `focus()` focus, and
-/// Tab and a click pass over.
+/// `tabindex` and not an editing host: what the dialog focusing steps
+/// and `focus()` focus, and Tab and a click pass over.
 fn open_dialog_alone(document: &Document, element: NodeId) -> bool {
-    is_open_dialog(document, element) && tab_index(document, element).is_none()
+    is_open_dialog(document, element)
+        && tab_index(document, element).is_none()
+        && !is_editing_host(document, element)
 }
 
 /// Whether the element is a focusable area that takes the focus itself:
@@ -194,7 +231,7 @@ fn sequential_area(
     element: NodeId,
 ) -> bool {
     if focus_area(document, styles, element) {
-        return true;
+        return !radio_passed_over(document, element);
     }
     laid.is_some_and(|laid| laid.scrollers.contains(&element))
         && rendered(document, styles, element)
@@ -202,6 +239,39 @@ fn sequential_area(
             .subtree(element)
             .skip(1)
             .any(|node| focusable(document, styles, node))
+}
+
+/// Whether `element` is a radio button Tab passes over, as the reference
+/// browser does (HTML leaves it to the user agent): one whose group has
+/// another radio button focused, which Tab leaves the group from, or one
+/// unchecked in a group with one checked, which Tab stops at instead.
+fn radio_passed_over(document: &Document, element: NodeId) -> bool {
+    if document.tag(element) != Some("input") || forms::input_type(document, element) != "radio" {
+        return false;
+    }
+    let group = forms::radio_group(document, element);
+    if group.len() < 2 {
+        return false;
+    }
+    let focused = document.focused();
+    if focused.is_some_and(|f| f != element && group.contains(&f)) {
+        return true;
+    }
+    !forms::checkedness(document, element)
+        && group
+            .iter()
+            .any(|&radio| radio != element && forms::checkedness(document, radio))
+}
+
+/// The popover invoker whose focus navigation scope a showing popover is
+/// in (HTML section 6.6.3's "associated focus navigation owner"): the
+/// element that showed it, unless that is in it.
+fn popover_invoker(document: &Document, popover: NodeId) -> Option<NodeId> {
+    let invoker = document.popover(popover)?.invoker?;
+    (document.contains(invoker)
+        && document.in_page(invoker)
+        && !document.is_shadow_including_inclusive_ancestor(popover, invoker))
+    .then_some(invoker)
 }
 
 /// Whether the element is being rendered: in the document's flat tree
@@ -267,17 +337,17 @@ pub(crate) fn focus_delegate(
     })
 }
 
-/// HTML's "autofocus delegate" of `target`: the first element in its
-/// subtree (its shadow tree, for a host) with `autofocus` that is a
-/// focusable area or delegates focus to one: what a popover shown
-/// focuses (section 6.12, gap batch H).
+/// HTML's "autofocus delegate" of `target`: the first of its
+/// descendants with `autofocus` that is a focusable area or delegates
+/// focus to one: what a popover shown focuses (section 6.12, gap batch
+/// H). A host's shadow tree is not its descendants: its own `autofocus`
+/// elements are not looked at, as the reference browser has it.
 pub(crate) fn autofocus_delegate(
     document: &Document,
     styles: Option<&Styles>,
     target: NodeId,
 ) -> Option<NodeId> {
-    let root = document.shadow_root(target).unwrap_or(target);
-    autofocus_among(document, styles, &elements_under(document, root))
+    autofocus_among(document, styles, &elements_under(document, target))
 }
 
 /// The elements under `root`, `root` aside, in tree order.
@@ -312,6 +382,48 @@ fn candidate(document: &Document, styles: Option<&Styles>, element: NodeId) -> O
         return focus_delegate(document, styles, element);
     }
     None
+}
+
+/// Whether Tab could stop at `element` were it in no scope that keeps it
+/// out: [`focusable_in`], with no negative `tabindex`, and not a host
+/// whose focus goes to its delegate. What a focusgroup's arrow keys move
+/// the focus to (gap batch H).
+pub(crate) fn keyboard_target(
+    document: &Document,
+    styles: Option<&Styles>,
+    laid: Option<&Laid>,
+    element: NodeId,
+) -> bool {
+    !tab_index(document, element).is_some_and(|n| n < 0)
+        && !delegates_focus(document, element)
+        && !open_dialog_alone(document, element)
+        && focusable_in(document, styles, laid, element)
+}
+
+/// The children of `node` in the flat tree, its elements, as a
+/// focusgroup walks them: a reading flow container's items in its reading
+/// flow (CSS Display 4 section 5.1), else in the flat tree's order.
+pub(crate) fn reading_children(
+    document: &Document,
+    styles: Option<&Styles>,
+    laid: Option<&Laid>,
+    node: NodeId,
+) -> Vec<NodeId> {
+    match reading_flow(styles, node) {
+        Some(flow) => {
+            let order = Order {
+                document,
+                styles,
+                laid,
+                scopes: HashMap::new(),
+            };
+            order.in_flow_order(node, order.flow_items(node), flow)
+        }
+        None => document
+            .flat_children(node)
+            .filter(|&child| document.is_element(child))
+            .collect(),
+    }
 }
 
 /// The reading flow `container` orders its items by (CSS Display 4
@@ -396,14 +508,40 @@ fn reading_slot(document: &Document, styles: Option<&Styles>, slot: NodeId) -> b
 /// scopes it; a shadow tree's host; a reading flow container's for its
 /// items, an item's for what is in it, and an element grouping items
 /// for them (HTML's reading flow scopes), a slot in a reading flow
-/// passing its own on to the scope it is in; the document; `None` for a
-/// host's child no slot has, which is in no scope.
+/// passing its own on to the scope it is in; a showing popover's
+/// invoker for it, and the popover for what is in it (HTML's popover
+/// focus navigation scopes); the document; `None` for a host's child no
+/// slot has, which is in no scope.
 fn scope_owner(document: &Document, styles: Option<&Styles>, element: NodeId) -> Option<NodeId> {
-    let mut at = element;
+    // A showing popover with an invoker is in the invoker's scope, and
+    // owns the scope of what is in it.
+    if let Some(invoker) = popover_invoker(document, element) {
+        return Some(invoker);
+    }
+    let parent = document.parent(element)?;
+    scope_owner_under(document, styles, parent, element)
+}
+
+/// The focus navigation scope owner of `child` of `parent`, or for a
+/// point in `parent` where `child` was, `child` still naming it: what
+/// [`scope_owner`] finds from its parent up.
+fn scope_owner_under(
+    document: &Document,
+    styles: Option<&Styles>,
+    parent: NodeId,
+    child: NodeId,
+) -> Option<NodeId> {
+    let mut at = child;
+    let mut parent = Some(parent);
     // Each turn moves up the tree, or to a slot further up the flat
     // tree, which the DOM's depth cap bounds.
     for _ in 0..dom::MAX_DEPTH * 4 {
-        let parent = document.parent(at)?;
+        let parent = match parent.take() {
+            Some(parent) => parent,
+            None => document.parent(at)?,
+        };
+        // A shadow host's children are their slots' first, a popover
+        // that is one too (its own tree's elements are its).
         if document.shadow_root(parent).is_some() {
             let slot = document.assigned_slot(at)?;
             if reading_slot(document, styles, slot) {
@@ -411,6 +549,9 @@ fn scope_owner(document: &Document, styles: Option<&Styles>, element: NodeId) ->
                 continue;
             }
             return Some(slot);
+        }
+        if popover_invoker(document, parent).is_some() {
+            return Some(parent);
         }
         if document.is_slot(parent) && document.is_shadow_root(document.root_of(parent)) {
             if reading_slot(document, styles, parent) {
@@ -475,6 +616,42 @@ pub(crate) fn navigate_from(
     current: NodeId,
     backward: bool,
 ) -> Option<NodeId> {
+    navigate(
+        document,
+        styles,
+        laid,
+        StartingPoint::Node(current),
+        backward,
+        false,
+    )
+}
+
+/// The area Tab moves the focus to from the sequential focus navigation
+/// starting point `start` (HTML section 6.6.3) when it is not the element
+/// focused: from a node as from an element focused, its ancestors passed
+/// over backward, as the reference browser has it; from where a node left
+/// the tree, the next area after that point in the scope it was in (its
+/// slot's, for a host's child), and so on outward.
+pub(crate) fn navigate_from_start(
+    document: &Document,
+    styles: Option<&Styles>,
+    laid: Option<&Laid>,
+    start: StartingPoint,
+    backward: bool,
+) -> Option<NodeId> {
+    navigate(document, styles, laid, start, backward, true)
+}
+
+/// [`navigate_from`] and [`navigate_from_start`]: from `from`, a node or a
+/// point, passing over the node's ancestors backward when `start`.
+fn navigate(
+    document: &Document,
+    styles: Option<&Styles>,
+    laid: Option<&Laid>,
+    from: StartingPoint,
+    backward: bool,
+    start: bool,
+) -> Option<NodeId> {
     let order = Order {
         document,
         styles,
@@ -482,55 +659,110 @@ pub(crate) fn navigate_from(
         scopes: scopes(document, styles, laid),
     };
     let root = document.root();
-    // Forward from a scope owner, its own scope's first area, as the
-    // reference browser goes into a focused host's tree or reading flow
-    // (gap batch H).
-    if !backward
-        && order.scopes.contains_key(&current)
-        && let Some(&first) = order.flattened(current).first()
-    {
-        return Some(first);
-    }
-    let mut from = current;
-    // Each turn moves out a scope, which the DOM's depth cap bounds.
-    while from != root {
-        let owner = scope_owner(document, styles, from)?;
-        let in_tree_order = order.scopes.get(&owner).map_or(&[][..], Vec::as_slice);
-        let items = order.items_of(owner);
-        // After `from` in its scope's order when it is there, else after
-        // it in tree order, whatever the items' `tabindex`.
-        let candidates: Vec<NodeId> = match items.iter().position(|&item| item == from) {
-            Some(at) if backward => items[..at].iter().rev().copied().collect(),
-            Some(at) => items[at + 1..].to_vec(),
-            None if backward => in_tree_order
-                .iter()
-                .copied()
-                .filter(|&item| document.shadow_including_precedes(item, from))
-                .rev()
-                .collect(),
-            None => in_tree_order
-                .iter()
-                .copied()
-                .filter(|&item| document.shadow_including_precedes(from, item))
-                .collect(),
-        };
-        for item in candidates {
-            let inner = match order.scopes.contains_key(&item) {
-                true => order.flattened(item),
-                false => Vec::new(),
-            };
-            let area = order.area(item).then_some(item);
-            let found = match backward {
-                true => inner.last().copied().or(area),
-                false => area.or_else(|| inner.first().copied()),
-            };
-            if found.is_some() {
-                return found;
+    // The node a starting point is at, whose ancestors are passed over
+    // backward.
+    let passed = match (from, start && backward) {
+        (StartingPoint::Node(node), true) => Some(node),
+        _ => None,
+    };
+    let (mut at, candidates) = match from {
+        StartingPoint::Node(current) => {
+            // Forward from a scope owner, its own scope's first area, as
+            // the reference browser goes into a focused host's tree or
+            // reading flow (gap batch H).
+            if !backward
+                && order.scopes.contains_key(&current)
+                && let Some(&first) = order.flattened(current).first()
+            {
+                return Some(first);
             }
+            if current == root {
+                return None;
+            }
+            let owner = scope_owner(document, styles, current)?;
+            let mut candidates = order.beside(owner, current, backward);
+            if passed.is_some() {
+                candidates.retain(|&item| {
+                    !document.is_shadow_including_inclusive_ancestor(item, current)
+                });
+            }
+            (owner, candidates)
         }
-        from = owner;
+        StartingPoint::Point {
+            parent,
+            offset,
+            slot,
+        } => {
+            let owner = match (document.shadow_root(parent), slot) {
+                (Some(_), Some(slot)) if reading_slot(document, styles, slot) => {
+                    scope_owner(document, styles, slot)?
+                }
+                (Some(_), Some(slot)) => slot,
+                (Some(_), None) => return None,
+                (None, _) => scope_owner_under(document, styles, parent, parent)?,
+            };
+            let in_tree_order = order.scopes.get(&owner).map_or(&[][..], Vec::as_slice);
+            let candidates: Vec<NodeId> = match backward {
+                true => in_tree_order
+                    .iter()
+                    .copied()
+                    .filter(|&item| !after_point(document, parent, offset, item))
+                    .rev()
+                    .collect(),
+                false => in_tree_order
+                    .iter()
+                    .copied()
+                    .filter(|&item| after_point(document, parent, offset, item))
+                    .collect(),
+            };
+            (owner, candidates)
+        }
+    };
+    if let Some(found) = order.first_of(candidates, backward) {
+        return Some(found);
     }
-    None
+    // Each turn moves out a scope, which the DOM's depth cap bounds; the
+    // owner left comes before its scope's areas, so backward it is next
+    // when it is an area itself.
+    loop {
+        if backward
+            && at != root
+            && order.area(at)
+            && !passed.is_some_and(|node| document.is_shadow_including_inclusive_ancestor(at, node))
+        {
+            return Some(at);
+        }
+        if at == root {
+            return None;
+        }
+        let owner = scope_owner(document, styles, at)?;
+        let candidates = order.beside(owner, at, backward);
+        if let Some(found) = order.first_of(candidates, backward) {
+            return Some(found);
+        }
+        at = owner;
+    }
+}
+
+/// Whether `item` is after the point before child `offset` of `parent`
+/// in shadow-including tree order.
+fn after_point(document: &Document, parent: NodeId, offset: u32, item: NodeId) -> bool {
+    if document.is_shadow_including_inclusive_ancestor(item, parent) {
+        return false;
+    }
+    if document.is_shadow_including_inclusive_ancestor(parent, item) {
+        // The child of `parent` it is in, through hosts; one in
+        // `parent`'s own shadow tree comes before its children.
+        let mut at = item;
+        while let Some(up) = document.host_or_parent(at) {
+            if up == parent {
+                return !document.is_shadow_root(at) && document.index_of(at) >= offset;
+            }
+            at = up;
+        }
+        return false;
+    }
+    document.shadow_including_precedes(parent, item)
 }
 
 /// Each focus navigation scope's items, by its owner (the document, a
@@ -550,6 +782,12 @@ fn scopes(
         true => document.shadow_including_subtree(root),
         false => document.subtree(root).collect(),
     };
+    // The invokers of the showing popovers, which own their scopes.
+    let invokers: HashSet<NodeId> = document
+        .top_layer()
+        .iter()
+        .filter_map(|&popover| popover_invoker(document, popover))
+        .collect();
     let mut scopes: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for node in nodes {
         if !document.is_element(node) {
@@ -559,6 +797,8 @@ fn scopes(
         let owner_kind = document.shadow_root(node).is_some()
             || (document.is_slot(node) && document.is_shadow_root(document.root_of(node)))
             || reading_flow(styles, node).is_some()
+            || popover_invoker(document, node).is_some()
+            || invokers.contains(&node)
             || item;
         // An open dialog is focusable, but not by Tab (gap batch H).
         if !owner_kind
@@ -571,6 +811,17 @@ fn scopes(
         }
         if let Some(owner) = scope_owner(document, styles, node) {
             scopes.entry(owner).or_default().push(node);
+        }
+    }
+    // An invoker's popovers come first in its scope, before what is in
+    // its shadow tree, as the reference browser orders them.
+    for invoker in invokers {
+        if let Some(items) = scopes.get_mut(&invoker) {
+            let (mut popovers, rest): (Vec<NodeId>, Vec<NodeId>) = items
+                .iter()
+                .partition(|&&item| popover_invoker(document, item) == Some(invoker));
+            popovers.extend(rest);
+            *items = popovers;
         }
     }
     scopes
@@ -586,6 +837,50 @@ struct Order<'a> {
 }
 
 impl Order<'_> {
+    /// The items of `owner`'s scope after `from`, or before it
+    /// `backward`, nearest first: in its scope's order when it is there,
+    /// else in tree order, whatever the items' `tabindex`.
+    fn beside(&self, owner: NodeId, from: NodeId, backward: bool) -> Vec<NodeId> {
+        let document = self.document;
+        let in_tree_order = self.scopes.get(&owner).map_or(&[][..], Vec::as_slice);
+        let items = self.items_of(owner);
+        match items.iter().position(|&item| item == from) {
+            Some(at) if backward => items[..at].iter().rev().copied().collect(),
+            Some(at) => items[at + 1..].to_vec(),
+            None if backward => in_tree_order
+                .iter()
+                .copied()
+                .filter(|&item| document.shadow_including_precedes(item, from))
+                .rev()
+                .collect(),
+            None => in_tree_order
+                .iter()
+                .copied()
+                .filter(|&item| document.shadow_including_precedes(from, item))
+                .collect(),
+        }
+    }
+
+    /// The first area `candidates` give, nearest first: each an area, or
+    /// standing for its own scope's, the last of them `backward`.
+    fn first_of(&self, candidates: Vec<NodeId>, backward: bool) -> Option<NodeId> {
+        for item in candidates {
+            let inner = match self.scopes.contains_key(&item) {
+                true => self.flattened(item),
+                false => Vec::new(),
+            };
+            let area = self.area(item).then_some(item);
+            let found = match backward {
+                true => inner.last().copied().or(area),
+                false => area.or_else(|| inner.first().copied()),
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
     /// Whether Tab stops at `item` of a scope: a [`sequential_area`]
     /// whose `tabindex` is not negative.
     fn area(&self, item: NodeId) -> bool {

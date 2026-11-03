@@ -61,6 +61,65 @@ fn render(tab: &mut Tab, clock: &HandClock) {
     );
 }
 
+#[test]
+fn a_scroller_focused_keeps_the_focus_and_takes_the_keys() {
+    // A scroll container that can scroll takes the focus (gap batch H):
+    // the frames' focus fixup, by the styles and the layout as they now
+    // are, leaves it focused, and an arrow key scrolls it.
+    let (mut tab, clock, _server) = page(
+        "<div id=s style='width:200px;height:200px;overflow-y:scroll'>\
+         <div style='height:600px'></div></div>",
+        true,
+    );
+    render(&mut tab, &clock);
+    let focused = run(
+        &mut tab,
+        &clock,
+        "s.focus(); console.log(document.activeElement === s)",
+    );
+    assert_eq!(focused, ["true"]);
+    let s = id(&tab, "s");
+    tab.engine.key_down(&Key::new("ArrowDown", "ArrowDown"));
+    for _ in 0..30 {
+        render(&mut tab, &clock);
+    }
+    assert_eq!(tab.engine.document().focused(), Some(s));
+    assert!(tab.engine.element_scroll(s) > 0.0);
+}
+
+#[test]
+fn a_popover_that_is_a_shadow_host_keeps_its_slotted_content_in_order() {
+    // Shown by its invoker, the popover is navigated after it; its own
+    // tree's elements are its scope's, and what its slot takes is the
+    // slot's, as for any host (HTML section 6.6.3, gap batch H).
+    let (mut tab, clock, _server) = page(
+        "<button id=invoker popovertarget=popover>Open</button>\
+         <x-pop id=popover><input type=checkbox id=one><input type=checkbox id=two></x-pop>\
+         <button id=last>Last</button>\
+         <script>customElements.define('x-pop', class extends HTMLElement {\
+           constructor() { super(); this.attachShadow({mode: 'open'});\
+             this.setAttribute('popover', 'auto');\
+             this.shadowRoot.innerHTML = '<button id=a>a</button><slot></slot><button id=b>b</button>'; }\
+         });</script>",
+        true,
+    );
+    render(&mut tab, &clock);
+    run(&mut tab, &clock, "invoker.focus()");
+    tab.engine.key_down(&Key::new("Enter", "Enter"));
+    tab.engine.key_up(&Key::new("Enter", "Enter"));
+    render(&mut tab, &clock);
+    let probe = "{const a = document.activeElement; \
+                 console.log(a.shadowRoot && a.shadowRoot.activeElement \
+                   ? a.id + '/' + a.shadowRoot.activeElement.id : a.id)}";
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        tab.engine.focus_next(false);
+        render(&mut tab, &clock);
+        seen.extend(run(&mut tab, &clock, probe));
+    }
+    assert_eq!(seen, ["popover/a", "one", "two", "popover/b", "last"]);
+}
+
 fn id(tab: &Tab, id: &str) -> NodeId {
     by_id(&tab.engine, id)
 }
@@ -1037,4 +1096,402 @@ fn a_button_with_a_command_is_no_submit_button_and_show_picker_wants_the_users_a
     assert_eq!(lines, ["shown"]);
     assert_eq!(tab.engine.popup_open(), Some(id(&tab, "s")));
     assert!(state(&tab, "s").contains(ElementState::OPEN));
+}
+
+#[test]
+fn a_dialog_shown_as_a_popover_too_toggles_as_each() {
+    // Its popover's `toggle` and its dialog's are tracked apart (HTML's
+    // two toggle task trackers): one of each.
+    let (mut tab, clock, _server) = page(
+        &format!("<dialog id=d popover>d</dialog>{}", logger(&["d"])),
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "var d = document.getElementById('d');\
+         d.addEventListener('beforetoggle', function () { d.showPopover(); }, {once: true});\
+         d.show(); console.log('open', d.open);",
+    );
+    assert_eq!(
+        lines,
+        [
+            "beforetoggle@d closed>open c",
+            "beforetoggle@d closed>open c",
+            "beforetoggle@d open>closed",
+            "open true",
+            "toggle@d closed>open",
+            "toggle@d closed>closed",
+        ]
+    );
+}
+
+#[test]
+fn a_dialogs_requests_and_its_forms_submit_close_it_as_the_reference_browser_does() {
+    let (mut tab, clock, _server) = page(
+        "<dialog id=d><form id=f method=dialog><button id=b>b</button></form></dialog>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "var d = document.getElementById('d'); d.returnValue = 'kept'; d.showModal();\
+         document.getElementById('f').submit(); console.log(d.open, JSON.stringify(d.returnValue));\
+         var other = document.implementation.createHTMLDocument('');\
+         var o = other.body.appendChild(other.createElement('dialog')); o.setAttribute('open', '');\
+         o.requestClose(); console.log(o.open);",
+    );
+    // `submit()` has no submitter: the result is the empty string; a
+    // dialog of a document that is not fully active stays open.
+    assert_eq!(lines, ["false \"\"", "true"]);
+}
+
+#[test]
+fn the_dialog_and_popover_focusing_steps_stop_the_documents_autofocus() {
+    let (mut tab, clock, _server) = page(
+        "<dialog id=d><input id=a><input id=b autofocus></dialog>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "document.getElementById('d').show(); console.log(document.activeElement.id);\
+         document.activeElement.blur();\
+         var late = document.body.appendChild(document.createElement('input'));\
+         late.id = 'late'; late.autofocus = true;",
+    );
+    assert_eq!(lines, ["b"]);
+    render(&mut tab, &clock);
+    render(&mut tab, &clock);
+    assert_eq!(focused(&tab), "-");
+}
+
+#[test]
+fn a_modal_dialog_inert_or_making_the_focus_inert_leaves_it_to_the_viewport() {
+    let (mut tab, clock, _server) = page(
+        "<style>body { margin: 0 } dialog { width: 100%; height: 100%; max-width: 100%; \
+         max-height: 100%; box-sizing: border-box; padding: 0 } \
+         dialog::backdrop { display: none }</style>\
+         <input id=outer><dialog id=d><input id=inner autofocus></dialog>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "var d = document.getElementById('d'); d.showModal();\
+         console.log(document.elementFromPoint(10, 10).id);\
+         d.inert = true; console.log(document.elementFromPoint(10, 10).tagName);\
+         d.close(); document.getElementById('outer').focus(); d.showModal();\
+         console.log(document.activeElement.tagName);",
+    );
+    // An `inert` attribute restyles at once; the focus on what the modal
+    // dialog made inert, the dialog inert too, goes to the viewport.
+    assert_eq!(lines, ["inner", "HTML", "BODY"]);
+}
+
+#[test]
+fn a_press_on_what_is_inert_or_past_every_box_is_the_roots() {
+    let (mut tab, clock, _server) = page(
+        "<style>body { margin: 0 } #box { width: 100px; height: 100px } dialog { top: 200px; \
+         margin: 0; left: 200px } dialog::backdrop { display: none }</style>\
+         <div id=box></div><dialog id=d>d</dialog>\
+         <script>['mousedown', 'mouseup', 'click'].forEach(function (t) {\
+           document.addEventListener(t, function (e) { console.log(t, e.target.tagName); }); });\
+         </script>",
+        true,
+    );
+    run(
+        &mut tab,
+        &clock,
+        "document.getElementById('d').showModal();",
+    );
+    tab.engine.frame(400, 300);
+    click(&mut tab, 50.0, 50.0);
+    assert_eq!(
+        lines(&mut tab),
+        ["mousedown HTML", "mouseup HTML", "click HTML"]
+    );
+}
+
+#[test]
+fn a_dialog_opened_by_its_attribute_has_a_close_watcher() {
+    let (mut tab, clock, _server) = page(
+        &format!(
+            "<dialog id=d open closedby=any>d</dialog>{}",
+            logger(&["d"])
+        ),
+        true,
+    );
+    assert!(tab.engine.document().dialog(id(&tab, "d")).is_some());
+    escape(&mut tab);
+    let lines = run(
+        &mut tab,
+        &clock,
+        "console.log(document.getElementById('d').open)",
+    );
+    assert_eq!(
+        lines,
+        [
+            "cancel@d",
+            "beforetoggle@d open>closed",
+            "false",
+            "toggle@d open>closed",
+            "close@d",
+        ]
+    );
+    // The attribute set by script and taken away by it again.
+    run(
+        &mut tab,
+        &clock,
+        "document.getElementById('d').setAttribute('open', '');",
+    );
+    assert!(tab.engine.document().dialog(id(&tab, "d")).is_some());
+    run(
+        &mut tab,
+        &clock,
+        "document.getElementById('d').removeAttribute('open');",
+    );
+    assert!(tab.engine.document().dialog(id(&tab, "d")).is_none());
+}
+
+#[test]
+fn an_editing_host_takes_the_focus_and_tab_reaches_it() {
+    let (mut tab, clock, _server) = page(
+        "<button id=a>a</button><div id=e contenteditable>e<span contenteditable=true>\
+         s</span></div><div id=f contenteditable=false>f</div><dialog id=d open \
+         contenteditable>d</dialog>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "document.getElementById('e').focus(); console.log(document.activeElement.id);\
+         document.getElementById('f').focus(); console.log(document.activeElement.id);\
+         console.log(document.getElementById('e').tabIndex);",
+    );
+    assert_eq!(lines, ["e", "e", "0"]);
+    let tab_key = Key::new("Tab", "Tab");
+    run(&mut tab, &clock, "document.getElementById('a').focus();");
+    tab.engine.key_down(&tab_key);
+    assert_eq!(focused(&tab), "e");
+    tab.engine.key_down(&tab_key);
+    assert_eq!(focused(&tab), "d");
+}
+
+#[test]
+fn a_dialog_popover_and_a_hosts_popover_focus_as_the_reference_browser_does() {
+    let (mut tab, clock, _server) = page(
+        "<dialog id=d popover autofocus><button id=inside>b</button></dialog>\
+         <div id=h popover tabindex=0><template shadowrootmode=open>\
+         <button autofocus>x</button></template></div>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "var d = document.getElementById('d'); d.showPopover();\
+         console.log(document.activeElement.id); d.hidePopover();\
+         d.removeAttribute('autofocus'); d.showPopover(); console.log(document.activeElement.id);\
+         d.focus(); console.log(document.activeElement.id); d.hidePopover();\
+         document.getElementById('h').showPopover(); console.log(document.activeElement.tagName);",
+    );
+    // With `autofocus` the dialog itself; else its first focusable area;
+    // a shown dialog takes `focus()`; a host's shadow tree is not looked
+    // in for an `autofocus` element.
+    assert_eq!(lines, ["d", "inside", "d", "BODY"]);
+}
+
+#[test]
+fn no_popover_is_shown_while_another_is_being_shown_or_hidden() {
+    let (mut tab, clock, _server) = page(
+        "<div popover id=a>a</div><div popover id=b>b</div><div popover=manual id=m>m</div>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "var a = document.getElementById('a'), b = document.getElementById('b'),\
+           m = document.getElementById('m');\
+         function tryShow(p) { try { p.showPopover(); return 'shown'; } \
+           catch (e) { return e.name + ': ' + e.message; } }\
+         a.addEventListener('beforetoggle', function (e) { console.log(e.newState, tryShow(m)); });\
+         a.showPopover(); a.hidePopover(); console.log(m.matches(':popover-open'), tryShow(b));",
+    );
+    let refused = "InvalidStateError: Failed to execute 'showPopover' on 'HTMLElement': \
+                   Invalid to show a popover during another show operation";
+    assert_eq!(
+        lines,
+        [
+            format!("open {refused}"),
+            format!("closed {refused}"),
+            "false shown".to_owned(),
+        ]
+    );
+}
+
+/// A page of an auto popover holding another and a hint, and an
+/// unrelated auto, each a box of its own, for presses.
+const STACKED: &str = "<style>body { margin: 0 } [popover] { margin: 0; padding: 0; border: 0; \
+    inset: auto; width: 50px; height: 50px; left: 0 } #a { top: 0 } #a2 { top: 60px } \
+    #h { top: 120px } #u { top: 180px }</style>\
+    <div popover id=a><div popover id=a2>a2</div><div popover=hint id=h>h</div></div>\
+    <div popover=hint id=u>u</div>";
+
+#[test]
+fn a_press_in_a_hint_or_an_auto_closes_what_is_above_it_in_the_stack() {
+    // With scripts, the bindings' light dismiss, a realm made by a
+    // script; without, the engine's.
+    for scripts in [true, false] {
+        let (mut tab, _clock, _server) =
+            page(&format!("{STACKED}<script>var realm = 1</script>"), scripts);
+        let open = |tab: &Tab, name: &str| state(tab, name).contains(ElementState::POPOVER_OPEN);
+        let show = |tab: &mut Tab| {
+            for name in ["a", "a2", "h"] {
+                let node = id(tab, name);
+                tab.engine.show_popover(node, None);
+            }
+            tab.engine.frame(400, 300);
+        };
+        show(&mut tab);
+        assert!(open(&tab, "a") && open(&tab, "a2") && open(&tab, "h"));
+        // In the hint: the auto above the one the hint hangs from goes.
+        click(&mut tab, 10.0, 130.0);
+        assert!(
+            open(&tab, "a") && !open(&tab, "a2") && open(&tab, "h"),
+            "{scripts}"
+        );
+        // In an auto: every hint goes.
+        click(&mut tab, 10.0, 10.0);
+        assert!(open(&tab, "a") && !open(&tab, "h"), "{scripts}");
+        // In a hint that hangs from no auto popover: every auto goes.
+        let u = id(&tab, "u");
+        tab.engine.show_popover(u, None);
+        tab.engine.frame(400, 300);
+        assert!(open(&tab, "a") && open(&tab, "u"), "{scripts}");
+        click(&mut tab, 10.0, 190.0);
+        assert!(!open(&tab, "a") && open(&tab, "u"), "{scripts}");
+    }
+}
+
+#[test]
+fn a_modal_dialog_in_an_auto_popover_closes_the_hints_too() {
+    let (mut tab, clock, _server) = page(&format!("{STACKED}<dialog id=d>d</dialog>"), true);
+    let lines = run(
+        &mut tab,
+        &clock,
+        "['a', 'a2', 'h'].forEach(function (i) { document.getElementById(i).showPopover(); });\
+         var d = document.getElementById('d'); document.getElementById('a').appendChild(d);\
+         d.showModal();\
+         console.log(['a', 'a2', 'h'].map(function (i) {\
+           return document.getElementById(i).matches(':popover-open'); }).join());\
+         d.close(); var a = document.getElementById('a');\
+         var open = document.body.appendChild(document.createElement('dialog'));\
+         open.popover = 'manual'; open.setAttribute('open', ''); open.showPopover();\
+         console.log(open.matches(':popover-open'));",
+    );
+    // A non-modal dialog takes `showPopover()` too.
+    assert_eq!(lines, ["true,false,false", "true"]);
+}
+
+#[test]
+fn a_labels_focus_and_a_slotted_elements_focus_go_where_the_reference_browser_has_them() {
+    let (mut tab, clock, _server) = page(
+        "<label id=l for=c>label</label><input id=c><button id=prev>p</button>\
+         <div id=host><template shadowrootmode=open><dialog id=sd><slot></slot></dialog>\
+         </template><button id=slotted>s</button></div>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "document.getElementById('l').focus(); console.log(document.activeElement.id);\
+         var d = document.getElementById('host').shadowRoot.getElementById('sd');\
+         document.getElementById('prev').focus(); d.show();\
+         document.getElementById('slotted').focus(); d.close();\
+         console.log(document.activeElement.id);",
+    );
+    assert_eq!(lines, ["c", "prev"]);
+}
+
+#[test]
+fn a_click_on_a_link_with_no_href_is_its_summarys_and_an_svg_link_is_followed() {
+    let (mut tab, clock, _server) = page(
+        "<details id=d><summary><a id=a><i id=i>open</i></a></summary>x</details>\
+         <svg width=100 height=100><a href='#there'><circle id=c cx=50 cy=50 r=40 /></a></svg>",
+        true,
+    );
+    let lines = run(
+        &mut tab,
+        &clock,
+        "document.getElementById('i').click(); console.log(document.getElementById('d').open);\
+         document.getElementById('c').dispatchEvent(new MouseEvent('click', {bubbles: true, \
+         cancelable: true}));",
+    );
+    assert_eq!(lines, ["true"]);
+    assert_eq!(tab.engine.url().and_then(net::Url::fragment), Some("there"));
+}
+
+#[test]
+fn a_light_dismiss_comes_after_the_mouseup_and_hover_stops_at_the_top_layer() {
+    let (mut tab, clock, _server) = page(
+        "<style>body { margin: 0 }</style><div id=host><template shadowrootmode=open>\
+         <style>[popover] { margin: 0; padding: 0; border: 0; inset: auto; left: 200px; \
+         top: 0; width: 100px; height: 50px }</style><div popover id=p><slot></slot></div>\
+         </template><span id=s>s</span></div>\
+         <script>['pointerup', 'mouseup', 'click'].forEach(function (t) {\
+           document.addEventListener(t, function () { console.log(t); }); });</script>",
+        true,
+    );
+    let shown = run(
+        &mut tab,
+        &clock,
+        "var p = document.getElementById('host').shadowRoot.getElementById('p');\
+         p.addEventListener('beforetoggle', function (e) { console.log(e.newState); });\
+         p.showPopover();",
+    );
+    assert_eq!(shown, ["open"]);
+    tab.engine.frame(400, 300);
+    tab.engine.pointer_move(202.0, 5.0);
+    assert!(state(&tab, "s").contains(ElementState::HOVER));
+    assert!(!state(&tab, "host").contains(ElementState::HOVER));
+    click(&mut tab, 10.0, 200.0);
+    assert_eq!(lines(&mut tab), ["pointerup", "mouseup", "closed", "click"]);
+}
+
+#[test]
+fn tab_and_the_keys_go_on_from_where_a_press_left_the_focus() {
+    let (mut tab, clock, _server) = page(
+        "<style>body { margin: 0 } #s { height: 100px; overflow-y: scroll } \
+         #s div { height: 1000px }</style>\
+         <button id=a>a</button><div id=s><div><p id=text>text</p></div></div>\
+         <button id=b>b</button>",
+        true,
+    );
+    tab.engine.frame(400, 300);
+    run(&mut tab, &clock, "document.getElementById('a').focus();");
+    // A press on the text takes the focus from the button to the viewport.
+    click(&mut tab, 10.0, 40.0);
+    assert_eq!(focused(&tab), "-");
+    let s = id(&tab, "s");
+    tab.engine.key_down(&Key::new("PageDown", "PageDown"));
+    assert!(tab.engine.element_scroll_target(s) > 0.0);
+    assert_eq!(tab.engine.scroll_target(), 0.0);
+    tab.engine.key_down(&Key::new("Tab", "Tab"));
+    assert_eq!(focused(&tab), "b");
+}
+
+#[test]
+fn a_precise_wheel_scrolls_at_once() {
+    let (mut tab, _clock, _server) = page(
+        "<style>body { margin: 0 } #s { height: 100px; overflow-y: scroll } \
+         #s div { height: 1000px }</style><div id=s><div></div></div>",
+        true,
+    );
+    tab.engine.frame(400, 300);
+    let s = id(&tab, "s");
+    tab.engine.wheel_precise(10.0, 10.0, 50.0);
+    assert_eq!(tab.engine.element_scroll(s), 50.0);
+    tab.engine.wheel(10.0, 10.0, 50.0);
+    assert_eq!(tab.engine.element_scroll(s), 50.0);
+    assert_eq!(tab.engine.element_scroll_target(s), 100.0);
 }

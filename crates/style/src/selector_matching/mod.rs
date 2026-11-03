@@ -148,11 +148,13 @@ pub struct PseudoElementSelector {
     /// selectors-4 §3.6.3 allows. No pseudo-element is in a user-action
     /// state until M26.4, and they are matched so.
     pub states: Vec<PseudoClass>,
-    /// The pseudo-element of the element `::slotted()` or `::part()`
-    /// represents that the selector represents instead
-    /// (`::part(label)::before`, CSS Shadow Parts 1 section 4.2, CSS
-    /// Scoping 1 section 3.2.2): `::before`, `::after` or `::marker`.
-    pub then: Option<PseudoElement>,
+    /// The pseudo-element of this one the selector represents instead,
+    /// if any (CSS Pseudo-Elements 4 section 4): one of the element
+    /// `::slotted()` or `::part()` represents (`::part(label)::before`,
+    /// CSS Shadow Parts 1 section 4.2, CSS Scoping 1 section 3.2.2), or
+    /// `::before`'s or `::after`'s `::marker`, as the reference browser
+    /// takes them; with its own after it in turn.
+    pub then: Option<Box<PseudoElementSelector>>,
 }
 
 /// The pseudo-elements a selector may end in (Pseudo-Elements 4).

@@ -337,7 +337,7 @@ fn container(
 
 /// `style`'s `scroll-padding` in px, top, right, bottom and left, its
 /// percentages of the scrollport's `size`, across and down.
-fn scroll_padding(style: &ComputedStyle, size: (f32, f32)) -> [f32; 4] {
+pub(crate) fn scroll_padding(style: &ComputedStyle, size: (f32, f32)) -> [f32; 4] {
     let padding = &style.effects().scroll_padding;
     std::array::from_fn(|side| {
         let of = if side % 2 == 0 { size.1 } else { size.0 };

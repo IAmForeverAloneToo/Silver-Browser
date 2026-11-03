@@ -908,6 +908,11 @@ pub(crate) fn invalidate(
                 || (tag == Some("input") && matches!(name, "checked" | "name" | "type" | "form"));
         }
         forms |= features.validity && (name == "id" || VALIDITY_ATTRIBUTES.contains(&name));
+        // The `inert` attribute makes the element and all it holds inert
+        // (HTML section 6.3, gap batch H), whatever the sheets say of it.
+        if name == "inert" {
+            out.mark(document, element, Reach::Subtree);
+        }
         if features.mentions(name, old, new) {
             out.mark(document, element, Reach::Subtree);
             if features.every_sibling {
