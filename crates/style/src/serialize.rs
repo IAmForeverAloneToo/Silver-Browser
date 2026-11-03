@@ -229,6 +229,7 @@ pub const COMPUTED_PROPERTIES: &[&str] = &[
     "overflow-wrap",
     "overflow-x",
     "overflow-y",
+    "overlay",
     "padding-block-end",
     "padding-block-start",
     "padding-bottom",

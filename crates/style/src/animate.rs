@@ -223,6 +223,7 @@ longhands! {
     Perspective = "perspective": ByComputedValue,
     PerspectiveOrigin = "perspective-origin": ByComputedValue,
     BackfaceVisibility = "backface-visibility": Discrete,
+    Overlay = "overlay": Discrete,
     Opacity = "opacity": ByComputedValue,
     BoxShadow = "box-shadow": ByComputedValue,
     Filter = "filter": ByComputedValue,
@@ -703,6 +704,7 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
         BackfaceVisibility => {
             copy_group!(to, from, effects, effects, effects_mut, backface_visibility)
         }
+        Overlay => copy_group!(to, from, effects, effects, effects_mut, overlay),
         Opacity => copy_group!(to, from, effects, effects, effects_mut, opacity),
         BoxShadow => {
             if to.effects().box_shadow != from.effects().box_shadow {
@@ -991,12 +993,33 @@ pub fn copy(property: Longhand, from: &ComputedStyle, to: &mut ComputedStyle) {
     }
 }
 
+/// Whether two colours are the same computed value: `currentcolor` is
+/// one whatever colour each element's `color` resolves it to (Color 4
+/// section 4.4), so a change of `color` alone changes no other property's
+/// `currentcolor` and starts no transition of it.
+fn same_color(a: computed::Color, b: computed::Color) -> bool {
+    a == b || (a.is_current() && b.is_current())
+}
+
+/// Whether two lists of shadows are the same computed value, their
+/// colours compared as [`same_color`] does.
+fn same_shadows(a: &[computed::Shadow], b: &[computed::Shadow]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            same_color(a.color, b.color)
+                && computed::Shadow {
+                    color: b.color,
+                    ..*a
+                } == *b
+        })
+}
+
 /// Whether `a` and `b` have the same computed value of `property`.
 pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
     use Longhand::*;
     match property {
         Color => a.color == b.color,
-        BackgroundColor => a.background_color == b.background_color,
+        BackgroundColor => same_color(a.background_color, b.background_color),
         FontSize => a.font_size_px == b.font_size_px,
         FontFamily => a.font().family == b.font().family,
         FontWeight => a.font().weight == b.font().weight,
@@ -1027,7 +1050,7 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         OverflowWrap => a.overflow_wrap == b.overflow_wrap,
         WordBreak => a.word_break == b.word_break,
         Visibility => a.visibility == b.visibility,
-        TextShadow => a.decoration().text_shadow == b.decoration().text_shadow,
+        TextShadow => same_shadows(&a.decoration().text_shadow, &b.decoration().text_shadow),
         LetterSpacing => {
             a.letter_spacing == b.letter_spacing
                 && a.text().letter_spacing == b.text().letter_spacing
@@ -1071,10 +1094,10 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         BorderRightWidth => a.border_width[RIGHT] == b.border_width[RIGHT],
         BorderBottomWidth => a.border_width[BOTTOM] == b.border_width[BOTTOM],
         BorderLeftWidth => a.border_width[LEFT] == b.border_width[LEFT],
-        BorderTopColor => a.border_color[TOP] == b.border_color[TOP],
-        BorderRightColor => a.border_color[RIGHT] == b.border_color[RIGHT],
-        BorderBottomColor => a.border_color[BOTTOM] == b.border_color[BOTTOM],
-        BorderLeftColor => a.border_color[LEFT] == b.border_color[LEFT],
+        BorderTopColor => same_color(a.border_color[TOP], b.border_color[TOP]),
+        BorderRightColor => same_color(a.border_color[RIGHT], b.border_color[RIGHT]),
+        BorderBottomColor => same_color(a.border_color[BOTTOM], b.border_color[BOTTOM]),
+        BorderLeftColor => same_color(a.border_color[LEFT], b.border_color[LEFT]),
         BorderTopStyle => a.border_style[TOP] == b.border_style[TOP],
         BorderRightStyle => a.border_style[RIGHT] == b.border_style[RIGHT],
         BorderBottomStyle => a.border_style[BOTTOM] == b.border_style[BOTTOM],
@@ -1137,8 +1160,9 @@ pub fn same(property: Longhand, a: &ComputedStyle, b: &ComputedStyle) -> bool {
         Perspective => a.effects().perspective == b.effects().perspective,
         PerspectiveOrigin => a.effects().perspective_origin == b.effects().perspective_origin,
         BackfaceVisibility => a.effects().backface_visibility == b.effects().backface_visibility,
+        Overlay => a.effects().overlay == b.effects().overlay,
         Opacity => a.effects().opacity == b.effects().opacity,
-        BoxShadow => a.effects().box_shadow == b.effects().box_shadow,
+        BoxShadow => same_shadows(&a.effects().box_shadow, &b.effects().box_shadow),
         Filter => a.effects().filter == b.effects().filter,
         WillChange => a.effects().will_change == b.effects().will_change,
         TransitionProperty => a.motion().transition_property == b.motion().transition_property,
@@ -1267,45 +1291,45 @@ pub fn blend(
     match property.animation_type() {
         AnimationType::NotAnimatable => {}
         AnimationType::ByComputedValue if interpolate(property, a, b, p, to) => {}
-        _ if property == Longhand::Display
-            && (a.display == computed::Display::None) != (b.display == computed::Display::None) =>
-        {
-            // The value other than `none` strictly between the ends.
-            let other = if a.display == computed::Display::None {
-                b
-            } else {
-                a
-            };
-            to.display = if p <= 0.0 {
-                a.display
-            } else if p >= 1.0 {
-                b.display
-            } else {
-                other.display
-            };
+        _ => match (hides(property, a), hides(property, b)) {
+            // The value that shows strictly between the ends.
+            (Some(true), Some(false)) | (Some(false), Some(true)) => {
+                let shown = if hides(property, a) == Some(true) {
+                    b
+                } else {
+                    a
+                };
+                let from = if p <= 0.0 {
+                    a
+                } else if p >= 1.0 {
+                    b
+                } else {
+                    shown
+                };
+                copy(property, from, to);
+            }
+            _ => copy(property, if p < 0.5 { a } else { b }, to),
+        },
+    }
+}
+
+/// Whether `property`'s value in `style` is the one that hides what the
+/// others show, for the properties that have one: `display: none`
+/// (Display 4 section 2.9), `overlay: none` (CSS Position 4 section
+/// 3.2) and `content-visibility: hidden` (Contain 2 section 4). A
+/// discrete change between it and another value takes the other for the
+/// whole of the change but its ends, so that a transition with
+/// `allow-discrete` keeps the element shown, or in the top layer, until
+/// it ends, and shows it from its start (Transitions 2 section 3.2).
+/// `None` for a property that has no such value.
+pub fn hides(property: Longhand, style: &ComputedStyle) -> Option<bool> {
+    match property {
+        Longhand::Display => Some(style.display == computed::Display::None),
+        Longhand::Overlay => Some(style.effects().overlay == computed::Overlay::None),
+        Longhand::ContentVisibility => {
+            Some(style.containment().content_visibility == computed::ContentVisibility::Hidden)
         }
-        // `content-visibility` likewise, its value other than `hidden`
-        // strictly between the ends (CSS Containment 2 section 4).
-        _ if property == Longhand::ContentVisibility
-            && (a.containment().content_visibility == computed::ContentVisibility::Hidden)
-                != (b.containment().content_visibility == computed::ContentVisibility::Hidden) =>
-        {
-            let hidden = computed::ContentVisibility::Hidden;
-            let other = if a.containment().content_visibility == hidden {
-                b
-            } else {
-                a
-            };
-            let from = if p <= 0.0 {
-                a
-            } else if p >= 1.0 {
-                b
-            } else {
-                other
-            };
-            copy(property, from, to);
-        }
-        _ => copy(property, if p < 0.5 { a } else { b }, to),
+        _ => None,
     }
 }
 

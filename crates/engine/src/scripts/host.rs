@@ -321,6 +321,9 @@ pub(crate) struct DocumentHost {
     pins: Vec<(NodeId, bool)>,
     /// What the window reports, lent for a run.
     window: WindowEnv,
+    /// The document's version as it was lent: a change since is the
+    /// run's own, which the engine's styles and layout have not met.
+    lent_version: u64,
     /// The styles a run's `getComputedStyle` computed, kept for the run.
     computed: Option<ComputedStyles>,
     /// Those the last run left, with the document's version they were
@@ -2959,11 +2962,22 @@ impl DocumentHost {
                     }
                     _ => Vec::new(),
                 };
-                // Laid out first when a layout is to come, so that the
-                // faces it needs are asked for (D54): `ready` and `status`
-                // say loading until one asks for nothing new. A window of
-                // no size lays nothing out, and waits for nothing.
-                if op == "status" && self.window.fonts_unsettled && !self.window.fonts_loading {
+                // Laid out first when a layout is to come, the engine's or
+                // one this run's own changes ask for, so that the faces it
+                // needs are asked for (D54): `ready` and `status` say
+                // loading until one asks for nothing new. A window of no
+                // size lays nothing out, and waits for nothing.
+                let has_faces = self
+                    .window
+                    .layout_fonts
+                    .as_ref()
+                    .and_then(text::FontCollection::document)
+                    .is_some();
+                let changed = has_faces && self.document.version() != self.lent_version;
+                if op == "status"
+                    && (self.window.fonts_unsettled || changed)
+                    && !self.window.fonts_loading
+                {
                     self.layout_now();
                 }
                 // Loading too while a face a canvas or that layout asked
@@ -4168,6 +4182,7 @@ impl DocumentHost {
         // A copy: the lent things serve every script one call runs (the
         // deferred ones in turn), and each sees the same window.
         self.window = lent.window.clone();
+        self.lent_version = self.document.version();
         self.animations_lent = lent.animations.is_some();
         *self.animations.get_mut() = lent
             .animations
@@ -4781,6 +4796,7 @@ impl DocumentHost {
             animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let recascade = computed
             .sheets
@@ -4857,6 +4873,7 @@ impl DocumentHost {
                 animations: Some(&self.animations),
                 inline_styles: Some(page),
                 frame_margins: self.window.frame_margins,
+                top_layer: None,
             };
             let Some(computed) = self.computed.as_mut() else {
                 return;
@@ -5666,6 +5683,7 @@ impl DocumentHost {
             animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let recascade = computed
             .sheets
@@ -5697,6 +5715,7 @@ impl DocumentHost {
             animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let recascade = computed
             .sheets
@@ -6973,6 +6992,7 @@ impl DocumentHost {
             animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let recascade = computed
             .sheets
@@ -7033,6 +7053,7 @@ impl DocumentHost {
             animations: Some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let version = self.document.version();
         let changes = self.document.changes();

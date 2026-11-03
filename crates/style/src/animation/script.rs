@@ -129,7 +129,7 @@ impl From<&Value> for TransitionValue {
     fn from(value: &Value) -> Self {
         match value {
             Value::Style(style) => TransitionValue::Style(Arc::clone(style)),
-            Value::Custom(tokens) => TransitionValue::Custom(tokens.clone()),
+            Value::Custom(tokens, _) => TransitionValue::Custom(tokens.clone()),
         }
     }
 }
@@ -844,23 +844,38 @@ impl Animations {
             return Ok(());
         }
         let effect = animation.effect;
+        // Its play state and its progress through its effect on the old
+        // timeline, which the new one takes up (Web Animations 2 section
+        // 4.4.1).
+        let old = self.context(animation);
+        let state = animation.player.play_state(&old);
+        let progress = animation
+            .player
+            .current_time(&old)
+            .filter(|_| old.end > 0.0)
+            .map(|time| {
+                if old.end.is_finite() {
+                    time / old.end
+                } else {
+                    0.0
+                }
+            });
+        let kinds = (
+            self.progress_based(animation.timeline),
+            self.progress_based(timeline),
+        );
         if let Some(animation) = self.animations.get_mut(&id) {
             animation.timeline = timeline;
         }
-        // A resolved start time is kept, and the hold time let go of: the
-        // animation runs on the new timeline from where its start time
-        // puts it, or has no current time on none.
         let Some(animation) = self.animations.get(&id) else {
             return Ok(());
         };
         let cx = self.context(animation);
         let mut notices = Vec::new();
         if let Some(animation) = self.animations.get_mut(&id) {
-            let player = &mut animation.player;
-            if player.start_time.is_some() {
-                player.hold_time = None;
-            }
-            player.update_finished_state(false, false, &cx, &mut notices);
+            animation
+                .player
+                .timeline_changed((state, progress), kinds, &cx, &mut notices);
         }
         self.owe(id, notices);
         self.touch_effect(effect);

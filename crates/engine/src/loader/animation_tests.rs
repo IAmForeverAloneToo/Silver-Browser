@@ -332,6 +332,130 @@ fn a_flush_of_an_element_no_frame_styled_is_the_before_change_style_of_the_frame
 }
 
 #[test]
+fn a_flush_before_the_first_frame_is_the_before_change_style_of_its_cascade() {
+    // G46, as a test's first task does it: the element made, flushed and
+    // changed before any frame styled the page transitions from the
+    // flush in the first frame's cascade, once the page has loaded.
+    let (mut tab, clock, _) = page(
+        "<script src=/none.js></script><body><div id=log></div><script>\
+           var d = document.createElement('div');\
+           d.style.cssText = 'transition: width 5000ms; width: 0px';\
+           document.body.appendChild(d);\
+           getComputedStyle(d).width;\
+           d.style.width = '100px';\
+           d.addEventListener('transitionrun', function (e) { console.log(e.type); });\
+         </script>\n</body>\n",
+    );
+    // Frames drawn only while one is wanted, as a browser draws them.
+    let mut at = 0;
+    while tab.engine.needs_frame() && at < 160 {
+        at += 16;
+        frame_at(&mut tab, &clock, at);
+    }
+    assert_eq!(lines(&mut tab), ["transitionrun"]);
+    assert!(tab.engine.needs_frame(), "the transition runs");
+}
+
+#[test]
+fn a_transition_waiting_out_its_delay_wakes_a_frame_at_its_end() {
+    // A frame is wanted when the delay of a transition of no duration
+    // ends, by the timeline of a document whose scripts run, which is at
+    // its time origin: a caller drawing frames only when one is wanted
+    // sees it end.
+    let (mut tab, clock, _) = page(
+        "<script>         requestAnimationFrame(function () {           var d = document.createElement('div');           d.style.cssText = 'transition: width 0s 300ms; width: 0px';           document.body.appendChild(d);           getComputedStyle(d).width;           d.style.width = '100px';           d.addEventListener('transitionend', function (e) { console.log(e.type); });         });         </script>",
+    );
+    let mut at = Duration::ZERO;
+    while at < Duration::from_secs(1) {
+        let next = if tab.engine.needs_frame() {
+            Some(at + Duration::from_millis(16))
+        } else {
+            [tab.engine.next_frame_at(), tab.engine.next_task_at()]
+                .into_iter()
+                .flatten()
+                .min()
+        };
+        let Some(next) = next else { break };
+        at = next.max(at + Duration::from_millis(1));
+        frame_at(&mut tab, &clock, at.as_millis() as u64);
+    }
+    assert_eq!(lines(&mut tab), ["transitionend"]);
+}
+
+#[test]
+fn a_css_animation_paused_on_a_scroll_timeline_holds_its_start() {
+    // Web Animations 2 section 4.4.13: paused from the first, on the
+    // root's scroll timeline, it holds the progress of the range's start
+    // once ready, and shows it whatever the scroll.
+    let (mut tab, clock, _) = page(
+        "<style>@keyframes a { from { width: 100px } to { width: 200px } }\
+         #f { height: 2000px }</style><div id=f></div><script>\
+         var d = document.createElement('div');\
+         d.setAttribute('style', 'width: 50px; height: 10px');\
+         document.body.prepend(d);\
+         d.style.animation = 'a 100s linear paused';\
+         d.style.animationTimeline = 'scroll(root)';\
+         requestAnimationFrame(function () { requestAnimationFrame(function () {\
+           var a = d.getAnimations()[0];\
+           a.ready.then(function () {\
+             console.log(a.currentTime, getComputedStyle(d).width);\
+             document.scrollingElement.scrollTop = 1000;\
+             requestAnimationFrame(function () { requestAnimationFrame(function () {\
+               console.log(a.currentTime, a.playState, getComputedStyle(d).width);\
+             }); });\
+           });\
+         }); });\
+         </script>",
+    );
+    for at in [16, 32, 48, 64, 80, 96, 112, 128] {
+        frame_at(&mut tab, &clock, at);
+    }
+    assert_eq!(lines(&mut tab), ["0% 100px", "0% paused 100px"]);
+}
+
+#[test]
+fn a_flush_of_an_element_no_frame_styled_is_its_pseudo_elements_before_change_style() {
+    // G46: the flush's styles of the element's `::after` too, which the
+    // frame's restyle transitions from.
+    let (mut tab, clock, _) = page(
+        "<style>.a::after { content: ''; transition: padding-left 1s; padding-left: 1px }\
+         .a.on::after { padding-left: 10px }</style><script>\
+         requestAnimationFrame(function () {\
+           var d = document.createElement('div'); d.className = 'a';\
+           document.body.appendChild(d);\
+           getComputedStyle(d).paddingLeft;\
+           d.classList.add('on');\
+           d.addEventListener('transitionrun', function (e) { console.log(e.pseudoElement); });\
+         });\
+         </script>",
+    );
+    frame_at(&mut tab, &clock, 16);
+    frame_at(&mut tab, &clock, 32);
+    frame_at(&mut tab, &clock, 48);
+    assert_eq!(lines(&mut tab), ["::after"]);
+}
+
+#[test]
+fn a_change_of_color_starts_no_transition_of_a_currentcolor_value() {
+    // Color 4 section 4.4: `currentcolor` computes to itself in a property
+    // other than `color`, so a change of `color` changes no computed value
+    // there to transition, though the used colour follows it.
+    let (_tab, _clock, console) = page(
+        "<div id=test></div><script>\
+           var div = document.getElementById('test');\
+           var cs = getComputedStyle(div, '');\
+           div.style.color = 'red';\
+           div.style.backgroundColor = 'currentcolor';\
+           cs.backgroundColor;\
+           div.style.transition = 'background-color linear 50s -10s';\
+           div.style.color = 'blue';\
+           console.log(cs.backgroundColor, div.getAnimations().length);\
+         </script>",
+    );
+    assert_eq!(console, ["rgb(0, 0, 255) 0"]);
+}
+
+#[test]
 fn an_animationend_listener_sees_the_forwards_fill() {
     // The reference browser's listener reads the value the animation
     // fills forwards with, the event's frame having sampled it.

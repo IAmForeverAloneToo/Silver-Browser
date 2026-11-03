@@ -157,3 +157,79 @@ fn a_scroll_timeline_a_script_makes_has_its_time_at_once_and_drives_its_animatio
     // Aligned with the start of its range, its auto duration all of it.
     assert_eq!(lines(&mut tab), ["0% 50 100%"]);
 }
+
+/// A page whose `#t` runs `anim` from z-index 0 to 100 on the timeline
+/// `timeline`, inside `inner`, inside a scroll container 100px square of
+/// 1000px both ways, scrolled half way both ways at the first frame; it
+/// logs `#t`'s value at each frame.
+fn nested(inner_open: &str, inner_close: &str, timeline: &str) -> &'static str {
+    Box::leak(
+        format!(
+            "<style>@keyframes anim {{ from {{ z-index: 0 }} to {{ z-index: 100 }} }}\
+             #s {{ overflow: auto; width: 100px; height: 100px; scroll-timeline: --outer }}\
+             #t {{ position: relative; z-index: -1; height: 10px;\
+                   animation: anim 1s linear; animation-timeline: {timeline} }}</style>\
+             <div id=s>{inner_open}<div id=t></div>{inner_close}\
+             <div style='height: 1000px; width: 1000px'></div></div><script>\
+             var s = document.getElementById('s');\
+             requestAnimationFrame(function () {{ s.scrollTop = 450; s.scrollLeft = 450; }});\
+             function log() {{\
+               var t = document.getElementById('t') ||\
+                 document.getElementById('h').shadowRoot.getElementById('t');\
+               console.log(getComputedStyle(t).zIndex);\
+               requestAnimationFrame(log);\
+             }}\
+             requestAnimationFrame(log);\
+             </script>"
+        )
+        .into_boxed_str(),
+    )
+}
+
+#[test]
+fn a_box_that_clips_along_the_axis_is_no_scroll_container_for_its_timeline() {
+    // Scroll-driven Animations 1 section 2.2.1: `scroll(nearest)` skips an
+    // ancestor that clips (`overflow: clip`, no scroll container) along
+    // the timeline's axis or along the other, for the one that scrolls,
+    // 450px both ways: of 900px across, and of 950px down past the 50px
+    // box.
+    for (inner, axis, expected) in [
+        ("overflow-x: clip", "x", "50"),
+        ("overflow-y: clip", "y", "47"),
+        ("overflow-x: clip", "y", "47"),
+    ] {
+        let open = format!("<div style='{inner}; height: 50px; width: 50px'>");
+        let timeline = format!("scroll(nearest {axis})");
+        let (mut tab, clock, _) = page(nested(&open, "</div>", &timeline));
+        for frame in 1..=4 {
+            frame_at(&mut tab, &clock, frame * 16);
+        }
+        let lines = lines(&mut tab);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some(expected),
+            "{inner} {axis}"
+        );
+    }
+}
+
+#[test]
+fn a_named_timeline_is_looked_up_over_the_flat_tree() {
+    // Section 4.4: an element in a shadow tree finds the name its host's
+    // ancestors in the document declare, through the host, as its flat
+    // tree ancestors are; its DOM ancestors end at the shadow root.
+    let (mut tab, clock, _) = page(nested(
+        "<div id=h><template shadowrootmode=open><style>\
+         #t { position: relative; z-index: -1; height: 10px;\
+              animation: anim 1s linear; animation-timeline: --outer }\
+         @keyframes anim { from { z-index: 0 } to { z-index: 100 } }</style>",
+        "</template></div>",
+        "--outer",
+    ));
+    for frame in 1..=4 {
+        frame_at(&mut tab, &clock, frame * 16);
+    }
+    // 450px of 910px, past the 10px box.
+    let lines = lines(&mut tab);
+    assert_eq!(lines.last().map(String::as_str), Some("49"));
+}

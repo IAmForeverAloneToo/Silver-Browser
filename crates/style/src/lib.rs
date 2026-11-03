@@ -132,7 +132,7 @@ pub use selector_matching::{matches_selector, matches_selector_list, parse_selec
 pub use cascade::{
     CascadeContext, Composited, FontMeasure, FontUnits, FrameMargins, InlineStyles,
     MatchedDeclaration, MatchedRule, PaletteValues, PseudoStyles, Recascade, Recascader, Restyle,
-    RuleOrigin, ShadowTreeSheets, Styles, Stylesheets, VARIANT_LONGHANDS, all_longhands,
+    RuleOrigin, ShadowTreeSheets, Styles, Stylesheets, TopLayer, VARIANT_LONGHANDS, all_longhands,
     cascade_document, font_longhands, font_palette_specified, font_shorthand_families,
     logical_longhands, palette_values_name, parse_color_text, parse_variant, physical_name,
     property_name, scroll_snap_value, stretch_name, supports, write_font_variant,

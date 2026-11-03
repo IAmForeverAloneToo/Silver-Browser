@@ -2909,11 +2909,15 @@ Deferred from the milestones above, each with what it waits on:
        milestone holds: M22's spinner is a square ring for want of the
        first. Found at M22. Done in gap batch E (D50-D52); what remains
        of rounded corners is G231, `backdrop-filter` G227.
-- [ ] G33 A CSS transition's side effect (Web Animations 1 §5.6): the
+- [x] G33 A CSS transition's side effect (Web Animations 1 section 5.6): the
        box acting as if `will-change` named the property it transitions,
        so that a transition of a transform from `none`, or of an
        opacity from 1, is composited from its start rather than laid
-       out where the box becomes a stacking context. Found at M22.
+       out where the box becomes a stacking context. Found at M22. Done
+       in gap batch H (D76): a running transition acts as `will-change`
+       naming its property, from its delay to its end, and what it acts
+       as lays nothing out where the box is a stacking context and a
+       containing block already.
 - [ ] G34 AVIF, once an AV1 decoder meets `deny.toml` and builds on
        Windows without NASM: `ravif`, which M23.1 named, only encodes.
        Until then an AVIF image is broken, and an `image-set()` option

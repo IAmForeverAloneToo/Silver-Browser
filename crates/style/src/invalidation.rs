@@ -1247,16 +1247,17 @@ mod tests {
         // ones, an element's or a pseudo-element's, and the element is
         // not listed as changed; any other is a change.
         let (mut document, sheets, mut styles) = setup(
-            "<div id=d><p id=p>text</p></div><div id=e></div><section id=f></section>\
-             <section id=g></section>",
+            "<div id=d><p id=p>text</p></div><span id=e></span><section id=f></section>\
+             <section id=g></section><div id=h></div>",
             "div { rotate: 0deg; opacity: 0.9 } .turned { rotate: 30deg } .faded { opacity: 0.5 } \
              .wide { width: 10px } .flat { rotate: none } .origin { transform-origin: 0 0 } \
-             div::after { content: 'z' } #e { opacity: 1 } #e.faded { opacity: 0.5 } \
+             div::after { content: 'z' } #e, #h { opacity: 1; rotate: 0deg } \
+             #e.faded, #h.faded { opacity: 0.5 } \
              #f { transform-style: preserve-3d; will-change: opacity } #f.faded { opacity: 0.5 } \
              #g { will-change: transform } #g.turned { rotate: 30deg } \
              p::before { content: 'x'; translate: 0 0 } .turned p::before { translate: 0 5px }",
         );
-        let [d, p, e, f, g] = ["d", "p", "e", "f", "g"].map(|id| by_id(&document, id));
+        let [d, p, e, f, g, h] = ["d", "p", "e", "f", "g", "h"].map(|id| by_id(&document, id));
         let effects = |styles: &Styles| styles.get(d).unwrap().effects.clone().unwrap();
         let old = effects(&styles);
         let restyle = change(&mut document, &sheets, &mut styles, |doc| {
@@ -1296,15 +1297,22 @@ mod tests {
         }
         // An opacity from 1 makes a stacking context of a box no
         // transform applies to, an inline box's, which the cascade
-        // cannot tell from another; it flattens a box's 3D content; and
-        // a transform makes a containing block, whatever `will-change`
-        // makes the box already.
+        // cannot tell from an inline replaced element's; it flattens a
+        // box's 3D content; and a transform makes a containing block,
+        // whatever `will-change` makes the box already.
         for (element, class) in [(e, "faded"), (f, "faded"), (g, "turned")] {
             let restyle = change(&mut document, &sheets, &mut styles, |doc| {
                 doc.set_attribute(element, "class", class).unwrap();
             });
             assert_eq!(restyle.changed, vec![element], "{class}");
         }
+        // A block's, which its transform makes a stacking context
+        // already, is composited.
+        let restyle = change(&mut document, &sheets, &mut styles, |doc| {
+            doc.set_attribute(h, "class", "faded").unwrap();
+        });
+        assert!(restyle.changed.is_empty(), "{restyle:?}");
+        assert_eq!(restyle.composited.len(), 1);
     }
 
     #[test]

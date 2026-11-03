@@ -2611,6 +2611,63 @@ fn fonts_ready_waits_for_the_faces_the_next_layout_asks_for() {
 }
 
 #[test]
+fn fonts_are_loading_in_the_run_that_changed_an_element_to_need_a_face() {
+    // CSS Font Loading 3 section 2.4: the run that gives settled text a
+    // family whose face no layout asked for lays the document out when
+    // it asks, so the face is asked for then, the set is loading, and
+    // `ready` waits for it, whenever the engine's next layout comes.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Web; src: url(f.ttf) }\
+             @font-face { font-family: Other; src: url(g.ttf) }</style>\
+             <body><p id=t>first</p>",
+        )),
+        "/f.ttf" => Some(Reply::ok("font/ttf", text::TEST_FONT)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    load_all(&mut tab, server.url("/page.html"));
+    tab.engine.layout(800.0);
+    tab.engine
+        .run_classic(
+            "const t = document.getElementById('t');\
+             console.log(document.fonts.status);\
+             t.style.fontFamily = 'Web';\
+             console.log(document.fonts.status);\
+             document.fonts.ready.then(() => console.log([...document.fonts][0].status));",
+        )
+        .expect("runs");
+    let lines = tab.run_until(|lines| lines.len() >= 3);
+    assert_eq!(lines, ["loaded", "loading", "loaded"]);
+    // `ready` alone asks for the face in the run, as the reference
+    // browser's style and layout flush does: the engine has it loading
+    // before any frame of its own laid the change out.
+    tab.engine.layout(800.0);
+    tab.engine
+        .run_classic(
+            "document.getElementById('t').style.fontFamily = 'Other';\
+             document.fonts.ready;",
+        )
+        .expect("runs");
+    let state = |tab: &Tab| {
+        tab.engine
+            .document_fonts()
+            .document()
+            .and_then(|faces| faces.state(1))
+    };
+    assert!(
+        matches!(
+            state(&tab),
+            Some(text::FaceState::Wanted | text::FaceState::Loading)
+        ),
+        "{:?}",
+        state(&tab)
+    );
+}
+
+#[test]
 fn a_load_settles_when_rules_come_while_its_faces_load() {
     // WPT's generic-family-keywords-003: rules put in as the load is
     // asked for, more put in while it is under way, a face loaded

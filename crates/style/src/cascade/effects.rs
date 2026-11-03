@@ -29,7 +29,7 @@ use super::{
 use crate::calc::Expression;
 use crate::calc::{Computed, Want};
 use crate::computed::{
-    BackfaceVisibility, Calc, LengthPercentage, PerspectiveOrigin, Rotate, TransformBox,
+    BackfaceVisibility, Calc, LengthPercentage, Overlay, PerspectiveOrigin, Rotate, TransformBox,
     TransformFunction, TransformOrigin, TransformStyle, Translate, WillChange,
 };
 
@@ -601,6 +601,15 @@ pub(super) fn parse_backface_visibility(tokens: &[Token]) -> Option<BackfaceVisi
     match single_ident(tokens)?.to_ascii_lowercase().as_str() {
         "visible" => Some(BackfaceVisibility::Visible),
         "hidden" => Some(BackfaceVisibility::Hidden),
+        _ => None,
+    }
+}
+
+/// `overlay: none | auto` (CSS Position 4 section 3.2).
+pub(super) fn parse_overlay(tokens: &[Token]) -> Option<Overlay> {
+    match single_ident(tokens)?.to_ascii_lowercase().as_str() {
+        "none" => Some(Overlay::None),
+        "auto" => Some(Overlay::Auto),
         _ => None,
     }
 }

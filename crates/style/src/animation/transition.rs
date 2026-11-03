@@ -54,11 +54,12 @@ impl Property {
 
 /// A transitioning property's value: a computed style that holds it, for a
 /// longhand, or a custom property's value, `None` for the
-/// guaranteed-invalid value.
+/// guaranteed-invalid value, with whether it read an attribute (Values 5
+/// section 7.7.3, M23.3), which a transition's values keep.
 #[derive(Debug, Clone)]
 pub(crate) enum Value {
     Style(Arc<ComputedStyle>),
-    Custom(Option<Arc<[Token]>>),
+    Custom(Option<Arc<[Token]>>, bool),
 }
 
 impl Value {
@@ -68,7 +69,7 @@ impl Value {
             (Value::Style(a), Value::Style(b), Property::Longhand(longhand)) => {
                 Arc::ptr_eq(a, b) || animate::same(*longhand, a, b)
             }
-            (Value::Custom(a), Value::Custom(b), Property::Custom(_)) => a == b,
+            (Value::Custom(a, _), Value::Custom(b, _), Property::Custom(_)) => a == b,
             _ => false,
         }
     }
@@ -175,7 +176,7 @@ fn transitionable(
                 }
             }
         }
-        (Property::Custom(_), Value::Custom(a), Value::Custom(b)) => {
+        (Property::Custom(_), Value::Custom(a, _), Value::Custom(b, _)) => {
             allow_discrete
                 || (typed
                     && matches!((a, b), (Some(a), Some(b))
@@ -190,7 +191,11 @@ fn value_in(property: &Property, style: &Arc<ComputedStyle>) -> Value {
     match property {
         Property::Longhand(_) => Value::Style(Arc::clone(style)),
         Property::Custom(name) => {
-            Value::Custom(style.custom.as_ref().and_then(|m| m.get(name)).cloned())
+            let custom = style.custom.as_ref();
+            Value::Custom(
+                custom.and_then(|m| m.get(name)).cloned(),
+                custom.is_some_and(|m| m.is_attr_tainted(name)),
+            )
         }
     }
 }

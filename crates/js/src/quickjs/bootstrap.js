@@ -28322,13 +28322,17 @@
       return setLoading(this) ? "loading" : "loaded";
     }
 
-    // Settled when the set is done loading. What the task asking did to
-    // the document (a sheet with faces, an element needing one) its
-    // layout sees later, so the document's set looks again in a later
-    // task, and each frame while it loads.
+    // Settled when the set is done loading. The document is styled and
+    // laid out first, as the reference browser does, so that a face an
+    // element the task changed now needs is asked for at once and the
+    // set is loading until it comes (CSS Font Loading 3 section 2.4:
+    // pending on the environment). A sheet with new faces the engine
+    // makes its faces of later, so the document's set looks again in a
+    // later task, and each frame while it loads.
     get ready() {
       const set = this;
       const s = setOf(set);
+      if (set === documentSet) native.fonts("status", null);
       if (s.readyDone && set === documentSet) {
         s.readyDone = false;
         s.ready = new $Promise((resolve) => { s.readyResolve = resolve; });

@@ -1362,6 +1362,7 @@ fn cascade_context<'a>(
         // Its `style` attributes as its policies allow them (M33.1).
         inline_styles: Some(page),
         frame_margins,
+        top_layer: None,
     }
 }
 
@@ -7467,7 +7468,7 @@ impl Engine {
             return None;
         }
         let frames = self.frames_next_frame_at();
-        let own = self.shown.timeline_origin.and_then(|origin| {
+        let own = self.timeline_origin().and_then(|origin| {
             // An animated image's next frame too (M23.1).
             let animation = self.shown.animations.borrow().next_change();
             let at = match (animation, self.shown.next_image_frame) {
@@ -7478,6 +7479,20 @@ impl Engine {
         });
         // The frames' too (M33.2).
         [own, frames].into_iter().flatten().min()
+    }
+
+    /// The time on the engine's clock at which the shown document's
+    /// timeline is at zero: its time origin when its scripts run, so that
+    /// `document.timeline.currentTime` is the frame callbacks' time (Web
+    /// Animations 1 section 4.2.1, D75), else its first frame's; `None`
+    /// before that frame. What the frames sample at and what
+    /// [`Engine::next_frame_at`] waits by, alike: a delay a document
+    /// whose scripts run waits out wakes its frame too.
+    fn timeline_origin(&self) -> Option<Duration> {
+        match self.shown.scripts.origin() {
+            Some(origin) if self.scripts_run() => Some(origin.at),
+            _ => self.shown.timeline_origin,
+        }
     }
 
     /// Finishes every transition running, as a script's `finish()` of
@@ -8243,9 +8258,9 @@ impl Engine {
         // origin, so that `document.timeline.currentTime` is the frame
         // callbacks' time (Web Animations 1 section 4.2.1, D75); another
         // at its first frame's.
-        let origin = match self.shown.scripts.origin() {
-            Some(origin) if self.scripts_run() => origin.at,
-            _ => *self.shown.timeline_origin.get_or_insert(time.now),
+        let origin = match self.timeline_origin() {
+            Some(origin) => origin,
+            None => *self.shown.timeline_origin.insert(time.now),
         };
         let timeline = time.now.saturating_sub(origin).as_secs_f64();
         self.shown.animations.get_mut().set_time(timeline);
@@ -8381,6 +8396,13 @@ impl Engine {
             let layout = self.layout(width as f32);
             for (node, scroll) in elements.iter_mut() {
                 let fragment = fragment_of(&layout.roots, *node);
+                // A box no longer a scroll container keeps its offset, as
+                // the reference browser keeps it, for when it is one
+                // again (a scroll timeline then finds it where it was);
+                // nothing draws or scrolls by it meanwhile.
+                if fragment.is_some_and(|f| !f.clips() || !f.style.overflow().scrolls()) {
+                    continue;
+                }
                 let max = fragment.map_or(0.0, Fragment::max_scroll);
                 scroll.target = scroll.target.clamp(0.0, max);
                 scroll.y = scroll.y.clamp(0.0, max);
@@ -11678,6 +11700,29 @@ mod tests {
             (engine.element_scroll(s), engine.element_scroll_target(s)),
             (0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn a_box_that_stops_scrolling_keeps_its_offset() {
+        // The reference browser keeps a scroll container's offset while
+        // its `overflow` is `visible`, and it scrolls from there again.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } #s { overflow: auto; height: 20px }\
+                    #s.v { overflow: visible } .c { height: 100px }</style>\
+             <div id=s><div class=c></div></div>",
+        );
+        engine.frame(100, 100);
+        let s = node_by_id(&engine, "s");
+        engine.set_element_scroll(s, 30.0);
+        engine.frame(100, 100);
+        engine.mutate(|d| d.set_attribute(s, "class", "v").unwrap());
+        engine.frame(100, 100);
+        assert_eq!(engine.element_max_scroll(s), 0.0);
+        assert_eq!(engine.element_scroll(s), 30.0);
+        engine.mutate(|d| d.set_attribute(s, "class", "").unwrap());
+        engine.frame(100, 100);
+        assert_eq!(engine.element_scroll(s), 30.0);
     }
 
     #[test]

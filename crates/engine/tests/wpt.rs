@@ -1202,6 +1202,14 @@ fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
 /// animations next change (`next_frame`), or to the next task due,
 /// whichever comes first, and a millisecond on at least; `None` when
 /// neither is.
+/// Whether the page wants a frame at its time `now`: one now, or one at
+/// a time it said it would want one that has come, as the end of a
+/// transition's or an animation's delay, which a browser's frame
+/// scheduler draws then.
+fn frame_due(engine: &Engine, now: Duration) -> bool {
+    engine.needs_frame() || engine.next_frame_at().is_some_and(|at| at <= now)
+}
+
 fn next_time(
     now: Duration,
     frame_wanted: bool,
@@ -1565,7 +1573,7 @@ fn wait_for(loaded: &mut Loaded, path: &str, class: &str) -> Result<(), String> 
         }
         engine.poll_network();
         engine.run_tasks();
-        if engine.needs_frame() || !rendered {
+        if frame_due(engine, now) || !rendered {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
         }
         if !rendered {
@@ -1821,7 +1829,7 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         engine.poll_network();
         engine.run_tasks();
         bless(engine, now, &mut said);
-        if engine.needs_frame() && last_frame.is_none_or(|last| now >= last + FRAME) {
+        if frame_due(engine, now) && last_frame.is_none_or(|last| now >= last + FRAME) {
             engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now));
             // An animation frame's callbacks may ask for keys or clicks.
             bless(engine, now, &mut said);

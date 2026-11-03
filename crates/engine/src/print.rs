@@ -165,6 +165,7 @@ impl Engine {
                 animations: Some(&animations),
                 inline_styles: None,
                 frame_margins: self.frame_margins,
+                top_layer: None,
             }
         };
         let mut styles = sheets.cascade(document, &context(&first_box));

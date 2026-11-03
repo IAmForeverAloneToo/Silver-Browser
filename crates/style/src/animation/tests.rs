@@ -645,3 +645,81 @@ fn a_progress_based_animations_start_time_follows_its_range_as_the_timeline_move
     store.set_measured(timeline, None);
     assert_eq!(store.state(id).unwrap().current_time, None);
 }
+
+/// A scroll timeline measured 0 to 100px at `offset`.
+fn scrolled(offset: f64) -> Measured {
+    Measured {
+        view: false,
+        scroller: None,
+        subject: None,
+        axis: crate::computed::Axis::Block,
+        offset,
+        ranges: [(0.0, 100.0); 6],
+    }
+}
+
+/// A store with a scroll timeline scrolled to `offset`, a document
+/// timeline at 1000ms, and an animation of an opacity effect of 1000ms
+/// on the document's: the store, the animation, and the two timelines.
+fn on_two_timelines(offset: f64) -> (Animations, u64, usize, usize) {
+    let mut store = Animations::new();
+    store.set_time(1.0);
+    let document = store.timeline_of(TimelineKind::Document { origin: 0.0 });
+    let scroll = store.create_progress_timeline(TimelineKind::Scroll {
+        source: TimelineSource::Root,
+        axis: crate::computed::Axis::Block,
+    });
+    store.set_measured(scroll, Some(scrolled(offset)));
+    let effect = opacity_effect(&mut store, (node(0), None), 1000.0);
+    let id = store
+        .create_animation(Some(effect), Some(document))
+        .unwrap();
+    (store, id, document, scroll)
+}
+
+#[test]
+fn an_animation_moved_between_timelines_keeps_its_progress() {
+    // Web Animations 2 section 4.4.1. Paused a quarter through on the
+    // document's timeline, onto a scroll timeline it holds a quarter of
+    // the range; running, it plays again there from the scroll's place.
+    let (mut store, id, document, scroll) = on_two_timelines(40.0);
+    store.pause(id).unwrap();
+    store.set_current_time(id, Some(250.0)).unwrap();
+    store.set_script_timeline(id, Some(scroll)).unwrap();
+    let state = store.state(id).unwrap();
+    assert_eq!(state.current_time, Some(25.0));
+    assert_eq!(state.play_state, PlayState::Paused);
+    // Back onto the document's: the same quarter, in milliseconds.
+    store.set_script_timeline(id, Some(document)).unwrap();
+    assert_eq!(store.state(id).unwrap().current_time, Some(250.0));
+    // Running, it follows the scroll once ready, from the range's start.
+    store.play(id).unwrap();
+    store.start_pending();
+    store.set_script_timeline(id, Some(scroll)).unwrap();
+    assert!(store.state(id).unwrap().pending);
+    store.start_pending();
+    let state = store.state(id).unwrap();
+    assert_eq!(
+        (state.start_time, state.current_time),
+        (Some(0.0), Some(40.0))
+    );
+    assert_eq!(state.play_state, PlayState::Running);
+}
+
+#[test]
+fn a_pause_on_a_progress_timeline_waits_for_it_and_holds_its_progress() {
+    // Web Animations 2 section 4.4.13: no time is sought; the pause runs
+    // when the timeline is active and holds where the range puts it.
+    let (mut store, id, _, scroll) = on_two_timelines(30.0);
+    store.set_script_timeline(id, Some(scroll)).unwrap();
+    store.set_measured(scroll, None);
+    store.pause(id).unwrap();
+    assert_eq!(store.state(id).unwrap().current_time, None);
+    store.start_pending();
+    assert!(store.state(id).unwrap().pending);
+    store.set_measured(scroll, Some(scrolled(20.0)));
+    store.start_pending();
+    let state = store.state(id).unwrap();
+    assert!(!state.pending);
+    assert_eq!((state.start_time, state.current_time), (None, Some(20.0)));
+}

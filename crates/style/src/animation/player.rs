@@ -276,6 +276,50 @@ impl Player {
         Ok(())
     }
 
+    /// What becomes of the playback when its animation moves to another
+    /// timeline (Web Animations 2 section 4.4.1), `cx` the new one's:
+    /// `previous` its play state and progress through its effect on the
+    /// old one, `from` and `to` whether the old and the new timelines
+    /// are progress-based. Onto a progress-based timeline its start time
+    /// follows the range, a playing one plays again there and a paused
+    /// one holds the same progress; off one, it takes the same progress
+    /// in the new timeline's time. Between two document timelines the
+    /// start time is kept.
+    pub fn timeline_changed(
+        &mut self,
+        previous: (PlayState, Option<f64>),
+        (from, to): (bool, bool),
+        cx: &Context,
+        notices: &mut Vec<Notice>,
+    ) {
+        let (state, progress) = previous;
+        if to {
+            self.auto_align = true;
+            self.start_time = None;
+            self.hold_time = None;
+            match state {
+                PlayState::Running | PlayState::Finished => {
+                    if self.pending.is_none() {
+                        self.new_ready(notices);
+                    }
+                    self.pending = Some(Pending::Play);
+                }
+                PlayState::Paused => {
+                    self.hold_time = progress.map(|p| p * cx.end);
+                }
+                PlayState::Idle => {}
+            }
+        } else if from && let Some(progress) = progress {
+            let seek = progress * cx.end;
+            if seek.is_finite() {
+                let _ = self.silently_set_current_time(Some(seek), cx);
+            }
+        } else if self.start_time.is_some() {
+            self.hold_time = None;
+        }
+        self.update_finished_state(false, false, cx, notices);
+    }
+
     /// Sets the start time (section 4.4.10).
     pub fn set_start_time(
         &mut self,
@@ -374,7 +418,15 @@ impl Player {
             return Ok(());
         }
         let mut seek = None;
-        if self.current_time(cx).is_none() {
+        // On a progress-based timeline nothing is sought: the pause
+        // holds the progress the range gives at the frame it runs, which
+        // waits while the timeline is inactive (Web Animations 2 section
+        // 4.4.13).
+        let finite = cx.range.is_some();
+        if finite && self.start_time.is_none() && self.hold_time.is_none() {
+            self.auto_align = true;
+        }
+        if self.current_time(cx).is_none() && !finite {
             if self.playback_rate >= 0.0 {
                 seek = Some(0.0);
             } else {

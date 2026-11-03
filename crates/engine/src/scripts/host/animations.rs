@@ -997,6 +997,7 @@ impl DocumentHost {
             animations: animated.then_some(&self.animations),
             inline_styles: Some(page),
             frame_margins: self.window.frame_margins,
+            top_layer: None,
         };
         let parent = self
             .document

@@ -12,7 +12,7 @@ use crate::computed::{
     BackgroundBox, BackgroundSize, BorderImageRepeat, BorderImageWidth, BreakBetween, BreakInside,
     ComputedStyle, Content, ContentItem, DecorationStyle, DecorationThickness, Gradient,
     GradientItem, GradientShape, GridLine, Image, ImageOrientation, ImageRendering,
-    LengthPercentage, LineDirection, ListStylePosition, ListStyleType, ObjectFit, Outset,
+    LengthPercentage, LineDirection, ListStylePosition, ListStyleType, ObjectFit, Outset, Overlay,
     PrintColorAdjust, Quotes, RadialSize, Repeat, RepeatCount, SliceSide, TemplateAreas,
     TextAlignLast, TextJustify, Timeline, TrackBreadth, TrackList, TrackSection, TrackSize,
     TransformFunction, TransformStyle, TransitionBehavior, TransitionProperty, UnderlinePosition,
@@ -390,6 +390,11 @@ pub(super) fn value(style: &ComputedStyle, name: &str, url: Url<'_>) -> Option<S
                 None => "normal".to_owned(),
             }
         }
+        "overlay" => match style.effects().overlay {
+            Overlay::None => "none",
+            Overlay::Auto => "auto",
+        }
+        .to_owned(),
         "scroll-behavior" => if style.effects().scroll_behavior_smooth {
             "smooth"
         } else {

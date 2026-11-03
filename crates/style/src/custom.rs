@@ -247,7 +247,7 @@ impl CustomProperties {
     }
 
     /// Marks the value of `name` as having read an attribute, or not.
-    fn set_attr_tainted(&mut self, name: &str, tainted: bool) {
+    pub(crate) fn set_attr_tainted(&mut self, name: &str, tainted: bool) {
         mark(&mut self.attr_tainted, name, tainted);
     }
 
@@ -534,6 +534,11 @@ pub(crate) struct Declaration<'t> {
     /// Whether it is an animation's, a keyframe's (M22): its value is
     /// animation-tainted.
     pub(crate) animated: bool,
+    /// Whether its value read an attribute before it came here: a
+    /// transition's value of a property whose value did (Values 5
+    /// section 7.7.3, M23.3), which stays attr-tainted through the
+    /// transition's interpolation and its discrete steps.
+    pub(crate) attr: bool,
 }
 
 /// What became of a property's value with its substitution functions
@@ -807,8 +812,9 @@ impl Substitutions {
                 Kind::Keyword(CssWide::Inherit | CssWide::Unset) => {
                     inherited.is_some_and(|m| m.is_attr_tainted(declaration.name))
                 }
-                Kind::Substituted => reads_attributes(declaration.value),
-                Kind::Keyword(CssWide::Initial) | Kind::Literal => false,
+                Kind::Substituted => declaration.attr || reads_attributes(declaration.value),
+                Kind::Literal => declaration.attr,
+                Kind::Keyword(CssWide::Initial) => false,
             })
             .collect();
         loop {
@@ -1045,6 +1051,7 @@ mod tests {
                 value: &d.value,
                 identity: Some(std::ptr::from_ref(d) as usize),
                 animated: false,
+                attr: false,
             })
             .collect();
         substitutions.compute(&declarations, parent, &[])
@@ -1119,6 +1126,7 @@ mod tests {
                 value: &d.value,
                 identity: None,
                 animated: d.name == "--a",
+                attr: false,
             })
             .collect();
         let map = substitutions.compute(&declarations, parent.as_ref(), &[]);
@@ -1139,6 +1147,7 @@ mod tests {
                 value: &d.value,
                 identity: None,
                 animated: true,
+                attr: false,
             })
             .collect();
         let empty = substitutions.compute(&declarations, None, &[]);
@@ -1505,6 +1514,7 @@ mod tests {
                 value: &d.value,
                 identity: None,
                 animated: false,
+                attr: false,
             })
             .collect();
         let child = substitutions.compute(&declarations, parent.as_ref(), &[]);
@@ -1531,6 +1541,7 @@ mod tests {
                     value: &d.value,
                     identity: Some(place),
                     animated: false,
+                    attr: false,
                 })
                 .collect()
         }
@@ -1720,6 +1731,7 @@ mod tests {
                     value: &d.value,
                     identity: None,
                     animated: false,
+                    attr: false,
                 })
                 .collect();
             Substitutions::new(sheets()).compute(&declarations, None, &attrs)
@@ -1805,6 +1817,7 @@ mod tests {
                     value: &d.value,
                     identity: Some(std::ptr::from_ref(d) as usize),
                     animated: false,
+                    attr: false,
                 })
                 .collect();
             substitutions.compute(&declarations, parent, &attributes(pairs))

@@ -255,6 +255,7 @@ impl<'a> Animated<'a> {
                         value: &declaration.value,
                         identity,
                         animated: true,
+                        attr: false,
                     });
                 }
             }
@@ -528,12 +529,13 @@ fn keyframe_style(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::HashMap;
 
     use dom::{Document, NodeId};
 
     use crate::animation::Animations;
-    use crate::cascade::{CascadeContext, Recascade, Styles, Stylesheets};
-    use crate::computed::{Color, ComputedStyle, LEFT, Size, WillChange};
+    use crate::cascade::{CascadeContext, Recascade, Styles, Stylesheets, TopLayer};
+    use crate::computed::{Color, ComputedStyle, LEFT, Overlay, Size, WillChange};
     use crate::selector_matching::PseudoElement;
     use crate::transform::list_matrix;
 
@@ -544,6 +546,14 @@ mod tests {
         sheets: Stylesheets,
         animations: RefCell<Animations>,
         styles: Styles,
+        /// What the top layer declares of its elements' `overlay`.
+        top_layer: HashMap<NodeId, Overlay>,
+    }
+
+    impl TopLayer for HashMap<NodeId, Overlay> {
+        fn overlay(&self, element: NodeId) -> Option<Overlay> {
+            self.get(&element).copied()
+        }
     }
 
     impl Page {
@@ -555,6 +565,7 @@ mod tests {
                 sheets,
                 animations: RefCell::new(Animations::new()),
                 styles: Styles::default(),
+                top_layer: HashMap::new(),
             };
             page.cascade();
             page
@@ -563,6 +574,7 @@ mod tests {
         fn context(&self) -> CascadeContext<'_> {
             CascadeContext {
                 animations: Some(&self.animations),
+                top_layer: Some(&self.top_layer),
                 ..CascadeContext::default()
             }
         }
@@ -595,6 +607,7 @@ mod tests {
             let changes = self.document.take_changes();
             let context = CascadeContext {
                 animations: Some(&self.animations),
+                top_layer: Some(&self.top_layer),
                 ..CascadeContext::default()
             };
             self.sheets.restyle_animated(
@@ -1575,6 +1588,166 @@ mod tests {
     }
 
     #[test]
+    fn a_transitioned_custom_property_reads_an_attribute_as_its_value_did() {
+        // Values 5 section 7.7.3: an attribute's value never becomes a
+        // URL, through a transition of the property holding it neither,
+        // registered or not; a value that read none stays a URL.
+        let mut page = Page::new(
+            "@property --s { syntax: '<string>'; inherits: false; initial-value: 'x' }
+             @property --n { syntax: '<length>'; inherits: false; initial-value: 0px }
+             div { --s: 'a.png'; --u: 'a.png'; --n: 0px; background-image: image-set(var(--s));
+                   transition: --s 1s linear allow-discrete, --u 1s linear allow-discrete,
+                               --n 1s linear }
+             #u { background-image: image-set(var(--u)) }
+             div.on { --s: attr(data-u); --u: attr(data-u); --n: attr(data-n px) }
+             #back { --s: attr(data-u); --u: attr(data-u) }
+             #back.on { --s: 'a.png'; --u: 'a.png' }",
+            "<div id=s data-u=b.png data-n=8></div><div id=u data-u=b.png></div>\
+             <div id=back data-u=b.png></div>",
+        );
+        let image = |page: &Page, id: &str| page.style(id).background().image.clone();
+        let attr = |page: &Page, id: &str, name: &str| {
+            let custom = page.style(id).custom.clone().expect("custom properties");
+            custom.is_attr_tainted(name)
+        };
+        page.frame(0.0);
+        assert!(image(&page, "s")[0].is_some());
+        assert!(image(&page, "u")[0].is_some());
+        assert_eq!(image(&page, "back"), vec![None]);
+        for id in ["s", "u", "back"] {
+            page.class(id, "on");
+        }
+        page.frame(1.0);
+        page.frame(1.25);
+        // Before half way the values stepped from: `#s` and `#u` read no
+        // attribute yet, `#back` still does.
+        assert!(!attr(&page, "s", "--s") && !attr(&page, "u", "--u"));
+        assert!(image(&page, "s")[0].is_some() && image(&page, "u")[0].is_some());
+        assert!(attr(&page, "back", "--s") && attr(&page, "back", "--u"));
+        assert_eq!(image(&page, "back"), vec![None]);
+        // Interpolated, by a registered type, either value's reaches it.
+        let n = page.style("s").custom.clone().expect("custom properties");
+        assert_eq!(n.get("--n").map(|t| t.to_vec()), Some(css::tokenize("2px")));
+        assert!(attr(&page, "s", "--n"));
+        page.frame(1.75);
+        // Past it, the values stepped to.
+        for id in ["s", "u"] {
+            assert_eq!(image(&page, id), vec![None], "#{id}");
+        }
+        assert!(attr(&page, "u", "--u") && !attr(&page, "back", "--u"));
+        assert!(page.animations.borrow().len() >= 6);
+    }
+
+    #[test]
+    fn a_transition_waiting_out_its_delay_wants_a_frame_at_its_end() {
+        // A transition of no duration and a delay changes nothing until
+        // the delay ends, when it ends and is reported: a frame is wanted
+        // then, and none before.
+        let mut page = Page::new(
+            "#d { width: 0px; transition: width 0s linear 5s }
+             #d.on { width: 100px }
+             #e { width: 0px; transition: width 1s linear 2s }
+             #e.on { width: 100px }",
+            "<div id=d></div><div id=e></div>",
+        );
+        page.frame(0.0);
+        page.class("d", "on");
+        page.frame(1.0);
+        page.frame(1.016);
+        assert!(!page.animations.borrow().needs_frame());
+        let next = page
+            .animations
+            .borrow()
+            .next_change()
+            .expect("a change ahead");
+        assert!((next - 6.0).abs() < 1e-6, "{next}");
+        page.class("e", "on");
+        page.frame(1.032);
+        page.frame(1.048);
+        let next = page
+            .animations
+            .borrow()
+            .next_change()
+            .expect("a change ahead");
+        assert!((next - 3.032).abs() < 1e-6, "{next}");
+    }
+
+    #[test]
+    fn a_transition_of_overlay_keeps_an_element_leaving_the_top_layer_in_it_until_it_ends() {
+        // CSS Position 4 sections 3.2 and 3.3: only the user agent sets
+        // `overlay`, as the top layer declares it; an author's own
+        // declaration is ignored. With `allow-discrete` the value stays
+        // `auto` through the transition and is `none` at its end; without
+        // it the removal is at once.
+        let mut page = Page::new(
+            "div { overlay: auto !important }
+             #t { transition: overlay 1s linear allow-discrete }
+             #n { transition: overlay 1s linear }
+             @keyframes o { from { overlay: auto } to { overlay: auto } }
+             #k { animation: o 1s linear paused }",
+            "<div id=t></div><div id=n></div><div id=a></div><div id=k></div>",
+        );
+        let overlay = |page: &Page, id: &str| page.style(id).effects().overlay;
+        assert_eq!(overlay(&page, "a"), Overlay::None);
+        // An animation sets it, as the reference browser lets one.
+        page.frame(0.0);
+        page.frame(0.016);
+        assert_eq!(overlay(&page, "k"), Overlay::Auto);
+        let (t, n) = (page.node("t"), page.node("n"));
+        page.frame(0.0);
+        page.top_layer.insert(t, Overlay::Auto);
+        page.top_layer.insert(n, Overlay::Auto);
+        page.restyle(&[t, n]);
+        // Into the top layer: `auto` as soon as the transition from
+        // `none` runs, strictly between its ends the value it shows.
+        page.frame(0.0);
+        page.frame(0.25);
+        assert_eq!(overlay(&page, "t"), Overlay::Auto);
+        assert_eq!(overlay(&page, "n"), Overlay::Auto);
+        page.frame(2.0);
+        page.top_layer.insert(t, Overlay::None);
+        page.top_layer.insert(n, Overlay::None);
+        page.restyle(&[t, n]);
+        page.frame(2.0);
+        assert_eq!(overlay(&page, "n"), Overlay::None);
+        page.frame(2.5);
+        assert_eq!(overlay(&page, "t"), Overlay::Auto);
+        page.frame(2.99);
+        assert_eq!(overlay(&page, "t"), Overlay::Auto);
+        page.frame(3.0);
+        assert_eq!(overlay(&page, "t"), Overlay::None);
+    }
+
+    #[test]
+    fn an_animated_custom_property_reads_an_attribute_as_its_keyframes_do() {
+        // A registered property's keyframes, stepped or interpolated,
+        // give their attribute's taint to the value (Values 5 section
+        // 7.7.3), and the underlying value its own.
+        let page = Page::new(
+            "@property --s { syntax: '<string>'; inherits: false; initial-value: 'x' }
+             @property --n { syntax: '<length>'; inherits: false; initial-value: 0px }
+             @keyframes s { from { --s: 'a.png'; --n: 0px } to { --s: attr(data-u); --n: attr(data-n px) } }
+             @keyframes b { to { --s: 'a.png' } }
+             div { --s: 'a.png'; background-image: image-set(var(--s)) }
+             #early { animation: s 1s linear -0.25s paused }
+             #late { animation: s 1s linear -0.75s paused }
+             #b { --s: attr(data-u); animation: b 1s linear -0.25s paused }",
+            "<div id=early data-u=b.png data-n=8></div><div id=late data-u=b.png data-n=8></div>\
+             <div id=b data-u=b.png></div>",
+        );
+        let custom = |id: &str| page.style(id).custom.clone().expect("custom properties");
+        let image = |id: &str| page.style(id).background().image.clone();
+        assert!(!custom("early").is_attr_tainted("--s") && image("early")[0].is_some());
+        assert!(custom("late").is_attr_tainted("--s"));
+        assert_eq!(image("late"), vec![None]);
+        // Interpolated, either keyframe's attribute reaches it.
+        assert!(custom("early").is_attr_tainted("--n"));
+        // Before half way, the underlying value's, which read one.
+        assert!(custom("b").is_attr_tainted("--s"));
+        assert_eq!(image("b"), vec![None]);
+    }
+
+    #[test]
     fn an_animation_acts_as_will_change_while_current_or_in_effect() {
         let mut page = Page::new(
             "@keyframes t { from { transform: rotate(10deg) } to { transform: none } }
@@ -1614,6 +1787,42 @@ mod tests {
         ]);
         page.cascade();
         assert!(page.style("a").motion.is_none());
+    }
+
+    #[test]
+    fn a_transition_acts_as_will_change_from_its_start_to_its_end() {
+        // G33 (Web Animations 1 section 5.6): a transition of a transform
+        // from `none` makes a stacking context and a layer from its first
+        // frame, and an opacity's from 1 in its delay too;
+        // ended, the box is as its style says.
+        let mut page = Page::new(
+            "#t { transition: transform 1s linear } #t.on { transform: rotate(90deg) }
+             #o { transition: opacity 1s linear 0.5s } #o.on { opacity: 0.5 }",
+            "<div id=t></div><div id=o></div>",
+        );
+        page.frame(0.0);
+        assert!(!page.style("t").is_stacking_context(false));
+        page.class("t", "on");
+        page.class("o", "on");
+        page.frame(1.0);
+        let t = page.style("t").clone();
+        assert!(
+            t.effects()
+                .will_change_in_effect()
+                .names(WillChange::TRANSFORM)
+        );
+        assert!(t.is_stacking_context(false));
+        // In its delay, its start value shown: acting all the same.
+        let o = page.style("o").clone();
+        assert_eq!(o.effects().opacity, 1.0);
+        assert!(
+            o.effects()
+                .will_change_in_effect()
+                .names(WillChange::OPACITY)
+        );
+        page.frame(2.5);
+        assert!(page.style("o").effects().will_change_in_effect().is_auto());
+        assert!(page.style("t").effects().will_change_in_effect().is_auto());
     }
 
     #[test]

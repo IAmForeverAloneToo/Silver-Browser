@@ -125,7 +125,8 @@ use crate::computed::{
 use crate::computed::{
     AnimationPlayState, Backgrounds, BorderImage, Calc, Containment, Decoration, Effects, Filter,
     FontKerning, FontProps, Fragmentation, GridStyle, ImageStyle, InlineSide, JustifyItems, Lists,
-    Motion, Radii, Resize, ScrollSnapType, SnapAlign, SnapAxis, SnapStrictness, Svg, WillChange,
+    Motion, Overlay, Radii, Resize, ScrollSnapType, SnapAlign, SnapAxis, SnapStrictness, Svg,
+    WillChange,
 };
 use crate::container::{ContainerSizes, Containers, Queried};
 use crate::custom::{self, CustomProperties, DataType, Substituted, Substitutions};
@@ -779,6 +780,20 @@ pub trait InlineStyles {
     fn allowed(&self, element: NodeId, value: &str) -> bool;
 }
 
+/// The top layer's say in its elements' `overlay` (CSS Position 4
+/// sections 3.2 and 3.3, D76): an important declaration of the user
+/// agent's, `auto` for an element in the top layer and `none` for one
+/// whose removal from it is pending. A transition of `overlay` with
+/// `allow-discrete` keeps the computed value `auto` until it ends, as
+/// `display`'s keeps a box (Transitions 2 section 3.2), and the element
+/// pending removal leaves the top layer once its computed `overlay` is
+/// `none`: the removal waits for the transition.
+pub trait TopLayer {
+    /// The `overlay` the top layer declares for `element`, `None` for
+    /// one it neither holds nor is removing.
+    fn overlay(&self, element: NodeId) -> Option<Overlay>;
+}
+
 /// What the cascade resolves relative units against (M10.1), and what
 /// it knows of the document from outside it (M16).
 #[derive(Clone, Copy, Default)]
@@ -810,6 +825,9 @@ pub struct CascadeContext<'a> {
     /// The margins of the iframe the document is in, which its `body`
     /// takes.
     pub frame_margins: FrameMargins,
+    /// What the top layer declares of its elements' `overlay`; `None`
+    /// when no element is in it.
+    pub top_layer: Option<&'a dyn TopLayer>,
 }
 
 /// Resolves the computed style of every element under `document`'s
@@ -1416,20 +1434,15 @@ impl Stylesheets {
                 // The style it had is its before-change style, if it was
                 // rendered (M22.1).
                 let old = styles.computed(node);
-                let before = Before::Known(
-                    old.filter(|old| !old.unrendered)
-                        .or_else(|| {
-                            old.is_none()
-                                .then(|| flushed.and_then(|f| f.computed(node)))
-                                .flatten()
-                                .filter(|f| !f.unrendered)
-                        })
-                        .map(|old| &*old.style),
-                );
+                // One these styles have not met takes the script's flush
+                // of it, its pseudo-elements' styles with it (G46).
+                let had = old.or_else(|| flushed.and_then(|f| f.computed(node)));
+                let before =
+                    Before::Known(had.filter(|had| !had.unrendered).map(|had| &*had.style));
                 // A change to a pseudo-element's style counts as one to
                 // the element's: how layout hears of it.
                 let computed =
-                    cascader.style_of(node, Parent::of(parent), rem, before, old, styles);
+                    cascader.style_of(node, Parent::of(parent), rem, before, had, styles);
                 restyle.computed += 1;
                 let changed = old != Some(&computed);
                 // What the queries of the elements under a container read
@@ -1884,7 +1897,7 @@ impl Recascader<'_> {
                 (&mut cascader.matcher, &mut cascader.candidates),
                 element,
                 (&cascader.ua, &cascader.author, &cascader.shadow),
-                cascader.context.inline_styles,
+                (cascader.context.inline_styles, cascader.context.top_layer),
                 cascader.context.frame_margins,
                 Some(&containers),
             ),
@@ -2477,18 +2490,29 @@ fn composited_style(
         rotate: None,
         scale: None,
         opacity: 1.0,
+        // What a transition or an animation acts as if `will-change`
+        // named (G33) is layout's only where it makes a stacking context
+        // or a containing block, which the checks below compare.
+        animated: WillChange::AUTO,
         ..effects.clone()
     };
     if without(old) != without(new) || blank(a) != blank(b) {
         return None;
     }
-    // The rest of the effects equal, whether the box has a transform
-    // decides whether it contains its absolutely and fixed positioned
-    // descendants; whether it is a stacking context when no transform
-    // applies to it, an inline box, decides whether it is one when one
-    // does; and an opacity can flatten its 3D content.
+    // The rest of the effects equal, whether the box has a transform,
+    // is a stacking context and contains its absolutely and fixed
+    // positioned descendants is what layout reads of them, as a box the
+    // transforms apply to or, for an `inline` element's, which may be an
+    // inline box, as one they do not (css-transforms-1 section 3); and an
+    // opacity can flatten its 3D content.
+    let inline = old.display == Display::Inline || new.display == Display::Inline;
+    let same_as = |transformable: bool| {
+        a.is_stacking_context_of(transformable) == b.is_stacking_context_of(transformable)
+            && a.contains_all_of(transformable) == b.contains_all_of(transformable)
+    };
     let same_to_layout = a.has_transform() == b.has_transform()
-        && a.is_stacking_context_of(false) == b.is_stacking_context_of(false)
+        && same_as(true)
+        && (!inline || same_as(false))
         && a.used_transform_style(old.overflow()) == b.used_transform_style(new.overflow());
     if !same_to_layout {
         return None;
@@ -2750,7 +2774,7 @@ impl<'a> Cascader<'a> {
                 (&mut self.matcher, &mut self.candidates),
                 element,
                 (&self.ua, &self.author, &self.shadow),
-                self.context.inline_styles,
+                (self.context.inline_styles, self.context.top_layer),
                 self.context.frame_margins,
                 Some(&containers),
             )
@@ -2857,7 +2881,7 @@ impl<'a> Cascader<'a> {
                     (&mut self.matcher, &mut self.candidates),
                     element,
                     (&self.ua, starting, &self.shadow),
-                    self.context.inline_styles,
+                    (self.context.inline_styles, self.context.top_layer),
                     self.context.frame_margins,
                     Some(&containers),
                 );
@@ -3429,8 +3453,25 @@ fn changed_style(
             Vec::new()
         }
     };
-    let mut transitioned_style = (!transitioned.is_empty())
-        .then(|| finish(compute(parent.style, animated, Some(&transitioned))));
+    // A transition acts as `will-change` naming its property while it
+    // runs (Web Animations 1 section 5.6, D76, G33), as an animation
+    // does: a transform from `none` or an opacity from 1 makes the box
+    // what it will be from the transition's start, and is composited.
+    let transitions_act = transitioned
+        .iter()
+        .filter_map(|t| match &t.property {
+            Property::Longhand(longhand) => WillChange::feature(longhand.name()),
+            Property::Custom(_) => None,
+        })
+        .fold(WillChange::AUTO, WillChange::with);
+    let mut transitioned_style = (!transitioned.is_empty()).then(|| {
+        let mut style = finish(compute(parent.style, animated, Some(&transitioned)));
+        if !transitions_act.is_auto() {
+            let acting = style.effects().animated.with(transitions_act);
+            style.effects_mut().animated = acting;
+        }
+        style
+    });
     if !rendered(transitioned_style.as_ref().unwrap_or(&style)) {
         cell.borrow_mut().cancel_transitions(target);
         transitioned_style = None;
@@ -3739,7 +3780,7 @@ fn declarations_for<'a>(
     (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
     element: NodeId,
     (ua, author, shadow): RulesInForce<'_, 'a>,
-    inline_styles: Option<&dyn InlineStyles>,
+    (inline_styles, top_layer): (Option<&dyn InlineStyles>, Option<&dyn TopLayer>),
     frame: FrameMargins,
     containers: Option<&Containers<'_>>,
 ) -> Matched<'a> {
@@ -3778,6 +3819,31 @@ fn declarations_for<'a>(
             context: own,
             tree: own_root,
             decl: Cow::Owned(decl),
+            container: None,
+        });
+        order += 1;
+    }
+    // What the top layer declares of it, an important declaration of the
+    // user agent's (CSS Position 4 section 3.3, D76).
+    if let Some(overlay) = top_layer.and_then(|layer| layer.overlay(element)) {
+        let keyword = match overlay {
+            Overlay::Auto => "auto",
+            Overlay::None => "none",
+        };
+        out.element().push(Applied {
+            tier: tier(TierBase::UserAgent, true),
+            layer: 0,
+            specificity: Specificity::default(),
+            proximity: UNSCOPED,
+            order,
+            rule: order,
+            context: own,
+            tree: own_root,
+            decl: Cow::Owned(css::Declaration {
+                name: "overlay".to_owned(),
+                value: vec![Token::Ident(keyword.into())],
+                important: true,
+            }),
             container: None,
         });
         order += 1;
@@ -4421,7 +4487,18 @@ fn compute_style(
     transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
     let transitioned = transitioned.unwrap_or_default();
-    let mut sorted: Vec<&Applied<'_>> = applied.iter().collect();
+    // `overlay` is the user agent's alone (CSS Position 4 section 3.2):
+    // an author's declaration of it, important or not, is valid but
+    // ignored, as the reference browser ignores it; an author only
+    // transitions the value the user agent's sheet gives (D76).
+    let mut sorted: Vec<&Applied<'_>> = applied
+        .iter()
+        .filter(|a| {
+            a.decl.name != "overlay"
+                || a.tier == tier(TierBase::UserAgent, false)
+                || a.tier == tier(TierBase::UserAgent, true)
+        })
+        .collect();
     // Origin and importance, then the context (Cascade 5 section 6.1):
     // for normal declarations the outer tree's win, for important ones
     // the inner's; then whether the element's own, the layer, the
@@ -4469,6 +4546,7 @@ fn compute_style(
                     value: &a.decl.value,
                     identity: a.identity(),
                     animated: false,
+                    attr: false,
                 };
                 ((first + n, false), declaration)
             })
@@ -4505,22 +4583,35 @@ fn compute_style(
     }
     let mut declared: Vec<custom::Declaration<'_>> = placed.into_iter().map(|(_, d)| d).collect();
     // A transition of a custom property gives its value at the step, or
-    // the guaranteed-invalid value, which `initial` is.
+    // the guaranteed-invalid value, which `initial` is. It reads an
+    // attribute as the value it steps to did, or, interpolated by its
+    // type below, as either did (Values 5 section 7.7.3).
     let initial = [Token::Ident("initial".into())];
     for transition in transitioned {
-        if let (Property::Custom(name), Value::Custom(start), Value::Custom(end)) =
-            (&transition.property, &transition.start, &transition.end)
+        if let (
+            Property::Custom(name),
+            Value::Custom(start, start_attr),
+            Value::Custom(end, end_attr),
+        ) = (&transition.property, &transition.start, &transition.end)
         {
-            let value = if transition.progress < 0.5 {
-                start
+            let (value, attr) = if transition.progress < 0.5 {
+                (start, *start_attr)
             } else {
-                end
+                (end, *end_attr)
+            };
+            let interpolated = || match (start, end) {
+                (Some(start), Some(end)) => {
+                    typed(name)
+                        && crate::property::interpolate(start, end, transition.progress).is_some()
+                }
+                _ => false,
             };
             declared.push(custom::Declaration {
                 name,
                 value: value.as_deref().unwrap_or(&initial),
                 identity: None,
                 animated: false,
+                attr: attr || ((*start_attr || *end_attr) && interpolated()),
             });
         }
     }
@@ -4898,27 +4989,46 @@ fn compute_style(
                     .map(Arc::from)
                     .or_else(unset)
             };
-            let (from, to) = (endpoint(mix.from), endpoint(mix.to));
-            let value = match (&from, &to) {
-                (Some(a), Some(b)) => crate::property::interpolate(a, b, mix.p)
-                    .map(Arc::from)
-                    .or_else(|| {
-                        if mix.p < 0.5 {
-                            from.clone()
-                        } else {
-                            to.clone()
-                        }
-                    }),
-                _ if mix.p < 0.5 => from.clone(),
-                _ => to.clone(),
+            // Whether a keyframe's value reads an attribute, by its own
+            // `attr()` or a `var()` of a value that did; the underlying
+            // one as it does (Values 5 section 7.7.3).
+            let reads = |value: Option<&[Token]>| match value {
+                None => current
+                    .as_ref()
+                    .is_some_and(|m| m.is_attr_tainted(mix.name)),
+                Some(tokens) => {
+                    custom::reads_attributes(tokens)
+                        || custom::var_names(tokens)
+                            .any(|name| current.as_ref().is_some_and(|m| m.is_attr_tainted(name)))
+                }
             };
-            if let (Some(map), Some(value)) = (current, value) {
-                style.custom = Some(Arc::new(map.with_values(vec![(mix.name, value)])));
+            let (from, to) = (endpoint(mix.from), endpoint(mix.to));
+            let stepped = || {
+                if mix.p < 0.5 {
+                    (from.clone(), reads(mix.from))
+                } else {
+                    (to.clone(), reads(mix.to))
+                }
+            };
+            let (value, attr) = match (&from, &to) {
+                (Some(a), Some(b)) => match crate::property::interpolate(a, b, mix.p) {
+                    Some(value) => (Some(Arc::from(value)), reads(mix.from) || reads(mix.to)),
+                    None => stepped(),
+                },
+                _ => stepped(),
+            };
+            if let (Some(map), Some(value)) = (current.as_ref(), value) {
+                let mut map = map.with_values(vec![(mix.name, value)]);
+                map.set_attr_tainted(mix.name, attr);
+                style.custom = Some(Arc::new(map));
             }
         }
         for transition in transitioned {
-            if let (Property::Custom(name), Value::Custom(Some(start)), Value::Custom(Some(end))) =
-                (&transition.property, &transition.start, &transition.end)
+            if let (
+                Property::Custom(name),
+                Value::Custom(Some(start), _),
+                Value::Custom(Some(end), _),
+            ) = (&transition.property, &transition.start, &transition.end)
                 && typed(name)
                 && let Some(value) = crate::property::interpolate(start, end, transition.progress)
                 && let Some(map) = style.custom.clone()
@@ -6489,6 +6599,7 @@ fn apply_declaration(
                 e.backface_visibility = v
             })
         }
+        "overlay" => set_effects(style, effects::parse_overlay(value), |e, v| e.overlay = v),
         // `scroll-behavior` (CSSOM View section 13.1): `auto | smooth`.
         "scroll-behavior" => {
             let smooth = match single_ident(value).map(str::to_ascii_lowercase).as_deref() {
@@ -7743,6 +7854,7 @@ fn apply_css_wide(
         "backface-visibility" => copy_effects(style, src, |e, s| {
             e.backface_visibility = s.backface_visibility
         }),
+        "overlay" => copy_effects(style, src, |e, s| e.overlay = s.overlay),
         "scroll-behavior" => copy_effects(style, src, |e, s| {
             e.scroll_behavior_smooth = s.scroll_behavior_smooth
         }),
@@ -11110,6 +11222,7 @@ mod tests {
             animations: None,
             inline_styles: None,
             frame_margins: FrameMargins::default(),
+            top_layer: None,
         };
         let viewport_used = Cell::new(false);
         let substitutions = Substitutions::new(0);
@@ -12099,6 +12212,7 @@ mod tests {
             animations: None,
             inline_styles: None,
             frame_margins: FrameMargins::default(),
+            top_layer: None,
         }
     }
 

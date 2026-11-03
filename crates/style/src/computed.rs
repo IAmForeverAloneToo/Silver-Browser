@@ -1825,6 +1825,20 @@ pub enum TransformStyle {
     Preserve3d,
 }
 
+/// `overlay` (CSS Position 4 section 3.2, D76): whether an element in the
+/// top layer is rendered there. Only the user agent's sheet sets it
+/// (`!important`, on what it puts in the top layer); an author may only
+/// transition it, which keeps an element leaving the top layer rendered
+/// there until the transition ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Overlay {
+    /// `none`, the initial value.
+    #[default]
+    None,
+    /// `auto`: rendered in the top layer while it is in it.
+    Auto,
+}
+
 /// `backface-visibility` (css-transforms-2 §12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackfaceVisibility {
@@ -2064,6 +2078,8 @@ pub struct Effects {
     /// `filter` (Filter Effects 1 section 5, gap batch E, D52): its
     /// functions in order; empty is `none`.
     pub filter: Vec<Filter>,
+    /// `overlay` (CSS Position 4 section 3.2, D76).
+    pub overlay: Overlay,
 }
 
 /// A `filter` function, computed (Filter Effects 1 section 13):
@@ -2156,6 +2172,7 @@ impl Default for Effects {
             animated: WillChange::AUTO,
             box_shadow: Vec::new(),
             filter: Vec::new(),
+            overlay: Overlay::None,
         }
     }
 }
