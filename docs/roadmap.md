@@ -3759,6 +3759,10 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G245 The reftests of `css/css-position`, `html/rendering` and
        `css/css-pseudo` whose expected failures say what differs rather
        than a cause diagnosed. Found in gap batch H.
+- [ ] G246 Some 230 expected WPT failures whose reasons named gap
+       batch H's steps, which the batch built, and which still fail:
+       each now says what the test sees and cites this gap, its cause
+       to be found. Found in gap batch H.
 
 ---
 
