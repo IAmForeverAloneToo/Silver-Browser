@@ -8698,6 +8698,34 @@ mod tests {
     }
 
     #[test]
+    fn a_page_scrolled_across_compares_with_a_fresh_engine_scrolled_as_far() {
+        // The input fuzz's: ArrowRight scrolled a page a few pixels wider
+        // than the viewport across, and the fresh engine was not; a
+        // scroll container's offset across is given it too.
+        let mut engine = test_engine();
+        engine.set_preferences(REDUCED);
+        engine.load_document(
+            "<body style='margin: 0'><div style='width: 203px; height: 20px; \
+             border-left: 2px solid #212121'></div><div id=s style='width: 40px; \
+             overflow-x: scroll'><div style='width: 90px; height: 10px; \
+             border-left: 30px solid #f00; background: #00f'></div></div>",
+        );
+        engine.frame(200, 100);
+        let right = Key::new("ArrowRight", "ArrowRight");
+        engine.key_down(&right);
+        engine.key_up(&right);
+        let s = node_by_id(&engine, "s");
+        engine.scroll_element_to_x(s, 25.0, true);
+        engine.frame(200, 100);
+        assert_eq!((engine.scroll_x(), engine.element_scroll_x(s)), (5.0, 25.0));
+        let mut fresh = test_engine();
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 200, 100)
+        {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
     fn a_canvas_a_script_made_compares_with_a_fresh_engine_by_its_place() {
         // The canvas's node is numbered as a script made it here and as
         // its markup is parsed in the fresh engine's snapshot: the

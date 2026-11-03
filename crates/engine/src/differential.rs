@@ -290,13 +290,18 @@ pub fn compare_with_fresh(
     give_state(engine, fresh, &order, &fresh_order);
     fresh.frame(width, height);
     settle_frames(fresh);
-    // The same offsets: the document's, and each scroll container's,
-    // node for node in tree order.
+    // The same offsets, down and across: the document's, and each scroll
+    // container's, node for node in tree order.
     fresh.set_scroll(engine.scroll_y());
+    fresh.scroll_to_x(engine.scroll_x(), true);
     for (&node, &fresh_node) in order.iter().zip(&fresh_order) {
         let offset = engine.element_scroll(node);
         if offset != 0.0 {
             fresh.set_element_scroll(fresh_node, offset);
+        }
+        let across = engine.element_scroll_x(node);
+        if across != 0.0 {
+            fresh.scroll_element_to_x(fresh_node, across, true);
         }
     }
     // Rasterized whole, not from the frame before: the engine's raster
