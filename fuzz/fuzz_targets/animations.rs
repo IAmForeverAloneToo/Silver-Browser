@@ -205,7 +205,13 @@ fn check_timing(style: &ComputedStyle, times: &[f64]) {
         let fill = &motion.animation_fill_mode;
         let timing = Timing {
             delay: at(&motion.animation_delay, i, 0.0),
-            duration: at(&motion.animation_duration, i, 0.0),
+            // `auto` is 0s on the document timeline these run on.
+            duration: motion
+                .animation_duration
+                .get(i % motion.animation_duration.len().max(1))
+                .copied()
+                .flatten()
+                .unwrap_or(0.0),
             iterations: at(&motion.animation_iteration_count, i, 1.0),
             direction: direction
                 .get(i % direction.len().max(1))
