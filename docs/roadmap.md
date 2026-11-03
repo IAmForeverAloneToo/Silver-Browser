@@ -2744,6 +2744,21 @@ design note first and the milestones' method:
        compared with Chrome 156 over 200,000 outputs; every gap the
        batch found closed in it, at the maintainer's word of 30 October;
        what is left in the note's section 2.
+- [ ] GH Web components, the cascade and animations
+       (`docs/design/components-cascade-animations.md`, D67-D78), the
+       priorities' groups H, G and N with their neighbours: custom
+       elements and shadow trees (G53), declarative shadow roots and the
+       root's overflow (G31), nesting, `@container`, `@scope` and
+       `@custom-media` (G8), `revert` and `revert-layer` (G7),
+       `@property` (G14), `env()` beyond properties (G18), logical
+       properties and `:dir()` (G24), `:has()` and the pseudo-elements
+       G12 kept, the Web Animations API (G26), scroll-driven animations
+       (G27), `@starting-style` and sizes from `auto` (G28), a user's
+       setting that stops animations (G30), transitions composited from
+       their start (G33), `display: contents`, ruby and `math` (G230), a
+       second document (G47, G51, G70), relative colours (G224) and
+       values past the finite (G228). Opened at the maintainer's word,
+       3 November 2026.
 
 Deferred from the milestones above, each with what it waits on:
 
@@ -3870,6 +3885,18 @@ Deferred from the milestones above, each with what it waits on:
 | D64 | How bindings stay cheap | GD | one bootstrap / chunks read at first use | M41's lazy GPU bindings generalized to named chunks |
 | D65 | What scripts measure | GD | a copy of the styles / the shown page's styles and layout | the shown page's, lent to the run, laid out when stale |
 | D66 | How the CSSOM keeps sheets | GD | rebuilt from text / an editable rule list an owner keeps | an editable rule list, kept until the owner's text changes; specified values serialized canonically; `currentcolor` a computed keyword |
+| D67 | Where a realm's other documents live | GH | an arena a document / fragments of the page's tree / documents in the page's arena | documents in the page's arena, each a `Document` node with its own subtree; an owner kept for nodes not in a tree; template contents in an inert document |
+| D68 | How shadow trees are kept | GH | a host's hidden children / a copied flat tree / shadow roots in the arena and the flat tree a view | shadow roots as nodes linked to their hosts; the flat tree a view the cascade, layout and hit testing walk; events retargeted on DOM's path |
+| D69 | How a shadow tree's styles apply | GH | the page's rule set filtered / a rule set a tree, shared by its instances | a rule set a tree; `:host`, `::slotted`, `::part` across; the outer tree's normal and the inner tree's important declarations winning |
+| D70 | Where custom elements live | GH | the host / the bindings, with the host reporting reactions | the bindings' registry and reactions, run before a native's call returns; parser elements upgraded in tree order |
+| D71 | How nesting, `@scope` and `@custom-media` reach the cascade | GH | matched nested / desugared when the sheet is built | desugared: `&` as `:is()` of the parent, scope roots and limits kept on rules, custom media resolved across sheets |
+| D72 | How container queries are answered | GH | before layout from guesses / interleaved style and layout / restyle after layout, bounded passes | the last layout's container sizes; containers whose answers change restyled and laid out again, a bounded number of passes |
+| D73 | How `revert` and registered properties cascade | GH | dropped / kept by origin and layer | declarations kept ordered by origin and layer for revert keywords; registered properties computed by their syntax |
+| D74 | How `:has()` is matched and invalidated | GH | every change restyles all / anchors found from a change's ancestors and siblings | searched per anchor, invalidated through the anchors a change can reach |
+| D75 | How scripts reach animations | GH | separate script animations / views of one store | one store of CSS and script animations, scripts holding views by number; scroll timelines read the engine's scroll offsets |
+| D76 | How entry transitions and sizes from `auto` work | GH | not at all / `@starting-style` as a before-change style, `calc-size()` resolved a frame at a time | as that; a transition acts as `will-change`; a user preference stops animations |
+| D77 | Which boxes `display`'s new values make | GH | none / contents, ruby and MathML Core's layout | contents walks its flat children; ruby annotations as inline boxes; MathML Core for the elements Chrome lays out; `run-in` refused as Chrome refuses it |
+| D78 | How relative colours and non-finite values compute | GH | refused / computed from the origin's channels, infinity kept | relative colours from their origin's channels; infinity and NaN kept to serialization; relative lengths in channels |
 
 ---
 
