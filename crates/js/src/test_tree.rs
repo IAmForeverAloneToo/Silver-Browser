@@ -127,6 +127,8 @@ impl Tree {
         self.work += self.work_per_call;
         Ok(match call {
             Call::Document => self.give(Some(0)),
+            // The tests' tree is one document's.
+            Call::OwnerDocument(_) => self.give(Some(0)),
             Call::Wrap(h) => {
                 let node = self.node(h)?;
                 self.exposed.insert(node as u64);
@@ -143,7 +145,14 @@ impl Tree {
                 } else {
                     ""
                 };
-                Answer::Strings(vec![name, String::new(), ns.to_owned(), n.kind.to_string()])
+                // No prefix, and the page's document.
+                Answer::Strings(vec![
+                    name,
+                    String::new(),
+                    ns.to_owned(),
+                    n.kind.to_string(),
+                    String::new(),
+                ])
             }
             Call::Children(h) => {
                 let node = self.node(h)?;
@@ -179,14 +188,14 @@ impl Tree {
                 let node = self.node(h)?;
                 Answer::MaybeString((node != 0).then(|| self.text_content(node)))
             }
-            Call::CreateElement(tag) => {
+            Call::CreateElement(tag, _) => {
                 if tag.is_empty() || tag.contains(' ') {
                     return Err(DomError::new("InvalidCharacterError", "bad name"));
                 }
                 let id = self.add(1, &tag.to_ascii_lowercase(), "");
                 self.give(Some(id))
             }
-            Call::CreateText(data) => {
+            Call::CreateText(data, _) => {
                 let id = self.add(3, "", &data);
                 self.give(Some(id))
             }

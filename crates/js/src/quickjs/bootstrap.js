@@ -535,30 +535,47 @@
       }
     }
     const answer = native.wrap(handle);
-    const object = make(handle, answer[0], answer[2], +answer[3]);
+    const object = make(handle, answer[0], answer[2], +answer[3], answer[4]);
     MapSet(objects, handle, {
       ref: new $WeakRef(object),
       strong: answer[1] === "" ? null : object,
     });
     Register(registry, object, handle);
-    for (let i = 4; i < answer.length; i++) {
+    for (let i = 5; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
     return object;
   }
 
+  // Whether a document beside the page's has had an object made (D67):
+  // until one has, every node's document is the page's, or an inert one
+  // of its type.
+  let otherDocuments = false;
+
   // A new object for a node, of the interface its kind, name and
-  // namespace say. The host hears it from `wrap`, and holds the node
-  // until it is released.
-  function make(handle, name, ns, kind) {
+  // namespace say; `extra` is an element's prefix, or a document's
+  // interface when it is not the page's. The host hears it from `wrap`,
+  // and holds the node until it is released.
+  function make(handle, name, ns, kind, extra) {
     switch (kind) {
       case 3:
         return new Text(KEY, handle, 3, name);
+      case 4:
+        return new CDATASection(KEY, handle, 4, name);
       case 7:
         return new ProcessingInstruction(KEY, handle, 7, name);
       case 8:
         return new Comment(KEY, handle, 8, name);
       case 9:
+        if (extra !== "") {
+          otherDocuments = true;
+        }
+        if (extra === "Document") {
+          return new Document(KEY, handle, 9, name);
+        }
+        if (extra === "XMLDocument") {
+          return new XMLDocument(KEY, handle, 9, name);
+        }
         return new HTMLDocument(KEY, handle, 9, name);
       case 10:
         return new DocumentType(KEY, handle, 10, name);
@@ -567,6 +584,9 @@
     }
     const object = new (elementInterface(name, ns))(KEY, handle, 1, name);
     setNsOf(object, ns === "" ? null : ns);
+    if (extra !== "") {
+      setPrefixOf(object, extra);
+    }
     return object;
   }
 
@@ -3969,7 +3989,7 @@
     }
 
     get attributeNamespace() {
-      return null;
+      return this.#fields.namespace;
     }
 
     get oldValue() {
@@ -3992,6 +4012,7 @@
         previous: r.previous === null ? null : wrap(r.previous),
         next: r.next === null ? null : wrap(r.next),
         attribute: r.attribute,
+        namespace: r.namespace,
         old: r.old,
       }));
     }
@@ -6545,7 +6566,16 @@
       }
       let bytes = null;
       if (body !== undefined && body !== null && this.#method !== "GET" && this.#method !== "HEAD") {
-        const extracted = extract(body, "XMLHttpRequest");
+        // A document is sent serialized, as UTF-8 (XMLHttpRequest
+        // section 3.5.6, step 4.1).
+        const extracted = isNode(body) && kindOf(body) === 9
+          ? {
+            bytes: utf8Encode(native.serializeDocument(handleOf(body))),
+            type: native.inHtmlDocument(handleOf(body))
+              ? "text/html;charset=UTF-8"
+              : "application/xml;charset=UTF-8",
+          }
+          : extract(body, "XMLHttpRequest");
         bytes = extracted.bytes;
         const set = combined(this.#headers, "content-type");
         if (set === null && extracted.type !== null) {
@@ -6812,7 +6842,36 @@
           "InvalidStateError",
         );
       }
-      return null;
+      if (this.#state !== DONE) return null;
+      return this.#document();
+    }
+
+    // The "document response" (XMLHttpRequest section 4.8.4): the body
+    // parsed into a document of its own (D67), once: an HTML one only
+    // for the `document` response type, an XML one for an XML type;
+    // null for another type, or XML that is not well formed.
+    #document() {
+      if (this.#cache !== undefined) return this.#cache;
+      const response = this.#response;
+      let made = null;
+      if (response !== null && !response.error && response.body !== null) {
+        const mime = this.#mime();
+        const at = StringIndexOf(mime, ";");
+        const essence = ToLowerCase(StringTrim(at < 0 ? mime : StringSlice(mime, 0, at)));
+        const html = essence === "text/html";
+        const xml = essence === "text/xml" || essence === "application/xml" ||
+          StringEndsWith(essence, "+xml");
+        if ((html && this.#responseType === "document") || xml) {
+          const charset = at < 0 ? null : parameter(";" + StringSlice(mime, at + 1), "charset");
+          const urls = response.urlList;
+          const url = urls.length === 0 ? "about:blank" : urls[urls.length - 1];
+          made = wrap(native.parseResponse(
+            binaryString(new $Uint8Array(response.body)), html, essence, charset, url,
+          ));
+        }
+      }
+      this.#cache = made;
+      return made;
     }
 
     get response() {
@@ -6823,6 +6882,7 @@
       if (this.#state !== DONE) return null;
       const response = this.#response;
       if (response === null || response.error) return null;
+      if (type === "document") return this.#document();
       if (this.#cache !== undefined) return this.#cache;
       const bytes = response.body === null ? new $Uint8Array(0) : new $Uint8Array(response.body);
       let value = null;
@@ -6999,6 +7059,8 @@
   let nameOf;
   let nsOf;
   let setNsOf;
+  let prefixOf;
+  let setPrefixOf;
   let childList;
   let elementList;
   let tokensOf;
@@ -7011,8 +7073,10 @@
     // which never change.
     #kind;
     #name;
-    // An element's namespace's URI, null for none (M32).
+    // An element's namespace's URI, null for none (M32), and its
+    // namespace prefix, null for none (D67).
     #ns = null;
+    #prefix = null;
     // The `childNodes` and `children` collections, each made once; an
     // element's `classList`, `style` and `dataset`, the same.
     #childNodes = null;
@@ -7039,6 +7103,10 @@
       nsOf = (node) => node.#ns;
       setNsOf = (node, ns) => {
         node.#ns = ns;
+      };
+      prefixOf = (node) => node.#prefix;
+      setPrefixOf = (node, prefix) => {
+        node.#prefix = prefix;
       };
       childList = (node) => {
         if (node.#childNodes === null) {
@@ -7089,9 +7157,20 @@
       return kindOf(this) === 1 ? qualifiedTag(this) : nameOf(this);
     }
 
+    // The node's document (D67): the page's, another a parser or a
+    // script made, or the inert one a template's contents are in.
     get ownerDocument() {
-      self(this);
-      return kindOf(this) === 9 ? null : theDocument();
+      const handle = self(this);
+      switch (kindOf(this)) {
+        case 9:
+          return null;
+        // An attribute's is its element's, or the page's.
+        case 2: {
+          const element = attrElement(this);
+          return element === null ? theDocument() : element.ownerDocument;
+        }
+      }
+      return wrap(native.ownerDocument(handle));
     }
 
     get parentNode() {
@@ -7128,9 +7207,16 @@
       return native.connected(self(this));
     }
 
-    // The document's base URL (gap batch A, G105).
+    // The document's base URL (gap batch A, G105); another document's
+    // its own (D67).
     get baseURI() {
-      self(this);
+      const handle = self(this);
+      if (otherDocuments && kindOf(this) !== 2) {
+        const owner = kindOf(this) === 9 ? handle : native.ownerDocument(handle);
+        if (owner !== native.document()) {
+          return native.documentInfo(owner)[5];
+        }
+      }
       return native.baseUrl();
     }
 
@@ -7237,16 +7323,9 @@
       return child;
     }
 
+    // A document's copy is a document beside the page's (D67).
     cloneNode(deep) {
       const handle = self(this);
-      if (kindOf(this) === 9) {
-        throw domError(
-          "NotSupportedError",
-          "Cloning a document is not supported.",
-          "cloneNode",
-          "Node",
-        );
-      }
       try {
         return wrap(native.clone(handle, deep === undefined ? false : !!deep));
       } catch (error) {
@@ -7268,6 +7347,13 @@
     "DOCUMENT_TYPE_NODE", 10,
     "DOCUMENT_FRAGMENT_NODE", 11,
     "NOTATION_NODE", 12,
+    // `compareDocumentPosition`'s bits (DOM section 4.4).
+    "DOCUMENT_POSITION_DISCONNECTED", 0x01,
+    "DOCUMENT_POSITION_PRECEDING", 0x02,
+    "DOCUMENT_POSITION_FOLLOWING", 0x04,
+    "DOCUMENT_POSITION_CONTAINS", 0x08,
+    "DOCUMENT_POSITION_CONTAINED_BY", 0x10,
+    "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC", 0x20,
   ];
   for (let i = 0; i < NODE_TYPES.length; i += 2) {
     defineProperty(Node, NODE_TYPES[i], { value: NODE_TYPES[i + 1], enumerable: true });
@@ -7277,7 +7363,7 @@
   // Whether `node` is a Text, ProcessingInstruction or Comment node.
   function isCharacterData(node) {
     const kind = kindOf(node);
-    return kind === 3 || kind === 7 || kind === 8;
+    return kind === 3 || kind === 4 || kind === 7 || kind === 8;
   }
 
   // The interface a ParentNode or ChildNode member of `node` is named
@@ -7756,12 +7842,12 @@
 
     get wholeText() {
       let first = self(this);
-      for (let p = native.previousSibling(first); p !== null && native.kind(p) === 3; ) {
+      for (let p = native.previousSibling(first); p !== null && isTextHandle(p); ) {
         first = p;
         p = native.previousSibling(p);
       }
       let text = "";
-      for (let n = first; n !== null && native.kind(n) === 3; n = native.nextSibling(n)) {
+      for (let n = first; n !== null && isTextHandle(n); n = native.nextSibling(n)) {
         text += native.data(n);
       }
       return text;
@@ -7799,17 +7885,23 @@
     return htmlDocument;
   }
 
+  // Whether `node`'s document is an HTML one: the page's type until a
+  // document beside it is made (D67), then the host's answer.
+  function inHtmlDocument(node) {
+    return otherDocuments ? native.inHtmlDocument(handleOf(node)) : isHtmlDocument();
+  }
+
   // An element's `tagName`: an HTML element's name in upper case in an
   // HTML document, another's as it is (DOM section 4.9).
   function qualifiedTag(element) {
     const name = nameOf(element);
-    return nsOf(element) === HTML_NS && isHtmlDocument() ? ToUpperCase(name) : name;
+    return nsOf(element) === HTML_NS && inHtmlDocument(element) ? ToUpperCase(name) : name;
   }
 
   // An attribute's name as an element keeps it: lowercased on an HTML
   // element of an HTML document, as given on another.
   function attrKey(element, name) {
-    return nsOf(element) === HTML_NS && isHtmlDocument() ? ToLowerCase(name) : name;
+    return nsOf(element) === HTML_NS && inHtmlDocument(element) ? ToLowerCase(name) : name;
   }
 
   // A nullable namespace argument: null, undefined and the empty string
@@ -7822,41 +7914,49 @@
     return text === "" ? null : text;
   }
 
-  // The namespace of an element's attribute named `qualified`: its
-  // prefix's, where that is XLink's, XML's or XMLNS's, on an element
-  // that is not HTML's; none otherwise.
+  // The namespace of an element's first attribute named `qualified`, as
+  // the host keeps it (D67): the one it was given or its name implies;
+  // null for none.
   function attributeNamespace(element, qualified) {
-    if (nsOf(element) === HTML_NS) {
-      return null;
+    const handle = handleOf(element);
+    const names = native.attributeNames(handle);
+    for (let i = 0; i < names.length; i++) {
+      if (names[i] === qualified) {
+        const ns = native.attributeNamespaces(handle)[i];
+        return ns === "" ? null : ns;
+      }
     }
-    if (qualified === "xmlns") {
-      return XMLNS_NS;
-    }
-    switch (prefixPart(qualified)) {
-      case "xlink":
-        return XLINK_NS;
-      case "xml":
-        return XML_NS;
-      case "xmlns":
-        return XMLNS_NS;
-      default:
-        return null;
-    }
+    return null;
   }
 
   // The qualified name of an element's attribute of namespace `ns` and
   // local name `local`, or null.
   function attributeNamed(element, ns, local) {
-    const names = native.attributeNames(handleOf(element));
+    const handle = handleOf(element);
+    const names = native.attributeNames(handle);
+    const namespaces = native.attributeNamespaces(handle);
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
-      const namespace = attributeNamespace(element, name);
+      const namespace = namespaces[i] === "" ? null : namespaces[i];
       const own = namespace === null ? name : localPart(name);
       if (namespace === ns && own === local) {
         return name;
       }
     }
     return null;
+  }
+
+  // `setAttributeNS`'s change (DOM section 4.9), the name validated
+  // against the namespace.
+  function setAttributeNS(handle, ns, qualified, value, method) {
+    try {
+      native.setAttributeNS(handle, ns, qualified, value);
+    } catch (error) {
+      throw failed(error, method, "Element");
+    }
+    if (ns === null) {
+      attributeHandler(wrap(handle), qualified, true, true);
+    }
   }
 
   // DOM's "validate and extract" (section 1.5): `qualified` a name with
@@ -7929,9 +8029,12 @@
       return qualifiedTag(this);
     }
 
+    // A name with a colon is a prefix and a local name only when it was
+    // made so (`createElementNS`, the XML parser); `createElement`'s and
+    // the HTML parser's are local names whole (D67).
     get localName() {
       self(this);
-      return localPart(nameOf(this));
+      return prefixOf(this) === null ? nameOf(this) : localPart(nameOf(this));
     }
 
     get namespaceURI() {
@@ -7941,7 +8044,7 @@
 
     get prefix() {
       self(this);
-      return prefixPart(nameOf(this));
+      return prefixOf(this);
     }
 
     get id() {
@@ -8023,20 +8126,18 @@
       removeAttribute(handle, attrKey(this, str(name)));
     }
 
-    // The namespaced attribute methods (DOM section 4.9): an attribute's
-    // namespace is its prefix's, XLink's, XML's or XMLNS's, on an
-    // element that is not HTML's (M32; G51 for the rest).
+    // The namespaced attribute methods (DOM section 4.9), over the
+    // namespaces the host keeps each attribute's in (D67).
     getAttributeNS(namespace, localName) {
       const handle = self(this);
       need(arguments.length, 2, "getAttributeNS", "Element");
-      const name = attributeNamed(this, nullable(namespace), str(localName));
-      return name === null ? null : native.attribute(handle, name);
+      return native.attributeNS(handle, nullable(namespace), str(localName));
     }
 
     hasAttributeNS(namespace, localName) {
-      self(this);
+      const handle = self(this);
       need(arguments.length, 2, "hasAttributeNS", "Element");
-      return attributeNamed(this, nullable(namespace), str(localName)) !== null;
+      return native.attributeNS(handle, nullable(namespace), str(localName)) !== null;
     }
 
     setAttributeNS(namespace, qualifiedName, value) {
@@ -8048,19 +8149,17 @@
         "setAttributeNS",
         "Element",
       );
-      const before = attributeNamed(this, ns, localPart(qualified));
-      if (before !== null && before !== qualified) {
-        removeAttribute(handle, before);
-      }
-      setAttribute(handle, qualified, str(value), "setAttributeNS");
+      setAttributeNS(handle, ns, qualified, str(value), "setAttributeNS");
     }
 
     removeAttributeNS(namespace, localName) {
       const handle = self(this);
       need(arguments.length, 2, "removeAttributeNS", "Element");
-      const name = attributeNamed(this, nullable(namespace), str(localName));
-      if (name !== null) {
-        removeAttribute(handle, name);
+      const ns = nullable(namespace);
+      const local = str(localName);
+      native.removeAttributeNS(handle, ns, local);
+      if (ns === null) {
+        attributeHandler(this, local, false);
       }
     }
 
@@ -8281,16 +8380,55 @@
     }
   }
 
+  // Whether `handle` names the page's document rather than one beside
+  // it (D67).
+  function isPage(handle) {
+    return !otherDocuments || handle === native.document();
+  }
+
+  // What `DocumentInfo` says of a document: its URL, encoding, content
+  // type, mode and referrer, and another's base URL.
+  function documentInfo(handle) {
+    return isPage(handle) ? native.documentInfo() : native.documentInfo(handle);
+  }
+
   class Document extends Node {
+    // `new Document()` (DOM section 4.5) is a script's to make: an XML
+    // document of its own, with nothing in it.
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
-        throw illegalConstructor("Document");
+        try {
+          return wrap(native.createDocument("plain", ""));
+        } catch (error) {
+          throw failed(error, "Document", "Document");
+        }
       }
       super(key, handle, kind, name);
     }
 
+    // `Document.parseHTMLUnsafe` (HTML section 8.5.1): `html` parsed as
+    // a document of its own, scripting off.
+    static parseHTMLUnsafe(html) {
+      need(arguments.length, 1, "parseHTMLUnsafe", "Document");
+      const markup = str(html);
+      try {
+        return wrap(native.parseDocument(markup, "text/html"));
+      } catch (error) {
+        throw failed(error, "parseHTMLUnsafe", "Document");
+      }
+    }
+
     get documentElement() {
       return wrap(documentElement(self(this)));
+    }
+
+    // SVG's `rootElement` (SVG 2 section 5.14.2): the document element
+    // when it is an SVG `svg` element.
+    get rootElement() {
+      const element = wrap(documentElement(self(this)));
+      return element !== null && nsOf(element) === SVG_NS && element.localName === "svg"
+        ? element
+        : null;
     }
 
     // The document's fonts (CSS Font Loading 3, D54).
@@ -8308,28 +8446,29 @@
     }
 
     // The focused element, or the body when none is (HTML section 6.6.6),
-    // and whether the window has the system's focus.
+    // and whether the window has the system's focus; a document beside
+    // the page's has no focus of its own.
     get activeElement() {
       const handle = self(this);
-      const focused = native.focused();
+      const focused = isPage(handle) ? native.focused() : null;
       return focused === null ? wrap(childOfHtml(handle, "body")) : wrap(focused);
     }
 
     hasFocus() {
-      self(this);
-      return native.hasFocus();
+      const handle = self(this);
+      return isPage(handle) && native.hasFocus();
     }
 
     // Page visibility (HTML section 6.2): hidden while the window is
-    // minimized or covered.
+    // minimized or covered; a document with no window is hidden.
     get visibilityState() {
-      self(this);
-      return native.hidden() ? "hidden" : "visible";
+      const handle = self(this);
+      return !isPage(handle) || native.hidden() ? "hidden" : "visible";
     }
 
     get hidden() {
-      self(this);
-      return native.hidden();
+      const handle = self(this);
+      return !isPage(handle) || native.hidden();
     }
 
     // The DOM's createEvent (section 4.5): an uninitialized event of the
@@ -8353,8 +8492,8 @@
     }
 
     get defaultView() {
-      self(this);
-      return global;
+      const handle = self(this);
+      return isPage(handle) ? global : null;
     }
 
     get textContent() {
@@ -8367,69 +8506,68 @@
     }
 
     get title() {
-      self(this);
-      return native.title();
+      const handle = self(this);
+      return isPage(handle) ? native.title() : native.documentTitle(handle);
     }
 
     set title(value) {
-      self(this);
-      native.setTitle(str(value));
+      const handle = self(this);
+      if (isPage(handle)) {
+        native.setTitle(str(value));
+      } else {
+        native.setDocumentTitle(handle, str(value));
+      }
     }
 
     get currentScript() {
-      self(this);
-      return wrap(native.currentScript());
+      const handle = self(this);
+      return isPage(handle) ? wrap(native.currentScript()) : null;
     }
 
     get URL() {
-      self(this);
-      return native.documentInfo()[0];
+      return documentInfo(self(this))[0];
     }
 
     get documentURI() {
-      self(this);
-      return native.documentInfo()[0];
+      return documentInfo(self(this))[0];
     }
 
     get characterSet() {
-      self(this);
-      return native.documentInfo()[1];
+      return documentInfo(self(this))[1];
     }
 
     get charset() {
-      self(this);
-      return native.documentInfo()[1];
+      return documentInfo(self(this))[1];
     }
 
     get inputEncoding() {
-      self(this);
-      return native.documentInfo()[1];
+      return documentInfo(self(this))[1];
     }
 
     get contentType() {
-      self(this);
-      return native.documentInfo()[2];
+      return documentInfo(self(this))[2];
     }
 
     get compatMode() {
-      self(this);
-      return native.documentInfo()[3];
+      return documentInfo(self(this))[3];
     }
 
     // The referrer of the request that brought the document (M33.3).
     get referrer() {
-      self(this);
-      return native.documentInfo()[4];
+      return documentInfo(self(this))[4];
     }
 
+    // A document with no window is cookie-averse (HTML section 3.1.4).
     get cookie() {
-      self(this);
-      return native.cookie();
+      const handle = self(this);
+      return isPage(handle) ? native.cookie() : "";
     }
 
     set cookie(value) {
-      self(this);
-      native.setCookie(str(value));
+      const handle = self(this);
+      if (isPage(handle)) {
+        native.setCookie(str(value));
+      }
     }
 
     get domain() {
@@ -8443,28 +8581,39 @@
     }
 
     get location() {
-      self(this);
-      return location;
+      const handle = self(this);
+      return isPage(handle) ? location : null;
     }
 
     set location(value) {
-      self(this);
-      location.href = value;
+      const handle = self(this);
+      if (isPage(handle)) {
+        location.href = value;
+      }
     }
 
+    // A document a parser or a script made is complete once made.
     get readyState() {
-      self(this);
-      return native.readyState();
+      const handle = self(this);
+      return isPage(handle) ? native.readyState() : "complete";
     }
 
     write(...text) {
-      self(this);
-      write(text, "", "write");
+      const handle = self(this);
+      if (isPage(handle)) {
+        write(text, "", "write");
+      } else {
+        writeElsewhere(handle, "write");
+      }
     }
 
     writeln(...text) {
-      self(this);
-      write(text, "\n", "writeln");
+      const handle = self(this);
+      if (isPage(handle)) {
+        write(text, "\n", "writeln");
+      } else {
+        writeElsewhere(handle, "writeln");
+      }
     }
 
     getElementById(elementId) {
@@ -8473,19 +8622,20 @@
       return wrap(native.elementById(handle, str(elementId)));
     }
 
+    // Each node a document makes is its (D67).
     createElement(localName) {
-      self(this);
+      const handle = self(this);
       need(arguments.length, 1, "createElement", "Document");
       const name = str(localName);
       try {
-        return wrap(native.createElement(name));
+        return wrap(native.createElement(name, handle));
       } catch (error) {
         throw failed(error, "createElement", "Document");
       }
     }
 
     createElementNS(namespace, qualifiedName) {
-      self(this);
+      const handle = self(this);
       need(arguments.length, 2, "createElementNS", "Document");
       const [ns, qualified] = validateAndExtract(
         nullable(namespace),
@@ -8494,22 +8644,157 @@
         "Document",
       );
       try {
-        return wrap(native.createElementNS(ns === null ? "" : ns, qualified));
+        return wrap(native.createElementNS(ns === null ? "" : ns, qualified, handle));
       } catch (error) {
         throw failed(error, "createElementNS", "Document");
       }
     }
 
     createTextNode(data) {
-      self(this);
+      const handle = self(this);
       need(arguments.length, 1, "createTextNode", "Document");
       const text = str(data);
       try {
-        return wrap(native.createText(text));
+        return wrap(native.createText(text, handle));
       } catch (error) {
         throw failed(error, "createTextNode", "Document");
       }
     }
+
+    // `createCDATASection` (DOM section 4.5): an XML document's alone.
+    createCDATASection(data) {
+      const handle = self(this);
+      need(arguments.length, 1, "createCDATASection", "Document");
+      const text = str(data);
+      if (inHtmlDocument(this)) {
+        throw domError(
+          "NotSupportedError",
+          "This operation is not supported for HTML documents.",
+          "createCDATASection",
+          "Document",
+        );
+      }
+      if (StringIndexOf(text, "]]>") >= 0) {
+        throw domError(
+          "InvalidCharacterError",
+          "String cannot contain ']]>' since that is the end delimiter of a CData section.",
+          "createCDATASection",
+          "Document",
+        );
+      }
+      try {
+        return wrap(native.createCDATASection(text, handle));
+      } catch (error) {
+        throw failed(error, "createCDATASection", "Document");
+      }
+    }
+
+    // `importNode` (DOM section 4.5): a copy of `node`, this document's.
+    importNode(node, deep) {
+      const handle = self(this);
+      need(arguments.length, 1, "importNode", "Document");
+      if (!isNode(node)) {
+        throw new $TypeError(prefix("importNode", "Document") + "parameter 1 is not of type 'Node'.");
+      }
+      if (kindOf(node) === 9) {
+        throw domError(
+          "NotSupportedError",
+          "The node provided is a document, which may not be imported.",
+          "importNode",
+          "Document",
+        );
+      }
+      if (kindOf(node) === 2) {
+        return node.cloneNode();
+      }
+      let copy;
+      try {
+        copy = native.clone(handleOf(node), deep === undefined ? false : !!deep);
+        native.adopt(copy, handle);
+      } catch (error) {
+        throw failed(error, "importNode", "Document");
+      }
+      return wrap(copy);
+    }
+
+    // `adoptNode` (DOM section 4.5): `node` taken out of where it is and
+    // made this document's.
+    adoptNode(node) {
+      const handle = self(this);
+      need(arguments.length, 1, "adoptNode", "Document");
+      if (!isNode(node)) {
+        throw new $TypeError(prefix("adoptNode", "Document") + "parameter 1 is not of type 'Node'.");
+      }
+      if (kindOf(node) === 9) {
+        throw domError(
+          "NotSupportedError",
+          "The node provided is a document, which may not be adopted.",
+          "adoptNode",
+          "Document",
+        );
+      }
+      if (kindOf(node) === 2) {
+        const element = attrElement(node);
+        if (element !== null) {
+          removeAttr(element, node.name);
+        }
+        return node;
+      }
+      try {
+        native.adopt(handleOf(node), handle);
+      } catch (error) {
+        throw failed(error, "adoptNode", "Document");
+      }
+      applyPins();
+      return node;
+    }
+
+    // `createAttribute` and `createAttributeNS` (DOM section 4.5): an
+    // attribute of no element, its name lowercased in an HTML document.
+    createAttribute(localName) {
+      self(this);
+      need(arguments.length, 1, "createAttribute", "Document");
+      let name = str(localName);
+      if (!validAttributeName(name)) {
+        throw domError(
+          "InvalidCharacterError",
+          "The localName provided ('" + name + "') contains an invalid character.",
+          "createAttribute",
+          "Document",
+        );
+      }
+      if (inHtmlDocument(this)) {
+        name = ToLowerCase(name);
+      }
+      return new Attr(KEY, null, name, null, "");
+    }
+
+    createAttributeNS(namespace, qualifiedName) {
+      self(this);
+      need(arguments.length, 2, "createAttributeNS", "Document");
+      const [ns, qualified] = validateAndExtract(
+        nullable(namespace),
+        str(qualifiedName),
+        "createAttributeNS",
+        "Document",
+      );
+      return new Attr(KEY, null, qualified, ns, "");
+    }
+  }
+
+  // `write` and `writeln` of a document beside the page's (HTML section
+  // 8.4.3), which has no parser to write to: an XML one throws, an HTML
+  // one takes nothing.
+  function writeElsewhere(handle, method) {
+    if (native.inHtmlDocument(handle)) {
+      return;
+    }
+    throw domError(
+      "InvalidStateError",
+      "Only HTML documents support " + method + "().",
+      method,
+      "Document",
+    );
   }
 
   // `document.write`'s text, its arguments joined and `end` after them,
@@ -8561,6 +8846,27 @@
     constructor(key, handle, kind, name) {
       if (key !== KEY) {
         throw illegalConstructor("HTMLDocument");
+      }
+      super(key, handle, kind, name);
+    }
+  }
+
+  // An XML document a parser or `createDocument` made (D67).
+  class XMLDocument extends Document {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("XMLDocument");
+      }
+      super(key, handle, kind, name);
+    }
+  }
+
+  // A CDATA section (DOM section 4.13): text of its own kind, which an
+  // XML document's parser or `createCDATASection` makes (D67).
+  class CDATASection extends Text {
+    constructor(key, handle, kind, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("CDATASection");
       }
       super(key, handle, kind, name);
     }
@@ -8658,27 +8964,27 @@
   include(
     {
       createComment(data) {
-        self(this);
+        const handle = self(this);
         need(arguments.length, 1, "createComment", "Document");
         const text = str(data);
         try {
-          return wrap(native.createComment(text));
+          return wrap(native.createComment(text, handle));
         } catch (error) {
           throw failed(error, "createComment", "Document");
         }
       },
 
       createDocumentFragment() {
-        self(this);
+        const handle = self(this);
         try {
-          return wrap(native.createFragment());
+          return wrap(native.createFragment(handle));
         } catch (error) {
           throw failed(error, "createDocumentFragment", "Document");
         }
       },
 
       createProcessingInstruction(target, data) {
-        self(this);
+        const handle = self(this);
         need(arguments.length, 2, "createProcessingInstruction", "Document");
         const name = str(target);
         const text = str(data);
@@ -8692,23 +8998,28 @@
           );
         }
         try {
-          return wrap(native.createProcessingInstruction(name, text));
+          return wrap(native.createProcessingInstruction(name, text, handle));
         } catch (error) {
           throw failed(error, "createProcessingInstruction", "Document");
         }
       },
 
       get doctype() {
-        self(this);
-        return wrap(native.doctype());
+        const handle = self(this);
+        return wrap(native.doctype(handle));
       },
 
       // `document.open()` (HTML section 8.4.2.1); with three arguments,
-      // the window's `open`.
+      // the window's `open`. A document beside the page's has no parser
+      // to open.
       open(...args) {
-        self(this);
+        const handle = self(this);
         if (args.length >= 3) {
-          return global.open(args[0], args[1], args[2]);
+          return isPage(handle) ? global.open(args[0], args[1], args[2]) : null;
+        }
+        if (!isPage(handle)) {
+          writeElsewhere(handle, "open");
+          return this;
         }
         let erased;
         try {
@@ -8721,7 +9032,11 @@
       },
 
       close() {
-        self(this);
+        const handle = self(this);
+        if (!isPage(handle)) {
+          writeElsewhere(handle, "close");
+          return;
+        }
         try {
           native.documentClose();
         } catch (error) {
@@ -8731,37 +9046,170 @@
 
       get implementation() {
         self(this);
-        if (theImplementation === null) {
-          theImplementation = new DOMImplementation(KEY);
+        let implementation = WeakMapGet(implementations, this);
+        if (implementation === undefined) {
+          implementation = new DOMImplementation(KEY, this);
+          WeakMapSet(implementations, this, implementation);
         }
-        return theImplementation;
+        return implementation;
       },
     },
     [Document.prototype],
   );
 
-  // `document.implementation`: doctypes it makes; no other documents.
-  let theImplementation = null;
+  // Each document's `implementation`, which makes doctypes for it and
+  // documents beside it (DOM section 4.5.1, D67).
+  const implementations = new $WeakMap();
+  let implementationDocument;
   class DOMImplementation {
-    constructor(key) {
+    #document;
+
+    constructor(key, document) {
       if (key !== KEY) {
         throw illegalConstructor("DOMImplementation");
       }
+      this.#document = document;
+    }
+
+    static {
+      implementationDocument = (implementation) => {
+        if (typeof implementation !== "object" || implementation === null ||
+            !(#document in implementation)) {
+          throw illegalInvocation();
+        }
+        return handleOf(implementation.#document);
+      };
     }
 
     createDocumentType(qualifiedName, publicId, systemId) {
+      const document = implementationDocument(this);
       need(arguments.length, 3, "createDocumentType", "DOMImplementation");
       const name = str(qualifiedName);
       validateAndExtract(null, name, "createDocumentType", "DOMImplementation");
       try {
-        return wrap(native.createDoctype(name, str(publicId), str(systemId)));
+        return wrap(native.createDoctype(name, str(publicId), str(systemId), document));
       } catch (error) {
         throw failed(error, "createDocumentType", "DOMImplementation");
       }
     }
 
+    // An XML document, with the element and doctype given (DOM section
+    // 4.5.1): its content type by the element's namespace.
+    createDocument(namespace, qualifiedName, doctype) {
+      implementationDocument(this);
+      need(arguments.length, 2, "createDocument", "DOMImplementation");
+      const ns = nullable(namespace);
+      const name = strOrEmpty(qualifiedName);
+      if (doctype !== undefined && doctype !== null &&
+          !(isNode(doctype) && kindOf(doctype) === 10)) {
+        throw new $TypeError(
+          prefix("createDocument", "DOMImplementation") +
+            "parameter 3 is not of type 'DocumentType'.",
+        );
+      }
+      const element = name === ""
+        ? null
+        : validateAndExtract(ns, name, "createDocument", "DOMImplementation");
+      const type = ns === HTML_NS ? "application/xhtml+xml" : ns === SVG_NS ? "image/svg+xml"
+        : "application/xml";
+      try {
+        const document = native.createDocument("xml", type);
+        if (doctype !== undefined && doctype !== null) {
+          native.insert(document, handleOf(doctype), null);
+        }
+        if (element !== null) {
+          const made = native.createElementNS(element[0] === null ? "" : element[0], element[1],
+            document);
+          native.insert(document, made, null);
+        }
+        return wrap(document);
+      } catch (error) {
+        throw failed(error, "createDocument", "DOMImplementation");
+      }
+    }
+
+    // An HTML document with a doctype, `html`, `head`, the `title` given
+    // and `body` (DOM section 4.5.1).
+    createHTMLDocument(title) {
+      implementationDocument(this);
+      try {
+        const document = native.createDocument("html", "text/html");
+        native.insert(document, native.createDoctype("html", "", "", document), null);
+        const html = native.createElement("html", document);
+        native.insert(document, html, null);
+        const head = native.createElement("head", document);
+        native.insert(html, head, null);
+        if (title !== undefined) {
+          const element = native.createElement("title", document);
+          native.insert(head, element, null);
+          native.insert(element, native.createText(str(title), document), null);
+        }
+        native.insert(html, native.createElement("body", document), null);
+        return wrap(document);
+      } catch (error) {
+        throw failed(error, "createHTMLDocument", "DOMImplementation");
+      }
+    }
+
     hasFeature() {
+      implementationDocument(this);
       return true;
+    }
+  }
+
+  // ---- DOMParser and XMLSerializer (HTML section 8.5.1, DOM Parsing
+  // section 3, D67) ------------------------------------------------------
+
+  const PARSER_TYPES = [
+    "text/html",
+    "text/xml",
+    "application/xml",
+    "application/xhtml+xml",
+    "image/svg+xml",
+  ];
+
+  class DOMParser {
+    #brand = true;
+
+    parseFromString(string, type) {
+      if (typeof this !== "object" || this === null || !(#brand in this)) {
+        throw illegalInvocation();
+      }
+      need(arguments.length, 2, "parseFromString", "DOMParser");
+      const markup = str(string);
+      const mime = str(type);
+      if (!ArrayIncludes(PARSER_TYPES, mime)) {
+        throw new $TypeError(
+          prefix("parseFromString", "DOMParser") + "The provided value '" + mime +
+            "' is not a valid enum value of type DOMParserSupportedType.",
+        );
+      }
+      try {
+        return wrap(native.parseDocument(markup, mime));
+      } catch (error) {
+        throw failed(error, "parseFromString", "DOMParser");
+      }
+    }
+  }
+
+  class XMLSerializer {
+    #brand = true;
+
+    serializeToString(root) {
+      if (typeof this !== "object" || this === null || !(#brand in this)) {
+        throw illegalInvocation();
+      }
+      need(arguments.length, 1, "serializeToString", "XMLSerializer");
+      if (!isNode(root)) {
+        throw new $TypeError(
+          prefix("serializeToString", "XMLSerializer") + "parameter 1 is not of type 'Node'.",
+        );
+      }
+      // An attribute's serialization is the empty string.
+      if (kindOf(root) === 2) {
+        return "";
+      }
+      return native.serializeXml(handleOf(root));
     }
   }
 
@@ -8974,7 +9422,11 @@
         removeAttribute(handleOf(element), before);
       }
     }
-    setAttribute(handleOf(element), attr.name, attr.value, method);
+    if (ns === null) {
+      setAttribute(handleOf(element), attr.name, attr.value, method);
+    } else {
+      setAttributeNS(handleOf(element), ns, attr.name, attr.value, method);
+    }
     attrBind(attr, element);
     let attrs = WeakMapGet(attrsOf, element);
     if (attrs === undefined) {
@@ -9205,10 +9657,17 @@
 
   // ---- Ranges, traversal and the selection (D59) -------------------------
 
+  // Whether the node `handle` names is a Text node: text, or a CDATA
+  // section (D67).
+  function isTextHandle(handle) {
+    const kind = native.kind(handle);
+    return kind === 3 || kind === 4;
+  }
+
   // Whether the node `handle` names is character data.
   function isCharacterHandle(handle) {
     const kind = native.kind(handle);
-    return kind === 3 || kind === 7 || kind === 8;
+    return kind === 3 || kind === 4 || kind === 7 || kind === 8;
   }
 
   // Whether `ancestor` is `node` or one of its ancestors.
@@ -9273,7 +9732,65 @@
 
   const rangeIds = new $WeakMap();
   const staticBounds = new $WeakMap();
-  const rangesGone = new $FinalizationRegistry((id) => native.dropRange(id));
+
+  // The host's live ranges and node iterators, by their ids, each with
+  // a weak reference to its object. One whose object is gone is let go
+  // of when the registry hears of it, or sooner when the host has as
+  // many as it keeps and a script makes another: the objects a script
+  // dropped within one run are gone at once, the registry hearing of
+  // them only after it. An id the host gave out again is another
+  // object's, which the late news of the first leaves alone.
+  function liveObjects(drop) {
+    const refs = new $Map();
+    const gone = new $FinalizationRegistry((id) => {
+      const ref = MapGet(refs, id);
+      if (ref !== undefined && WeakRefDeref(ref) === undefined) {
+        MapDelete(refs, id);
+        drop(id);
+      }
+    });
+    return {
+      // The id `make` gives, made for `object`, after the dropped ones
+      // are let go of if it fails.
+      make(object, make) {
+        let id;
+        try {
+          id = make();
+        } catch (error) {
+          const dead = [];
+          MapForEach(refs, (ref, id) => {
+            if (WeakRefDeref(ref) === undefined) {
+              ArrayPush(dead, id);
+            }
+          });
+          if (dead.length === 0) {
+            throw error;
+          }
+          for (let i = 0; i < dead.length; i++) {
+            MapDelete(refs, dead[i]);
+            drop(dead[i]);
+          }
+          id = make();
+        }
+        MapSet(refs, id, new $WeakRef(object));
+        Register(gone, object, id);
+        return id;
+      },
+    };
+  }
+  const liveRanges = liveObjects((id) => native.dropRange(id));
+
+  // A new live range of the document `document` names, collapsed at its
+  // start (`createRange`, the Range constructor).
+  function newRange(range, document) {
+    let id;
+    try {
+      id = liveRanges.make(range, () => native.createRange(document));
+    } catch (error) {
+      throw failed(error, "Range", "Range");
+    }
+    WeakMapSet(rangeIds, range, id);
+  }
 
   // A range's boundary points: start node, start offset, end node, end
   // offset.
@@ -9417,17 +9934,11 @@
   }
 
   class Range extends AbstractRange {
-    // `new Range()`: collapsed at the start of the document.
-    constructor() {
+    // `new Range()`: collapsed at the start of the document; a
+    // document's `createRange()` gives its own (D67).
+    constructor(key, document) {
       super(KEY);
-      let id;
-      try {
-        id = native.createRange(native.document());
-      } catch (error) {
-        throw failed(error, "Range", "Range");
-      }
-      WeakMapSet(rangeIds, this, id);
-      Register(rangesGone, this, id);
+      newRange(this, key === KEY ? document : native.document());
     }
 
     // DOM Parsing's `createContextualFragment()`: `fragment` parsed in
@@ -9814,20 +10325,20 @@
       if (attrOf(this) !== undefined) {
         return "";
       }
-      if (b[0] === b[2] && native.kind(b[0]) === 3) {
+      if (b[0] === b[2] && isTextHandle(b[0])) {
         return StringSlice(native.data(b[0]), b[1], b[3]);
       }
       let text = "";
-      if (native.kind(b[0]) === 3) {
+      if (isTextHandle(b[0])) {
         text += StringSlice(native.data(b[0]), b[1]);
       }
       const nodes = containedNodes(b);
       for (let i = 0; i < nodes.length; i++) {
-        if (native.kind(nodes[i]) === 3) {
+        if (isTextHandle(nodes[i])) {
           text += native.data(nodes[i]);
         }
       }
-      if (native.kind(b[2]) === 3) {
+      if (isTextHandle(b[2])) {
         text += StringSlice(native.data(b[2]), 0, b[3]);
       }
       return text;
@@ -10111,12 +10622,13 @@
     const b = native.rangeOf(id);
     const start = b[0];
     const kind = native.kind(start);
-    if (kind === 7 || kind === 8 || (kind === 3 && native.parent(start) === null) ||
+    const text = kind === 3 || kind === 4;
+    if (kind === 7 || kind === 8 || (text && native.parent(start) === null) ||
         start === node) {
       throw domError("HierarchyRequestError", "The Range's start node can not hold the node.");
     }
     let reference = null;
-    if (kind === 3) {
+    if (text) {
       reference = start;
     } else {
       reference = native.firstChild(start);
@@ -10125,7 +10637,7 @@
       }
     }
     const parent = reference === null ? start : native.parent(reference);
-    if (kind === 3) {
+    if (text) {
       reference = native.splitText(start, b[1]);
     }
     if (node === reference) {
@@ -10724,7 +11236,7 @@
     }
   }
 
-  const iteratorsGone = new $FinalizationRegistry((id) => native.dropIterator(id));
+  const liveIterators = liveObjects((id) => native.dropIterator(id));
 
   class NodeIterator {
     #id;
@@ -10734,8 +11246,7 @@
         throw illegalConstructor("NodeIterator");
       }
       WeakMapSet(traversers, this, state);
-      this.#id = native.createIterator(state.rootHandle);
-      Register(iteratorsGone, this, this.#id);
+      this.#id = liveIterators.make(this, () => native.createIterator(state.rootHandle));
     }
 
     get root() {
@@ -10840,8 +11351,8 @@
   include(
     {
       createRange() {
-        self(this);
-        return new Range();
+        const handle = self(this);
+        return new Range(KEY, handle);
       },
 
       createTreeWalker(root, whatToShow = undefined, filter = null) {
@@ -11000,6 +11511,7 @@
   expose(Node, "Node");
   expose(CharacterData, "CharacterData");
   expose(Text, "Text");
+  expose(CDATASection, "CDATASection");
   expose(Comment, "Comment");
   expose(ProcessingInstruction, "ProcessingInstruction");
   expose(DocumentType, "DocumentType");
@@ -11022,6 +11534,9 @@
   expose(HTMLElement, "HTMLElement");
   expose(Document, "Document");
   expose(HTMLDocument, "HTMLDocument");
+  expose(XMLDocument, "XMLDocument");
+  expose(DOMParser, "DOMParser");
+  expose(XMLSerializer, "XMLSerializer");
 
   // ---- Collections ---------------------------------------------------
 
@@ -12782,6 +13297,9 @@
       if (state.imports.length !== 0 || state.owner === null) {
         return null;
       }
+      if (state.elsewhere) {
+        return state.owner;
+      }
       return sheetInfo(state)[3] === "1" ? state.owner : null;
     }
 
@@ -12958,7 +13476,7 @@
 
     replace(text) {
       const state = sheetState(this);
-      if (state.constructed) {
+      if (state.constructed && !state.elsewhere) {
         native.cssom("replace", null, cssomPath(state, []), str(text), 0);
         return ReflectApply(Promise.resolve, Promise, [this]);
       }
@@ -12974,7 +13492,7 @@
 
     replaceSync(text) {
       const state = sheetState(this);
-      if (state.constructed) {
+      if (state.constructed && !state.elsewhere) {
         native.cssom("replace", null, cssomPath(state, []), str(text), 0);
         return;
       }
@@ -12987,7 +13505,9 @@
     }
   }
 
-  // `document.styleSheets`: one list, its sheets read at each ask.
+  // A document's `styleSheets`: one list a document, its sheets read at
+  // each ask.
+  const sheetListDocuments = new $WeakMap();
   class StyleSheetList {
     constructor(key) {
       if (key !== KEY) {
@@ -12996,12 +13516,13 @@
     }
 
     get length() {
-      return documentSheets().length;
+      return documentSheets(listDocument(this)).length;
     }
 
     item(index) {
+      const document = listDocument(this);
       need(arguments.length, 1, "item", "StyleSheetList");
-      const sheets = documentSheets();
+      const sheets = documentSheets(document);
       const i = unsigned(index);
       return i < sheets.length ? sheets[i] : null;
     }
@@ -13012,7 +13533,19 @@
     configurable: true,
   });
 
-  function documentSheets() {
+  // The document a sheet list is of.
+  function listDocument(list) {
+    const document = WeakMapGet(sheetListDocuments, list);
+    if (document === undefined) {
+      throw illegalInvocation();
+    }
+    return document;
+  }
+
+  function documentSheets(document) {
+    if (!isPage(document)) {
+      return otherDocumentSheets(document);
+    }
     const flat = native.cssom("sheets", null, [], "", 0);
     const out = [];
     for (let i = 0; i < flat.length; i += 2) {
@@ -13021,30 +13554,68 @@
     return out;
   }
 
-  let theSheetList = null;
+  // The sheets of a document beside the page's (D67), which renders
+  // nothing: each of its `style` elements' text as a sheet of its own,
+  // made when first asked for and again once the text has changed.
+  const otherSheets = new $WeakMap();
+  function otherDocumentSheets(document) {
+    const styles = native.query(document, "style", true);
+    const out = [];
+    for (let i = 0; i < styles.length; i++) {
+      const element = wrap(styles[i]);
+      const ns = nsOf(element);
+      if (ns !== HTML_NS && ns !== SVG_NS) {
+        continue;
+      }
+      const text = native.childText(styles[i]);
+      let known = WeakMapGet(otherSheets, element);
+      if (known === undefined || known.text !== text) {
+        const sheet = new CSSStyleSheet(KEY);
+        // Kept by the host as a constructed sheet is, but not one: it
+        // cannot be replaced or adopted.
+        const state = constructSheet(sheet, documentInfo(document)[5]);
+        state.owner = element;
+        state.elsewhere = true;
+        native.cssom("replace", null, cssomPath(state, []), text, 0);
+        known = { text, sheet };
+        WeakMapSet(otherSheets, element, known);
+      }
+      ArrayPush(out, known.sheet);
+    }
+    return out;
+  }
+
+  const sheetLists = new $WeakMap();
   const sheetListHandlers = {
     get(target, key, receiver) {
       const i = arrayIndex(key);
       if (i >= 0) {
-        const sheets = documentSheets();
+        const sheets = documentSheets(WeakMapGet(sheetListDocuments, target));
         return i < sheets.length ? sheets[i] : undefined;
       }
       return ReflectGet(target, key, receiver);
     },
     has(target, key) {
       const i = arrayIndex(key);
-      return i >= 0 ? i < documentSheets().length : ReflectHas(target, key);
+      return i >= 0
+        ? i < documentSheets(WeakMapGet(sheetListDocuments, target)).length
+        : ReflectHas(target, key);
     },
   };
 
   include(
     {
       get styleSheets() {
-        self(this);
-        if (theSheetList === null) {
-          theSheetList = new $Proxy(new StyleSheetList(KEY), sheetListHandlers);
+        const handle = self(this);
+        let list = WeakMapGet(sheetLists, this);
+        if (list === undefined) {
+          const target = new StyleSheetList(KEY);
+          list = new $Proxy(target, sheetListHandlers);
+          WeakMapSet(sheetListDocuments, target, handle);
+          WeakMapSet(sheetListDocuments, list, handle);
+          WeakMapSet(sheetLists, this, list);
         }
-        return theSheetList;
+        return list;
       },
     },
     [Document.prototype],
@@ -13083,7 +13654,7 @@
                 "convert value to 'CSSStyleSheet'.",
             );
           }
-          if (!state.constructed) {
+          if (!state.constructed || state.elsewhere) {
             throw new $DOMException(
               "Failed to set the 'adoptedStyleSheets' property on 'Document': Can't adopt " +
                 "non-constructed stylesheets.",
@@ -14460,6 +15031,13 @@
     }
   }
   expose(MathMLElement, "MathMLElement");
+  // A MathML element is an HTMLOrSVGElement too (MathML Core section
+  // 2.1.2): its `nonce` is HTML's and SVG's.
+  defineProperty(
+    MathMLElement.prototype,
+    "nonce",
+    getOwnPropertyDescriptor(HTMLElement.prototype, "nonce"),
+  );
 
   // The interface an element with local name `tag` of the namespace
   // `ns` is an object of: SVG's for its name, else SVGElement; MathML's

@@ -102,6 +102,8 @@ mod context;
 #[cfg(test)]
 mod context_tests;
 pub mod differential;
+#[cfg(test)]
+mod documents_tests;
 pub mod downloads;
 #[cfg(test)]
 mod downloads_tests;

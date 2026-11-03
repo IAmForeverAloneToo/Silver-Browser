@@ -294,10 +294,13 @@ impl SelectorFeatures {
     /// Whether changing attribute `name` from `old` to `new` can change
     /// which selectors match its element.
     fn mentions(&self, name: &str, old: Option<&str>, new: Option<&str>) -> bool {
+        // A selector of a namespace's attribute names its local name.
+        let local = dom::local_part(name);
         if self.any_attribute
             || self.attributes.contains(name)
             || (name.bytes().any(|b| b.is_ascii_uppercase())
                 && self.attributes.contains(&name.to_ascii_lowercase()))
+            || (local != name && self.attributes.contains(local))
         {
             return true;
         }
@@ -1218,6 +1221,18 @@ mod tests {
     /// no order.
     fn set(nodes: &[NodeId]) -> HashSet<NodeId> {
         nodes.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_change_to_an_attribute_of_a_namespace_is_read_by_its_local_name() {
+        // D67: `[x|k]` names the local name; the journal the qualified one.
+        let sheets = Stylesheets::new(vec![
+            css::parse_stylesheet("@namespace x url(urn:x); [x|k] {}").unwrap(),
+        ]);
+        let f = sheets.features();
+        assert!(f.mentions("p:k", None, Some("v")));
+        assert!(f.mentions("k", None, Some("v")));
+        assert!(!f.mentions("p:other", None, Some("v")));
     }
 
     #[test]

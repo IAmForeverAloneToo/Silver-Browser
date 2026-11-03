@@ -150,6 +150,13 @@ impl Parser {
         stop
     }
 
+    /// The document's mode, as the doctype parsed made it (section
+    /// 13.2.6.4.1): what a document of its own, one `DOMParser` made,
+    /// is given.
+    pub fn quirks_mode(&self) -> tree_builder::QuirksMode {
+        self.builder.quirks_mode()
+    }
+
     /// Whether the parse is done.
     pub fn is_done(&self) -> bool {
         self.done
@@ -261,6 +268,8 @@ pub struct DecodedDocument {
     /// `encoding` crate cannot decode it yet (a legacy CJK encoding):
     /// the bytes were decoded as UTF-8 instead, and `encoding` says so.
     pub undecodable: Option<Encoding>,
+    /// The document's mode, as its doctype made it.
+    pub quirks: tree_builder::QuirksMode,
 }
 
 /// Parses an HTML document from its bytes. `transport` is the encoding
@@ -289,7 +298,24 @@ pub fn parse_document_from_bytes(bytes: &[u8], transport: Option<Encoding>) -> D
         encoding: load.encoding().unwrap_or(encoding::UTF_8),
         confidence: load.confidence().unwrap_or(Confidence::Certain),
         undecodable: load.undecodable(),
+        quirks: load
+            .parser()
+            .map(|parser| parser.quirks_mode())
+            .unwrap_or_default(),
     }
+}
+
+/// Parses `input` as a document of its own, scripting off, as HTML's
+/// `DOMParser.parseFromString` and `Document.parseHTMLUnsafe` do (section
+/// 8.5.1): its tree, its scripts never run and its `noscript` content
+/// markup, and the mode its doctype gave it.
+pub fn parse_detached(input: &str) -> (Document, tree_builder::QuirksMode) {
+    let mut parser = Parser::new(false);
+    parser.feed(input);
+    parser.end();
+    let mut document = Document::new();
+    parse_whole(&mut parser, &mut document);
+    (document, parser.quirks_mode())
 }
 
 #[cfg(test)]
@@ -367,6 +393,25 @@ mod tests {
             "<p>a</p><script>x</script><i>w</i><script>y</script><em>n</em><u><p>b</p></u>"
         );
         document.validate().unwrap();
+    }
+
+    #[test]
+    fn a_document_parsed_alone_has_scripting_off_and_its_doctypes_mode() {
+        // D67, `DOMParser`'s: `noscript` holds markup, and the mode is
+        // the doctype's.
+        let (document, quirks) = parse_detached("<noscript><p>a</p></noscript>");
+        assert_eq!(quirks, tree_builder::QuirksMode::Quirks);
+        assert!(
+            document
+                .subtree(document.root())
+                .any(|n| document.tag(n) == Some("p"))
+        );
+        let (_, quirks) = parse_detached("<!DOCTYPE html><p>a");
+        assert_eq!(quirks, tree_builder::QuirksMode::NoQuirks);
+        let decoded = parse_document_from_bytes(b"<!DOCTYPE html><p>a", None);
+        assert_eq!(decoded.quirks, tree_builder::QuirksMode::NoQuirks);
+        let decoded = parse_document_from_bytes(b"<p>a", None);
+        assert_eq!(decoded.quirks, tree_builder::QuirksMode::Quirks);
     }
 
     #[test]

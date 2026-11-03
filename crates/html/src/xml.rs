@@ -7,8 +7,9 @@
 //! feeds. Elements go into the document in the namespace their prefix,
 //! or the default namespace, is bound to by the `xmlns` attributes in
 //! scope (the `xml` prefix bound from the start); attributes keep their
-//! qualified names, normalized as section 3.3.3 says; character data and
-//! CDATA sections become text, adjacent text joined. Comments,
+//! qualified names, normalized as section 3.3.3 says; character data
+//! becomes text, adjacent text joined, and a CDATA section a text node
+//! of its own that is one (D67). Comments,
 //! processing instructions and the document type declaration are nodes
 //! (D58), but for those in the internal subset; what is in an HTML
 //! `template` goes in its contents. The internal subset's general
@@ -28,6 +29,7 @@
 //! error.
 
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 
 use dom::{Document, Namespace, NodeData, NodeId, XML_NAMESPACE, XMLNS_NAMESPACE};
 use encoding::Encoding;
@@ -225,6 +227,21 @@ pub fn parse_xml_text(text: &str) -> Result<Document, XmlError> {
     Ok(document)
 }
 
+/// Parses `text` as a document of its own (`DOMParser`'s, D67): the
+/// document as far as the parse went, and the error it stopped at, if
+/// it is not well formed, for the caller to report in it.
+pub fn parse_xml_detached(text: &str) -> (Document, Option<XmlError>) {
+    let mut parser = XmlParser::new(text);
+    let mut document = Document::new();
+    loop {
+        match parser.parse(&mut document, usize::MAX) {
+            Ok(XmlStop::Done) => return (document, None),
+            Ok(_) => {}
+            Err(error) => return (document, Some(error)),
+        }
+    }
+}
+
 /// The name the container of a fragment's parse goes by: no end tag can
 /// name it.
 const FRAGMENT_ROOT: &str = "\u{0}fragment";
@@ -309,149 +326,497 @@ pub fn parse_xml_fragment(
 }
 
 /// The XML serialization of `node`'s children (DOM Parsing section 3.2,
-/// what `innerHTML` reads in an XML document): each element by its
-/// qualified name, a default namespace declared where an element's
-/// differs from its parent's (the context's for `node`'s children), an
-/// empty element closed as XML closes it (`<br />` for HTML's void ones,
-/// `<p></p>` for HTML's others, `<g/>` for another namespace's), text and
-/// attribute values escaped. A template's contents stand for its
-/// children.
-pub fn serialize_xml_children(document: &Document, node: NodeId) -> String {
-    let mut out = String::new();
-    let inherited = document
-        .namespace(node)
-        .and_then(Namespace::uri)
-        .map(str::to_owned);
+/// what `innerHTML` reads in an XML document): each child serialized in
+/// no namespace's context, a template's contents standing for its
+/// children, the markup required to be well formed; `None` when it is
+/// not, which `innerHTML` throws for.
+pub fn serialize_xml_children(document: &Document, node: NodeId) -> Option<String> {
+    let mut serializer = XmlSerializer::new(document, true);
     let node = document.template_content(node).unwrap_or(node);
     for child in document.children(node) {
-        write_xml(document, child, inherited.as_deref(), &mut out);
+        serializer.node(child, None, &PrefixMap::new())?;
     }
-    out
+    Some(serializer.out)
 }
 
 /// The XML serialization of `node` itself (what `outerHTML` reads in an
-/// XML document), in the namespace its parent's is.
-pub fn serialize_xml_node(document: &Document, node: NodeId) -> String {
-    let mut out = String::new();
-    let inherited = document
-        .parent(node)
-        .and_then(|parent| document.namespace(parent))
-        .and_then(Namespace::uri)
-        .map(str::to_owned);
-    write_xml(document, node, inherited.as_deref(), &mut out);
-    out
+/// XML document), required to be well formed; `None` when it is not.
+pub fn serialize_xml_node(document: &Document, node: NodeId) -> Option<String> {
+    xml_serialization(document, node, true)
+}
+
+/// DOM Parsing section 3.2's "produce an XML serialization" of `node`:
+/// its markup, prefixes declared or made up where its elements' and
+/// attributes' namespaces need them (`XMLSerializer.serializeToString`,
+/// with `require_well_formed` off); `None` when it is required to be
+/// well formed and is not.
+pub fn xml_serialization(
+    document: &Document,
+    node: NodeId,
+    require_well_formed: bool,
+) -> Option<String> {
+    let mut serializer = XmlSerializer::new(document, require_well_formed);
+    if require_well_formed
+        && document.is_document(node)
+        && document.document_element_of(node).is_none()
+    {
+        return None;
+    }
+    serializer.node(node, None, &PrefixMap::new())?;
+    Some(serializer.out)
 }
 
 /// HTML's void elements, which XML writes as `<br />` when empty.
-const XML_VOID: [&str; 18] = [
+const XML_VOID: [&str; 19] = [
     "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "img", "input",
-    "keygen", "link", "meta", "param", "source", "track", "wbr",
+    "keygen", "link", "menuitem", "meta", "param", "source", "track", "wbr",
 ];
 
-/// Writes `node` and what is under it, iteratively; `inherited` is the
-/// default namespace in scope where it goes.
-fn write_xml(document: &Document, node: NodeId, inherited: Option<&str>, out: &mut String) {
-    // Each entry: a node to write and the namespace in scope there, or
-    // an end tag to close.
-    enum Step<'a> {
-        Node(NodeId, Option<String>),
-        End(&'a str),
+/// A namespace prefix map (DOM Parsing section 3.2.1.1): each namespace,
+/// none among them, with the prefixes bound to it, in the order they
+/// were; the `xml` prefix bound from the start.
+#[derive(Clone)]
+struct PrefixMap(Vec<(Option<String>, Vec<String>)>);
+
+impl PrefixMap {
+    fn new() -> PrefixMap {
+        PrefixMap(vec![(
+            Some(XML_NAMESPACE.to_owned()),
+            vec!["xml".to_owned()],
+        )])
     }
-    let mut steps = vec![Step::Node(node, inherited.map(str::to_owned))];
-    while let Some(step) = steps.pop() {
-        let (at, inherited) = match step {
-            Step::End(tag) => {
-                out.push_str("</");
-                out.push_str(tag);
-                out.push('>');
-                continue;
-            }
-            Step::Node(at, inherited) => (at, inherited),
-        };
-        match document.data(at) {
-            Some(NodeData::Element { tag, attrs, ns }) => {
-                out.push('<');
-                out.push_str(tag);
-                let mut scope = inherited.clone();
-                if !tag.contains(':') && ns.uri() != inherited.as_deref() {
-                    scope = ns.uri().map(str::to_owned);
-                    if !attrs.iter().any(|(name, _)| name == "xmlns") {
-                        out.push_str(" xmlns=\"");
-                        escape_xml(ns.uri().unwrap_or(""), true, out);
-                        out.push('"');
-                    }
-                }
-                for (name, value) in attrs {
-                    out.push(' ');
-                    out.push_str(name);
-                    out.push_str("=\"");
-                    escape_xml(value, true, out);
-                    out.push('"');
-                }
-                let inner = document.template_content(at).unwrap_or(at);
-                let children: Vec<NodeId> = document.children(inner).collect();
-                if children.is_empty() {
-                    match ns {
-                        Namespace::Html if XML_VOID.contains(&tag.as_str()) => {
-                            out.push_str(" />");
-                        }
-                        Namespace::Html => {
-                            out.push_str("></");
-                            out.push_str(tag);
-                            out.push('>');
-                        }
-                        _ => out.push_str("/>"),
-                    }
-                    continue;
-                }
-                out.push('>');
-                steps.push(Step::End(tag));
-                for child in children.into_iter().rev() {
-                    steps.push(Step::Node(child, scope.clone()));
-                }
-            }
-            Some(NodeData::Text(text)) => escape_xml(text, false, out),
-            Some(NodeData::Comment(text)) => {
-                out.push_str("<!--");
-                out.push_str(text);
-                out.push_str("-->");
-            }
-            Some(NodeData::ProcessingInstruction { target, data }) => {
-                out.push_str("<?");
-                out.push_str(target);
-                out.push(' ');
-                out.push_str(data);
-                out.push_str("?>");
-            }
-            Some(NodeData::DocumentType {
-                name,
-                public_id,
-                system_id,
-            }) => {
-                out.push_str("<!DOCTYPE ");
-                out.push_str(name);
-                if !public_id.is_empty() {
-                    out.push_str(" PUBLIC \"");
-                    out.push_str(public_id);
-                    out.push('"');
-                } else if !system_id.is_empty() {
-                    out.push_str(" SYSTEM");
-                }
-                if !system_id.is_empty() {
-                    out.push_str(" \"");
-                    out.push_str(system_id);
-                    out.push('"');
-                }
-                out.push('>');
-            }
-            Some(NodeData::Document | NodeData::DocumentFragment) => {
-                for child in document.children(at).collect::<Vec<_>>().into_iter().rev() {
-                    steps.push(Step::Node(child, inherited.clone()));
-                }
-            }
-            None => {}
+
+    fn prefixes(&self, ns: Option<&str>) -> Option<&Vec<String>> {
+        self.0
+            .iter()
+            .find(|(uri, _)| uri.as_deref() == ns)
+            .map(|(_, prefixes)| prefixes)
+    }
+
+    /// Whether `prefix` is bound to `ns` ("found").
+    fn has(&self, ns: Option<&str>, prefix: &str) -> bool {
+        self.prefixes(ns)
+            .is_some_and(|prefixes| prefixes.iter().any(|p| p == prefix))
+    }
+
+    fn add(&mut self, ns: Option<&str>, prefix: &str) {
+        match self.0.iter_mut().find(|(uri, _)| uri.as_deref() == ns) {
+            Some((_, prefixes)) => prefixes.push(prefix.to_owned()),
+            None => self
+                .0
+                .push((ns.map(str::to_owned), vec![prefix.to_owned()])),
         }
     }
+
+    /// "Retrieving a preferred prefix string": `preferred` if it is bound
+    /// to `ns`, else the last prefix bound to it.
+    fn preferred(&self, preferred: Option<&str>, ns: Option<&str>) -> Option<String> {
+        let prefixes = self.prefixes(ns)?;
+        prefixes
+            .iter()
+            .find(|p| Some(p.as_str()) == preferred)
+            .or(prefixes.last())
+            .cloned()
+    }
+}
+
+/// What an element's start tag leaves its children: its qualified name
+/// for its end tag, and the namespace and prefix map they are serialized
+/// with; `None` when it closed itself.
+type Opened = Option<(String, Option<String>, PrefixMap)>;
+
+/// The state of one XML serialization: the markup so far, the made up
+/// prefixes' index, and whether the markup must be well formed.
+struct XmlSerializer<'a> {
+    document: &'a Document,
+    require_well_formed: bool,
+    prefix_index: u32,
+    out: String,
+}
+
+impl<'a> XmlSerializer<'a> {
+    fn new(document: &'a Document, require_well_formed: bool) -> XmlSerializer<'a> {
+        XmlSerializer {
+            document,
+            require_well_formed,
+            prefix_index: 1,
+            out: String::new(),
+        }
+    }
+
+    /// DOM Parsing's new prefix for a namespace: `ns{index}`, bound to
+    /// `ns` in `map`.
+    fn new_prefix(&mut self, map: &mut PrefixMap, ns: Option<&str>) -> String {
+        let prefix = format!("ns{}", self.prefix_index);
+        self.prefix_index += 1;
+        map.add(ns, &prefix);
+        prefix
+    }
+
+    /// The XML serialization algorithm (section 3.2.1) of `node` with the
+    /// context namespace `ns` and the prefix map `map`, iteratively: an
+    /// element's children are serialized with the namespace and map its
+    /// start tag left, then its end tag written; `None` when the markup
+    /// must be well formed and is not.
+    fn node(&mut self, node: NodeId, ns: Option<&str>, map: &PrefixMap) -> Option<()> {
+        enum Step {
+            Node(NodeId, Option<String>, Rc<PrefixMap>),
+            End(String),
+        }
+        let document = self.document;
+        let mut steps = vec![Step::Node(
+            node,
+            ns.map(str::to_owned),
+            Rc::new(map.clone()),
+        )];
+        while let Some(step) = steps.pop() {
+            let (at, ns, map) = match step {
+                Step::End(name) => {
+                    self.out.push_str("</");
+                    self.out.push_str(&name);
+                    self.out.push('>');
+                    continue;
+                }
+                Step::Node(at, ns, map) => (at, ns, map),
+            };
+            match document.data(at) {
+                Some(NodeData::Element { .. }) => {
+                    let Some((name, inherited, map)) = self.start_tag(at, ns.as_deref(), &map)?
+                    else {
+                        continue;
+                    };
+                    let map = Rc::new(map);
+                    steps.push(Step::End(name));
+                    let inner = match document.element_name(at) {
+                        Some((Namespace::Html, "template")) => {
+                            document.template_content(at).unwrap_or(at)
+                        }
+                        _ => at,
+                    };
+                    let children: Vec<NodeId> = document.children(inner).collect();
+                    for child in children.into_iter().rev() {
+                        steps.push(Step::Node(child, inherited.clone(), map.clone()));
+                    }
+                }
+                Some(NodeData::Document | NodeData::DocumentFragment) => {
+                    let children: Vec<NodeId> = document.children(at).collect();
+                    for child in children.into_iter().rev() {
+                        steps.push(Step::Node(child, ns.clone(), map.clone()));
+                    }
+                }
+                Some(NodeData::Text(text)) if document.is_cdata(at) => {
+                    if self.require_well_formed && text.contains("]]>") {
+                        return None;
+                    }
+                    self.out.push_str("<![CDATA[");
+                    self.out.push_str(text);
+                    self.out.push_str("]]>");
+                }
+                Some(NodeData::Text(text)) => {
+                    if self.require_well_formed && !text.chars().all(is_char) {
+                        return None;
+                    }
+                    escape_xml(text, false, &mut self.out);
+                }
+                Some(NodeData::Comment(text)) => {
+                    if self.require_well_formed
+                        && (!text.chars().all(is_char)
+                            || text.contains("--")
+                            || text.ends_with('-'))
+                    {
+                        return None;
+                    }
+                    self.out.push_str("<!--");
+                    self.out.push_str(text);
+                    self.out.push_str("-->");
+                }
+                Some(NodeData::ProcessingInstruction { target, data }) => {
+                    if self.require_well_formed
+                        && (target.contains(':')
+                            || target.eq_ignore_ascii_case("xml")
+                            || !is_xml_name(target)
+                            || !data.chars().all(is_char)
+                            || data.contains("?>"))
+                    {
+                        return None;
+                    }
+                    self.out.push_str("<?");
+                    self.out.push_str(target);
+                    self.out.push(' ');
+                    self.out.push_str(data);
+                    self.out.push_str("?>");
+                }
+                Some(NodeData::DocumentType {
+                    name,
+                    public_id,
+                    system_id,
+                }) => {
+                    if self.require_well_formed
+                        && (!public_id.chars().all(is_pubid_char)
+                            || !system_id.chars().all(is_char)
+                            || (system_id.contains('"') && system_id.contains('\'')))
+                    {
+                        return None;
+                    }
+                    self.out.push_str("<!DOCTYPE ");
+                    self.out.push_str(name);
+                    if !public_id.is_empty() {
+                        self.out.push_str(" PUBLIC \"");
+                        self.out.push_str(public_id);
+                        self.out.push('"');
+                    } else if !system_id.is_empty() {
+                        self.out.push_str(" SYSTEM");
+                    }
+                    if !system_id.is_empty() {
+                        self.out.push_str(" \"");
+                        self.out.push_str(system_id);
+                        self.out.push('"');
+                    }
+                    self.out.push('>');
+                }
+                None => {}
+            }
+        }
+        Some(())
+    }
+
+    /// An element's start tag ("serializing an Element node", steps 1 to
+    /// 17), written with its attributes: what it leaves its children;
+    /// `None` when it must be well formed and is not.
+    fn start_tag(
+        &mut self,
+        element: NodeId,
+        inherited: Option<&str>,
+        map: &PrefixMap,
+    ) -> Option<Opened> {
+        let document = self.document;
+        let (namespace, _) = document.element_name(element)?;
+        let local = document.local_name(element)?;
+        let prefix = document.element_prefix(element);
+        let ns = namespace.uri();
+        if self.require_well_formed && (local.contains(':') || !is_xml_name(local)) {
+            return None;
+        }
+        let mut map = map.clone();
+        let mut local_prefixes: Vec<(String, Option<String>)> = Vec::new();
+        let local_default = self.record_namespaces(element, &mut map, &mut local_prefixes);
+        // The local default namespace as the one inherited: none for an
+        // empty declaration, nothing for one of the XML namespace.
+        let declared = local_default
+            .as_ref()
+            .filter(|uri| uri.as_str() != XML_NAMESPACE)
+            .map(|uri| (!uri.is_empty()).then(|| uri.clone()));
+        let mut inherited = inherited.map(str::to_owned);
+        let mut ignore_default = false;
+        let qualified;
+        self.out.push('<');
+        if inherited.as_deref() == ns {
+            ignore_default = local_default.is_some();
+            qualified = match ns {
+                Some(XML_NAMESPACE) => format!("xml:{local}"),
+                _ => local.to_owned(),
+            };
+            self.out.push_str(&qualified);
+        } else {
+            let mut candidate = map.preferred(prefix, ns);
+            if prefix == Some("xmlns") {
+                if self.require_well_formed {
+                    return None;
+                }
+                candidate = prefix.map(str::to_owned);
+            }
+            if let Some(candidate) = candidate {
+                qualified = format!("{candidate}:{local}");
+                if let Some(default) = declared {
+                    inherited = default;
+                }
+                self.out.push_str(&qualified);
+            } else if let Some(prefix) = prefix {
+                let prefix = if local_prefixes.iter().any(|(p, _)| p == prefix) {
+                    self.new_prefix(&mut map, ns)
+                } else {
+                    map.add(ns, prefix);
+                    prefix.to_owned()
+                };
+                qualified = format!("{prefix}:{local}");
+                self.out.push_str(&qualified);
+                self.out.push_str(" xmlns:");
+                self.out.push_str(&prefix);
+                self.out.push_str("=\"");
+                self.attribute_value(ns.unwrap_or(""))?;
+                self.out.push('"');
+                if let Some(default) = declared {
+                    inherited = default;
+                }
+            } else if local_default.as_deref() != Some(ns.unwrap_or("")) {
+                ignore_default = true;
+                qualified = local.to_owned();
+                inherited = ns.map(str::to_owned);
+                self.out.push_str(&qualified);
+                self.out.push_str(" xmlns=\"");
+                self.attribute_value(ns.unwrap_or(""))?;
+                self.out.push('"');
+            } else {
+                qualified = local.to_owned();
+                inherited = ns.map(str::to_owned);
+                self.out.push_str(&qualified);
+            }
+        }
+        self.attributes(element, &mut map, &local_prefixes, ignore_default)?;
+        let empty = document.first_child(element).is_none();
+        if empty && *namespace == Namespace::Html && XML_VOID.contains(&local) {
+            self.out.push_str(" />");
+            return Some(None);
+        }
+        if empty && *namespace != Namespace::Html {
+            self.out.push_str("/>");
+            return Some(None);
+        }
+        self.out.push('>');
+        Some(Some((qualified, inherited, map)))
+    }
+
+    /// "Recording the namespace information" (section 3.2.1.1.2): the
+    /// element's `xmlns:` declarations put in `map` and `local_prefixes`;
+    /// its `xmlns` declaration's value, if it has one.
+    fn record_namespaces(
+        &self,
+        element: NodeId,
+        map: &mut PrefixMap,
+        local_prefixes: &mut Vec<(String, Option<String>)>,
+    ) -> Option<String> {
+        let document = self.document;
+        let mut default = None;
+        for (i, (name, value)) in document.attrs(element)?.iter().enumerate() {
+            if document.attribute_namespace(element, i) != Some(XMLNS_NAMESPACE) {
+                continue;
+            }
+            let Some((_, prefix)) = name.split_once(':') else {
+                default = Some(value.clone());
+                continue;
+            };
+            if value == XML_NAMESPACE {
+                continue;
+            }
+            let ns = (!value.is_empty()).then_some(value.as_str());
+            if map.has(ns, prefix) {
+                continue;
+            }
+            map.add(ns, prefix);
+            local_prefixes.push((prefix.to_owned(), ns.map(str::to_owned)));
+        }
+        default
+    }
+
+    /// "XML serialization of the attributes" (section 3.2.1.1.3).
+    fn attributes(
+        &mut self,
+        element: NodeId,
+        map: &mut PrefixMap,
+        local_prefixes: &[(String, Option<String>)],
+        ignore_default: bool,
+    ) -> Option<()> {
+        let document = self.document;
+        let attrs = document.attrs(element)?;
+        let own = document.namespace(element).and_then(Namespace::uri);
+        let mut seen: Vec<(Option<&str>, &str)> = Vec::new();
+        for (i, (name, value)) in attrs.iter().enumerate() {
+            let ns = document.attribute_namespace(element, i);
+            let local = dom::attribute_local_name(ns, name);
+            // An `xmlns` of no namespace (`setAttribute`'s) declares a
+            // default namespace to a reader: one that is not the
+            // element's, or that its start tag made or left out, is
+            // dropped, as the reference browser drops it.
+            if ns.is_none()
+                && local == "xmlns"
+                && (ignore_default || value.as_str() != own.unwrap_or(""))
+            {
+                continue;
+            }
+            let prefix = match ns {
+                Some(_) => name.split_once(':').map(|(prefix, _)| prefix),
+                None => None,
+            };
+            if self.require_well_formed && seen.contains(&(ns, local)) {
+                return None;
+            }
+            seen.push((ns, local));
+            let mut candidate = None;
+            if let Some(ns) = ns {
+                candidate = map.preferred(prefix, Some(ns));
+                if ns == XMLNS_NAMESPACE {
+                    // A declaration the element's start tag made, or that
+                    // says what is already so, is left out.
+                    let declared = local_prefixes
+                        .iter()
+                        .find(|(p, _)| p == local)
+                        .map(|(_, uri)| uri.as_deref().unwrap_or(""));
+                    if value == XML_NAMESPACE
+                        || (prefix.is_none() && ignore_default)
+                        || (prefix.is_some() && declared != Some(value.as_str()))
+                    {
+                        continue;
+                    }
+                    // A prefix's declaration cannot undeclare it.
+                    if self.require_well_formed
+                        && (value == XMLNS_NAMESPACE || (prefix.is_some() && value.is_empty()))
+                    {
+                        return None;
+                    }
+                    if prefix == Some("xmlns") {
+                        candidate = Some("xmlns".to_owned());
+                    }
+                } else if candidate.is_none() {
+                    let made = self.new_prefix(map, Some(ns));
+                    self.out.push_str(" xmlns:");
+                    self.out.push_str(&made);
+                    self.out.push_str("=\"");
+                    self.attribute_value(ns)?;
+                    self.out.push('"');
+                    candidate = Some(made);
+                }
+            }
+            self.out.push(' ');
+            if let Some(candidate) = candidate {
+                self.out.push_str(&candidate);
+                self.out.push(':');
+            }
+            if self.require_well_formed
+                && (local.contains(':')
+                    || !is_xml_name(local)
+                    || (local == "xmlns" && ns.is_none()))
+            {
+                return None;
+            }
+            self.out.push_str(local);
+            self.out.push_str("=\"");
+            self.attribute_value(value)?;
+            self.out.push('"');
+        }
+        Some(())
+    }
+
+    /// "Serializing an attribute value": escaped; `None` when it must be
+    /// well formed and holds what XML's `Char` does not.
+    fn attribute_value(&mut self, value: &str) -> Option<()> {
+        if self.require_well_formed && !value.chars().all(is_char) {
+            return None;
+        }
+        escape_xml(value, true, &mut self.out);
+        Some(())
+    }
+}
+
+/// Whether `name` is XML's `Name`.
+fn is_xml_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(is_name_start) && chars.all(is_name_char)
+}
+
+/// XML's `PubidChar`.
+fn is_pubid_char(c: char) -> bool {
+    matches!(c, ' ' | '\r' | '\n' | 'a'..='z' | 'A'..='Z' | '0'..='9')
+        || "-'()+,./:=?;!*#@$_%".contains(c)
 }
 
 /// XML's escaping: `&`, `<` and `>`, and in an attribute value `"` and
@@ -904,8 +1269,9 @@ impl Parser {
         self.insert(c, node)
     }
 
-    /// `SYSTEM "..."` or `PUBLIC "..." "..."`: the public and system
-    /// identifiers.
+    /// `SYSTEM "..."` or `PUBLIC "..." "..."` (XML 1.0's `ExternalID`,
+    /// whose system literal follows a public one, empty or not): the
+    /// public and system identifiers.
     fn external_id<'a>(&mut self, c: &mut Cursor<'a>) -> Result<(&'a str, &'a str), XmlError> {
         let public = c.skip("PUBLIC");
         if !public {
@@ -917,10 +1283,7 @@ impl Parser {
             return Ok(("", first));
         }
         c.space();
-        if matches!(c.peek(), Some('"' | '\'')) {
-            return Ok((first, self.literal(c)?));
-        }
-        Ok((first, ""))
+        Ok((first, self.literal(c)?))
     }
 
     /// A quoted literal's content.
@@ -1073,7 +1436,7 @@ impl Parser {
             c.skip("<![CDATA[");
             let text = c.until(self, "]]>", "CData section")?;
             self.check_chars(c, text)?;
-            self.text(c, text)
+            self.cdata(c, text)
         } else if c.starts_with("<?") {
             self.processing_instruction(c, true)
         } else if c.starts_with("<!") {
@@ -1169,6 +1532,7 @@ impl Parser {
         let parent = self.parent();
         if let Some(last) = self.document.last_child(parent)
             && self.document.is_text(last)
+            && !self.document.is_cdata(last)
         {
             return self
                 .document
@@ -1178,6 +1542,19 @@ impl Parser {
         let node = self
             .document
             .create_text(text)
+            .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
+        self.document
+            .append_new(parent, node)
+            .map_err(|_| c.error(self, "the document is too large".to_owned()))
+    }
+
+    /// A CDATA section, a node of its own in the open element, joined to
+    /// no text beside it.
+    fn cdata(&mut self, c: &Cursor, text: &str) -> Result<(), XmlError> {
+        let parent = self.parent();
+        let node = self
+            .document
+            .create_cdata(text)
             .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
         self.document
             .append_new(parent, node)
@@ -1437,6 +1814,11 @@ impl Parser {
             let prefix = if attr == "xmlns" {
                 None
             } else if let Some(prefix) = attr.strip_prefix("xmlns:") {
+                // A declaration's prefix is a name (Namespaces in XML 1.0
+                // section 3, `PrefixedAttName`).
+                if prefix.is_empty() {
+                    return Err(c.error(self, "Failed to parse QName 'xmlns:'".to_owned()));
+                }
                 if value.is_empty() {
                     return Err(c.error(
                         self,
@@ -1492,6 +1874,7 @@ impl Parser {
                         }
                     }
                 }
+                None if attr == "xmlns" => (Some(XMLNS_NAMESPACE.to_owned()), attr.as_str()),
                 None => (None, attr.as_str()),
             };
             if expanded.contains(&key) {
@@ -1499,10 +1882,16 @@ impl Parser {
             }
             expanded.push(key);
         }
+        let namespaces: Vec<Option<String>> = expanded.into_iter().map(|(ns, _)| ns).collect();
         let parent = self.parent();
         let node = self
             .document
             .create_element_ns(ns, &name, attrs)
+            .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
+        self.document.mark_prefixed(node);
+        // Each attribute in the namespace its prefix is bound to.
+        self.document
+            .set_attribute_namespaces(node, namespaces)
             .map_err(|_| c.error(self, "the document is too large".to_owned()))?;
         self.document
             .append_new(parent, node)
@@ -2030,12 +2419,16 @@ mod tests {
             document.remove_child(container, child).unwrap();
             document.append_child(body, child).unwrap();
         }
+        // The children are serialized in no namespace's context, each
+        // declaring the namespace it is in (DOM Parsing section 3.2).
         assert_eq!(
-            serialize_xml_children(&document, body),
-            "<P class=\"a\">x &amp; &lt;</P><br /><s:rect/><q xmlns=\"\">t</q><!--c-->"
+            serialize_xml_children(&document, body).unwrap(),
+            "<P xmlns=\"http://www.w3.org/1999/xhtml\" class=\"a\">x &amp; &lt;</P>\
+             <br xmlns=\"http://www.w3.org/1999/xhtml\" />\
+             <s:rect xmlns:s=\"http://www.w3.org/2000/svg\"/><q>t</q><!--c-->"
         );
         let html = document.document_element().unwrap();
-        assert!(serialize_xml_node(&document, html).starts_with(
+        assert!(serialize_xml_node(&document, html).unwrap().starts_with(
             "<html xmlns=\"http://www.w3.org/1999/xhtml\" \
              xmlns:s=\"http://www.w3.org/2000/svg\"><body><P"
         ));
@@ -2052,9 +2445,134 @@ mod tests {
         let div = document.create_element("div").unwrap();
         document.set_attribute(div, "title", "a\nb\"").unwrap();
         assert_eq!(
-            serialize_xml_node(&document, div),
+            serialize_xml_node(&document, div).unwrap(),
             "<div xmlns=\"http://www.w3.org/1999/xhtml\" title=\"a&#xA;b&quot;\"></div>"
         );
+    }
+
+    /// The document element of `source`, parsed.
+    fn root_of(source: &str) -> (Document, NodeId) {
+        let document = parse_xml_text(source).unwrap();
+        let root = document.document_element().unwrap();
+        (document, root)
+    }
+
+    fn serialized(document: &Document, node: NodeId) -> String {
+        xml_serialization(document, node, false).unwrap()
+    }
+
+    #[test]
+    fn the_serialization_declares_or_makes_up_the_prefixes_namespaces_need() {
+        // DOM Parsing section 3.2: an attribute of a namespace bound to a
+        // prefix takes the nearest, one of another one made up, `ns1`, `ns2`.
+        let (mut document, root) =
+            root_of("<r xmlns:x0='uri' xmlns:x2='uri'><b xmlns:x1='uri'/></r>");
+        let b = document.first_child(root).unwrap();
+        document
+            .set_attribute_ns(b, Some("uri"), "name", "v")
+            .unwrap();
+        assert_eq!(
+            serialized(&document, root),
+            "<r xmlns:x0=\"uri\" xmlns:x2=\"uri\"><b xmlns:x1=\"uri\" x1:name=\"v\"/></r>"
+        );
+        let (mut document, root) = root_of("<root><child1/><child2/></root>");
+        let (one, two) = (
+            document.first_child(root).unwrap(),
+            document.last_child(root).unwrap(),
+        );
+        document
+            .set_attribute_ns(one, Some("u1"), "a", "1")
+            .unwrap();
+        document
+            .set_attribute_ns(one, Some("u2"), "b", "2")
+            .unwrap();
+        document
+            .set_attribute_ns(two, Some("u3"), "c", "3")
+            .unwrap();
+        assert_eq!(
+            serialized(&document, root),
+            "<root><child1 xmlns:ns1=\"u1\" ns1:a=\"1\" xmlns:ns2=\"u2\" ns2:b=\"2\"/>\
+             <child2 xmlns:ns3=\"u3\" ns3:c=\"3\"/></root>"
+        );
+        // A default namespace is declared where an element's differs
+        // from what it inherits, and reset for one of none; a prefix the
+        // parser bound is the element's.
+        let (document, root) = root_of("<p:a xmlns:p='u'><b xmlns='v'><c xmlns=''/></b></p:a>");
+        assert_eq!(
+            serialized(&document, root),
+            "<p:a xmlns:p=\"u\"><b xmlns=\"v\"><c xmlns=\"\"/></b></p:a>"
+        );
+        // An `xmlns` of no namespace that is not the element's is dropped.
+        let (mut document, root) = root_of("<package/>");
+        document.set_attribute(root, "xmlns", "urn:opf").unwrap();
+        assert_eq!(serialized(&document, root), "<package/>");
+    }
+
+    #[test]
+    fn a_cdata_section_is_a_node_of_its_own_written_back_as_one() {
+        let (document, root) = root_of("<a>x<![CDATA[<b> & ]]><![CDATA[]]>y</a>");
+        let kids: Vec<NodeId> = document.children(root).collect();
+        assert_eq!(kids.len(), 4, "text, two sections, text");
+        assert!(!document.is_cdata(kids[0]) && document.is_cdata(kids[1]));
+        assert_eq!(document.node_type(kids[1]), Some(4));
+        assert_eq!(document.text(kids[2]), Some(""));
+        assert_eq!(document.text_content(root), "x<b> & y");
+        assert_eq!(
+            serialized(&document, root),
+            "<a>x<![CDATA[<b> & ]]><![CDATA[]]>y</a>"
+        );
+    }
+
+    #[test]
+    fn markup_required_well_formed_that_is_not_is_refused() {
+        let mut document = Document::new();
+        let p = document.create_element("p").unwrap();
+        let comment = document.create_comment("a--b").unwrap();
+        document.append_child(p, comment).unwrap();
+        assert_eq!(serialize_xml_children(&document, p), None);
+        assert_eq!(
+            xml_serialization(&document, p, false).as_deref(),
+            Some("<p xmlns=\"http://www.w3.org/1999/xhtml\"><!--a--b--></p>")
+        );
+        let q = document.create_element("q").unwrap();
+        let text = document.create_text("\u{c}").unwrap();
+        document.append_child(q, text).unwrap();
+        assert_eq!(serialize_xml_node(&document, q), None);
+        // A local name with a colon, an element `createElement` made.
+        let colon = document.create_element("a:b").unwrap();
+        assert_eq!(serialize_xml_node(&document, colon), None);
+        // A document needs its element.
+        let empty = Document::new();
+        assert_eq!(xml_serialization(&empty, empty.root(), true), None);
+    }
+
+    #[test]
+    fn a_document_parsed_alone_keeps_what_was_parsed_before_its_error() {
+        let (document, error) = parse_xml_detached("<r><a>1</a><b>");
+        let error = error.expect("not well formed");
+        assert!(error.message.contains("b"), "{error}");
+        let root = document.document_element().unwrap();
+        assert_eq!(document.text_content(root), "1");
+        // A public identifier needs a system literal; a declaration a
+        // prefix.
+        assert!(parse_xml_text("<!DOCTYPE html PUBLIC \"-//x\"><html/>").is_err());
+        assert!(parse_xml_text("<!DOCTYPE html PUBLIC \"-//x\" \"\"><html/>").is_ok());
+        assert!(parse_xml_text("<a xmlns:='urn:x'/>").is_err());
+        // The parser keeps each attribute's namespace, and the element's
+        // prefix.
+        let (document, root) = root_of("<p:r xmlns:p='urn:p' p:a='1' xml:lang='en' b='2'/>");
+        assert_eq!(document.attr_ns(root, Some("urn:p"), "a"), Some("1"));
+        assert_eq!(
+            document.attr_ns(root, Some(XML_NAMESPACE), "lang"),
+            Some("en")
+        );
+        assert_eq!(
+            document.attr_ns(root, Some(XMLNS_NAMESPACE), "p"),
+            Some("urn:p")
+        );
+        assert_eq!(document.attr_ns(root, None, "b"), Some("2"));
+        assert_eq!(document.element_prefix(root), Some("p"));
+        assert_eq!(document.local_name(root), Some("r"));
     }
 
     #[test]

@@ -67,6 +67,8 @@ pub(crate) struct Record {
     pub(crate) previous: Option<NodeId>,
     pub(crate) next: Option<NodeId>,
     pub(crate) attribute: Option<String>,
+    /// The attribute's namespace, `None` for none.
+    pub(crate) namespace: Option<String>,
     pub(crate) old: Option<String>,
 }
 
@@ -80,6 +82,7 @@ impl Record {
             previous: None,
             next: None,
             attribute: None,
+            namespace: None,
             old: None,
         }
     }
@@ -230,12 +233,18 @@ impl MutationObservers {
                     record.removed.extend(removed);
                     taken.extend(removed);
                 }
-                Mutated::Attribute { element, name, old } => {
+                Mutated::Attribute {
+                    element,
+                    name,
+                    namespace,
+                    old,
+                } => {
                     if let Some((record, _, watched)) = group.take() {
                         self.queue(record, &watched);
                     }
                     let mut record = Record::new(Kind::Attributes, element);
                     record.attribute = Some(name);
+                    record.namespace = namespace.map(String::from);
                     record.old = old;
                     self.queue(record, &watched);
                 }
@@ -289,13 +298,16 @@ impl MutationObservers {
             let wanted = (r.node == target || o.subtree)
                 && match record.kind {
                     Kind::ChildList => o.child_list,
+                    // A filter names attributes of no namespace (DOM's
+                    // "queue a mutation record", step 3.4).
                     Kind::Attributes => {
                         o.attributes
                             && o.attribute_filter.as_ref().is_none_or(|filter| {
-                                record
-                                    .attribute
-                                    .as_ref()
-                                    .is_some_and(|name| filter.contains(name))
+                                record.namespace.is_none()
+                                    && record
+                                        .attribute
+                                        .as_ref()
+                                        .is_some_and(|name| filter.contains(name))
                             })
                     }
                     Kind::CharacterData => o.character_data,
@@ -344,6 +356,7 @@ pub(crate) fn json(records: &[Record]) -> String {
                     ("previous", node(r.previous)),
                     ("next", node(r.next)),
                     ("attribute", text(&r.attribute)),
+                    ("namespace", text(&r.namespace)),
                     ("old", text(&r.old)),
                 ])
             })

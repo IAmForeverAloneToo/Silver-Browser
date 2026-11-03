@@ -90,9 +90,12 @@ pub enum Call {
     /// The bindings make an object for the node, which the host then
     /// holds until it is released: the node's name (its `nodeName`, an
     /// element's qualified name); `connected` or empty; an element's
-    /// namespace's URI, or empty (M32); its `nodeType` (D58); then the
-    /// names of its attributes that start with `on`, which may be event
-    /// handlers (M26), as strings.
+    /// namespace's URI, or empty (M32); its `nodeType` (D58); for an
+    /// element whose name has a prefix that prefix, for a document the
+    /// interface its object is of (`Document`, `HTMLDocument` or
+    /// `XMLDocument`, D67), else empty; then the names of its attributes
+    /// that start with `on`, which may be event handlers (M26), as
+    /// strings.
     Wrap(Handle),
     /// The nodes scripts hold whose place in the document changed since
     /// this was last asked, each with whether it is now in the document:
@@ -144,34 +147,94 @@ pub enum Call {
     /// An element's attributes' names, in order.
     AttributeNames(Handle),
     /// A new element with this local name, which the host checks and
-    /// lowercases.
-    CreateElement(String),
+    /// lowercases in an HTML document. Each call that makes a node names
+    /// the document it is made for last, `None` for the page's (D67).
+    CreateElement(String, Option<Handle>),
     /// A new element of the namespace whose URI is given (none if
     /// `None`) with this qualified name, which the bindings validated
     /// (`createElementNS`, M32).
-    CreateElementNs(Option<String>, String),
+    CreateElementNs(Option<String>, String, Option<Handle>),
     /// A new text node.
-    CreateText(String),
+    CreateText(String, Option<Handle>),
     /// A new comment (D58).
-    CreateComment(String),
+    CreateComment(String, Option<Handle>),
+    /// A new CDATA section (`createCDATASection`, D67).
+    CreateCdata(String, Option<Handle>),
     /// A new processing instruction: its target, which the bindings
     /// checked, and data.
-    CreateProcessingInstruction(String, String),
+    CreateProcessingInstruction(String, String, Option<Handle>),
     /// A new, empty document fragment.
-    CreateFragment,
+    CreateFragment(Option<Handle>),
     /// `markup` parsed as a fragment in the context of the node's element
     /// (DOM Parsing's `createContextualFragment`, a range's start): a
     /// new document fragment, whose scripts run once inserted.
     ContextualFragment(Handle, String),
     /// A new doctype: its name, which the bindings checked, and public
     /// and system identifiers.
-    CreateDoctype(String, String, String),
+    CreateDoctype(String, String, String, Option<Handle>),
     /// A doctype's name, public identifier and system identifier.
     DoctypeIds(Handle),
     /// A template's contents, a fragment.
     TemplateContent(Handle),
-    /// The document's doctype, or `None`.
-    Doctype,
+    /// A document's doctype, or `None`: the page's for `None`.
+    Doctype(Option<Handle>),
+    /// A node's owner document (DOM's node document, D67), an inert
+    /// template document made for a template's contents if need be.
+    OwnerDocument(Handle),
+    /// A new document beside the page's (D67): `html` for an HTML one
+    /// (`createHTMLDocument`), `xml` for an XML one of the content type
+    /// given (`createDocument`), `plain` for the `Document`
+    /// constructor's.
+    CreateDocument {
+        kind: String,
+        content_type: String,
+    },
+    /// `markup` parsed into a new document of the type its MIME type
+    /// says (`DOMParser.parseFromString`, `Document.parseHTMLUnsafe`):
+    /// `text/html` by the HTML parser, scripting off, another by the XML
+    /// parser, an error reported in the document as the reference
+    /// browser reports it.
+    ParseDocument {
+        markup: String,
+        mime: String,
+    },
+    /// A response's body parsed into a new document (XHR's "document
+    /// response"): HTML's (`html`) decoded by its `charset`, if one, or
+    /// sniffed, XML's by its own; its content type and URL as given;
+    /// `None` for XML that is not well formed.
+    ParseResponse {
+        body: Vec<u8>,
+        html: bool,
+        content_type: String,
+        charset: Option<String>,
+        url: String,
+    },
+    /// `XMLSerializer.serializeToString`: the node's XML serialization,
+    /// not required to be well formed (DOM Parsing section 3.2).
+    SerializeXml(Handle),
+    /// A document serialized as a request body: an HTML document's HTML,
+    /// another's XML (XHR's `send`).
+    SerializeDocument(Handle),
+    /// `adoptNode`: the node taken out of its parent and made the
+    /// document's.
+    Adopt {
+        node: Handle,
+        document: Handle,
+    },
+    /// Whether an element's node document is an HTML one, which decides
+    /// the case of its HTML elements' names and attributes.
+    InHtmlDocument(Handle),
+    /// The value of an element's attribute of a namespace (`None` for
+    /// none) and local name (`getAttributeNS`).
+    AttributeNs(Handle, Option<String>, String),
+    /// `setAttributeNS`: a namespace, a qualified name the bindings
+    /// validated against it, and a value.
+    SetAttributeNs(Handle, Option<String>, String, String),
+    /// `removeAttributeNS`: a namespace and a local name.
+    RemoveAttributeNs(Handle, Option<String>, String),
+    /// The namespaces of an element's attributes, in order, the empty
+    /// string for none.
+    AttributeNamespaces(Handle),
     /// `compareDocumentPosition`'s bits of the second node against the
     /// first (D59).
     ComparePosition(Handle, Handle),
@@ -704,9 +767,14 @@ pub enum Call {
     /// The viewport's width and height in CSS pixels, and the device
     /// pixel ratio.
     Viewport,
-    /// The document's URL, character encoding, content type and
-    /// compatibility mode.
-    DocumentInfo,
+    /// A document's URL, character encoding, content type,
+    /// compatibility mode and referrer: the page's for `None`, another's
+    /// as it was made (D67).
+    DocumentInfo(Option<Handle>),
+    /// A document's title (HTML section 3.1.7): the page's for `None`.
+    DocumentTitle(Option<Handle>),
+    /// Sets another document's title.
+    SetDocumentTitle(Handle, String),
     /// An element's, or its pseudo-element's (`before`, `after`,
     /// `first-letter`, `first-line`, `marker`; empty for the element),
     /// computed value of a property, serialized; `None` when there is

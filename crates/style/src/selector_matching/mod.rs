@@ -204,6 +204,8 @@ pub enum SimpleSelector {
         value: String,
         /// How the value compares: the flag, or HTML's rule without one.
         case: CaseFlag,
+        /// Its namespace component (CSS Namespaces 3 section 6.4).
+        namespace: AttrNamespace,
     },
     /// A pseudo-class.
     PseudoClass(PseudoClass),
@@ -234,6 +236,18 @@ impl Namespaces {
             .find(|(name, _)| name == prefix)
             .map(|(_, ns)| ns)
     }
+}
+
+/// An attribute selector's namespace component (CSS Namespaces 3
+/// section 6.4): none written, matched by the attribute's name as it is
+/// kept; `*|` for any namespace, and `|` or a declared prefix for no
+/// namespace or one, matched by the attribute's local name (D67).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AttrNamespace {
+    #[default]
+    Unwritten,
+    Any,
+    Is(Option<String>),
 }
 
 /// Attribute selector operators (selectors-4 §6.1).

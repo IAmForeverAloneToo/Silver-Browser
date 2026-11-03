@@ -8,7 +8,10 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
-use dom::{Document, MutationError, Namespace, NodeData, NodeId, forms};
+use dom::{
+    CompatMode, Document, DocumentFacts, DocumentInterface, MutationError, Namespace, NodeData,
+    NodeId, forms,
+};
 use js::{Answer, Call, ConsoleLevel, DomError, Handle, NestedScript, ScriptError, ScriptingHost};
 use net::cookies::Context;
 use style::animation::Animations;
@@ -428,6 +431,7 @@ impl ScriptingHost for DocumentHost {
                 | Call::Replace { .. }
                 | Call::SetTextContent(..)
                 | Call::SetAttribute(..)
+                | Call::SetAttributeNs(..)
                 | Call::SetInnerHtml(..)
                 | Call::SetOuterHtml(..)
                 | Call::InsertAdjacentHtml { .. }
@@ -708,8 +712,11 @@ impl DocumentHost {
                     .data(id)
                     .ok_or(MutationError::NoSuchNode)
                     .map_err(refused)?;
-                let kind = data.node_type().to_string();
+                let kind = self.document.node_type(id).unwrap_or(9).to_string();
                 let (name, ns) = match data {
+                    NodeData::Text(_) if self.document.is_cdata(id) => {
+                        ("#cdata-section".to_owned(), String::new())
+                    }
                     NodeData::Element { tag, ns, .. } => {
                         (tag.clone(), ns.uri().unwrap_or_default().to_owned())
                     }
@@ -723,7 +730,16 @@ impl DocumentHost {
                     NodeData::Document => ("#document".to_owned(), String::new()),
                 };
                 let connected = if self.connected(id) { "connected" } else { "" };
-                let mut answer = vec![name, connected.to_owned(), ns, kind];
+                // An element's prefix, or a document's interface (D67).
+                let extra = match self.document.document_facts(id) {
+                    Some(facts) => match facts.interface {
+                        DocumentInterface::Document => "Document",
+                        DocumentInterface::HtmlDocument => "HTMLDocument",
+                        DocumentInterface::XmlDocument => "XMLDocument",
+                    },
+                    None => self.document.element_prefix(id).unwrap_or_default(),
+                };
+                let mut answer = vec![name, connected.to_owned(), ns, kind, extra.to_owned()];
                 // The attributes that may be event handlers (M26).
                 answer.extend(
                     self.document
@@ -744,10 +760,7 @@ impl DocumentHost {
                 ))
             }
             Call::Kind(node) => {
-                let kind = self
-                    .document
-                    .data(self.node(node)?)
-                    .map_or(9, NodeData::node_type);
+                let kind = self.document.node_type(self.node(node)?).unwrap_or(9);
                 Ok(Answer::Number(f64::from(kind)))
             }
             Call::Tag(node) => {
@@ -795,11 +808,12 @@ impl DocumentHost {
                 Ok(Answer::Nodes(children))
             }
             Call::Version => Ok(Answer::Number(self.document.version() as f64)),
+            // In a document's tree, the page's or another's (DOM's
+            // `isConnected`).
             Call::Connected(node) => {
                 let node = self.node(node)?;
-                let root = self.document.root();
                 let top = self.document.ancestors(node).last().unwrap_or(node);
-                Ok(Answer::Bool(top == root))
+                Ok(Answer::Bool(self.document.is_document(top)))
             }
             Call::Contains { node, other } => {
                 let (node, other) = (self.node(node)?, self.node(other)?);
@@ -903,60 +917,89 @@ impl DocumentHost {
                     attrs.iter().map(|(name, _)| name.clone()).collect(),
                 ))
             }
-            Call::CreateElement(name) => {
+            Call::CreateElement(name, document) => {
                 if !valid_element_local_name(&name) {
                     return Err(DomError::new(
                         "InvalidCharacterError",
                         format!("The tag name provided ('{name}') is not a valid name."),
                     ));
                 }
+                let document = self.document_for(document)?;
                 // An XML document's element is HTML's only in XHTML (DOM
                 // section 4.5, `createElement`), its name as given.
-                let element = match self.page.as_ref().and_then(Page::content_type) {
-                    Some(kind) if kind != "application/xhtml+xml" => self
-                        .document
-                        .create_element_ns(Namespace::Other(None), &name, Vec::new()),
-                    _ => self.document.create_element(&name),
+                let element = match self.document.document_facts(document) {
+                    None => match self.page.as_ref().and_then(Page::content_type) {
+                        Some(kind) if kind != "application/xhtml+xml" => self
+                            .document
+                            .create_element_ns(Namespace::Other(None), &name, Vec::new()),
+                        _ => self.document.create_element(&name),
+                    },
+                    Some(facts) if !facts.xml => self.document.create_element_for(
+                        document,
+                        Namespace::Html,
+                        &name.to_ascii_lowercase(),
+                    ),
+                    Some(facts) => {
+                        let ns = match facts.content_type == "application/xhtml+xml" {
+                            true => Namespace::Html,
+                            false => Namespace::Other(None),
+                        };
+                        self.document.create_element_for(document, ns, &name)
+                    }
                 }
                 .map_err(refused)?;
                 self.detached.push(element);
                 self.made_by_script(element, false);
                 Ok(self.give(Some(element)))
             }
-            Call::CreateElementNs(ns, qualified) => {
+            Call::CreateElementNs(ns, qualified, document) => {
                 let ns = Namespace::from_uri(ns.as_deref());
-                let element = self
-                    .document
-                    .create_element_ns(ns, &qualified, Vec::new())
-                    .map_err(refused)?;
+                let document = self.document_for(document)?;
+                let element = match document == self.document.root() {
+                    true => self.document.create_element_ns(ns, &qualified, Vec::new()),
+                    false => self.document.create_element_for(document, ns, &qualified),
+                }
+                .map_err(refused)?;
+                self.document.mark_prefixed(element);
                 self.detached.push(element);
                 self.made_by_script(element, false);
                 Ok(self.give(Some(element)))
             }
-            Call::CreateText(data) => {
+            Call::CreateText(data, document) => {
                 self.work += data.len() as u64 / 64;
+                let document = self.document_for(document)?;
                 let text = self.document.create_text(&data).map_err(refused)?;
-                self.detached.push(text);
+                self.made_for(text, document);
                 Ok(self.give(Some(text)))
             }
-            Call::CreateComment(data) => {
+            Call::CreateComment(data, document) => {
                 self.work += data.len() as u64 / 64;
+                let document = self.document_for(document)?;
                 let made = self.document.create_comment(&data).map_err(refused)?;
-                self.detached.push(made);
+                self.made_for(made, document);
                 Ok(self.give(Some(made)))
             }
-            Call::CreateProcessingInstruction(target, data) => {
+            Call::CreateCdata(data, document) => {
+                self.work += data.len() as u64 / 64;
+                let document = self.document_for(document)?;
+                let made = self.document.create_cdata(&data).map_err(refused)?;
+                self.made_for(made, document);
+                Ok(self.give(Some(made)))
+            }
+            Call::CreateProcessingInstruction(target, data, document) => {
                 self.work += (target.len() + data.len()) as u64 / 64;
+                let document = self.document_for(document)?;
                 let made = self
                     .document
                     .create_processing_instruction(&target, &data)
                     .map_err(refused)?;
-                self.detached.push(made);
+                self.made_for(made, document);
                 Ok(self.give(Some(made)))
             }
-            Call::CreateFragment => {
+            Call::CreateFragment(document) => {
+                let document = self.document_for(document)?;
                 let made = self.document.create_fragment().map_err(refused)?;
-                self.detached.push(made);
+                self.made_for(made, document);
                 Ok(self.give(Some(made)))
             }
             Call::ContextualFragment(node, markup) => {
@@ -978,6 +1021,12 @@ impl DocumentHost {
                 };
                 let under = element.unwrap_or(node);
                 let container = self.parse_fragment(&context, under, &markup)?;
+                // The XML parser keeps the `html`, `head` and `body` the
+                // HTML one drops: they go, their children in their place
+                // (HTML section 8.5.3, `createContextualFragment`).
+                if self.document.is_xml_node(under) {
+                    self.unwrap_document_parts(container)?;
+                }
                 // Its scripts are not started: they run once inserted.
                 let scripts: Vec<NodeId> = self
                     .document
@@ -989,17 +1038,19 @@ impl DocumentHost {
                     self.made_by_script(script, false);
                 }
                 let made = self.document.create_fragment().map_err(refused)?;
-                self.detached.push(made);
+                let owner = self.document.owner_document(node);
+                self.made_for(made, owner);
                 self.adopt(container, made, None)?;
                 Ok(self.give(Some(made)))
             }
-            Call::CreateDoctype(name, public_id, system_id) => {
+            Call::CreateDoctype(name, public_id, system_id, document) => {
                 self.work += (name.len() + public_id.len() + system_id.len()) as u64 / 64;
+                let document = self.document_for(document)?;
                 let made = self
                     .document
                     .create_doctype(&name, &public_id, &system_id)
                     .map_err(refused)?;
-                self.detached.push(made);
+                self.made_for(made, document);
                 Ok(self.give(Some(made)))
             }
             Call::DoctypeIds(node) => match self.document.data(self.node(node)?) {
@@ -1018,9 +1069,129 @@ impl DocumentHost {
                 let content = self.document.template_content(self.node(node)?);
                 Ok(self.give(content))
             }
-            Call::Doctype => {
-                let doctype = self.document.doctype();
+            Call::Doctype(document) => {
+                let document = self.document_for(document)?;
+                let doctype = self.document.doctype_of(document);
                 Ok(self.give(doctype))
+            }
+            Call::OwnerDocument(node) => {
+                let node = self.node(node)?;
+                let owner = self.document.owner_document_made(node);
+                Ok(self.give(Some(owner)))
+            }
+            Call::CreateDocument { kind, content_type } => {
+                let facts = match kind.as_str() {
+                    "html" => DocumentFacts::html("about:blank"),
+                    "plain" => DocumentFacts {
+                        interface: DocumentInterface::Document,
+                        ..DocumentFacts::xml("application/xml", "about:blank")
+                    },
+                    _ => DocumentFacts::xml(&content_type, "about:blank"),
+                };
+                let made = self.document.create_document(facts).map_err(refused)?;
+                Ok(self.give(Some(made)))
+            }
+            Call::ParseDocument { markup, mime } => {
+                let made = self.parse_document(&markup, &mime)?;
+                Ok(self.give(Some(made)))
+            }
+            Call::ParseResponse {
+                body,
+                html,
+                content_type,
+                charset,
+                url,
+            } => {
+                let made =
+                    self.parse_response(&body, html, &content_type, charset.as_deref(), &url)?;
+                Ok(self.give(made))
+            }
+            Call::SerializeXml(node) => {
+                let node = self.node(node)?;
+                self.work += self.document.subtree(node).count() as u64;
+                let markup =
+                    html::xml::xml_serialization(&self.document, node, false).unwrap_or_default();
+                Ok(Answer::String(markup))
+            }
+            Call::SerializeDocument(node) => {
+                let node = self.node(node)?;
+                self.work += self.document.subtree(node).count() as u64;
+                let markup = match self.document.is_xml_node(node) {
+                    true => html::xml::xml_serialization(&self.document, node, false)
+                        .unwrap_or_default(),
+                    false => html::serialize_children(&self.document, node, true),
+                };
+                Ok(Answer::String(markup))
+            }
+            Call::Adopt { node, document } => {
+                let (node, document) = (self.node(node)?, self.node(document)?);
+                let had_parent = self.document.parent(node).is_some();
+                self.document.adopt(node, document).map_err(refused)?;
+                if had_parent {
+                    self.taken_out(node);
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::InHtmlDocument(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Bool(!self.document.is_xml_node(node)))
+            }
+            Call::AttributeNs(node, ns, local) => {
+                let node = self.node(node)?;
+                let value = self.document.attr_ns(node, ns.as_deref(), &local);
+                Ok(Answer::MaybeString(value.map(str::to_owned)))
+            }
+            Call::SetAttributeNs(node, ns, qualified, value) => {
+                let node = self.node(node)?;
+                self.work += (qualified.len() + value.len()) as u64 / 64;
+                self.document
+                    .set_attribute_ns(node, ns.as_deref(), &qualified, &value)
+                    .map_err(refused)?;
+                // An attribute of no namespace is what the element's own
+                // behaviour reads.
+                if ns.is_none() {
+                    self.canvas_attribute(node, &qualified);
+                    if qualified == "style"
+                        && let Some(page) = self.page.as_mut()
+                    {
+                        page.set_cssom_style(node, false);
+                    }
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::RemoveAttributeNs(node, ns, local) => {
+                let node = self.node(node)?;
+                if self.document.is_element(node) {
+                    self.document
+                        .remove_attribute_ns(node, ns.as_deref(), &local)
+                        .map_err(refused)?;
+                    if ns.is_none() {
+                        self.canvas_attribute(node, &local);
+                    }
+                }
+                Ok(Answer::Nothing)
+            }
+            Call::AttributeNamespaces(node) => {
+                let node = self.node(node)?;
+                Ok(Answer::Strings(
+                    self.document
+                        .attribute_namespaces(node)
+                        .into_iter()
+                        .map(Option::unwrap_or_default)
+                        .collect(),
+                ))
+            }
+            Call::DocumentTitle(document) => {
+                let document = self.document_for(document)?;
+                Ok(Answer::String(super::document_title_of(
+                    &self.document,
+                    document,
+                )))
+            }
+            Call::SetDocumentTitle(document, value) => {
+                let document = self.document_for(Some(document))?;
+                self.set_title_of(document, &value);
+                Ok(Answer::Nothing)
             }
             Call::ComparePosition(node, other) => {
                 let (node, other) = (self.node(node)?, self.node(other)?);
@@ -1363,7 +1534,7 @@ impl DocumentHost {
                 let root = self.node(root)?;
                 // An HTML element's name is matched lowercased in an HTML
                 // document, another's as given (DOM section 4.2.6).
-                let xml = self.document.is_xml_document();
+                let xml = self.document.is_xml_node(root);
                 let lower = name.to_ascii_lowercase();
                 let found = self
                     .elements_under(root)
@@ -1423,10 +1594,13 @@ impl DocumentHost {
                 Ok(Answer::Nodes(found))
             }
             // An XML document's markup is XML's (DOM Parsing section 3.2).
+            // Not well formed, an XML document's markup cannot be read
+            // (DOM Parsing section 2.3, "require well-formed").
             Call::InnerHtml(node) => {
                 let node = self.node(node)?;
-                let markup = match self.document.is_xml_document() {
-                    true => html::xml::serialize_xml_children(&self.document, node),
+                let markup = match self.document.is_xml_node(node) {
+                    true => html::xml::serialize_xml_children(&self.document, node)
+                        .ok_or_else(not_well_formed)?,
                     false => html::serialize_children(&self.document, node, true),
                 };
                 self.work += markup.len() as u64 / 64;
@@ -1434,8 +1608,9 @@ impl DocumentHost {
             }
             Call::OuterHtml(node) => {
                 let node = self.node(node)?;
-                let markup = match self.document.is_xml_document() {
-                    true => html::xml::serialize_xml_node(&self.document, node),
+                let markup = match self.document.is_xml_node(node) {
+                    true => html::xml::serialize_xml_node(&self.document, node)
+                        .ok_or_else(not_well_formed)?,
                     false => html::serialize_node(&self.document, node, true),
                 };
                 self.work += markup.len() as u64 / 64;
@@ -2307,7 +2482,15 @@ impl DocumentHost {
                     f64::from(self.window.media.resolution),
                 ]))
             }
-            Call::DocumentInfo => {
+            Call::DocumentInfo(Some(document))
+                if self
+                    .node(document)
+                    .is_ok_and(|document| self.document.document_facts(document).is_some()) =>
+            {
+                let document = self.node(document)?;
+                Ok(Answer::Strings(self.document_info_of(document)))
+            }
+            Call::DocumentInfo(_) => {
                 let page = self.page.as_ref();
                 let url = page
                     .and_then(|page| page.url())
@@ -5247,6 +5430,194 @@ impl DocumentHost {
         }
     }
 
+    /// Takes the HTML `html`, `head` and `body` elements at the top of
+    /// `container` out, their children put in their place, and theirs
+    /// that are such in turn.
+    fn unwrap_document_parts(&mut self, container: NodeId) -> Result<(), DomError> {
+        let part = |document: &Document, node: NodeId| {
+            matches!(document.tag(node), Some("html" | "head" | "body"))
+        };
+        while let Some(found) = self
+            .document
+            .children(container)
+            .find(|&child| part(&self.document, child))
+        {
+            let children: Vec<NodeId> = self.document.children(found).collect();
+            for child in children {
+                self.work += 1;
+                self.document
+                    .insert_before(container, child, Some(found))
+                    .map_err(refused)?;
+            }
+            self.document
+                .remove_child(container, found)
+                .map_err(refused)?;
+            self.taken_out(found);
+        }
+        Ok(())
+    }
+
+    /// The document a node is made for: the page's for `None`, else the
+    /// document `handle` names (D67).
+    fn document_for(&self, document: Option<Handle>) -> Result<NodeId, DomError> {
+        let Some(document) = document else {
+            return Ok(self.document.root());
+        };
+        let document = self.node(document)?;
+        match self.document.is_document(document) {
+            true => Ok(document),
+            false => Err(refused(MutationError::WrongKind)),
+        }
+    }
+
+    /// `node`, just made by a script for `document`: that document's, and
+    /// freed once let go of while out of a tree.
+    fn made_for(&mut self, node: NodeId, document: NodeId) {
+        let _ = self.document.set_owner(node, document);
+        self.detached.push(node);
+    }
+
+    /// What `DocumentInfo` answers of another document (D67): its URL,
+    /// character encoding, content type and mode, no referrer, and its
+    /// base URL: its first `base` element's `href` resolved against its
+    /// URL, else its URL.
+    fn document_info_of(&self, document: NodeId) -> Vec<String> {
+        let Some(facts) = self.document.document_facts(document) else {
+            return Vec::new();
+        };
+        let mode = match facts.mode {
+            CompatMode::Quirks => "BackCompat",
+            _ => "CSS1Compat",
+        };
+        let base = self
+            .document
+            .subtree(document)
+            .find(|&node| self.document.tag(node) == Some("base"))
+            .and_then(|base| self.document.attr(base, "href"))
+            .and_then(|href| {
+                net::Url::parse(&facts.url)
+                    .ok()?
+                    .join(href)
+                    .ok()
+                    .map(|url| url.to_string())
+            })
+            .unwrap_or_else(|| facts.url.clone());
+        vec![
+            facts.url.clone(),
+            facts.charset.clone(),
+            facts.content_type.clone(),
+            mode.to_owned(),
+            String::new(),
+            base,
+        ]
+    }
+
+    /// What the page's document is, as another document is described: a
+    /// copy of it (`cloneNode`) is made of these.
+    fn page_facts(&self) -> DocumentFacts {
+        let url = self.page_url();
+        let mut facts = match self.page.as_ref().and_then(Page::content_type) {
+            Some(kind) if self.document.is_xml_document() => DocumentFacts::xml(kind, &url),
+            _ => DocumentFacts::html(&url),
+        };
+        if let Some(page) = &self.page {
+            facts.charset = page.encoding().name().to_owned();
+        }
+        facts
+    }
+
+    /// The page's document's URL, which a document parsed by a script is
+    /// given (HTML section 8.5.1, `DOMParser`).
+    fn page_url(&self) -> String {
+        self.page
+            .as_ref()
+            .and_then(Page::url)
+            .map_or_else(|| "about:blank".to_owned(), ToString::to_string)
+    }
+
+    /// `DOMParser.parseFromString` and `Document.parseHTMLUnsafe` (HTML
+    /// section 8.5.1): `markup` parsed into a new document at the page's
+    /// URL, by the HTML parser with scripting off for `text/html`, else
+    /// by the XML parser, the error a document is not well formed by
+    /// reported in it as the reference browser reports it.
+    fn parse_document(&mut self, markup: &str, mime: &str) -> Result<NodeId, DomError> {
+        self.work += markup.len() as u64 / 64;
+        let url = self.page_url();
+        let (parsed, facts) = match mime {
+            "text/html" => {
+                let (parsed, quirks) = html::parse_detached(markup);
+                let mut facts = DocumentFacts::html(&url);
+                facts.mode = compat_mode(quirks);
+                (parsed, facts)
+            }
+            _ => {
+                let (mut parsed, error) = html::xml::parse_xml_detached(markup);
+                if let Some(error) = error {
+                    html::xml::insert_error_block(&mut parsed, &error);
+                }
+                (parsed, DocumentFacts::xml(mime, &url))
+            }
+        };
+        self.work += parsed.len() as u64;
+        let made = self.document.graft(&parsed, facts).map_err(refused)?;
+        self.parsed_elsewhere(made);
+        Ok(made)
+    }
+
+    /// The scripts of `document`, a document a parser made beside the
+    /// page's, are already started (HTML section 8.5.1, "scripting
+    /// disabled"): neither they nor their copies run where they go.
+    fn parsed_elsewhere(&mut self, document: NodeId) {
+        let scripts: Vec<NodeId> = self
+            .document
+            .subtree_with_contents(document)
+            .into_iter()
+            .filter(|&node| is_script(&self.document, node))
+            .collect();
+        self.started.extend(scripts);
+    }
+
+    /// XMLHttpRequest's "document response" (section 4.8.4): `body`
+    /// parsed into a new document of `content_type` at `url`, HTML's
+    /// decoded by `charset`, a `meta`'s or UTF-8, XML's by its own;
+    /// `None` for XML that is not well formed.
+    fn parse_response(
+        &mut self,
+        body: &[u8],
+        html: bool,
+        content_type: &str,
+        charset: Option<&str>,
+        url: &str,
+    ) -> Result<Option<NodeId>, DomError> {
+        self.work += body.len() as u64 / 64;
+        let transport = charset.and_then(encoding::Encoding::for_label);
+        let (parsed, mut facts) = if html {
+            // The charset given, else a `meta`'s in the first bytes, else
+            // UTF-8 (step 4.2).
+            let transport = transport
+                .or_else(|| html::encoding_sniffing::prescan(body))
+                .unwrap_or(encoding::UTF_8);
+            let decoded = html::parse_document_from_bytes(body, Some(transport));
+            let mut facts = DocumentFacts::html(url);
+            facts.mode = compat_mode(decoded.quirks);
+            facts.charset = decoded.encoding.name().to_owned();
+            (decoded.document, facts)
+        } else {
+            let (text, encoding) = html::xml::decode_xml_with(body, transport);
+            let Ok(parsed) = html::xml::parse_xml_text(&text) else {
+                return Ok(None);
+            };
+            let mut facts = DocumentFacts::xml(content_type, url);
+            facts.charset = encoding.name().to_owned();
+            (parsed, facts)
+        };
+        facts.content_type = content_type.to_owned();
+        self.work += parsed.len() as u64;
+        let made = self.document.graft(&parsed, facts).map_err(refused)?;
+        self.parsed_elsewhere(made);
+        Ok(Some(made))
+    }
+
     /// The node `handle` names, which a script holds and so is live.
     fn node(&self, handle: Handle) -> Result<NodeId, DomError> {
         NodeId::from_bits(handle.0)
@@ -5289,7 +5660,7 @@ impl DocumentHost {
         let max_depth = (dom::MAX_DEPTH + 1).saturating_sub(depth);
         // An XML document's fragment is the XML parser's, in the context
         // of the element it goes under (DOM Parsing section 2.4).
-        if self.document.is_xml_document() {
+        if self.document.is_xml_node(under) {
             let parsed = html::xml::parse_xml_fragment(
                 &mut self.document,
                 container,
@@ -5482,9 +5853,9 @@ impl DocumentHost {
             Some(NodeData::DocumentFragment) => document.children(node).collect(),
             _ => vec![node],
         };
-        if child == node {
-            return Ok(());
-        }
+        // A child replaced by itself is still removed and inserted again
+        // (DOM's "replace", steps 7 to 13), the ranges in it moving to
+        // its parent.
         self.document.remove_child(parent, child).map_err(refused)?;
         self.taken_out(child);
         self.document
@@ -5718,52 +6089,28 @@ impl DocumentHost {
     /// control's state too, by HTML's cloning steps (M26.7): its value,
     /// checkedness and selectedness, with their dirty flags.
     fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+        // The copy is its original's document's (D67); a copy of the
+        // page's document is a document of its facts.
+        let owner = self.document.owner_document(node);
+        let page = self.page_facts();
         let copy = |document: &mut Document, from: NodeId| -> Result<NodeId, MutationError> {
-            match document.data(from) {
-                Some(NodeData::Element { tag, attrs, ns }) => {
-                    let (tag, attrs, ns) = (tag.clone(), attrs.clone(), ns.clone());
-                    let made = document.create_element_ns(ns, &tag, attrs)?;
-                    if let Some(state) = document.control(from) {
-                        let state = forms::ControlState {
-                            selection: forms::Selection::default(),
-                            indeterminate: false,
-                            edited_from: None,
-                            scroll: 0,
-                            custom_error: None,
-                            user_validity: false,
-                            ..state.clone()
-                        };
-                        if let Err(error) = document.set_control(made, state) {
-                            let _ = document.free(made);
-                            return Err(error);
-                        }
-                    }
-                    Ok(made)
+            let made = document.copy_node(from, owner, || page.clone())?;
+            if let Some(state) = document.control(from) {
+                let state = forms::ControlState {
+                    selection: forms::Selection::default(),
+                    indeterminate: false,
+                    edited_from: None,
+                    scroll: 0,
+                    custom_error: None,
+                    user_validity: false,
+                    ..state.clone()
+                };
+                if let Err(error) = document.set_control(made, state) {
+                    let _ = document.free(made);
+                    return Err(error);
                 }
-                Some(NodeData::Text(data)) => {
-                    let data = data.clone();
-                    document.create_text(&data)
-                }
-                Some(NodeData::Comment(data)) => {
-                    let data = data.clone();
-                    document.create_comment(&data)
-                }
-                Some(NodeData::ProcessingInstruction { target, data }) => {
-                    let (target, data) = (target.clone(), data.clone());
-                    document.create_processing_instruction(&target, &data)
-                }
-                Some(NodeData::DocumentType {
-                    name,
-                    public_id,
-                    system_id,
-                }) => {
-                    let (name, public_id, system_id) =
-                        (name.clone(), public_id.clone(), system_id.clone());
-                    document.create_doctype(&name, &public_id, &system_id)
-                }
-                Some(NodeData::DocumentFragment) => document.create_fragment(),
-                _ => Err(MutationError::WrongKind),
             }
+            Ok(made)
         };
         let top = copy(&mut self.document, node).map_err(refused)?;
         self.detached.push(top);
@@ -5800,12 +6147,19 @@ impl DocumentHost {
     /// or without a head to put a `title` in. The children replaced are
     /// detached, and freed once no script holds them.
     pub(crate) fn set_document_title(&mut self, value: &str) {
+        let root = self.document.root();
+        self.set_title_of(root, value);
+    }
+
+    /// [`DocumentHost::set_document_title`] of `of`, the page's document
+    /// or another (D67).
+    fn set_title_of(&mut self, of: NodeId, value: &str) {
         let document = &mut self.document;
-        let Some(html) = document.document_element() else {
+        let Some(html) = document.document_element_of(of) else {
             return;
         };
         let existing = document
-            .subtree(document.root())
+            .subtree(of)
             .find(|&node| document.tag(node) == Some("title"));
         let title = match existing {
             Some(title) => title,
@@ -5872,6 +6226,27 @@ impl DocumentHost {
             let _ = document.free(root);
             false
         });
+        // The documents beside the page's (D67) no script holds anything
+        // of and no node is owned by, until none is left to free: one
+        // may have been the last holding the next's.
+        loop {
+            let mut freed = false;
+            for other in document.other_documents() {
+                if exposed.contains(&other) || document.document_in_use(other) {
+                    continue;
+                }
+                let held_inside = document
+                    .subtree_with_contents(other)
+                    .into_iter()
+                    .any(|node| exposed.contains(&node) || held.contains(&node));
+                if !held_inside && document.free(other).is_ok() {
+                    freed = true;
+                }
+            }
+            if !freed {
+                break;
+            }
+        }
         let document = &self.document;
         self.canvases.retain(|node| document.contains(node));
     }
@@ -6369,6 +6744,24 @@ fn touches_sheets(document: &dom::Document, changes: &[dom::Change]) -> bool {
         dom::Change::Everything => true,
         _ => false,
     })
+}
+
+/// The `InvalidStateError` reading an XML document's markup that is not
+/// well formed throws.
+fn not_well_formed() -> DomError {
+    DomError::new(
+        "InvalidStateError",
+        "The node cannot be serialized as it is not well formed.",
+    )
+}
+
+/// The mode the HTML parser's `quirks` gives a document (D67).
+fn compat_mode(quirks: html::tree_builder::QuirksMode) -> CompatMode {
+    match quirks {
+        html::tree_builder::QuirksMode::NoQuirks => CompatMode::NoQuirks,
+        html::tree_builder::QuirksMode::LimitedQuirks => CompatMode::LimitedQuirks,
+        html::tree_builder::QuirksMode::Quirks => CompatMode::Quirks,
+    }
 }
 
 /// A refusal of `dom`'s as the exception a script gets.

@@ -50,8 +50,8 @@ use dom::{Document, ElementState, NodeId, forms};
 
 use super::language::{extended_filter, is_well_formed_tag, pragma_language};
 use super::{
-    AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector, SelectorList,
-    SimpleSelector,
+    AttrNamespace, AttrOp, CaseFlag, Combinator, PseudoClass, PseudoElement, Selector,
+    SelectorList, SimpleSelector,
 };
 
 /// Whether any selector in the list matches the element. A one-off;
@@ -495,7 +495,8 @@ impl<'a> Matcher<'a> {
                 op,
                 value,
                 case,
-            } => matches_attribute(document, element, name, *op, value, *case),
+                namespace,
+            } => matches_attribute(document, element, name, *op, value, *case, namespace),
             SimpleSelector::PseudoClass(pc) => self.matches_pseudo_class(element, pc),
             SimpleSelector::Namespace(ns) => document.namespace(element) == Some(ns),
         }
@@ -1000,6 +1001,7 @@ fn html_value_is_case_insensitive(name: &str) -> bool {
 }
 
 /// Attribute selector semantics (selectors-4 §6.1, §6.3).
+#[allow(clippy::too_many_arguments)]
 fn matches_attribute(
     document: &Document,
     element: NodeId,
@@ -1007,32 +1009,24 @@ fn matches_attribute(
     op: AttrOp,
     value: &str,
     case: CaseFlag,
+    namespace: &AttrNamespace,
 ) -> bool {
     // An HTML element's attributes are kept lowercase; a foreign one's
     // in their case (`viewBox`), which the selector's name matches in any
     // case; in an XML document only in its own.
-    let exact = document.is_xml_document()
-        || (document.is_html(element) && !name.bytes().any(|b| b.is_ascii_uppercase()));
-    let actual = if exact {
-        document.attr(element, name)
-    } else {
-        document.attrs(element).and_then(|attrs| {
-            attrs
-                .iter()
-                .find(|(attr, _)| attr.eq_ignore_ascii_case(name))
-                .map(|(_, value)| value.as_str())
-        })
-    };
-    let Some(actual) = actual else {
-        return false;
+    let xml = document.is_xml_node(element);
+    let exact = xml || (document.is_html(element) && !name.bytes().any(|b| b.is_ascii_uppercase()));
+    let same = |attr: &str| match exact {
+        true => attr == name,
+        false => attr.eq_ignore_ascii_case(name),
     };
     let fold = match case {
         CaseFlag::I => true,
         CaseFlag::S => false,
-        CaseFlag::Unset => !document.is_xml_document() && html_value_is_case_insensitive(name),
+        CaseFlag::Unset => !xml && html_value_is_case_insensitive(name),
     };
     let compare = Compare { fold };
-    match op {
+    let holds = |actual: &str| match op {
         AttrOp::Exists => true,
         AttrOp::Equals => compare.eq(actual, value),
         // `~=` matches words separated by ASCII white space, as HTML
@@ -1055,6 +1049,27 @@ fn matches_attribute(
         AttrOp::Prefix => !value.is_empty() && compare.starts_with(actual, value),
         AttrOp::Suffix => !value.is_empty() && compare.ends_with(actual, value),
         AttrOp::Substring => !value.is_empty() && compare.contains(actual, value),
+    };
+    let Some(attrs) = document.attrs(element) else {
+        return false;
+    };
+    match namespace {
+        AttrNamespace::Unwritten if exact => document.attr(element, name).is_some_and(holds),
+        AttrNamespace::Unwritten => attrs
+            .iter()
+            .find(|(attr, _)| same(attr))
+            .is_some_and(|(_, actual)| holds(actual)),
+        // A namespace component names attributes by the namespace each
+        // keeps and its local name (D67): any of them may hold, as `*|`
+        // names one of each namespace.
+        written => attrs.iter().enumerate().any(|(i, (attr, actual))| {
+            let ns = document.attribute_namespace(element, i);
+            let wanted = match written {
+                AttrNamespace::Is(uri) => ns == uri.as_deref(),
+                _ => true,
+            };
+            wanted && same(dom::attribute_local_name(ns, attr)) && holds(actual)
+        }),
     }
 }
 
@@ -1212,6 +1227,53 @@ mod tests {
         assert!(matched(&document, "[data-y]").is_empty());
         assert!(matched(&document, "[type=a]").is_empty());
         assert_eq!(matched(&document, "[type=a i]"), ["Div"]);
+    }
+
+    #[test]
+    fn a_namespace_component_matches_an_attribute_by_its_namespace_and_local_name() {
+        // D67: `[ns|attr]` with the sheet's `@namespace` prefixes.
+        let mut document = Document::new();
+        let root = document.root();
+        let svg = document
+            .create_element_ns(
+                dom::Namespace::Svg,
+                "svg",
+                vec![("xlink:href".into(), "#a".into())],
+            )
+            .unwrap();
+        document.append_child(root, svg).unwrap();
+        document
+            .set_attribute_ns(svg, Some("urn:x"), "p:k", "v")
+            .unwrap();
+        document.set_attribute(svg, "k", "plain").unwrap();
+        let namespaces = crate::selector_matching::Namespaces {
+            default: None,
+            prefixes: vec![
+                ("x".into(), dom::Namespace::from_uri(Some("urn:x"))),
+                (
+                    "xl".into(),
+                    dom::Namespace::from_uri(Some(dom::XLINK_NAMESPACE)),
+                ),
+            ],
+        };
+        let matches = |selector: &str| {
+            let list = crate::selector_matching::parse_selector_list_in(
+                &css::tokenize(selector),
+                &namespaces,
+            )
+            .unwrap();
+            matches_selector_list(&document, svg, &list)
+        };
+        assert!(matches("[x|k=v]"));
+        assert!(!matches("[x|k=plain]"));
+        assert!(matches("[|k=plain]"));
+        assert!(!matches("[|k=v]"));
+        assert!(matches("[*|k=v]") && matches("[*|k=plain]"));
+        assert!(matches("[xl|href='#a']"));
+        assert!(!matches("[|href]"));
+        // Written without one, an attribute is found by its name as kept.
+        assert!(matches("[k=plain]"));
+        assert!(!matches("[k=v]"));
     }
 
     #[test]

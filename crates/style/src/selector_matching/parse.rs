@@ -28,8 +28,8 @@ use css::Token;
 
 use super::language::is_well_formed_range;
 use super::{
-    AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoClass, PseudoElement,
-    PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
+    AttrNamespace, AttrOp, CaseFlag, Combinator, CompoundSelector, Namespaces, PseudoClass,
+    PseudoElement, PseudoElementSelector, Selector, SelectorList, SimpleSelector, Specificity,
 };
 
 /// How deep `:not()`, `:is()`, `:where()` and `of S` may nest.
@@ -429,13 +429,14 @@ fn parse_compound(c: &mut Cursor, depth: usize, scope: Scope) -> Option<Compound
             // Namespaces are unsupported (documented subset).
             Token::Delim('|') => return None,
             Token::OpenSquare => {
-                let (name, op, value, case) = parse_attribute(c)?;
+                let (name, op, value, case, namespace) = parse_attribute(c)?;
                 spec.1 += 1;
                 simple.push(SimpleSelector::Attribute {
                     name,
                     op,
                     value,
                     case,
+                    namespace,
                 });
                 continue; // parse_attribute consumed through `]`
             }
@@ -500,26 +501,34 @@ fn parse_states(c: &mut Cursor, depth: usize, spec: &mut Specificity) -> Option<
     Some(states)
 }
 
+/// An attribute selector's parts: its name, comparison, value, case
+/// flag and namespace component.
+type AttributeParts = (String, AttrOp, String, CaseFlag, AttrNamespace);
+
 /// Parses an attribute selector; the cursor is at `[`.
-fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)> {
+fn parse_attribute(c: &mut Cursor) -> Option<AttributeParts> {
     c.advance(); // '['
     c.skip_ws();
     // A namespace prefix (CSS Namespaces 3 section 6.4): `|` for none,
-    // `*|` for any, or one the sheet declares; the attribute is matched
-    // by its name, as the attributes here are kept by name.
-    match (c.peek(), c.peek_ahead(1), c.peek_ahead(2)) {
-        (Some(Token::Delim('|')), Some(Token::Ident(_)), _) => c.advance(),
+    // `*|` for any, or one the sheet declares (D67).
+    let namespace = match (c.peek(), c.peek_ahead(1), c.peek_ahead(2)) {
+        (Some(Token::Delim('|')), Some(Token::Ident(_)), _) => {
+            c.advance();
+            AttrNamespace::Is(None)
+        }
         (Some(Token::Delim('*')), Some(Token::Delim('|')), Some(Token::Ident(_))) => {
             c.advance();
             c.advance();
+            AttrNamespace::Any
         }
         (Some(Token::Ident(prefix)), Some(Token::Delim('|')), Some(Token::Ident(_))) => {
-            c.namespaces.prefix(prefix)?;
+            let uri = c.namespaces.prefix(prefix)?.uri().map(str::to_owned);
             c.advance();
             c.advance();
+            AttrNamespace::Is(uri)
         }
-        _ => {}
-    }
+        _ => AttrNamespace::Unwritten,
+    };
     let name = match c.peek() {
         Some(Token::Ident(name)) => name.clone(),
         _ => return None,
@@ -529,7 +538,13 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)>
     let op = match c.peek() {
         Some(Token::CloseSquare) => {
             c.advance();
-            return Some((name, AttrOp::Exists, String::new(), CaseFlag::Unset));
+            return Some((
+                name,
+                AttrOp::Exists,
+                String::new(),
+                CaseFlag::Unset,
+                namespace,
+            ));
         }
         Some(Token::Delim('=')) => {
             c.advance();
@@ -586,7 +601,7 @@ fn parse_attribute(c: &mut Cursor) -> Option<(String, AttrOp, String, CaseFlag)>
         return None;
     }
     c.advance();
-    Some((name, op, value, case))
+    Some((name, op, value, case, namespace))
 }
 
 /// What a `:` begins.
@@ -1144,6 +1159,7 @@ mod tests {
                 op: AttrOp::Exists,
                 value: String::new(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }
@@ -1165,6 +1181,7 @@ mod tests {
                     op,
                     value: "b".into(),
                     case: CaseFlag::Unset,
+                    namespace: AttrNamespace::Unwritten,
                 }],
                 "operator mismatch for {src}"
             );
@@ -1180,6 +1197,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "https://x".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }
@@ -1217,6 +1235,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "y".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }
@@ -1234,6 +1253,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "0".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }
@@ -1661,6 +1681,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "x".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
         assert!(parse(":NOT(.a):Hover::BEFORE").is_ok());
@@ -1950,6 +1971,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "hello world".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }
@@ -1963,6 +1985,7 @@ mod tests {
                 op: AttrOp::Equals,
                 value: "x".into(),
                 case: CaseFlag::Unset,
+                namespace: AttrNamespace::Unwritten,
             }]
         );
     }

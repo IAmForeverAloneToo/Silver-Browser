@@ -81,10 +81,13 @@ fn inner_html_is_xmls_in_an_xml_document() {
            console.log(d.childNodes.length);\
          ]]></script></body></html>",
     );
+    // The children are serialized in no namespace's context, each
+    // declaring its own (DOM Parsing section 3.2, D67).
     assert_eq!(
         console,
         [
-            "<br /><p>a&amp;b</p>",
+            "<br xmlns=\"http://www.w3.org/1999/xhtml\" />\
+             <p xmlns=\"http://www.w3.org/1999/xhtml\">a&amp;b</p>",
             "B http://www.w3.org/1999/xhtml svg",
             "SyntaxError",
             "2",

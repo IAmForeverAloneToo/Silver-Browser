@@ -56,6 +56,20 @@ pub(super) struct Live {
     /// An XML document (DOM's type "xml"), an XML parser's: its HTML
     /// elements' names and attributes keep their case.
     pub(super) xml: bool,
+    /// The documents beside the page's (D67).
+    pub(super) documents: super::documents::Documents,
+    /// The namespaces of the attributes of the elements whose attributes
+    /// are not all in those their names imply, one an attribute.
+    pub(super) attr_ns: std::collections::HashMap<NodeId, Vec<Option<Box<str>>>>,
+    /// The elements whose qualified names have a prefix: those
+    /// `createElementNS` and the XML parser made of a name with a colon,
+    /// which another's (`createElement`'s, the HTML parser's) is part of
+    /// its local name.
+    pub(super) prefixed: std::collections::HashSet<NodeId>,
+    /// The text nodes that are CDATA sections (an XML parser's, or
+    /// `createCDATASection`'s): text to everything after the DOM, with
+    /// their own node type and markup.
+    pub(super) cdata: std::collections::HashSet<NodeId>,
 }
 
 impl Live {
@@ -333,10 +347,17 @@ impl Document {
                         ns: ns2,
                     }),
                 ) => {
+                    // Each attribute has one of the same namespace, local
+                    // name and value, whatever its prefix.
                     tag == tag2
                         && ns == ns2
                         && attrs.len() == attrs2.len()
-                        && attrs.iter().all(|attr| attrs2.contains(attr))
+                        && attrs.iter().enumerate().all(|(i, (name, value))| {
+                            let namespace = self.attribute_namespace(a, i);
+                            let local = super::attributes::attribute_local_name(namespace, name);
+                            self.find_attribute_ns(b, namespace, local)
+                                .is_some_and(|j| attrs2[j].1 == *value)
+                        })
                 }
                 (Some(x), Some(y)) => x == y,
                 _ => false,
@@ -505,7 +526,12 @@ impl Document {
         });
         let mut iterators = std::mem::take(&mut self.rare.iterators);
         for state in iterators.iter_mut().flatten() {
-            if !self.is_inclusive_ancestor(child, state.reference) || child == state.root {
+            // An iterator whose root goes with `child`, or is not above
+            // it, keeps its reference.
+            if !self.is_inclusive_ancestor(child, state.reference)
+                || child == state.root
+                || !self.is_inclusive_ancestor(state.root, child)
+            {
                 continue;
             }
             if state.before {
@@ -725,5 +751,11 @@ mod tests {
         doc.remove_child(p, t[0]).unwrap();
         let state = doc.iterator(id).unwrap();
         assert_eq!((state.reference, state.before), (p, false));
+        // One whose root goes with the node taken out keeps its reference.
+        let (mut doc, p, t) = paragraph(&["a", "b"]);
+        let id = doc.create_iterator(t[0]).unwrap();
+        let parent = doc.parent(p).unwrap();
+        doc.remove_child(parent, p).unwrap();
+        assert_eq!(doc.iterator(id).unwrap().reference, t[0]);
     }
 }

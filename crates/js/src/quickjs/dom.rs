@@ -186,6 +186,14 @@ impl<'js> Args<'_, 'js> {
         })))
     }
 
+    /// A string, or `None` for `null` or `undefined`.
+    fn maybe_string(&self, i: usize) -> rquickjs::Result<Option<String>> {
+        if self.value(i).is_null() || self.value(i).is_undefined() {
+            return Ok(None);
+        }
+        self.string(i).map(Some)
+    }
+
     /// A string, which the bootstrap has made well formed.
     fn string(&self, i: usize) -> rquickjs::Result<String> {
         match self.value(i).as_string() {
@@ -207,6 +215,7 @@ const RUN_SCRIPTS: &[&str] = &[
     "replace",
     "setTextContent",
     "setAttribute",
+    "setAttributeNS",
     "setInnerHTML",
     "setOuterHTML",
     "insertAdjacentHTML",
@@ -255,12 +264,15 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::RemoveAttribute(a.handle(0)?, a.string(1)?))
     }),
     ("attributeNames", |a| Ok(Call::AttributeNames(a.handle(0)?))),
-    ("createElement", |a| Ok(Call::CreateElement(a.string(0)?))),
+    ("createElement", |a| {
+        Ok(Call::CreateElement(a.string(0)?, a.maybe_handle(1)?))
+    }),
     ("createElementNS", |a| {
         let ns = a.string(0)?;
         Ok(Call::CreateElementNs(
             (!ns.is_empty()).then_some(ns),
             a.string(1)?,
+            a.maybe_handle(2)?,
         ))
     }),
     ("byTagNS", |a| {
@@ -271,27 +283,102 @@ const NATIVES: &[(&str, Decode)] = &[
             a.string(2)?,
         ))
     }),
-    ("createText", |a| Ok(Call::CreateText(a.string(0)?))),
-    ("createComment", |a| Ok(Call::CreateComment(a.string(0)?))),
+    ("createText", |a| {
+        Ok(Call::CreateText(a.string(0)?, a.maybe_handle(1)?))
+    }),
+    ("createComment", |a| {
+        Ok(Call::CreateComment(a.string(0)?, a.maybe_handle(1)?))
+    }),
+    ("createCDATASection", |a| {
+        Ok(Call::CreateCdata(a.string(0)?, a.maybe_handle(1)?))
+    }),
     ("createProcessingInstruction", |a| {
         Ok(Call::CreateProcessingInstruction(
             a.string(0)?,
             a.string(1)?,
+            a.maybe_handle(2)?,
         ))
     }),
-    ("createFragment", |_| Ok(Call::CreateFragment)),
+    ("createFragment", |a| {
+        Ok(Call::CreateFragment(a.maybe_handle(0)?))
+    }),
     ("createDoctype", |a| {
         Ok(Call::CreateDoctype(
             a.string(0)?,
             a.string(1)?,
             a.string(2)?,
+            a.maybe_handle(3)?,
         ))
     }),
     ("doctypeIds", |a| Ok(Call::DoctypeIds(a.handle(0)?))),
     ("templateContent", |a| {
         Ok(Call::TemplateContent(a.handle(0)?))
     }),
-    ("doctype", |_| Ok(Call::Doctype)),
+    ("doctype", |a| Ok(Call::Doctype(a.maybe_handle(0)?))),
+    ("ownerDocument", |a| Ok(Call::OwnerDocument(a.handle(0)?))),
+    ("createDocument", |a| {
+        Ok(Call::CreateDocument {
+            kind: a.string(0)?,
+            content_type: a.string(1)?,
+        })
+    }),
+    ("parseDocument", |a| {
+        Ok(Call::ParseDocument {
+            markup: a.string(0)?,
+            mime: a.string(1)?,
+        })
+    }),
+    ("parseResponse", |a| {
+        Ok(Call::ParseResponse {
+            body: a.bytes(0)?.unwrap_or_default(),
+            html: a.bool(1),
+            content_type: a.string(2)?,
+            charset: a.maybe_string(3)?,
+            url: a.string(4)?,
+        })
+    }),
+    ("serializeXml", |a| Ok(Call::SerializeXml(a.handle(0)?))),
+    ("serializeDocument", |a| {
+        Ok(Call::SerializeDocument(a.handle(0)?))
+    }),
+    ("adopt", |a| {
+        Ok(Call::Adopt {
+            node: a.handle(0)?,
+            document: a.handle(1)?,
+        })
+    }),
+    ("inHtmlDocument", |a| Ok(Call::InHtmlDocument(a.handle(0)?))),
+    ("attributeNS", |a| {
+        Ok(Call::AttributeNs(
+            a.handle(0)?,
+            a.maybe_string(1)?,
+            a.string(2)?,
+        ))
+    }),
+    ("setAttributeNS", |a| {
+        Ok(Call::SetAttributeNs(
+            a.handle(0)?,
+            a.maybe_string(1)?,
+            a.string(2)?,
+            a.string(3)?,
+        ))
+    }),
+    ("removeAttributeNS", |a| {
+        Ok(Call::RemoveAttributeNs(
+            a.handle(0)?,
+            a.maybe_string(1)?,
+            a.string(2)?,
+        ))
+    }),
+    ("attributeNamespaces", |a| {
+        Ok(Call::AttributeNamespaces(a.handle(0)?))
+    }),
+    ("documentTitle", |a| {
+        Ok(Call::DocumentTitle(a.maybe_handle(0)?))
+    }),
+    ("setDocumentTitle", |a| {
+        Ok(Call::SetDocumentTitle(a.handle(0)?, a.string(1)?))
+    }),
     ("moveBefore", |a| {
         Ok(Call::MoveBefore {
             parent: a.handle(0)?,
@@ -813,7 +900,9 @@ const NATIVES: &[(&str, Decode)] = &[
     ("closeWindow", |_| Ok(Call::CloseWindow)),
     ("navigator", |_| Ok(Call::NavigatorInfo)),
     ("viewport", |_| Ok(Call::Viewport)),
-    ("documentInfo", |_| Ok(Call::DocumentInfo)),
+    ("documentInfo", |a| {
+        Ok(Call::DocumentInfo(a.maybe_handle(0)?))
+    }),
     ("computedValue", |a| {
         Ok(Call::ComputedValue {
             node: a.handle(0)?,

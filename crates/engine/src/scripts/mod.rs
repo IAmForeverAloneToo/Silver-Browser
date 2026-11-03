@@ -3148,8 +3148,14 @@ pub(crate) fn violation_level(violation: &Violation) -> ConsoleLevel {
 /// first `title` element in tree order, its ASCII white space stripped
 /// and collapsed; empty without one.
 pub(crate) fn document_title(document: &Document) -> String {
+    document_title_of(document, document.root())
+}
+
+/// The title of `of`, the page's document or another (D67), as
+/// [`document_title`] reads the page's.
+pub(crate) fn document_title_of(document: &Document, of: NodeId) -> String {
     let Some(title) = document
-        .subtree(document.root())
+        .subtree(of)
         .find(|&node| document.tag(node) == Some("title"))
     else {
         return String::new();
@@ -3385,11 +3391,11 @@ mod tests {
             .expect_err("a bad name");
         assert_eq!(error.name, "InvalidCharacterError");
         let error = host
-            .dom(Call::CreateElement("1a".into()))
+            .dom(Call::CreateElement("1a".into(), None))
             .expect_err("a bad name");
         assert_eq!(error.name, "InvalidCharacterError");
         // The document's element may be replaced by another element.
-        let made = match host.dom(Call::CreateElement("html".into())) {
+        let made = match host.dom(Call::CreateElement("html".into(), None)) {
             Ok(js::Answer::Node(Some(made))) => made,
             other => panic!("{other:?}"),
         };

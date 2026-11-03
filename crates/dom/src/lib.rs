@@ -19,9 +19,11 @@ mod microsyntax;
 pub mod validity;
 
 pub use document::{
-    Boundary, Change, Children, Document, ElementState, IteratorState, LiveRange, MAX_DATA_BYTES,
-    MAX_DEPTH, MAX_GENERATION, MAX_ITERATORS, MAX_JOURNAL, MAX_NAMED_CHANGES, MAX_NODES,
-    MAX_OBSERVED, MAX_RANGES, Mutated, Mutation, MutationError, NodeData, NodeId, Subtree,
+    Boundary, Change, Children, CompatMode, Document, DocumentFacts, DocumentInterface,
+    ElementState, IteratorState, LiveRange, MAX_DATA_BYTES, MAX_DEPTH, MAX_GENERATION,
+    MAX_ITERATORS, MAX_JOURNAL, MAX_NAMED_CHANGES, MAX_NODES, MAX_OBSERVED, MAX_RANGES, Mutated,
+    Mutation, MutationError, NodeData, NodeId, Subtree, attribute_local_name,
+    implied_attribute_namespace,
 };
 pub use microsyntax::{Dimension, parse_dimension, parse_integer, parse_non_negative_integer};
 

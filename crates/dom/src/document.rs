@@ -34,7 +34,11 @@ use std::fmt;
 use crate::forms::ControlState;
 use crate::{Element, Namespace, Node, Text, local_part};
 
+mod attributes;
+mod documents;
 mod live;
+pub use attributes::{attribute_local_name, implied_attribute_namespace};
+pub use documents::{CompatMode, DocumentFacts, DocumentInterface};
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
 
 /// The deepest elements may nest: 512, the HTML parser's cap on its
@@ -125,7 +129,8 @@ impl fmt::Display for NodeId {
 /// What a node is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeData {
-    /// The document node, the root; there is one per document.
+    /// A document node: the page's, the arena's root, or another
+    /// document's beside it (D67), parentless either way.
     Document,
     /// An element: its tag name (lowercase for an HTML element, a
     /// foreign one's qualified name in its own case), its attributes, in
@@ -251,11 +256,13 @@ pub enum Mutated {
         prev: Option<NodeId>,
         next: Option<NodeId>,
     },
-    /// Attribute `name` of `element` was set or removed; `old` is its
-    /// value before, `None` when it had none.
+    /// The attribute of local name `name` and namespace `namespace` of
+    /// `element` was set or removed; `old` is its value before, `None`
+    /// when it had none.
     Attribute {
         element: NodeId,
         name: String,
+        namespace: Option<Box<str>>,
         old: Option<String>,
     },
     /// A text node's data changed from `old`.
@@ -672,11 +679,61 @@ impl Document {
         }
     }
 
-    /// Any element's local name: an HTML element's tag, another's
-    /// qualified name without its prefix.
+    /// Any element's local name: its qualified name without its prefix,
+    /// the whole of it when it has none (a colon in the name of an
+    /// element `createElement` or the HTML parser made is part of it).
     #[inline]
     pub fn local_name(&self, id: NodeId) -> Option<&str> {
-        self.element_name(id).map(|(_, tag)| local_part(tag))
+        self.element_name(id)
+            .map(|(_, tag)| match tag.contains(':') {
+                true if !self.rare.prefixed.contains(&id) => tag,
+                _ => local_part(tag),
+            })
+    }
+
+    /// An element's namespace prefix, if its name has one.
+    pub fn element_prefix(&self, id: NodeId) -> Option<&str> {
+        if !self.rare.prefixed.contains(&id) {
+            return None;
+        }
+        self.element_name(id)?
+            .1
+            .split_once(':')
+            .map(|(prefix, _)| prefix)
+    }
+
+    /// The DOM's `nodeType` of `id`: [`NodeData::node_type`]'s, 4 for a
+    /// CDATA section; `None` for a stale id.
+    pub fn node_type(&self, id: NodeId) -> Option<u16> {
+        let kind = self.data(id)?.node_type();
+        Some(match kind == 3 && self.rare.cdata.contains(&id) {
+            true => 4,
+            false => kind,
+        })
+    }
+
+    /// Whether `id` is a CDATA section: a text node of its own kind.
+    pub fn is_cdata(&self, id: NodeId) -> bool {
+        self.rare.cdata.contains(&id)
+    }
+
+    /// A new, detached CDATA section (`createCDATASection`, an XML
+    /// parser's `<![CDATA[`).
+    pub fn create_cdata(&mut self, data: &str) -> Result<NodeId, MutationError> {
+        let made = self.create_text(data)?;
+        self.rare.cdata.insert(made);
+        Ok(made)
+    }
+
+    /// Notes that `element`'s qualified name has a prefix: one with a
+    /// colon `createElementNS` or the XML parser made.
+    pub fn mark_prefixed(&mut self, element: NodeId) {
+        if self
+            .element_name(element)
+            .is_some_and(|(_, tag)| tag.contains(':'))
+        {
+            self.rare.prefixed.insert(element);
+        }
     }
 
     /// An element's namespace.
@@ -1160,6 +1217,7 @@ impl Document {
                     Some(r) => self.link_before(parent.index, node.index, r.index),
                     None => self.link_last(parent.index, node.index),
                 }
+                self.owned_by_tree(node);
                 self.live_inserted(parent, node);
                 self.record_change(Change::Inserted {
                     parent,
@@ -1181,6 +1239,8 @@ impl Document {
             Some(r) => self.link_before(parent.index, child.index, r.index),
             None => self.link_last(parent.index, child.index),
         }
+        // Inserted, it is its parent's document's (DOM's "adopt").
+        self.owned_by_tree(child);
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
@@ -1234,6 +1294,7 @@ impl Document {
             Some(r) => self.link_before(parent.index, node.index, r.index),
             None => self.link_last(parent.index, node.index),
         }
+        self.owned_by_tree(node);
         self.live_inserted(parent, node);
         self.record_change(Change::Inserted {
             parent,
@@ -1269,6 +1330,7 @@ impl Document {
             return Err(MutationError::HierarchyRequest);
         }
         self.link_last(parent.index, child.index);
+        self.owned_by_tree(child);
         self.live_inserted(parent, child);
         self.record_change(Change::Inserted { parent, child });
         self.observe_insertion(parent, child);
@@ -1312,19 +1374,47 @@ impl Document {
         set
     }
 
-    /// [`Document::set_attribute`] of a name as the element keeps it.
+    /// [`Document::set_attribute`] of a name as the element keeps it: the
+    /// first attribute of that name changed, else one of no namespace
+    /// made.
     fn set_attribute_named(
         &mut self,
         element: NodeId,
         name: String,
         value: &str,
     ) -> Result<(), MutationError> {
-        let had = match self.attrs_mut(element)?.iter().find(|(k, _)| *k == name) {
+        let at = self
+            .attrs_mut(element)?
+            .iter()
+            .position(|(k, _)| *k == name);
+        self.change_attribute(element, at, name, value, None)
+    }
+
+    /// Sets the value of `element`'s attribute at `at` to `value`, or adds
+    /// one named `name` in `namespace` last for `None` (DOM's "change an
+    /// attribute" and "append an attribute").
+    fn change_attribute(
+        &mut self,
+        element: NodeId,
+        at: Option<usize>,
+        name: String,
+        value: &str,
+        namespace: Option<&str>,
+    ) -> Result<(), MutationError> {
+        let had = match at.and_then(|at| self.attrs(element)?.get(at)) {
             // The same value changes nothing but is still a change to
             // mutation observers, as the DOM's "change an attribute" is.
             Some((_, v)) if v == value => {
-                let old = Some(value.to_owned());
-                self.observed(|| Mutated::Attribute { element, name, old });
+                if self.observing.is_some() {
+                    let old = Some(value.to_owned());
+                    let (local, namespace) = self.observed_name(element, at, &name);
+                    self.observed(|| Mutated::Attribute {
+                        element,
+                        name: local,
+                        namespace,
+                        old,
+                    });
+                }
                 return Ok(());
             }
             Some((_, v)) => Some(v.len()),
@@ -1332,24 +1422,31 @@ impl Document {
         };
         let (more, less) = match had {
             Some(old) => (value.len(), old),
-            None => (name.len() + value.len(), 0),
+            None => (name.len() + value.len() + namespace.map_or(0, str::len), 0),
         };
         self.check_data(more.saturating_sub(less))?;
         self.data_bytes = self.data_bytes + more - less;
         let attrs = self.attrs_mut(element)?;
-        let old = match attrs.iter_mut().find(|(k, _)| *k == name) {
-            Some((_, v)) => Some(std::mem::replace(v, value.to_string())),
+        let (old, at) = match at.and_then(|at| attrs.get_mut(at).map(|slot| (at, slot))) {
+            Some((at, (_, v))) => (Some(std::mem::replace(v, value.to_string())), at),
             None => {
                 attrs.push((name.clone(), value.to_string()));
-                None
+                // Counted above with the name and value.
+                self.data_bytes -= namespace.map_or(0, str::len);
+                self.push_attribute_namespace(element, namespace);
+                (None, self.attrs(element).map_or(0, |a| a.len() - 1))
             }
         };
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
-        self.observed(|| Mutated::Attribute {
-            element,
-            name: name.clone(),
-            old: old.clone(),
-        });
+        if self.observing.is_some() {
+            let (local, namespace) = self.observed_name(element, Some(at), &name);
+            self.observed(|| Mutated::Attribute {
+                element,
+                name: local,
+                namespace,
+                old: old.clone(),
+            });
+        }
         self.record_change(Change::AttributeChanged { element, name, old });
         if let Some(name) = default {
             crate::forms::default_changed(self, element, &name);
@@ -1357,10 +1454,25 @@ impl Document {
         Ok(())
     }
 
+    /// The local name and namespace a mutation observer is told of for
+    /// `element`'s attribute at `at`, named `name`.
+    fn observed_name(
+        &self,
+        element: NodeId,
+        at: Option<usize>,
+        name: &str,
+    ) -> (String, Option<Box<str>>) {
+        let namespace = at.and_then(|at| self.attribute_namespace(element, at));
+        (
+            attributes::attribute_local_name(namespace, name).to_owned(),
+            namespace.map(Into::into),
+        )
+    }
+
     /// An attribute's name as `element` keeps it: lowercased on an HTML
     /// element of an HTML document, as given on another.
     fn attribute_name(&self, element: NodeId, name: &str) -> String {
-        if self.is_html(element) && !self.rare.xml {
+        if self.is_html(element) && !self.is_xml_node(element) {
             name.to_ascii_lowercase()
         } else {
             name.to_owned()
@@ -1382,7 +1494,8 @@ impl Document {
         removed
     }
 
-    /// [`Document::remove_attribute`] of a name as the element keeps it.
+    /// [`Document::remove_attribute`] of a name as the element keeps it:
+    /// the first attribute of that name.
     fn remove_attribute_named(
         &mut self,
         element: NodeId,
@@ -1392,12 +1505,34 @@ impl Document {
         let Some(at) = attrs.iter().position(|(k, _)| *k == name) else {
             return Ok(());
         };
-        let (_, old) = attrs.remove(at);
+        self.remove_attribute_at(element, at)
+    }
+
+    /// Removes `element`'s attribute at `at` (DOM's "remove an
+    /// attribute").
+    fn remove_attribute_at(&mut self, element: NodeId, at: usize) -> Result<(), MutationError> {
+        let (local, namespace) = match self.observing.is_some() {
+            true => {
+                let name = self
+                    .attrs(element)
+                    .and_then(|a| a.get(at))
+                    .map(|(n, _)| n.clone());
+                self.observed_name(element, Some(at), &name.unwrap_or_default())
+            }
+            false => (String::new(), None),
+        };
+        let attrs = self.attrs_mut(element)?;
+        if at >= attrs.len() {
+            return Ok(());
+        }
+        let (name, old) = attrs.remove(at);
         self.data_bytes -= name.len() + old.len();
+        self.remove_attribute_namespace(element, at);
         let default = matches!(name.as_str(), "checked" | "selected").then(|| name.clone());
         self.observed(|| Mutated::Attribute {
             element,
-            name: name.clone(),
+            name: local,
+            namespace,
             old: Some(old.clone()),
         });
         self.record_change(Change::AttributeChanged {
@@ -1485,8 +1620,14 @@ impl Document {
         if !self.contains(id) {
             return Err(MutationError::NoSuchNode);
         }
-        // A template's contents go with the template.
-        if id == self.root || self.parent(id).is_some() || self.template_host(id).is_some() {
+        // A template's contents go with the template, and a document
+        // stays while a node outside it is its, or it holds a document's
+        // templates' contents.
+        if id == self.root
+            || self.parent(id).is_some()
+            || self.template_host(id).is_some()
+            || (self.is_document(id) && self.document_in_use(id))
+        {
             return Err(MutationError::Attached);
         }
         // The subtree, and the contents of each template in it, theirs too.
@@ -1494,6 +1635,14 @@ impl Document {
         for node in &doomed {
             if let Some(content) = self.rare.templates.contents.remove(node) {
                 self.rare.templates.hosts.remove(&content);
+            }
+        }
+        self.forget_documents(&doomed);
+        self.data_bytes -= self.forget_attribute_namespaces(&doomed);
+        if !self.rare.prefixed.is_empty() || !self.rare.cdata.is_empty() {
+            for node in &doomed {
+                self.rare.prefixed.remove(node);
+                self.rare.cdata.remove(node);
             }
         }
         for index in doomed.into_iter().map(|n| n.index) {
@@ -1731,8 +1880,16 @@ impl Document {
             let Some(record) = &slot.record else { continue };
             counted += 1;
             let i = i as u32;
-            if record.data == NodeData::Document && i != self.root.index {
-                return Err(format!("a second document node in slot {i}"));
+            // Another document is parentless, and known for one.
+            if record.data == NodeData::Document
+                && i != self.root.index
+                && (record.parent.is_some()
+                    || !self.rare.documents.facts.contains_key(&NodeId {
+                        index: i,
+                        generation: slot.generation,
+                    }))
+            {
+                return Err(format!("document node {i} is not a known parentless one"));
             }
             // The children list, walked forwards, mirrors itself.
             let mut prev = None;
@@ -1779,7 +1936,13 @@ impl Document {
             .iter()
             .filter_map(|s| s.record.as_ref())
             .map(|r| data_size(&r.data) + r.control.as_ref().map_or(0, |c| c.bytes()))
-            .sum();
+            .sum::<usize>()
+            + self
+                .rare
+                .attr_ns
+                .values()
+                .map(|kept| attributes::namespaces_size(kept))
+                .sum::<usize>();
         if data != self.data_bytes {
             return Err(format!(
                 "{data} bytes of data counted as {}",
@@ -1797,6 +1960,37 @@ impl Document {
         }
         if self.rare.templates.hosts.len() != self.rare.templates.contents.len() {
             return Err("a template's contents are not mirrored".into());
+        }
+        let documents = &self.rare.documents;
+        if documents.facts.values().filter(|facts| facts.xml).count() != documents.xml {
+            return Err("the XML documents are miscounted".into());
+        }
+        for &document in documents.facts.keys() {
+            if !self.is_document(document) || document == self.root {
+                return Err(format!("{document} is no other document"));
+            }
+        }
+        for (&top, &owner) in &documents.owners {
+            if !self.contains(top)
+                || self.parent(top).is_some()
+                || self.is_document(top)
+                || !documents.facts.contains_key(&owner)
+            {
+                return Err(format!("{top}'s owner {owner} is wrong"));
+            }
+        }
+        for (&of, &inert) in &documents.inert {
+            let is_inert = documents.facts.get(&inert).is_some_and(|facts| facts.inert);
+            if !self.is_document(of) || !is_inert || documents.inert.get(&inert) != Some(&inert) {
+                return Err(format!("{of}'s inert template document is wrong"));
+            }
+        }
+        for (&element, kept) in &self.rare.attr_ns {
+            if self.attrs(element).map(<[_]>::len) != Some(kept.len()) {
+                return Err(format!(
+                    "{element}'s attributes' namespaces are not one each"
+                ));
+            }
         }
         if let Some(slot) = self.slots.iter().find(|s| s.generation >= MAX_GENERATION) {
             return Err(format!("a slot at generation {}", slot.generation));
@@ -2078,8 +2272,14 @@ impl Document {
         if self.has_names(child) && self.connected(child) {
             self.index_names(child, false);
         }
+        // Taken out of another document's tree, it stays that document's.
+        let mut owner = None;
         if let Some(parent) = self.link(Some(parent)) {
             self.live_removing(parent, child);
+            owner = self.owner_leaving(parent);
+        }
+        if let Some(owner) = owner {
+            self.rare.documents.owners.insert(child, owner);
         }
         let Some(record) = self.record(child) else {
             return;
@@ -2446,11 +2646,16 @@ mod tests {
         assert_eq!(xml.tag(made), Some("Span"));
         assert_eq!(xml.attr(upper, "ClassName"), Some("x"));
         assert_eq!(xml.attr(upper, "classname"), None);
-        // A prefixed name's local part.
+        // A prefixed name's local part; a name with a colon made without
+        // a prefix (`createElement`'s, the HTML parser's) is whole.
         let other = document
             .create_element_ns(Namespace::from_uri(Some("urn:x")), "x:item", Vec::new())
             .unwrap();
+        assert_eq!(document.local_name(other), Some("x:item"));
+        assert_eq!(document.element_prefix(other), None);
+        document.mark_prefixed(other);
         assert_eq!(document.local_name(other), Some("item"));
+        assert_eq!(document.element_prefix(other), Some("x"));
         assert_eq!(
             document.namespace(other).and_then(Namespace::uri),
             Some("urn:x")
@@ -2927,6 +3132,7 @@ mod tests {
         let attribute = |old: Option<&str>| Mutated::Attribute {
             element: a,
             name: "id".to_owned(),
+            namespace: None,
             old: old.map(str::to_owned),
         };
         let child = |added, removed, prev, next| Mutated::ChildList {
@@ -3074,6 +3280,7 @@ mod tests {
             Mutated::Attribute {
                 element: a,
                 name: "n".to_owned(),
+                namespace: None,
                 old: Some("0".to_owned())
             }
         );
