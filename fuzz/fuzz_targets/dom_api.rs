@@ -1088,7 +1088,10 @@ fuzz_target!(|data: &[u8]| {
     engine.navigate(url.clone());
     loop {
         engine.poll_network();
-        if engine.url() == Some(&url) && *engine.load_state() == LoadState::Loaded {
+        // Its own URL, but for a fragment its script may have gone to.
+        if engine.url().map(Url::without_fragment) == Some(url.without_fragment())
+            && *engine.load_state() == LoadState::Loaded
+        {
             break;
         }
         woken
