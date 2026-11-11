@@ -1785,6 +1785,7 @@ impl SoftwareBackend {
             return;
         };
         let spread = filters.map_or([0.0; 4], filter_reach);
+        let whole = within;
         let within = match only {
             Some(rect) => match within.intersect(rect) {
                 Some(within) => within,
@@ -1811,6 +1812,23 @@ impl SoftwareBackend {
                 scratch_region(&mut self.text, items, matrix, grow, within, (width, height))
             else {
                 return;
+            };
+            // A group inside that is resampled (turned or skewed) samples
+            // its texels by where the scratch lies, to the last bit: its
+            // scratch is the clip's whole then, wherever the group's
+            // reach is, so that a change elsewhere in the group, which
+            // moves the reach, leaves the pixels it does not touch as
+            // they were (CI's mutation fuzzing: a turned, translucent
+            // body under a translucent root came a level apart).
+            let (x0, y0, w, h) = if filters.is_none() && resamples_inside(items) {
+                (
+                    i64::from(whole.x0),
+                    i64::from(whole.y0),
+                    whole.x1 - whole.x0,
+                    whole.y1 - whole.y0,
+                )
+            } else {
+                (x0, y0, w, h)
             };
             let Some(mut scratch) = tiny_skia::Pixmap::new(w, h) else {
                 return;
@@ -3240,6 +3258,15 @@ fn extent(text: &mut GlyphCache, item: &DisplayItem, state: &State) -> Option<Cl
     let clip = grown(clip, state.spread());
     let extent = grown(mapped, pixels).intersect(clip);
     (!extent.is_empty()).then_some(extent)
+}
+
+/// Whether `items` hold a group drawn through a matrix that does more
+/// than translate and scale: one resampled.
+fn resamples_inside(items: &[DisplayItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(item, DisplayItem::PushGroup { matrix, .. }
+            if !matrix.translates_and_scales_only())
+    })
 }
 
 /// Where a group drawn through `matrix`, which only translates and

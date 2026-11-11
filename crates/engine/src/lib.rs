@@ -14403,6 +14403,32 @@ mod tests {
     }
 
     #[test]
+    fn a_turned_group_under_a_translucent_one_keeps_its_pixels_as_the_group_grows() {
+        // CI's mutation fuzzing: text added to a translucent root moved
+        // the scratch its turned, translucent body was resampled into,
+        // and the pixels the text did not touch, kept from the frame
+        // before, came a level apart from a fresh engine's.
+        let page = "<html style='translate: 0 -8px; opacity: 0.2'>                    <body style='rotate: 30deg; opacity: 0.5'><fieldset></fieldset></body></html>";
+        let mut engine = test_engine();
+        let mut fresh = test_engine();
+        engine.load_document(page);
+        engine.frame(64, 48);
+        engine.mutate(|document| {
+            let html = document
+                .children(document.root())
+                .find(|&node| document.tag(node) == Some("html"))
+                .expect("an html element");
+            let text = document
+                .create_text("div { padding: 3px }")
+                .expect("a text node");
+            document.append_child(html, text).expect("appended");
+        });
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 64, 48) {
+            panic!("{difference}");
+        }
+    }
+
+    #[test]
     fn the_document_is_a_layer_of_tiles_that_a_scroll_composites() {
         // M19.4: the document's content is a layer of tiles kept from
         // frame to frame; a scroll composites them, drawing nothing
