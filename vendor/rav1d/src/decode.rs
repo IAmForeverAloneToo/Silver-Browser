@@ -269,11 +269,18 @@ fn read_mv_residual(ts_c: &mut Rav1dTileStateContext, ref_mv: &mut Mv, mv_prec: 
 
     let mv_cdf = &mut ts_c.cdf.mv;
 
+    // Silver: wrapping, as dav1d's C stores the sum into an int16_t (a
+    // corrupt stream took a component past its range, and a build that
+    // checks overflow panicked).
     if mv_joint.contains(MVJoint::V) {
-        ref_mv.y += read_mv_component_diff(&mut ts_c.msac, &mut mv_cdf.comp[0], mv_prec) as i16;
+        ref_mv.y = ref_mv.y.wrapping_add(
+            read_mv_component_diff(&mut ts_c.msac, &mut mv_cdf.comp[0], mv_prec) as i16,
+        );
     }
     if mv_joint.contains(MVJoint::H) {
-        ref_mv.x += read_mv_component_diff(&mut ts_c.msac, &mut mv_cdf.comp[1], mv_prec) as i16;
+        ref_mv.x = ref_mv.x.wrapping_add(
+            read_mv_component_diff(&mut ts_c.msac, &mut mv_cdf.comp[1], mv_prec) as i16,
+        );
     }
 }
 
