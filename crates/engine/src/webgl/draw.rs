@@ -117,13 +117,20 @@ pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features)> {
         .min(16);
     let features = Features::of(&info.features);
     let device = client.id();
-    let (reply, _) = wait(client, |call| Request::RequestDevice {
+    let reply = wait(client, |call| Request::RequestDevice {
         call,
         adapter,
         id: device,
         features: features.names(),
         limits: vec![("maxVertexBuffers".to_owned(), buffers)],
-    })?;
+    });
+    // The adapter is the GPU process's to keep until dropped, and the
+    // device keeps what it needs of it: dropped now (every context left
+    // one there for as long as its page lived; CI's nightly fuzzing ran
+    // out of memory remaking contexts).
+    client.queue([Request::Drop { id: adapter }]);
+    client.flush();
+    let (reply, _) = reply?;
     match reply {
         Reply::Device { result: Ok(_), .. } => Some((device, features)),
         _ => None,

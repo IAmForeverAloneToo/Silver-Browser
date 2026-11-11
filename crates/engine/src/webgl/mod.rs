@@ -2522,4 +2522,60 @@ mod tests {
         assert_eq!(held(&h), (0, 0));
         assert!(!h.made());
     }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn contexts_made_and_lost_leave_nothing_in_the_gpu_process() {
+        // CI's nightly webgl_ops fuzzing ran out of memory: every context
+        // left the adapter it asked for in the GPU process. A service of
+        // the test's own on a thread (it is not `Send`), its objects
+        // counted when asked.
+        use crate::gpu::service::GpuService;
+        use std::sync::Weak;
+        use std::sync::mpsc;
+        enum Job {
+            Bytes(Vec<u8>, Weak<GpuClient>),
+            Count(mpsc::Sender<usize>),
+        }
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        std::thread::spawn(move || {
+            let mut service = GpuService::new(false);
+            while let Ok(job) = inbox.recv() {
+                match job {
+                    Job::Bytes(bytes, to) => {
+                        let replies = service.handle(1, &bytes).unwrap();
+                        if let Some(to) = to.upgrade() {
+                            for batch in crate::gpu::wire::reply_batches(replies) {
+                                to.deliver(&batch).unwrap();
+                            }
+                        }
+                    }
+                    Job::Count(answer) => answer.send(service.objects(1)).unwrap(),
+                }
+            }
+        });
+        let sender = std::sync::Mutex::new(jobs.clone());
+        let client = Arc::new_cyclic(|this: &Weak<GpuClient>| {
+            let to = this.clone();
+            GpuClient::new(Box::new(move |bytes| {
+                let _ = sender.lock().unwrap().send(Job::Bytes(bytes, to.clone()));
+            }))
+        });
+        let objects = || {
+            let (answer, count) = mpsc::channel();
+            jobs.send(Job::Count(answer)).unwrap();
+            count.recv().unwrap()
+        };
+        let mut h = Harness::new(client);
+        for version in [1, 2, 1] {
+            if !h.create(version) {
+                eprintln!("no adapter here: WebGL is not checked");
+                return;
+            }
+            h.call("createBuffer", &[], Vec::new(), None);
+            assert!(objects() > 0);
+            h.call("loseContext", &[], Vec::new(), None);
+            assert_eq!(objects(), 0);
+        }
+    }
 }
