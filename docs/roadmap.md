@@ -3802,7 +3802,7 @@ Deferred from the milestones above, each with what it waits on:
        groups) to be made free where a page needs none of it. The
        medians are in the T4.3 run of the batch. Found in gap batch H's
        acceptance, left by the maintainer's word.
-- [ ] G248 Three WPT tests that pass or fail by the machine's timing,
+- [ ] G248 Five WPT tests that pass or fail by the machine's timing,
        each `either:` until found: in
        `execution-timing/077.html` two async `data:` scripts run as
        their fetches end, which can end out of order where the reference
@@ -3811,8 +3811,11 @@ Deferred from the milestones above, each with what it waits on:
        50 ms after `ended` can come before the script processor's last
        buffer or two (macOS, three in nine); in `audio_loop_base.html`
        the runner's ten seconds of page time can pass before the audio,
-       played at the real clock, loops twice (always when run alone).
-       Found by CI's nightly runs and the gate.
+       played at the real clock, loops twice (always when run alone),
+       as in `audio_loop_seek_to_eos.html`; in
+       `WorkerPerformanceNow.html` a worker's `performance.now()` reads
+       the real clock and the page's the runner's, which the worker can
+       get ahead of (macOS). Found by CI's runs and the gate.
 
 ---
 
