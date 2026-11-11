@@ -532,3 +532,20 @@ fn a_constant_divisor_of_zero_is_left_undefined_not_refused() {
     let vs1 = "attribute vec4 p;\nvoid main() { gl_Position = p; }\n";
     program(vs1, fs1, &webgl1());
 }
+
+#[test]
+fn an_index_a_comma_makes_out_of_range_is_clamped_not_refused() {
+    // The nightly glsl_parse fuzz's: `v_uv[(x, 5)]` compiles (a comma's
+    // value is no constant expression), and naga refused its translation,
+    // which folds to a constant index out of range. WebGL makes such an
+    // access safe: the index is clamped. As a variable's, a vector's, a
+    // matrix's and a uniform array's.
+    let vs = "#version 300 es\nin vec4 p;\nuniform vec4 u_a[3];\nout vec2 v_uv[2];\n\
+        void main() { mat2 m = mat2(1.0); vec3 c = vec3(0.0); float k = 1.0;\n\
+          v_uv[0] = vec2(0.0); v_uv[1] = vec2(0.0);\n\
+          v_uv[k, 5] -= -k, 2.0; c[k, 7] = m[k, 4].x + u_a[k, 9].y + c[k, -1];\n\
+          gl_Position = p + vec4(c, 0.0); }\n";
+    let fs = "#version 300 es\nprecision highp float;\nin vec2 v_uv[2];\nout vec4 color;\n\
+        void main() { color = vec4(v_uv[1], v_uv[0]); }\n";
+    program(vs, fs, &webgl2());
+}

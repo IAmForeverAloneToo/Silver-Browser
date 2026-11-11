@@ -318,6 +318,17 @@ fn first(n: u8) -> String {
     }
 }
 
+/// How many elements an index of `ty` reaches: an array's, a vector's
+/// components, a matrix's columns; none for other types.
+fn bound_of(ty: &Type) -> u32 {
+    match ty {
+        Type::Array(_, n) => *n,
+        Type::Vector(_, n) => u32::from(*n),
+        Type::Matrix(c, _) => u32::from(*c),
+        _ => 0,
+    }
+}
+
 // ---- The uniforms' layouts ----
 
 /// How a uniform's value is kept in its buffer.
@@ -1165,6 +1176,17 @@ impl<'a> Emitter<'a> {
     fn temp(&mut self) -> String {
         self.temps += 1;
         format!("webgl_t{}", self.temps)
+    }
+
+    /// `text`, the index of `index` into `bound` elements, clamped into
+    /// range when it is no constant: WebGL makes an access out of range
+    /// safe, and WGSL refuses an index naga folds to a constant out of
+    /// range, as a comma's right side is (`a[(x, 5)]`, glsl_parse).
+    fn clamped(index: &Expr, bound: u32, text: String) -> String {
+        if index.value.is_some() || bound == 0 {
+            return text;
+        }
+        format!("min(u32({text}), {}u)", bound - 1)
     }
 
     /// `text`, a constant of `ty` (a scalar's or a vector's), as a value
@@ -2048,7 +2070,8 @@ impl<'a> Emitter<'a> {
                     self.line(&format!("var {t} = {b};"));
                     b = t;
                 }
-                format!("{b}[{}]", parts[1])
+                let i = Self::clamped(index, bound_of(&base.ty), parts[1].clone());
+                format!("{b}[{i}]")
             }
             ExprKind::Field(base, i) => {
                 let b = self.expr(base)?;
@@ -2249,7 +2272,7 @@ impl<'a> Emitter<'a> {
                 let Some((path, l)) = self.uniform_path(base)? else {
                     return Ok(None);
                 };
-                let Lay::Array(element, _) = l else {
+                let Lay::Array(element, n) = l else {
                     return Ok(None);
                 };
                 let i = self.expr(index)?;
@@ -2260,6 +2283,7 @@ impl<'a> Emitter<'a> {
                 } else {
                     i
                 };
+                let i = Self::clamped(index, n, i);
                 Ok(Some((format!("{path}[{i}]"), *element)))
             }
             _ => Ok(None),
@@ -2501,7 +2525,11 @@ impl<'a> Emitter<'a> {
                         }
                     }
                     None => Lvalue {
-                        path: format!("{}[{i}]", lv.path),
+                        path: format!(
+                            "{}[{}]",
+                            lv.path,
+                            Self::clamped(index, bound_of(&base.ty), i)
+                        ),
                         comps: None,
                     },
                 }
