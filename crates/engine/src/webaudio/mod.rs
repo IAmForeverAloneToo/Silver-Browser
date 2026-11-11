@@ -461,7 +461,11 @@ impl WebAudio {
                     return fail("InvalidStateError", "Cannot resume a closed AudioContext.");
                 }
                 // An offline context's rendering stops at its suspensions
-                // on its own thread: resuming lets it go on.
+                // on its own thread: resuming lets it go on. Running is
+                // told first: the rest of a short render, and its end
+                // and closing told from its thread, come after it
+                // (macOS's CI saw them before it, the resume's promise
+                // rejected as the context's closing settled it).
                 if let Some(offline) = &context.offline {
                     if !offline.started {
                         return fail(
@@ -469,9 +473,9 @@ impl WebAudio {
                             "cannot resume an offline context that has not started",
                         );
                     }
-                    offline.resume();
                     context.state = State::Running;
                     context.teller.state(State::Running);
+                    offline.resume();
                     return Ok((Json::from("running"), Vec::new()));
                 }
                 if context.state == State::Running {
