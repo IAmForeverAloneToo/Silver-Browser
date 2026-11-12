@@ -2196,8 +2196,7 @@ none of batch H's features is either within 10% or here.
   some 4,000 calls in the dashboard's first frame: the base pays it
   too, and its time varies by a factor of two with the process's
   heap from run to run, in both trees.
-- Another global allocator: mimalloc halved the first frame's layout
-  gap above; it touches the whole engine and its dependencies.
+- Another global allocator: tried and not taken (D79, below).
 - A colour's change drawn without a layout (G254, deferred): an
   animated or transitioned colour (a hover's, a skeleton loader's
   shimmer) costs a restyle of the element and a layout of its boxes'
@@ -2206,6 +2205,44 @@ none of batch H's features is either within 10% or here.
   are patched into the boxes (M22.4). The colours' list patched so too
   is the lever, if the sweep or the dogfood shows such a page jank.
   Its children are restyled only when they read the change (G254).
+
+
+**The allocator trial (D79, 2026-11-13).** mimalloc 0.1.52 (v3) and the
+Windows segment heap against the system's (the NT heap, which Rust's
+`System` allocates from), on the benchmarks' executables. Bars: the
+median T4.3 row 10% faster, no row more than 5% slower, the peak
+working set at most 10% and the peak commit at most 25% higher (commit
+is charged machine-wide, a renderer a tab). Neither passed; the
+system's allocator stays.
+
+T4.3, 4 rounds, the 56 rows of `t43table.py`, ratio to the system's:
+
+| Allocator | Median row | Slowest row | Fastest row |
+|---|---|---|---|
+| mimalloc, defaults | x0.88 | x1.06, noise (x0.99 over 8 more rounds) | x0.44 (64 nested grids) |
+| Segment heap | x1.11 | x1.35 | x0.99 |
+
+mimalloc's first frame's paint in the `features` bench, 6 more rounds:
+x1.09, x1.23 in its secure mode, x1.02 with its arenas committed
+eagerly (which commits 1 GiB a process).
+
+Peak working set / peak commit, MiB, medians of 3 runs:
+
+| Bench | System | mimalloc | mimalloc, commit options | Segment heap |
+|---|---|---|---|---|
+| load | 36 / 27 | 65 / 81 | 36 / 30 | 34 / 23 |
+| dom | 113 / 105 | 183 / 338 | 123 / 131 | 113 / 102 |
+| features | 71 / 63 | 140 / 256 | 68 / 71 | 64 / 55 |
+| grid | 52 / 43 | 91 / 212 | 59 / 64 | 51 / 42 |
+| match | 17 / 15 | 21 / 44 | 18 / 18 | 16 / 15 |
+
+mimalloc's commit options: purges at once and decommitting, pages
+committed on demand, no full pages kept, arenas reserved 64 MiB at a
+time; its working set then 13% over on `grid` and 11% on `match`, its
+commit 49% over on `grid`. Its secure mode is larger still (x2.2 to
+x3.8 the working set). The segment heap is smaller everywhere and
+slower everywhere. Measured by the environment's options and by
+manifests stamped on copies of the executables; nothing of it is kept.
 
 **What the features cost a page that uses them.** The `features`
 bench: 1,000 cards, each feature at a time against the plain page,

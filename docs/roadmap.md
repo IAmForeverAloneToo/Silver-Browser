@@ -4097,6 +4097,7 @@ Deferred from the milestones above, each with what it waits on:
 | D76 | How entry transitions and sizes from `auto` work | GH | not at all / `@starting-style` as a before-change style, `calc-size()` resolved a frame at a time | as that; a transition acts as `will-change`; a user preference stops animations |
 | D77 | Which boxes `display`'s new values make | GH | none / contents, ruby and MathML Core's layout | contents walks its flat children; ruby annotations as inline boxes; MathML Core for the elements Chrome lays out; `run-in` refused as Chrome refuses it |
 | D78 | How relative colours and non-finite values compute | GH | refused / computed from the origin's channels, infinity kept | relative colours from their origin's channels; infinity and NaN kept to serialization; relative lengths in channels |
+| D79 | The global allocator | G247 | the system's / mimalloc, its secure mode or its commit options / the Windows segment heap by the manifest | the system's: mimalloc made the median T4.3 row 12% faster but doubled the peak working set and tripled the commit, and with its commit options still went 13% over the working set and 49% over the commit on `grid`; the segment heap was smaller and 11% slower (`docs/perf-budgets.md`, the allocator trial) |
 
 ---
 
