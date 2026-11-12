@@ -55,18 +55,14 @@ pub const MAX_SCRIPT_HEAP: usize = 256 << 20;
 /// QuickJS-ng's operations: 2 to 5 seconds of running code. Past them
 /// the script is stopped ([`ErrorKind::Budget`]).
 pub const MAX_SCRIPT_STEPS: u32 = 10_000;
-/// The native stack a realm's scripts may use, in bytes. QuickJS-ng's
-/// default is a megabyte, the whole of a Windows main thread's stack.
-/// Twice this in a debug build (M38): QuickJS measures from where a
-/// realm's runtime began (G165), and the engine's own frames between
-/// there and where its scripts run, a frame's inside its parent's, are
-/// some five times larger unoptimized (QuickJS itself is optimized in
-/// every build); Windows CI's timing ran out of the release bound there.
-pub const MAX_SCRIPT_STACK: usize = if cfg!(debug_assertions) {
-    512 << 10
-} else {
-    256 << 10
-};
+/// The native stack a realm's scripts may use, in bytes, measured from
+/// where its runtime began (G165): a megabyte in either build. A call
+/// of a script's function takes some 2.5 KiB of it, QuickJS's frame in
+/// C, so that 256 KiB gave a page fewer than a hundred frames, a page
+/// that recursed 90 deep (WPT's `scope-deep.html`) running out on
+/// Windows CI; browsers give some ten thousand, which the threads that
+/// run scripts have to have room for first (G253).
+pub const MAX_SCRIPT_STACK: usize = 1 << 20;
 
 /// What a realm may use; each field defaults to its constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

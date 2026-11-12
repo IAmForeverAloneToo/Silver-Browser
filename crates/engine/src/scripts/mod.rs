@@ -43,9 +43,10 @@ use std::time::Duration;
 
 /// The most scripts that run nested, one inside another's call, the
 /// outermost counted (M25): past it no further one runs, and the console
-/// says so. Each level takes some 30 KiB of a realm's 256 KiB of stack
-/// (`js::MAX_SCRIPT_STACK`), which runs out at about eight, measured: the
-/// cap stops a script that writes a script that writes one before that.
+/// says so. Each level takes some 30 KiB of a realm's stack
+/// (`js::MAX_SCRIPT_STACK`), whose 256 KiB, as it was, ran out at about
+/// eight, measured: the cap stops a script that writes a script that
+/// writes one before that.
 pub const MAX_SCRIPT_NESTING: usize = 6;
 
 use dom::{Document, NodeId};

@@ -3853,6 +3853,22 @@ Deferred from the milestones above, each with what it waits on:
        offsets to be compared, or the fresh engine's left its own; any
        difference that turns up looked at before the site sweep. Found
        by G247 (C's snapping test, which asserts the offsets itself).
+- [ ] G253 A page's scripts recurse about as deep as a browser's: a
+       trivial function ten thousand frames deep in a release build,
+       where a call takes some 2.5 KiB of native stack (QuickJS's frame,
+       measured and recorded, not changed). `js::MAX_SCRIPT_STACK` was
+       256 KiB, fewer than a hundred frames (a megabyte since, about
+       four hundred). Every thread that runs scripts given the room,
+       found by search (the shell's and the content process's main
+       threads, workers of each kind, worklets, the WPT and engine test
+       runners), one that cannot be refusing to run them; the room left
+       under the scripts' limit measured against the deepest native
+       work a script can start (layout and style, parsing, JSON,
+       structured clone, regular expressions), and their own depth
+       guards checked. Tests: ten thousand frames; unbounded recursion
+       a RangeError the page outlives; the same through
+       `getBoundingClientRect` at each level; a thread's stack shrunk
+       caught. Found by G247 (D1 tipped `scope-deep.html` on CI).
 
 ---
 
