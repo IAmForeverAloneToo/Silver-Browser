@@ -14575,6 +14575,13 @@ mod tests {
             // A scroll container made to snap, scrolled between two of
             // its areas: it rests on the nearer.
             ("scroll-snap-type: y mandatory", 70.0),
+            // The same, snapping smoothly: a fresh engine moves only
+            // where it goes at the frame it is compared at, so its pixels
+            // are the engine's; where they rest is compared (G252).
+            (
+                "scroll-snap-type: y mandatory; scroll-behavior: smooth",
+                70.0,
+            ),
             // One of its boxes made the target it starts scrolled to.
             ("scroll-initial-target: nearest", 0.0),
         ] {
@@ -14615,9 +14622,13 @@ mod tests {
                 panic!("{change}: {difference}");
             }
             assert!(engine.cached_styles().has_snaps, "{change}");
-            // It snapped: to the second box's start, or the third's.
+            // It snapped: to the second box's start, or the third's; a
+            // smooth snap is on its way there.
             let want = if scrolled > 0.0 { 60.0 } else { 120.0 };
-            assert_eq!(engine.element_scroll(s), want, "{change}");
+            assert_eq!(engine.element_scroll_target(s), want, "{change}");
+            if !change.contains("smooth") {
+                assert_eq!(engine.element_scroll(s), want, "{change}");
+            }
         }
     }
 

@@ -307,7 +307,24 @@ pub fn compare_with_fresh(
     fresh.frame(width, height);
     settle_frames(fresh);
     // The same offsets, down and across: the document's, and each scroll
-    // container's, node for node in tree order.
+    // container's, node for node in tree order; and which of them the
+    // user or a script has moved, which no `scroll-initial-target` puts
+    // back.
+    let fresh_of = |node: NodeId| {
+        order
+            .iter()
+            .position(|&at| at == node)
+            .and_then(|at| fresh_order.get(at).copied())
+    };
+    fresh.shown.moved = engine
+        .shown
+        .moved
+        .iter()
+        .filter_map(|&scroller| match scroller {
+            None => Some(None),
+            Some(node) => fresh_of(node).map(Some),
+        })
+        .collect();
     fresh.set_scroll(engine.scroll_y());
     fresh.scroll_to_x(engine.scroll_x(), true);
     for (&node, &fresh_node) in order.iter().zip(&fresh_order) {
@@ -324,6 +341,28 @@ pub fn compare_with_fresh(
     // keeps its last frame (M13.3), and the fresh one's must not.
     fresh.backend.forget_frame();
     let fresh_pixels = fresh.frame(width, height);
+    // Where the page rests its scroll containers (G252): the offsets
+    // above are the engine's, and a fresh engine that snaps them, clamps
+    // them or puts one at its initial target in its frame says that the
+    // engine left it where the page lets nothing rest.
+    let rest = |e: &Engine, scroller: Option<NodeId>| e.scroll_targets(scroller);
+    if rest(engine, None) != rest(fresh, None) {
+        return Err(format!(
+            "the viewport rests at {:?}, a fresh engine from there at {:?}",
+            rest(engine, None),
+            rest(fresh, None)
+        ));
+    }
+    for (i, (&node, &fresh_node)) in order.iter().zip(&fresh_order).enumerate() {
+        let (here, there) = (rest(engine, Some(node)), rest(fresh, Some(fresh_node)));
+        if here != there {
+            return Err(format!(
+                "node {i} ({:?}) rests scrolled at {here:?}, a fresh engine from there at \
+                 {there:?}",
+                engine.shown.document.tag(node)
+            ));
+        }
+    }
 
     engine.cached_styles();
     fresh.cached_styles();

@@ -3855,14 +3855,24 @@ Deferred from the milestones above, each with what it waits on:
        upload or cache raced, or a scroll offset read at another moment)
        than a test's timing: the test stays as it is, not quarantined.
        The images were kept from the run. Found by G247's gate.
-- [ ] G252 The differential tests' comparison with a fresh engine
+- [x] G252 The differential tests' comparison with a fresh engine
        (`differential::compare_with_fresh`) carries the scroll offsets
        over, so that where a page's scroll containers rest (a snap, a
-       `scroll-initial-target`) is never compared: an engine that
-       failed to snap after a change drew as the fresh one did. The
-       offsets to be compared, or the fresh engine's left its own; any
-       difference that turns up looked at before the site sweep. Found
-       by G247 (C's snapping test, which asserts the offsets itself).
+       `scroll-initial-target`) is never compared: an engine that failed
+       to snap after a change drew as the fresh one did. The offsets to
+       be compared, or the fresh engine's left its own; any difference
+       that turns up looked at before the site sweep. Found by G247 (C's
+       snapping test, which asserts the offsets itself). Done: after its
+       frame the fresh engine's resting offsets (its targets, the
+       viewport's and each scroll container's) are compared with the
+       engine's, and which containers the user or a script has moved is
+       carried over with the offsets, so that an initial target does not
+       take them back. A fresh engine re-snaps an offset carried over at
+       its frame, so a snap missed at once already drew otherwise; a
+       smooth snap's did not, its pixels the engine's: that case is
+       tested, and an engine that stops snapping after a change fails it
+       in the comparison (rests at 70, a fresh engine at 60). No test of
+       the engine's differs.
 - [x] G253 A page's scripts recurse deep enough, and no page ends its
        renderer by recursion: `js::MAX_SCRIPT_STACK` was 256 KiB, fewer
        than a hundred frames (a call takes some 3.5 KiB, QuickJS's
