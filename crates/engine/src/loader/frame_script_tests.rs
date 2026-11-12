@@ -170,7 +170,10 @@ fn a_port_goes_to_a_frame_and_answers() {
 #[test]
 fn a_frame_navigates_what_it_may_and_is_refused_the_rest() {
     // `b`'s frame may navigate its own origin's sibling and the top, not
-    // the sibling of `a`'s (the reference browser's rule, p6).
+    // the sibling of `a`'s (the reference browser's rule, p6). The
+    // navigator acts once its sibling's document answers it: until that
+    // loads, the frame holds its first, of the top's origin, and is
+    // refused (a slow machine's 50 ms were not enough).
     static PAGES: &[(&str, &str)] = &[
         (
             "/page.html",
@@ -183,13 +186,26 @@ fn a_frame_navigates_what_it_may_and_is_refused_the_rest() {
         ),
         (
             "/navigator.html",
-            "<script>onload = () => setTimeout(() => {\
+            "<script>\
+             let ready = false;\
+             onmessage = e => {\
+               if (ready || e.origin !== location.origin) return;\
+               ready = true;\
                try { parent.frames.a.location = 'y.html' } \
                catch (e) { console.log(e.name, e.message.replace(/'http.*'/, 'URL')) }\
                parent.frames.b.location.href = 'y.html';\
-             }, 50)</script>",
+             };\
+             const ping = () => {\
+               if (ready) return;\
+               parent.frames.b.postMessage('here?', '*');\
+               setTimeout(ping, 10);\
+             };\
+             onload = ping</script>",
         ),
-        ("/x.html", "<p>x</p>"),
+        (
+            "/x.html",
+            "<p>x</p><script>onmessage = e => e.source.postMessage('here', '*')</script>",
+        ),
         ("/y.html", "<script>console.log('y here')</script>"),
     ];
     let server = sites(PAGES);
