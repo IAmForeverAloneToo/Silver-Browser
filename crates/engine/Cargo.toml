@@ -80,6 +80,10 @@ name = "pseudo"
 harness = false
 
 [[bench]]
+name = "features"
+harness = false
+
+[[bench]]
 name = "flex"
 harness = false
 

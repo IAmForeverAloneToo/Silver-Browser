@@ -130,7 +130,7 @@ milestone's T4.3, with the item that will undo it.
 | An opacity animated on each of 1,000 | 16.7ms | `animation` | 15.1ms, one frame of 120 past |
 | TodoMVC: the frame after 100 items added, completed, deleted | 16.7ms | `interaction` | 4.5, 6.4 and 3.5ms |
 | A page of the twenty, from its navigation to its first frame | 100ms | `pages` | 19.7ms, the worst 69.1ms (the page built by script) |
-| A realm made | 8ms | `scripts` | 5.3ms |
+| A realm made | 9ms (8 until G247) | `scripts` | 5.3ms |
 | A cold start, to the blank tab's first frame with its page | 300ms (`STARTUP_BUDGET`) | `--startup-trace` | 94ms, warm |
 | A page of the twenty, what its renderer holds of its own | 64MB | `--check-processes memory` | 27.6MB, the most 59.2MB (the page in several scripts, whose CJK fallback fonts it reads) |
 
@@ -2087,8 +2087,30 @@ node a script makes and every layout, which pages that use none of its
 features paid too; G247 takes it back, its steps found by the hook
 timing (`--features hook-timing`, above) of both trees.
 
-**T4.3.** Against 13b332993, by turns; the rows and what took them
-back are written here as G247's steps land. An exception:
+**The steps.** By the hooks' numbers, in this order:
+
+- A (b168e69f2): the rules found by an element's attributes and the
+  user agent's `::backdrop` rules by the top layer, as by its class
+  and tag, and each declaration sorted in 64 bytes, not 144: a
+  gallery's first style x2.41 to x0.95.
+- B (d1fc90c0a): a layout measures containers only once some element
+  is one: a paragraph appended a frame x1.68 to x1.34.
+- D (260441b03): a node's object alone in its tree joins no group
+  until another does: a script-built table's script stage x2.07 to
+  x1.42 (below).
+- C (0ba1408ac): snapping looked for only once something snaps, text
+  no highlight is over finds no highlight spans, and a line with no
+  inline box or atomic inline on it keeps no places nor measures the
+  root's font: the first frame of 1,000 paragraphs x1.25 to x1.12, a
+  paragraph appended a frame x1.34 to x1.12.
+- E (e56e4f1bb): no transition to cancel hashes nothing; the rest of
+  the style rows spread thin (below).
+
+**T4.3.** Against 13b332993, by turns, the sixteen benches of gap
+batch H's own run, four rounds, at G247's end: 55 rows still more
+than 10% over the base's, each written here with its cause, by
+cause; none is a single change's cost. Every row of a page using
+none of batch H's features is either within 10% or here.
 
 - *A table of 1000 rows built by a script*, its script's stage: the
   bench's inner loop (a row and four cells made, appended, each cell's
@@ -2113,7 +2135,92 @@ back are written here as G247's steps land. An exception:
   more than the noise. Made at first use as chunks (D64), those
   sections would take back a quarter of a millisecond, the rest being
   the bindings pages use (shadow trees, custom elements, the top
-  layer); so the realm is left at x1.23.
+  layer); so the realm is left at x1.23, x1.28 (6.24 against 7.99ms)
+  at G247's end, and its budget is 9ms, not 8.
+- *Style, each element's* (+0.6us an element, measured on 6,000):
+  flex's first frame of 1,000 cards x1.36, grid's dashboard x1.36 and
+  20 caption changes x1.14, dom's table x1.17 to x1.23 (four rows),
+  mutation's x1.23 to x1.29 (three rows), load's first frame's x1.25.
+  Collecting the declarations +0.18us a sheet (two an element);
+  `style_key`'s some eight new checks (inert, the top layer, a modal,
+  MathML, boxes made of nothing, relevance, the flat tree's parent),
+  each a state bit or an attribute's lookup, and a bigger key to hash;
+  one more pseudo-element (`::backdrop`) sampled for each element. No
+  item is past 5% of the delta. Not taken, written down: flags of the
+  document, set and never cleared, for "the top layer used", "inert
+  set" and "a `::backdrop` or `details` styled", so that a page with
+  none skips those checks; some 10 to 20% of the delta for half a
+  day, and most real pages set them (dialogs, details).
+- *Layout and paint, what C left* (spread thin): mutation's layout
+  x1.15 (two rows), frame x1.12 to x1.16 (three rows), paint x1.11 to
+  x1.18 (three rows) and raster x1.12; dom's layout x1.16 and paint
+  x1.15 to x1.17 (three rows); flex's first paint x1.12; scroll's
+  frame x1.11; animation's class change layout x1.15 and frame x1.10.
+  A run's inline items collected +1.4 to 1.6us (+25 to 35%) with the
+  same code and the same sizes of every type it makes (only
+  `ComputedStyle` grew, 824 to 848 bytes): their vector's growth is
+  twice as slow in the head's heap. With mimalloc as the bench's
+  global allocator (an A/B, not kept) the first frame's layout gap is
+  x1.08, not x1.15: about half of it is the system allocator's speed
+  for the head's pattern of allocations. The paint order's walk +20%,
+  some 2ns a fragment over small changes everywhere.
+- *A restyle's fixed costs* (rows of 0.01 to 0.13ms): animation's
+  style x1.18 to x1.43 (six rows) and paint x1.11 to x2.00 (four
+  rows), composite's style x1.12 to x1.43 (four rows) and paint x1.11,
+  mutation's style a paragraph appended x1.29, grid's caption style.
+  Each restyle's passes batch H added (containers' and the top
+  layer's, the rule sets in force) at a few microseconds each.
+- *Parsing and inserting* (75ns a node): load's parsed alone x1.18,
+  its `load` to the page shown x1.17, the scripts bench's page of
+  1,000 paragraphs and 110 scripts x1.44 and x1.49. The tree builder's
+  per-element steps (`is`, custom elements, form association) and the
+  six new steps of every insertion (custom elements, shadow trees,
+  autofocus, references, owner trees, details). On the scripts page,
+  located: its load is 16.0 to 36.3ms, all of it in the parser's
+  slices (110 of them, the same turns and waiting): the styling done
+  there, interleaved with the parsing, pays each element's style
+  costs above cold, +1.7us an element against +0.5 on a page styled
+  at once.
+- *The script-built table's moves* (D, above): dom's script stages
+  x1.42 and x1.36, and x1.11 to x1.15 (three rows) where a cell's text
+  or the table's class changes. The table rows past the frame budget
+  before G247 (below) are further past it: the class toggled
+  17.8 to 21.2ms of style.
+
+**Ideas, not taken.** Measured, for when a page needs them:
+
+- The bindings made at first use: the separable sections as chunks
+  (D64) take 0.27ms off a realm; each interface installed on its
+  first access, a bigger lever, is unmeasured.
+- The layout cache's keep clones a box's fragments, 2 to 4us a call,
+  some 4,000 calls in the dashboard's first frame: the base pays it
+  too, and its time varies by a factor of two with the process's
+  heap from run to run, in both trees.
+- Another global allocator: mimalloc halved the first frame's layout
+  gap above; it touches the whole engine and its dependencies.
+
+**What the features cost a page that uses them.** The `features`
+bench: 1,000 cards, each feature at a time against the plain page,
+the least of five runs. A declarative shadow tree a card, `@scope`,
+nesting, `:has()` and a modal dialog in the top layer are within
+some 15% of the plain page's every row; `:has()` whose subject holds
+all 1,000 cards, a card's class toggled, 3.8ms a frame. Past the
+frame budget when used, each written by the element, to be read
+against a page's own count:
+
+| Feature | First frame | A frame after |
+| --- | --- | --- |
+| None | 64.1ms, its layout 36.1 | 13.5ms, a card appended |
+| A size container a card | 134.7ms, its layout 107.5 | 31.8ms, a card appended |
+| A CSS animation (a colour) a card | 84.4ms, its style 37.2 | 86.5ms |
+
+- A size container: some 18us a container at each layout (the frame
+  after a card appended, 1,000 of them), 71us in the first frame.
+- An element whose `border-color` a CSS animation runs: some 86us an
+  element a frame. Each frame restyles the 1,000 cards and their 2,000
+  children and lays out 4,005 boxes, for a property no child inherits
+  and that changes no layout: the base does the same (it is not
+  batch H's), and the sweep says whether pages meet it.
 
 ### Over budget, and why
 

@@ -3791,7 +3791,7 @@ Deferred from the milestones above, each with what it waits on:
        batch H's steps, which the batch built, and which still fail:
        each now says what the test sees and cites this gap, its cause
        to be found. Found in gap batch H.
-- [ ] G247 What gap batch H costs: T4.3 against 13b332993 found the
+- [x] G247 What gap batch H costs: T4.3 against 13b332993 found the
        first frame's style of a gallery of 1000 figures 2.4 times as
        slow (5.1 to 12.3 ms), of a grid of 1000 cards 1.8 times, a table
        of 1000 rows built by a script twice as slow (97 to 191 ms), the
@@ -3801,7 +3801,10 @@ Deferred from the milestones above, each with what it waits on:
        bookkeeping, shadow scoping, custom element reactions, tree
        groups) to be made free where a page needs none of it. The
        medians are in the T4.3 run of the batch. Found in gap batch H's
-       acceptance, left by the maintainer's word.
+       acceptance, left by the maintainer's word. Done: five steps
+       taken by the hooks' timing (`docs/perf-budgets.md`, "Gap batch H
+       (G247)"), the rows still past 10% written there by cause, the
+       features' own costs measured by the `features` bench.
 - [ ] G248 Six WPT tests that pass or fail by the machine's timing,
        each `either:` until found: in
        `execution-timing/077.html` two async `data:` scripts run as
@@ -3869,6 +3872,20 @@ Deferred from the milestones above, each with what it waits on:
        a RangeError the page outlives; the same through
        `getBoundingClientRect` at each level; a thread's stack shrunk
        caught. Found by G247 (D1 tipped `scope-deep.html` on CI).
+- [ ] G254 An animated or transitioned property that no child
+       inherits and that changes no layout costs a restyle of the
+       element's subtree and a layout at every frame: a `border-color`
+       animation on 1,000 cards restyles 3,002 elements and lays out
+       4,005 boxes a frame, some 86us an element (the base does the
+       same). A hover's colour transition on a long page relays it out
+       at each frame. Descendants restyled only when what they can
+       depend on changed (an inherited property, a custom property,
+       the font size); colours alone (`color`, `background-color`, the
+       borders', outline's and decoration's colours, a shadow's colour,
+       `fill`, `stroke`) repainted without a layout. Differential tests
+       of each, a layout-changing animation still laid out, one hovered
+       link one element restyled and no box laid out. Taken out of the
+       freeze by the lead: hovers on every site meet it. Found by G247.
 
 ---
 
