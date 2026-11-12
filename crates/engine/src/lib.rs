@@ -790,6 +790,14 @@ impl Shown {
         layout: &DocumentLayout,
         viewport: (f32, f32),
     ) -> style::container::ContainerSizes {
+        // No element made a container: nothing to measure (G247).
+        if !self
+            .styled
+            .as_ref()
+            .is_some_and(|styled| styled.styles.has_containers)
+        {
+            return style::container::ContainerSizes::new();
+        }
         let scrolled = &self.element_scroll;
         scroll_state::container_states(
             layout,
@@ -14400,6 +14408,46 @@ mod tests {
             }
         }
         (changed, engine.boxes_reused(), engine.layouts_kept())
+    }
+
+    #[test]
+    fn a_container_made_after_the_first_frame_is_measured_and_queried() {
+        // G247: a page with no container measures none, until one is
+        // made; then its size queries and units answer as a fresh
+        // engine's, and the page's styles keep knowing it has one.
+        let page = "<style>#c > p { color: #f00 }                     @container (min-width: 100px) { #c > p { color: #00f; width: 50cqw } }                    </style><div id=c><p>text</p></div>";
+        let mut engine = test_engine();
+        let mut fresh = test_engine();
+        engine.load_document(page);
+        engine.frame(320, 120);
+        assert!(!engine.cached_styles().has_containers);
+        engine.mutate(|document| {
+            let root = document.root();
+            let c = document
+                .subtree(root)
+                .find(|&node| document.attr(node, "id") == Some("c"))
+                .expect("the container");
+            document
+                .set_attribute(c, "style", "container-type: inline-size")
+                .expect("set");
+        });
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 320, 120)
+        {
+            panic!("{difference}");
+        }
+        assert!(engine.cached_styles().has_containers);
+        // The query holds of the container measured: blue.
+        let document = engine.document().clone();
+        let p = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("p"))
+            .expect("the paragraph");
+        let style = engine.styles().get(p).expect("styled").clone();
+        assert_eq!(
+            style.color,
+            style::computed::Color::rgb8(0, 0, 255),
+            "the query holds"
+        );
     }
 
     #[test]

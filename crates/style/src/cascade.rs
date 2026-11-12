@@ -235,6 +235,11 @@ pub struct Styles {
     /// styles are computed again when a web font arrives (G12). Stale
     /// as `uses_viewport_units` is.
     pub uses_font_units: bool,
+    /// Whether any element's style made it a size or a scroll-state
+    /// container (D72), so that a layout of these styles measures them
+    /// (G247): a page with none measures nothing. Stale as
+    /// `uses_viewport_units` is, set and never cleared.
+    pub has_containers: bool,
     /// The root element's font, which the root units measure; `None`
     /// for the initial one.
     root_font: Option<Arc<FontProps>>,
@@ -342,6 +347,8 @@ impl Styles {
     }
 
     fn set(&mut self, node: NodeId, computed: Computed) {
+        let container = computed.style.container_type;
+        self.has_containers |= container.is_size() || container.scroll_state;
         let index = node.index();
         if self.entries.len() <= index {
             self.entries.resize(index + 1, None);
