@@ -556,6 +556,7 @@
       owner === pageRoot &&
       groupOf(object) === null &&
       !hasGroup(root) &&
+      // `holdObject` covers a custom element's too: each is enough.
       !WeakSetHas(customObjects, object)
     ) {
       return;
@@ -763,7 +764,8 @@
     if (object !== undefined) {
       WeakSetAdd(customObjects, object);
       // One left without a group is its lone tree's root: the group is
-      // made now, to be held.
+      // made now, to be held. (`joinGroup` gives a custom element's
+      // object a group too: each is enough.)
       const group = groupOf(object) === null ? groupFor(handle) : groupOf(object);
       if (group !== pageGroup) {
         holdGroup(group);

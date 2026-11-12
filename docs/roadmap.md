@@ -3820,6 +3820,22 @@ Deferred from the milestones above, each with what it waits on:
        find nothing left to wait for before the cross-origin frame has
        loaded (always here, never on CI's Windows runner). Found by CI's
        runs and the gate.
+- [ ] G249 The fuzz targets that make a realm for every input, dom_api
+       and script, take 0.8 and 0.5s an input under the address
+       sanitizer (a one-byte input), against 0.03s for those that make
+       none: their corpora load in half an hour or more (dom_api's
+       2,826 inputs, minimized, 1,875s), so that five minutes of
+       fuzzing at a batch's exit is mostly loading. The realm's
+       bindings made lazily (G247) to shorten it; the realm is not to
+       be shared between inputs. Found by G247's corpus minimization.
+- [ ] G250 Node objects' groups held otherwise (D70): an object holds
+       its tree's group and a group only its roots', so that a node a
+       script makes and puts into another tree moves no object between
+       groups. A script-built table's script stage is x1.42 its base's
+       for it (`docs/perf-budgets.md`, "Gap batch H (G247)"), about 5us
+       an insert of a fresh node. About two days, with the lifetime
+       tests G247 added. Waits for the site sweep to say whether
+       building the DOM from a script is what pages feel. Found by G247.
 
 ---
 

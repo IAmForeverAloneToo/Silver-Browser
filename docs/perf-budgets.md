@@ -2079,6 +2079,28 @@ x1.17 and x1.20 in two later runs; alternated six times each, base
 2.93 to 4.05 ms and head 3.09 to 3.68: the Intel GPU's frames vary so
 between runs, the base's as the head's. No exception.
 
+### Gap batch H (G247)
+
+The Windows machine, release. Gap batch H (web components, the modern
+cascade, animations) added work to every element's cascade, every
+node a script makes and every layout, which pages that use none of its
+features paid too; G247 takes it back, its steps found by the hook
+timing (`--features hook-timing`, above) of both trees.
+
+**T4.3.** Against 13b332993, by turns; the rows and what took them
+back are written here as G247's steps land. An exception:
+
+- *A table of 1000 rows built by a script*, its script's stage: the
+  bench's inner loop (a row and four cells made, appended, each cell's
+  text set), 4,000 rows in a probe of the DOM's calls one by one:
+  400ms against the base's 281, x1.42 (x2.07 before G247). Batch H's
+  node object groups keep a tree's objects together while any is
+  reached (D70); a node a script makes and puts into another tree is
+  moved to that tree's group as the host tells the bindings, about 5us
+  an insert: the host's answer and some ten Map operations. Without
+  the moves the loop is the base's, 284ms; the calls that move nothing
+  cost nothing more. G250 holds the groups otherwise.
+
 ### Over budget, and why
 
 These are known and recorded rather than hidden. Each has the item that
