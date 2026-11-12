@@ -282,24 +282,40 @@ fn the_gpu_backend_draws_every_page_as_the_software_backend_does() {
     pages.extend(pages_in("tests/reference"));
     pages.extend(pages_in("tests/layouts"));
     let mut failures = Vec::new();
+    // A frame that fails is drawn again whole on the GPU, its layers and
+    // glyphs let go of first, and the failure says whether that one
+    // matches: a difference that goes is the GPU path's own moment (an
+    // upload or a cache raced, G251), one that stays is its drawing.
+    let mut check = |name: &str, a: &[u8], b: &[u8], on_gpu: &mut Engine| {
+        let Some(failure) = compare(name, a, b, &out_dir) else {
+            return;
+        };
+        on_gpu.trim();
+        let again = on_gpu.frame(WIDTH, HEIGHT);
+        let redrawn = match compare(&format!("{name}.again"), a, &again, &out_dir) {
+            None => "drawn again whole, it matches".to_string(),
+            Some(_) => "drawn again whole, it still differs".to_string(),
+        };
+        failures.push(format!("{failure}; {redrawn}"));
+    };
     for (name, source) in &pages {
         software.load_document(source);
         on_gpu.load_document(source);
         let a = software.frame(WIDTH, HEIGHT);
         let b = on_gpu.frame(WIDTH, HEIGHT);
-        failures.extend(compare(name, &a, &b, &out_dir));
+        check(name, &a, &b, &mut on_gpu);
         if software.max_scroll() > 0.0 {
             software.set_scroll(SCROLL);
             on_gpu.set_scroll(SCROLL);
             let a = software.frame(WIDTH, HEIGHT);
             let b = on_gpu.frame(WIDTH, HEIGHT);
-            failures.extend(compare(&format!("{name}.scrolled"), &a, &b, &out_dir));
+            check(&format!("{name}.scrolled"), &a, &b, &mut on_gpu);
             // Back up, which composites the tiles kept.
             software.set_scroll(0.0);
             on_gpu.set_scroll(0.0);
             let a = software.frame(WIDTH, HEIGHT);
             let b = on_gpu.frame(WIDTH, HEIGHT);
-            failures.extend(compare(&format!("{name}.back"), &a, &b, &out_dir));
+            check(&format!("{name}.back"), &a, &b, &mut on_gpu);
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

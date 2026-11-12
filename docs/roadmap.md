@@ -3865,15 +3865,23 @@ Deferred from the milestones above, each with what it waits on:
        an insert of a fresh node. About two days, with the lifetime
        tests G247 added. Waits for the site sweep to say whether
        building the DOM from a script is what pages feel. Found by G247.
-- [ ] G251 The GPU backend's frame of the grid garden page scrolled
-       came out once, under a gate's load, with 3 pixels of a caption's
-       glyph unlike the software backend's (at 455,385 to 455,387: ec e8
-       dc against 88 6a 3d), the equivalence test failing; alone it
-       passed three times in three. Output that differs only under load
-       is more likely the GPU path's own nondeterminism (a glyph atlas
-       upload or cache raced, or a scroll offset read at another moment)
-       than a test's timing: the test stays as it is, not quarantined.
-       The images were kept from the run. Found by G247's gate.
+- [ ] G251 The GPU backend's frame of the grid garden page scrolled came
+       out once, under a gate's load, with 3 pixels of a caption's glyph
+       unlike the software backend's (at 455,385 to 455,387: ec e8 dc
+       against 88 6a 3d), the equivalence test failing; alone it passed
+       three times in three. Output that differs only under load is more
+       likely the GPU path's own nondeterminism (a glyph atlas upload or
+       cache raced, or a scroll offset read at another moment) than a
+       test's timing: the test stays as it is, not quarantined. The
+       images were kept from the run. Found by G247's gate. Looked at
+       (2026-11-13): the three pixels are the page's brown background
+       (8a6a3c) where the card's light fill (f3efe4) and a glyph's edge
+       are, a colour nowhere near them: the card's layer was left partly
+       transparent there, not a glyph drawn otherwise. Not made again: 3
+       runs alone and 12 beside the engine's tests looping passed. A
+       failing frame is now drawn again whole on the GPU, its layers and
+       glyphs let go of, and the failure says whether that one matches,
+       which tells a raced upload from a drawing that stays wrong.
 - [x] G252 The differential tests' comparison with a fresh engine
        (`differential::compare_with_fresh`) carries the scroll offsets
        over, so that where a page's scroll containers rest (a snap, a
