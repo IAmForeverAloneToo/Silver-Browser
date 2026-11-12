@@ -2264,4 +2264,84 @@ mod tests {
         tree.remove(TOP);
         assert_eq!(tree.frames(), MAX_FRAMES, "the top stays");
     }
+
+    #[test]
+    fn a_frame_navigates_by_origin_as_htmls_familiar_with_rule_says() {
+        // HTML's "familiar with": A may navigate B when B is A or A's
+        // top, or B or an ancestor of B is of A's origin (A itself among
+        // them). The top `a` with children b, b, c and a, a `c` under the
+        // first b and a `b` under the c: siblings b/b, b/c and a/b, and
+        // grandchildren, every pair asked both ways (G255).
+        let origin = |host: &str| {
+            Url::parse(&format!("http://{host}.test/"))
+                .expect("a URL")
+                .origin()
+        };
+        let tree = FrameTree::shared();
+        let mut tree = lock(&tree);
+        tree.set_document(TOP, origin("a"), Sandbox::NONE);
+        // Each frame: its number, its host, its parent.
+        let mut frames: Vec<(FrameId, &str, Option<FrameId>)> = vec![(TOP, "a", None)];
+        for (host, parent) in [("b", 0), ("b", 0), ("c", 0), ("a", 0), ("c", 1), ("b", 3)] {
+            let parent = frames[parent].0;
+            let id = tree.add(parent).expect("room");
+            tree.set_document(id, origin(host), Sandbox::NONE);
+            frames.push((id, host, Some(parent)));
+        }
+        let host = |id: FrameId| frames.iter().find(|f| f.0 == id).expect("a frame").1;
+        let parent = |id: FrameId| frames.iter().find(|f| f.0 == id).expect("a frame").2;
+        let familiar = |source: FrameId, target: FrameId| {
+            let mut at = Some(target);
+            while let Some(id) = at {
+                if id == source || host(id) == host(source) {
+                    return true;
+                }
+                at = parent(id);
+            }
+            target == TOP
+        };
+        let mut allowed = 0;
+        for &(source, from, _) in &frames {
+            for &(target, to, _) in &frames {
+                let may = tree.may_navigate(source, target, (&origin(from), Sandbox::NONE), false);
+                assert_eq!(
+                    may,
+                    familiar(source, target),
+                    "{source} {from} -> {target} {to}"
+                );
+                allowed += usize::from(may);
+            }
+        }
+        // Of `a`, all 7 each; of `b`, 5 each; of `c`, 4 each.
+        assert_eq!(allowed, 37, "of 49 pairs");
+        // The cases the matrix is for, by name.
+        let ids: Vec<FrameId> = frames.iter().map(|f| f.0).collect();
+        let [_, b1, b2, c, a, c_under_b, b_under_c] = ids[..] else {
+            unreachable!("seven frames")
+        };
+        let b = origin("b");
+        let may = |source, target| tree.may_navigate(source, target, (&b, Sandbox::NONE), false);
+        assert!(
+            may(b1, b2),
+            "a sibling of its origin under another's parent"
+        );
+        assert!(!may(b1, c), "a sibling of a third origin");
+        assert!(!may(b1, a), "a sibling of its parent's origin");
+        assert!(may(b1, TOP), "its top");
+        assert!(may(b1, c_under_b), "its child of another origin");
+        assert!(
+            may(b_under_c, b2),
+            "a frame of its origin elsewhere in the tab"
+        );
+        assert!(!may(b_under_c, c), "its parent of another origin");
+        assert!(may(b1, b_under_c), "one of its origin under another's");
+        // An opaque origin is familiar with none; the sandbox's navigation
+        // flag keeps a frame to itself, its descendants and its top.
+        let opaque = net::Origin::new_opaque();
+        assert!(!tree.may_navigate(b1, b2, (&opaque, Sandbox::NONE), false));
+        assert!(!tree.may_navigate(b1, b2, (&b, Sandbox::NAVIGATION), false));
+        assert!(tree.may_navigate(b1, c_under_b, (&b, Sandbox::NAVIGATION), false));
+        assert!(tree.may_navigate(b1, TOP, (&b, Sandbox::NAVIGATION), false));
+        assert!(!tree.may_navigate(b1, TOP, (&b, Sandbox::TOP_NAVIGATION), false));
+    }
 }

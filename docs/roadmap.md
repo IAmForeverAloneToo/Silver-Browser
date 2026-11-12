@@ -3192,7 +3192,14 @@ Deferred from the milestones above, each with what it waits on:
        `document.domain` relaxing it, `opener`; `storage` events to
        other frames' documents of the same key. Every frame is
        cross-origin to every other until M34's site instances share a
-       runtime (D24). Found at M33.
+       runtime (D24). Found at M33. Siblings of one origin under
+       another's parent too (a frame of `b` reading its `b` sibling
+       under `a`), found by a test's flake (0cf862e1d); closed in every
+       case, tested over parents, siblings and grandchildren of one and
+       of other origins, with navigation's familiar-with rule
+       (`frames.rs`, `frame_script_tests.rs`). Gmail, Docs and editors
+       in iframe mode read their own origin's frames: the site sweep
+       counts it.
 - [ ] G91 A frame's layers composited on the GPU: its pixels are drawn
        in software and uploaded. With M34's out-of-process frames.
        Found at M33. With G110's rest: the renderers' pages drawn on the

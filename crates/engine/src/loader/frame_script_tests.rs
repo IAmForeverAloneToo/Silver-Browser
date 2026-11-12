@@ -222,6 +222,82 @@ fn a_frame_navigates_what_it_may_and_is_refused_the_rest() {
 }
 
 #[test]
+fn no_frame_reads_another_frames_document_whatever_their_origins() {
+    // Every frame is cross-origin to every other here, its own origin's
+    // too (D24): HTML lets frames of one origin read each other's
+    // documents, which waits for G90, and the rest never. A top of `a`
+    // reads its own origin's frame; a reader of `b` its sibling of `b`,
+    // its parent and top of `a` and its child of `b`; that child its
+    // parent of `b` and its top. Each read throws, none answers (G255).
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe name=same src=x.html></iframe>\
+             <iframe src='http://b.localhost:PORT/reader.html'></iframe>\
+             <iframe name=b src='http://b.localhost:PORT/x.html'></iframe><script>\
+             for (const f of document.querySelectorAll('iframe')) {\
+               f.src = f.src.replace('PORT', location.port);\
+             }\
+             const read = w => { try { return w.document ? 'read' : 'none' } \
+               catch (e) { return e.name } };\
+             onload = () => console.log('top: same', read(frames.same), \
+               document.querySelector('iframe').contentDocument);</script>",
+        ),
+        (
+            "/reader.html",
+            "<iframe name=child src=grandchild.html></iframe><script>\
+             const read = w => { try { return w.document ? 'read' : 'none' } \
+               catch (e) { return e.name } };\
+             const heard = new Set();\
+             onmessage = e => {\
+               if (e.origin !== location.origin || heard.size === 2) return;\
+               heard.add(e.source);\
+               if (heard.size < 2) return;\
+               console.log('reader: sibling', read(parent.frames.b), 'parent', read(parent), \
+                 'top', read(top), 'child', read(frames.child));\
+             };\
+             const ping = () => {\
+               if (heard.size === 2) return;\
+               parent.frames.b.postMessage('here?', '*');\
+               frames.child.postMessage('here?', '*');\
+               setTimeout(ping, 10);\
+             };\
+             onload = ping</script>",
+        ),
+        (
+            "/grandchild.html",
+            "<script>\
+             const read = w => { try { return w.document ? 'read' : 'none' } \
+               catch (e) { return e.name } };\
+             let told = false;\
+             onmessage = e => {\
+               e.source.postMessage('here', '*');\
+               if (told) return;\
+               told = true;\
+               console.log('grandchild: parent', read(parent), 'top', read(top));\
+             };</script>",
+        ),
+        (
+            "/x.html",
+            "<p>x</p><script>onmessage = e => e.source.postMessage('here', '*')</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let mut lines = run(&server, at(&server, "a.localhost", "/page.html"), 3);
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame http://b.localhost:PORT/grandchild.html] grandchild: parent SecurityError \
+             top SecurityError",
+            "[frame http://b.localhost:PORT/reader.html] reader: sibling SecurityError parent \
+             SecurityError top SecurityError child SecurityError",
+            "top: same SecurityError null",
+        ]
+    );
+}
+
+#[test]
 fn links_and_forms_target_frames_by_name_parent_and_top() {
     static PAGES: &[(&str, &str)] = &[
         (
