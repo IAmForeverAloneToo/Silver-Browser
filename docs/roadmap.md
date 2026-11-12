@@ -3859,12 +3859,12 @@ Deferred from the milestones above, each with what it waits on:
 - [x] G253 A page's scripts recurse deep enough, and no page ends its
        renderer by recursion: `js::MAX_SCRIPT_STACK` was 256 KiB, fewer
        than a hundred frames (a call takes some 3.5 KiB, QuickJS's
-       frame, measured); 16 MiB now, some 4,700, the most `rquickjs`
-       keeps a limit at (past it, none). Every thread that runs scripts
-       has `engine::STACK_SIZE`, 40 MiB, its scripts' and 16 MiB under
-       them, half as much again as the deepest native work a script's
-       call starts at its limit (measured in a debug build); a realm is
-       made only where the thread says it has that
+       frame, measured); 16 MiB now, some 3,000 on Windows, the most
+       `rquickjs` keeps a limit at (past it, none). Every thread that
+       runs scripts has `engine::STACK_SIZE`, 40 MiB, its scripts' and
+       16 MiB under them, half as much again as the deepest native work
+       a script's call starts at its limit (measured in a debug build);
+       a realm is made only where the thread says it has that
        (`js::remaining_stack`, the crate's second reviewed `unsafe`),
        none elsewhere. Shadow trees' slots let hosts nest past
        `dom::MAX_DEPTH` in the flat tree, and the boxes' recursion ended

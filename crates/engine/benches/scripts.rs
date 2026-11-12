@@ -140,6 +140,11 @@ fn load(server: &TestServer, scripting: bool) -> Duration {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let mut made = Vec::new();
     for _ in 0..support::rounds(RUNS) {
         let start = Instant::now();

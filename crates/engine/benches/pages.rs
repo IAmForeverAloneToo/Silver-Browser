@@ -161,6 +161,11 @@ fn measure_folder(root: &Path, label: &str) -> Vec<f64> {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/pages");
     let mut wholes = measure_folder(&root, "the pages written for the benchmark");
     let about = Url::parse("about:silver").expect("a URL");

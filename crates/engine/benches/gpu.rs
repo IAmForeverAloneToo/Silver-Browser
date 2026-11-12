@@ -239,6 +239,11 @@ fn timed() -> (Vec<f64>, Vec<f64>) {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     if engine::gpu::local_client().is_none() {
         println!("no adapter here: nothing to time");
         return;

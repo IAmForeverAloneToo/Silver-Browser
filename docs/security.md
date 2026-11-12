@@ -176,8 +176,9 @@ above.
 QuickJS-ng through `rquickjs`, one realm for each document and worker:
 a 256 MiB heap at most (`MAX_SCRIPT_HEAP`, 64 MiB in a frame), past
 which the realm is stopped and the user told; a 16 MiB stack
-(`MAX_SCRIPT_STACK`, some 4,700 frames: `rquickjs` takes more for no
-limit at all, which a compile-time assertion forbids), on threads of
+(`MAX_SCRIPT_STACK`, some 3,000 frames on Windows, by its C compiler:
+`rquickjs` takes more for no limit at all, which a compile-time
+assertion forbids), on threads of
 `engine::STACK_SIZE` (40 MiB) alone, a realm made only where
 `js::remaining_stack` says the thread has that stack and
 `js::NATIVE_STACK` (16 MiB, half as much again as the native work a
@@ -779,7 +780,7 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_HANDLE` | `(1 << 53) - 1` | The largest number a handle may be: what a script's number holds exactly. |
 | `js` | `MAX_SCRIPT_HEAP` | `256 << 20` | The most heap a realm may hold, in bytes. |
 | `js` | `MAX_SCRIPT_STEPS` | `10_000` | The interrupt checks a run may take, each about 10,000 of QuickJS-ng's operations: 2 to 5 seconds of running code. |
-| `js` | `MAX_SCRIPT_STACK` | `16 << 20` | The native stack a realm's scripts may use, in bytes, some 4,700 frames; at most 16 MiB, past which `rquickjs` sets no limit (G253). |
+| `js` | `MAX_SCRIPT_STACK` | `16 << 20` | The native stack a realm's scripts may use, in bytes, some 3,000 frames on Windows; at most 16 MiB, past which `rquickjs` sets no limit (G253). |
 | `js` | `NATIVE_STACK` | `16 << 20` | The stack a thread keeps under its scripts' for the native work a call of theirs starts (G253): no realm is made on a thread with less left than both. |
 | `js` | `MAX_ANSWERS` | `1024` | The answers kept, by pattern and value, before they are forgotten. |
 | `js` | `MAX_WASM_MODULE_BYTES` | `64 << 20` | The largest module a realm compiles. |

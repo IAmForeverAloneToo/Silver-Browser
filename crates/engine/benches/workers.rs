@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
@@ -173,6 +175,11 @@ fn measured(source: &str) -> f64 {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     println!("the Mandelbrot demo, 640 by 400, 200 iterations:");
     mandelbrot(4);
     mandelbrot(0);

@@ -183,6 +183,11 @@ fn median(stats: &[FrameStats], of: fn(&FrameStats) -> Duration) -> f64 {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
         .expect("the bundled font parses");
     for feature in &FEATURES {

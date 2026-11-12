@@ -27,3 +27,17 @@ pub fn hooks(title: &str) {
     #[cfg(feature = "hook-timing")]
     print!("{}", dom::hook_timing::take(title));
 }
+
+/// Runs `body`, a bench's own, on a thread of the engine's stack, which
+/// a realm needs (G253): a bench's main thread has the system's, 1 MiB
+/// on Windows, on which no realm is made.
+#[allow(dead_code)]
+pub fn on_engine_stack(body: fn()) {
+    std::thread::Builder::new()
+        .name("bench".to_owned())
+        .stack_size(engine::STACK_SIZE)
+        .spawn(body)
+        .expect("a thread for the bench")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}

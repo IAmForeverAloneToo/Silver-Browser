@@ -19,13 +19,27 @@
 #[inline(never)]
 pub fn remaining_stack() -> Option<usize> {
     let marker = 0u8;
-    let here = std::ptr::addr_of!(marker) as usize;
-    here.checked_sub(stack_low()?)
+    remaining_below(std::ptr::addr_of!(marker) as usize, stack_bounds()?)
 }
 
-/// The lowest address of the calling thread's stack (it grows down).
+/// The bytes under `here` of a stack from `low` up to `high`; `None`
+/// for an address outside it, a bug but in a fuzzing build, where
+/// AddressSanitizer's fake stacks, which check uses after return, keep
+/// a frame's locals on the heap: the whole stack there, its frames above
+/// here, at a realm's making near its thread's top, few.
+fn remaining_below(here: usize, (low, high): (usize, usize)) -> Option<usize> {
+    if (low..=high).contains(&here) {
+        Some(here - low)
+    } else if cfg!(fuzzing) {
+        Some(high - low)
+    } else {
+        None
+    }
+}
+
+/// The lowest and highest addresses of the calling thread's stack.
 #[cfg(windows)]
-fn stack_low() -> Option<usize> {
+fn stack_bounds() -> Option<(usize, usize)> {
     use windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits;
     let (mut low, mut high) = (0usize, 0usize);
     // SAFETY: GetCurrentThreadStackLimits writes the calling thread's
@@ -33,12 +47,12 @@ fn stack_low() -> Option<usize> {
     // which point to these two live locals; it has no other effect and
     // cannot fail.
     unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
-    (low != 0 && high > low).then_some(low)
+    (low != 0 && high > low).then_some((low, high))
 }
 
-/// The lowest address of the calling thread's stack (it grows down).
+/// The lowest and highest addresses of the calling thread's stack.
 #[cfg(target_os = "linux")]
-fn stack_low() -> Option<usize> {
+fn stack_bounds() -> Option<(usize, usize)> {
     let mut low: *mut libc::c_void = std::ptr::null_mut();
     let mut size: libc::size_t = 0;
     // SAFETY: `attr` is initialized by pthread_getattr_np before it is
@@ -54,12 +68,12 @@ fn stack_low() -> Option<usize> {
         libc::pthread_attr_destroy(&mut attr);
         got == 0
     };
-    (ok && !low.is_null() && size > 0).then_some(low as usize)
+    (ok && !low.is_null() && size > 0).then(|| (low as usize, low as usize + size))
 }
 
-/// The lowest address of the calling thread's stack (it grows down).
+/// The lowest and highest addresses of the calling thread's stack.
 #[cfg(target_os = "macos")]
-fn stack_low() -> Option<usize> {
+fn stack_bounds() -> Option<(usize, usize)> {
     // SAFETY: both calls only read the calling thread's own stack's
     // address (its highest) and size; the thread is alive throughout.
     let (top, size) = unsafe {
@@ -70,19 +84,28 @@ fn stack_low() -> Option<usize> {
         )
     };
     (top != 0 && size > 0)
-        .then(|| top.checked_sub(size))
+        .then(|| Some((top.checked_sub(size)?, top)))
         .flatten()
 }
 
 /// Elsewhere nothing is known: no realm is made.
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn stack_low() -> Option<usize> {
+fn stack_bounds() -> Option<(usize, usize)> {
     None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::remaining_stack;
+    use super::{remaining_below, remaining_stack};
+
+    #[test]
+    fn an_address_outside_the_stack_says_nothing_of_it() {
+        // Fail closed (G253): only a fuzzing build takes the whole stack.
+        assert_eq!(remaining_below(15, (10, 20)), Some(5));
+        assert_eq!(remaining_below(10, (10, 20)), Some(0));
+        assert_eq!(remaining_below(5, (10, 20)), None);
+        assert_eq!(remaining_below(25, (10, 20)), None);
+    }
 
     /// What a thread spawned with `size` bytes of stack reports at its
     /// start.

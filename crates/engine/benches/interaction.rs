@@ -190,6 +190,11 @@ fn median(mut times: Vec<f64>) -> f64 {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = TestServer::plain(|_| Reply::ok("text/html; charset=utf-8", APP.as_bytes()));
     let url = server.url("/");
     let runs: Vec<[Step; 3]> = (0..support::rounds(RUNS)).map(|_| run(&url)).collect();

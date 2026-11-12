@@ -184,6 +184,11 @@ fn navigation(server: &TestServer, from: &str, host: &str) -> String {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = server();
     println!("processes ({RUNS} runs each, one engine | a tab of renderers):");
     for (what, path) in [

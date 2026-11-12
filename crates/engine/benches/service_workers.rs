@@ -167,6 +167,11 @@ fn run(context: &Context, url: &Url) -> Duration {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = TestServer::plain(held);
     println!(
         "a page of twenty resources, each reply held back {} ms, {RUNS} runs, load to loaded:",

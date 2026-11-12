@@ -121,6 +121,11 @@ fn times(config: &Config, url: &Url, scanner: bool) -> String {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let authority = TestAuthority::new();
     let h1 = TestServer::tls(authority.server(&["a.localhost"], VALID), held);
     let h2 = TestServer::tls(authority.server_h2(&["a.localhost"], VALID), held);

@@ -35,3 +35,7 @@ libc.workspace = true
 [dev-dependencies]
 # The text format, for the tests' modules (M29).
 wat = "1"
+
+# `cargo fuzz` builds with `--cfg fuzzing`, which `stack.rs` reads.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

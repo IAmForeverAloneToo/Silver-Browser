@@ -206,6 +206,11 @@ fn load(url: &Url) -> Duration {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = server();
     println!("WebAssembly (M29), median of {RUNS}:");
     for (path, what) in [

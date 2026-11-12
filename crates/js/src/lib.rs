@@ -60,10 +60,11 @@ pub const MAX_SCRIPT_STEPS: u32 = 10_000;
 /// The native stack a realm's scripts may use, in bytes, measured from
 /// where its runtime began (G165): a call of a script's function takes
 /// some 3.5 KiB of it, QuickJS's frame in C, in either build (G253,
-/// measured: 2,360 frames in 8 MiB), so that this gives a page some
-/// 4,700 frames, where it was 256 KiB, fewer than a hundred. A realm is
-/// made only on a thread with this much left and [`NATIVE_STACK`] under
-/// it ([`remaining_stack`]).
+/// measured: 2,360 frames in 8 MiB), half as much again as CI's Windows
+/// compiler builds QuickJS, so that this gives a page some 3,000 frames
+/// on Windows (4,700 here), where it was 256 KiB, fewer than a hundred.
+/// A realm is made only on a thread with this much left and
+/// [`NATIVE_STACK`] under it ([`remaining_stack`]).
 ///
 /// No more than 16 MiB: rquickjs takes a larger limit for none at all
 /// (its `set_max_stack_size`, so that QuickJS's subtraction from the

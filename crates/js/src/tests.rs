@@ -552,10 +552,11 @@ fn deep_recursion_throws_a_catchable_range_error() {
 }
 
 #[test]
-fn a_page_recurses_four_thousand_deep_and_no_deeper_than_its_limit() {
+fn a_page_recurses_three_thousand_deep_and_no_deeper_than_its_limit() {
     // G253: the limit holds (rquickjs takes one past 16 MiB for none, and
     // a script's recursion would end the process), and is deep enough
-    // for what pages do.
+    // for what pages do: some 4,700 frames here, 3,000 and more on CI's
+    // Windows, whose C compiler makes QuickJS's frame larger.
     let done = realm()
         .run(
             &script(
@@ -570,7 +571,7 @@ fn a_page_recurses_four_thousand_deep_and_no_deeper_than_its_limit() {
     let (deepest, name) = text.split_once(' ').expect("a depth and a name");
     let deepest: u32 = deepest.parse().expect("a depth");
     assert_eq!(name, "RangeError");
-    assert!((4_000..10_000).contains(&deepest), "{deepest} frames deep");
+    assert!((3_000..10_000).contains(&deepest), "{deepest} frames deep");
 }
 
 #[test]

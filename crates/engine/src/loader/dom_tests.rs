@@ -3018,17 +3018,18 @@ fn a_script_at_its_stack_limit_lays_out_the_deepest_pages_and_throws_no_deeper()
             crate::differential::run_script(
                 engine,
                 "const d = document.getElementById('d'); \
-                 function plain(n) { return n === 0 ? 0 : 1 + plain(n - 1); } \
-                 let limit = 0; \
-                 try { for (let n = 100; ; n += 100) { plain(n); limit = n; } } \
-                 catch (e) { console.log('limit ' + (limit >= 4000) + ' ' + e.name); } \
                  let w = 0; \
-                 function deep(n) { \
-                   if (n === 0) { d.style.width = (++w) + 'px'; return d.getBoundingClientRect().width; } \
-                   return deep(n - 1); } \
+                 function deep(n, lay) { \
+                   if (n === 0) { \
+                     if (!lay) return 0; \
+                     d.style.width = (++w) + 'px'; return d.getBoundingClientRect().width; } \
+                   return 1 + deep(n - 1, lay); } \
+                 let limit = 0; \
+                 try { for (let n = 100; ; n += 100) { deep(n, false); limit = n; } } \
+                 catch (e) { console.log('limit ' + (limit >= 3000) + ' ' + e.name); } \
                  const out = []; \
-                 for (const back of [400, 100, 25, 10, -50]) { \
-                   try { out.push(typeof deep(limit - back)); } catch (e) { out.push(e.name); } } \
+                 for (const back of [400, 100, 25, 10, -500]) { \
+                   try { out.push(typeof deep(limit - back, true)); } catch (e) { out.push(e.name); } } \
                  console.log(out.join(' '));",
             );
             crate::differential::run_script(engine, "console.log('after')");

@@ -222,7 +222,7 @@ const SCROLL_TICK_FRACTION: f32 = 1.0 / 3.0;
 const SCROLL_SNAP_PX: f32 = 0.5;
 
 /// The stack a thread that runs the engine needs: its scripts' own
-/// (`js::MAX_SCRIPT_STACK`, some 4,700 frames), the native work a
+/// (`js::MAX_SCRIPT_STACK`, some 3,000 frames on Windows), the native work a
 /// script's call starts under them (`js::NATIVE_STACK`: a page nested as
 /// deep as the parser lets, `dom::MAX_DEPTH`, is built into boxes and
 /// laid out by recursion, about 7 KiB a level in release and 33 KiB in a

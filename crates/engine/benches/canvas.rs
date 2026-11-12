@@ -233,6 +233,11 @@ fn chart() {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let dom = Path::new(env!("CARGO_TARGET_TMPDIR")).join("particles-dom.html");
     std::fs::write(&dom, DOM_PARTICLES).expect("the page is written");
     for gpu in [false, true] {

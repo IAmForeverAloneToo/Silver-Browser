@@ -170,6 +170,11 @@ fn opened() -> (Duration, Duration) {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = server();
     for (path, what) in [
         ("/none.html", "the page alone"),

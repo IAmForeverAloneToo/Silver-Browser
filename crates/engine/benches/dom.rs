@@ -144,8 +144,25 @@ fn report(stats: &[FrameStats]) {
     );
 }
 
-/// The page of `rows` loaded, scripts on, and its first frame drawn.
-fn loaded(server: &TestServer, rows: usize) -> (Engine, Receiver<()>) {
+/// A page whose script makes five hosts slotted into each other's
+/// shadow trees, each a chain of 400 blocks with its slot at the bottom:
+/// 2,000 elements in a flat tree 2,000 deep, which a restyle walked once
+/// a node before G253, its first frame 0.7 s. Made in the first frame's
+/// animation frame callback, so that the frame restyles them.
+const SLOTTED: &str = concat!(
+    "<!DOCTYPE html><body><script>requestAnimationFrame(() => { ",
+    "let at = document.body; ",
+    "for (let h = 0; h < 5; h++) { ",
+    "const host = document.createElement('section'); at.append(host); ",
+    "let inner = host.attachShadow({mode: 'open'}); ",
+    "for (let i = 0; i < 400; i++) { ",
+    "const d = document.createElement('div'); inner.append(d); inner = d; } ",
+    "inner.append(document.createElement('slot')); at = host; } ",
+    "at.append('deep'); });</script>"
+);
+
+/// The page at `path` loaded, scripts on, no frame drawn yet.
+fn navigated(server: &TestServer, path: &str) -> (Engine, Receiver<()>) {
     let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
         .expect("the bundled font parses");
     let mut engine = Engine::with_fonts(fonts);
@@ -154,13 +171,19 @@ fn loaded(server: &TestServer, rows: usize) -> (Engine, Receiver<()>) {
     engine.set_waker(move || {
         let _ = wake.send(());
     });
-    engine.navigate(server.url(&format!("/{rows}.html")));
+    engine.navigate(server.url(path));
     while *engine.load_state() != LoadState::Loaded {
         woken
             .recv_timeout(Duration::from_secs(30))
             .expect("the page loads");
         engine.poll_network();
     }
+    (engine, woken)
+}
+
+/// The page of `rows` loaded, scripts on, and its first frame drawn.
+fn loaded(server: &TestServer, rows: usize) -> (Engine, Receiver<()>) {
+    let (mut engine, woken) = navigated(server, &format!("/{rows}.html"));
     black_box(engine.frame_at(WIDTH, HEIGHT, FrameTime::at(Duration::ZERO)));
     (engine, woken)
 }
@@ -175,7 +198,15 @@ fn click(engine: &mut Engine, at: (f32, f32)) -> Duration {
 }
 
 fn main() {
+    support::on_engine_stack(bench);
+}
+
+/// The bench, on a thread of the engine's stack.
+fn bench() {
     let server = TestServer::plain(|request| {
+        if request.target == "/slotted.html" {
+            return Reply::ok("text/html; charset=utf-8", SLOTTED.as_bytes());
+        }
         match ROWS
             .iter()
             .find(|rows| request.target == format!("/{rows}.html"))
@@ -240,4 +271,13 @@ fn main() {
             println!("  {}", before.since(Work::of(&engine), CHANGES));
         }
     }
+
+    println!("a page of 2,000 elements slotted five shadow trees deep, {BUILDS} times:");
+    let mut stats = Vec::new();
+    for _ in 0..BUILDS {
+        let (mut engine, _woken) = navigated(&server, "/slotted.html");
+        stats.push(draw(&mut engine));
+    }
+    report(&stats);
+    support::hooks("dom 3");
 }
