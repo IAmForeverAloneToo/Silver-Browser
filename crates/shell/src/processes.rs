@@ -23,8 +23,8 @@ use crate::platform::ProcessLauncher;
 /// `--crash` and three handles' values set it up to report its crash to
 /// the browser (M34.4); then `--probe` and a file of the user's run the
 /// sandbox's probes instead and say what became of each, and
-/// `--crash-now` with `panic` or `fault` crashes it, for the check of
-/// the dumps. A panic that ends it is reported, its exit code 101's.
+/// `--crash-now` with `panic`, `fault` or `overflow` (its stack's, on a
+/// thread of the engine's, G253) crashes it, for the check of the dumps. A panic that ends it is reported, its exit code 101's.
 pub(crate) fn renderer() -> i32 {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(3).collect();
     if arguments.first().is_some_and(|first| first == "--crash") {
@@ -55,9 +55,27 @@ pub(crate) fn renderer() -> i32 {
         match crash {
             Some("panic") => panic!("the check's panic"),
             Some("fault") => crate::platform::fault(),
+            Some("overflow") => {
+                let _ = std::thread::Builder::new()
+                    .stack_size(engine::STACK_SIZE)
+                    .spawn(|| overflow(0))
+                    .map(std::thread::JoinHandle::join);
+            }
             _ => {}
         }
-        engine::renderer::run(std::io::stdin(), std::io::stdout())
+        // On a thread of the engine's stack, which its scripts and its
+        // layout need (G253), on every system alike: a main thread's is
+        // the system's to give.
+        std::thread::Builder::new()
+            .name("renderer".to_owned())
+            .stack_size(engine::STACK_SIZE)
+            .spawn(|| engine::renderer::run(std::io::stdin(), std::io::stdout()))
+            .map_err(|error| format!("no renderer thread: {error}"))
+            .and_then(|thread| {
+                thread
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
     });
     match ran {
         Ok(Ok(())) => 0,
@@ -500,6 +518,17 @@ fn check_sandbox() -> Result<(), String> {
     Ok(())
 }
 
+/// Recurses until the thread's stack runs out: a renderer ending as a
+/// page's recursion past every guard would end it (G253).
+#[inline(never)]
+fn overflow(depth: u64) -> u64 {
+    let frame = std::hint::black_box([depth; 64]);
+    if std::hint::black_box(depth) == u64::MAX {
+        return 0;
+    }
+    overflow(depth + 1).wrapping_add(frame[0])
+}
+
 fn check_crash() -> Result<(), String> {
     let dir = std::env::temp_dir().join(format!("silver-crashes-{}", std::process::id()));
     let checked = crashed(&dir);
@@ -517,7 +546,7 @@ fn crashed(dir: &Path) -> Result<(), String> {
     for dump in &older {
         std::fs::write(dump, b"older").map_err(|error| format!("not written: {error}"))?;
     }
-    for (number, how) in [(8, "panic"), (9, "fault")] {
+    for (number, how) in [(8, "panic"), (9, "fault"), (10, "overflow")] {
         let launcher = ProcessLauncher::new()
             .map_err(|error| format!("no executable: {error}"))?
             .with_crashes(Some(dir.to_path_buf()))

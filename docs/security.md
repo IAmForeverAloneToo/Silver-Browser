@@ -50,7 +50,7 @@ operating system.
 
 | What | Trusted to | Held by |
 |---|---|---|
-| The workspace's Rust | be memory-safe and keep its rules | `#![forbid(unsafe_code)]` everywhere but the shell's platform module and the reading of the bindings' bytecode (M35.12); the tests, the gate and review |
+| The workspace's Rust | be memory-safe and keep its rules | `#![forbid(unsafe_code)]` everywhere but the shell's platform module, the reading of the bindings' bytecode (M35.12) and the question of a thread's stack's bounds (G253); the tests, the gate and review |
 | Third-party crates | be correct and memory-safe at their safe interfaces | pinned in `Cargo.lock`, `cargo deny` (advisories and licences), the unsafe inventory (section 5) |
 | C under the crates (QuickJS-ng, aws-lc) | nothing beyond what fuzzing and their upstreams give | the bounds of section 8 on what reaches them; the process boundary (section 4.10): QuickJS-ng runs in the renderers, aws-lc in the browser |
 | A renderer process | nothing: what it says is a compromised renderer's word | the browser's checks on each message against the renderer's site lock and grants, a kill on the first it may not send; the sandbox |
@@ -175,8 +175,14 @@ above.
 
 QuickJS-ng through `rquickjs`, one realm for each document and worker:
 a 256 MiB heap at most (`MAX_SCRIPT_HEAP`, 64 MiB in a frame), past
-which the realm is stopped and the user told; a 256 KiB stack
-(`MAX_SCRIPT_STACK`); and a run stopped after 10,000 interrupt checks
+which the realm is stopped and the user told; a 16 MiB stack
+(`MAX_SCRIPT_STACK`, some 4,700 frames: `rquickjs` takes more for no
+limit at all, which a compile-time assertion forbids), on threads of
+`engine::STACK_SIZE` (40 MiB) alone, a realm made only where
+`js::remaining_stack` says the thread has that stack and
+`js::NATIVE_STACK` (16 MiB, half as much again as the native work a
+script's call starts at its limit, measured) under it, and none where
+it cannot say (G253); and a run stopped after 10,000 interrupt checks
 (`MAX_SCRIPT_STEPS`, 2 to 5 seconds of running code). Workers have no
 such budget and run on threads of their own. WebAssembly runs in
 `wasmi`, an interpreter in Rust: a module of 64 MiB at most, compiled
@@ -420,7 +426,13 @@ it reads is only what the same process wrote with QuickJS's own writer
 from the bootstrap compiled into the executable (and, since M41,
 WebGPU's and WebGL's bindings, compiled so apart and read at a page's
 first use), kept in a static that is never written again nor freed;
-never a file, a pipe, another process's bytes or a page's. The shell's test
+never a file, a pipe, another process's bytes or a page's. And, since
+G253, `stack.rs` in the same crate, three blocks, one for each system
+that answers (Windows' `GetCurrentThreadStackLimits`, Linux's
+`pthread_getattr_np`, macOS's `pthread_get_stackaddr_np` and
+`pthread_get_stacksize_np`), each asking for the calling thread's own
+stack's bounds into locals, nothing kept; where none answers, no realm
+is made. The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2). M40 adds the second exception, `media`'s
@@ -595,7 +607,7 @@ earlier milestones say why each is what it is):
 | `css` | `MAX_NESTING` | `128` | How deep blocks may nest before a block is kept raw rather than parsed. |
 | `devtools` | `MAX_MESSAGE_BYTES` | `8 << 20` | The longest message the protocol reads or writes, in bytes: half the longest message between processes (`engine::ipc::MAX_MESSAGE`), so that one always fits in one. |
 | `devtools` | `MAX_JSON_DEPTH` | `64` | How deep arrays and objects may nest in a message. |
-| `dom` | `MAX_DEPTH` | `512` | The deepest elements may nest: 512, the HTML parser's cap on its stack of open elements (`html::MAX_DEPTH` is this constant), which keeps the recursive walks over a finished tree within any thread's stack. |
+| `dom` | `MAX_DEPTH` | `512` | The deepest elements may nest: 512, the HTML parser's cap on its stack of open elements (`html::MAX_DEPTH` is this constant), which keeps the recursive walks over a finished tree within any thread's stack. A tree's: shadow trees' slots nest hosts' children past it in the flat tree, from which boxes are built only to this depth (G253). |
 | `dom` | `MAX_NODES` | `1 << 22` | The most nodes a document may hold alive through its mutation API: about four million, past any real page (the largest have a few hundred thousand) and short of what would exhaust memory before their attributes and text are counted. |
 | `dom` | `MAX_JOURNAL` | `1 << 16` | The most records the journal keeps between two drains. |
 | `dom` | `MAX_DATA_BYTES` | `256 << 20` | The most bytes of text, tag names and attribute names and values a document may hold in its live nodes through its mutation API: 256 MiB, what a script's heap may hold (M25), so that a script cannot make the document keep a string many times over that it holds once. |
@@ -643,6 +655,7 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_TIMERS` | `100_000` | The most timers a document may have set at once (M26): past them `setTimeout` throws a `RangeError`. |
 | `engine` | `MAX_REPORTS` | `100` | The console's level for `violation`: an error for a refusal, a warning for a report. |
 | `engine` | `MAX_PORTS` | `65_536` | A document's ports, its workers' included: past it, a new channel is refused. |
+| `engine` | `STACK_SIZE` | `40 << 20` | The stack of every thread that runs the engine or its scripts: the shell's main thread (its link arguments), a renderer's engine thread, workers' and service workers' (G253). |
 | `engine` | `MAX_WORKERS` | `16` | A document's live workers, its workers' own included: past it, a new one waits for one to end, as the standard allows. |
 | `engine` | `MAX_WORKER_DEPTH` | `8` | How deep workers may make workers, from the document: a worker made deeper fails to load. |
 | `engine` | `MAX_MESSAGE_BYTES` | `256 << 20` | The most a message's serialized form may hold, in bytes. |
@@ -766,7 +779,8 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_HANDLE` | `(1 << 53) - 1` | The largest number a handle may be: what a script's number holds exactly. |
 | `js` | `MAX_SCRIPT_HEAP` | `256 << 20` | The most heap a realm may hold, in bytes. |
 | `js` | `MAX_SCRIPT_STEPS` | `10_000` | The interrupt checks a run may take, each about 10,000 of QuickJS-ng's operations: 2 to 5 seconds of running code. |
-| `js` | `MAX_SCRIPT_STACK` | `256 << 10` | The native stack a realm's scripts may use, in bytes (twice it in a debug build, M38). |
+| `js` | `MAX_SCRIPT_STACK` | `16 << 20` | The native stack a realm's scripts may use, in bytes, some 4,700 frames; at most 16 MiB, past which `rquickjs` sets no limit (G253). |
+| `js` | `NATIVE_STACK` | `16 << 20` | The stack a thread keeps under its scripts' for the native work a call of theirs starts (G253): no realm is made on a thread with less left than both. |
 | `js` | `MAX_ANSWERS` | `1024` | The answers kept, by pattern and value, before they are forgotten. |
 | `js` | `MAX_WASM_MODULE_BYTES` | `64 << 20` | The largest module a realm compiles. |
 | `js` | `MAX_WASM_MEMORY` | `256 << 20` | What a realm's memories and tables hold, in all. |
@@ -782,6 +796,7 @@ earlier milestones say why each is what it is):
 | `js` | `MAX_NUMBER_STRING` | `1100` | The longest numeric string formatted exactly (ECMA-402 section 15.5.16's strings); a longer one is read as a double (gap batch D). |
 | `js` | `MAX_REFERRERS` | `8192` | The most scripts and modules a realm keeps as referrers: past them a new one's `import()`s resolve against its own URL with the default options (gap batch D). |
 | `js` | `MAX_INPUT` | `256` | The most active scripts kept for promises made by code a string compiled, until the jobs run (gap batch D). |
+| `layout` | `MAX_BOX_DEPTH` | `2 * dom::MAX_DEPTH` | The deepest boxes nest, anonymous ones counted: a box this deep keeps none, so that the layout's and the painting's recursion is within `engine::STACK_SIZE` (G253). |
 | `layout` | `MAX_SET` | `1024` | The most counters one element's set holds. |
 | `layout` | `MAX_COUNTERS` | `1 << 20` | The most counters one walk instantiates. |
 | `layout` | `MAX_GENERATED_TEXT` | `1 << 20` | The longest one pseudo-element's text, in bytes: a `::before`'s, an `::after`'s or a marker's. |

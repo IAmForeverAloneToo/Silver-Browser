@@ -138,41 +138,52 @@ fn held(engine: &Engine) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    NOW.store(0, Ordering::Relaxed);
-    let mut input = Input(data);
-    let page = document(&mut input, 0);
-    let mut url = String::from("data:text/html,");
-    for byte in page.bytes() {
-        let _ = write!(url, "%{byte:02X}");
-    }
-    let url = Url::parse(&url).expect("a data: URL");
-    let mut engine = Engine::with_fonts(fonts().clone());
-    engine.set_scripting(true);
-    engine.set_clock(Arc::new(now));
-    let (wake, woken) = channel();
-    engine.set_waker(move || {
-        let _ = wake.send(());
+    // On a thread of the engine's stack, which a realm needs for
+    // its scripts (G253): libFuzzer's thread has the system's.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(engine::STACK_SIZE)
+            .spawn_scoped(scope, || {
+                NOW.store(0, Ordering::Relaxed);
+                let mut input = Input(data);
+                let page = document(&mut input, 0);
+                let mut url = String::from("data:text/html,");
+                for byte in page.bytes() {
+                    let _ = write!(url, "%{byte:02X}");
+                }
+                let url = Url::parse(&url).expect("a data: URL");
+                let mut engine = Engine::with_fonts(fonts().clone());
+                engine.set_scripting(true);
+                engine.set_clock(Arc::new(now));
+                let (wake, woken) = channel();
+                engine.set_waker(move || {
+                    let _ = wake.send(());
+                });
+                engine.navigate(url.clone());
+                loop {
+                    engine.poll_network();
+                    // Its own URL, but for a fragment its script may have gone to.
+                    if engine.url().map(Url::without_fragment) == Some(url.without_fragment())
+                        && *engine.load_state() == LoadState::Loaded
+                    {
+                        break;
+                    }
+                    woken
+                        .recv_timeout(Duration::from_secs(60))
+                        .expect("the page loads");
+                }
+                for _ in 0..4 {
+                    settle_network(&mut engine);
+                    held(&engine);
+                    engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now()));
+                    NOW.fetch_add(u64::from(input.byte()) * 4, Ordering::Relaxed);
+                    engine.run_tasks();
+                }
+                settle_network(&mut engine);
+                held(&engine);
+            })
+            .expect("a thread for the input")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     });
-    engine.navigate(url.clone());
-    loop {
-        engine.poll_network();
-        // Its own URL, but for a fragment its script may have gone to.
-        if engine.url().map(Url::without_fragment) == Some(url.without_fragment())
-            && *engine.load_state() == LoadState::Loaded
-        {
-            break;
-        }
-        woken
-            .recv_timeout(Duration::from_secs(60))
-            .expect("the page loads");
-    }
-    for _ in 0..4 {
-        settle_network(&mut engine);
-        held(&engine);
-        engine.frame_at(WIDTH, HEIGHT, FrameTime::at(now()));
-        NOW.fetch_add(u64::from(input.byte()) * 4, Ordering::Relaxed);
-        engine.run_tasks();
-    }
-    settle_network(&mut engine);
-    held(&engine);
 });

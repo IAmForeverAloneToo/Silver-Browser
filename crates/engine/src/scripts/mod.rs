@@ -1867,7 +1867,14 @@ impl Scripts {
                 }
                 Err(error) => {
                     self.report(&error);
-                    self.stop();
+                    // A thread without room for scripts says so itself
+                    // (G253); a realm that could not be made otherwise is
+                    // out of memory.
+                    if error.kind == ErrorKind::Stack {
+                        self.halt();
+                    } else {
+                        self.stop();
+                    }
                     return false;
                 }
             }
@@ -2797,17 +2804,23 @@ impl Scripts {
     }
 
     fn stop(&mut self) {
+        self.halt();
+        self.push(ConsoleEntry::of(
+            ConsoleSource::Engine,
+            ConsoleLevel::Error,
+            "Scripts stopped on this page: out of memory".to_owned(),
+        ));
+    }
+
+    /// Stops the page's scripts for good: [`Self::stop`] but for its
+    /// word, for a cause reported already.
+    fn halt(&mut self) {
         self.realm = None;
         self.host.forget_objects();
         self.host.timers.clear_all();
         self.host.workers.workers.terminate_all();
         self.stopped = true;
         self.just_stopped = true;
-        self.push(ConsoleEntry::of(
-            ConsoleSource::Engine,
-            ConsoleLevel::Error,
-            "Scripts stopped on this page: out of memory".to_owned(),
-        ));
     }
 
     /// Reports `error` as HTML section 8.1.4.6 does, to the console: an
@@ -3217,7 +3230,7 @@ pub(crate) fn report_text(error: &ScriptError) -> Option<String> {
     let text = match error.kind {
         ErrorKind::Dead | ErrorKind::Handled => return None,
         ErrorKind::Rejection => format!("Uncaught (in promise) {}", error.message),
-        ErrorKind::Budget => error.message.clone(),
+        ErrorKind::Budget | ErrorKind::Stack => error.message.clone(),
         ErrorKind::Exception | ErrorKind::Heap => format!("Uncaught {}", error.message),
     };
     Some(if error.url.is_empty() {

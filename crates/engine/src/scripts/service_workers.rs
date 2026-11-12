@@ -40,7 +40,7 @@ pub(crate) const SERVICE_WORKER_EVENT_LIMIT: Duration = Duration::from_secs(3);
 /// event longest ago is stopped.
 pub(crate) const MAX_RUNNING_SERVICE_WORKERS: usize = 32;
 /// A running version's thread's stack: the engine's own.
-const SERVICE_WORKER_STACK: usize = 32 << 20;
+const SERVICE_WORKER_STACK: usize = crate::STACK_SIZE;
 
 /// A version running: how to reach it and stop it, its storage key, and
 /// when it was last given an event.

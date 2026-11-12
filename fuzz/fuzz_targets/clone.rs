@@ -74,14 +74,29 @@ thread_local! {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let text = String::from_utf8_lossy(data).into_owned();
-    REALM.with_borrow_mut(|kept| {
-        let mut realm = match kept.take() {
-            Some(realm) if realm.dead().is_none() && realm.heap() < LIMITS.heap / 4 * 3 => realm,
-            _ => listening(),
-        };
-        deliver(&mut *realm, text);
-        *kept = Some(realm);
+    // On a thread of the engine's stack, which a realm needs for
+    // its scripts (G253): libFuzzer's thread has the system's.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(engine::STACK_SIZE)
+            .spawn_scoped(scope, || {
+                let text = String::from_utf8_lossy(data).into_owned();
+                REALM.with_borrow_mut(|kept| {
+                    let mut realm = match kept.take() {
+                        Some(realm)
+                            if realm.dead().is_none() && realm.heap() < LIMITS.heap / 4 * 3 =>
+                        {
+                            realm
+                        }
+                        _ => listening(),
+                    };
+                    deliver(&mut *realm, text);
+                    *kept = Some(realm);
+                });
+            })
+            .expect("a thread for the input")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     });
 });
 

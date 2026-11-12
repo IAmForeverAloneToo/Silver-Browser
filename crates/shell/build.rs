@@ -1,16 +1,26 @@
-//! The shell's main thread runs the engine, whose recursion over a page
-//! nested as deep as the parser lets needs `engine::STACK_SIZE`, 32 MiB.
+//! The shell's main thread runs the engine in the one-process build and
+//! for `--print-to-pdf`, its scripts and its recursion over a page nested
+//! as deep as the parser lets needing `engine::STACK_SIZE`, 40 MiB
+//! (G253); a renderer process runs its engine on a thread of that size.
 //! Windows gives a main thread 1 MiB unless the program says otherwise,
 //! which a page of 160 nested elements overflowed; the linker reserves
-//! more. Elsewhere the main thread has 8 MiB, what the system gives.
+//! more, as macOS's does. Linux gives a main thread what its limits say,
+//! 8 MiB by default, too little for a realm, which is then not made.
+
+/// `engine::STACK_SIZE`, in bytes.
+const STACK_SIZE: usize = 40 << 20;
 
 fn main() {
     commit();
     let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    // engine::STACK_SIZE, which a build script cannot read (a test of
+    // the shell's holds them equal).
     if windows && msvc {
-        // engine::STACK_SIZE, which a build script cannot read.
-        println!("cargo:rustc-link-arg-bins=/STACK:33554432");
+        println!("cargo:rustc-link-arg-bins=/STACK:{STACK_SIZE}");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-stack_size,{STACK_SIZE:#x}");
     }
 }
 

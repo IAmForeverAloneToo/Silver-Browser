@@ -465,7 +465,7 @@ impl Launcher for ThreadLauncher {
         let fonts = self.fonts.clone();
         let thread = thread::Builder::new()
             .name(format!("renderer-{number}"))
-            .stack_size(32 << 20)
+            .stack_size(crate::STACK_SIZE)
             .spawn(move || crate::renderer::run_with(renderer_in, renderer_out, fonts))?;
         Ok(Launched {
             from_renderer: Box::new(browser_in),

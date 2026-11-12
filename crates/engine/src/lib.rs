@@ -221,14 +221,22 @@ const SCROLL_TICK_FRACTION: f32 = 1.0 / 3.0;
 /// Within this distance of the target, the animation lands on it.
 const SCROLL_SNAP_PX: f32 = 0.5;
 
-/// The stack a thread that runs the engine needs: a page nested as deep
-/// as the parser lets (`dom::MAX_DEPTH`) is built into boxes and laid out
-/// by recursion, about 7 KiB a level in release and 33 KiB in a debug
-/// build. Windows gives a program's main thread 1 MiB, which a page of
-/// 160 nested elements overflowed (found at M25); the shell's main thread
-/// is given this much (its build script), and the engine's tests hold a
-/// page at the cap to it.
-pub const STACK_SIZE: usize = 32 << 20;
+/// The stack a thread that runs the engine needs: its scripts' own
+/// (`js::MAX_SCRIPT_STACK`, some 4,700 frames), the native work a
+/// script's call starts under them (`js::NATIVE_STACK`: a page nested as
+/// deep as the parser lets, `dom::MAX_DEPTH`, is built into boxes and
+/// laid out by recursion, about 7 KiB a level in release and 33 KiB in a
+/// debug build), and the engine's own frames above where its realm
+/// begins (G253). A realm is made only on a thread with room for it.
+/// Windows gives a program's main thread 1 MiB, which a page of 160
+/// nested elements overflowed (found at M25); the shell's main thread is
+/// given this much (its build script), a renderer process runs its
+/// engine on a thread of it, as workers run theirs, and the engine's
+/// tests hold a page at the cap to it. It is reserved, not committed:
+/// a thread's pages are taken as it uses them.
+pub const STACK_SIZE: usize = 40 << 20;
+
+const _: () = assert!(STACK_SIZE >= js::MAX_SCRIPT_STACK + js::NATIVE_STACK + (8 << 20));
 
 /// The clock the engine's tasks, timers and scripts read (M26,
 /// `docs/design/events.md`): the time since a start of the caller's. The

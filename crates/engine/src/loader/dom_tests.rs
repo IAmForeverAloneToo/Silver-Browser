@@ -2944,3 +2944,195 @@ fn nested_containers_settle_a_level_a_pass_up_to_the_bound() {
     assert!(widths[4] > 200 - 99, "{widths:?}");
     assert!(widths[3] >= 200 - bound, "{widths:?}");
 }
+
+/// Runs `test` on a thread of the engine's stack, with an engine whose
+/// scripts run, the bundled font its only one (G253).
+fn on_engine_stack(test: impl FnOnce(&mut crate::Engine) + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(crate::STACK_SIZE)
+        .spawn(move || {
+            let mut engine = crate::Engine::with_fonts(
+                text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+                    .expect("the bundled font parses"),
+            );
+            engine.set_scripting(true);
+            test(&mut engine);
+        })
+        .expect("a thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
+/// The texts `engine`'s console took since this was last asked.
+fn console_of(engine: &mut crate::Engine) -> Vec<String> {
+    engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect()
+}
+
+/// Hosts nested in each other's light trees, `hosts` of them, each one's
+/// shadow tree `deep` elements of `display: table-cell` deep with its
+/// slot at the bottom, an `i#d` in the last: a flat tree as deep as they
+/// add up to, each tree within the DOM's cap (G253).
+const SLOTTED_DEEP: &str = "function slotted(hosts, deep) { \
+    let at = document.body; \
+    for (let h = 0; h < hosts; h++) { \
+      const host = document.createElement('section'); at.append(host); \
+      let inner = host.attachShadow({mode: 'open'}); \
+      const sheet = document.createElement('style'); \
+      sheet.textContent = 'div { display: table-cell }'; inner.append(sheet); \
+      for (let i = 0; i < deep; i++) { const d = document.createElement('div'); inner.append(d); inner = d; } \
+      inner.append(document.createElement('slot')); at = host; } \
+    const i = document.createElement('i'); i.id = 'd'; i.textContent = 'x'; at.append(i); }";
+
+#[test]
+fn a_script_at_its_stack_limit_lays_out_the_deepest_pages_and_throws_no_deeper() {
+    // G253: the native stack under a script's: one recursing all but to
+    // its limit, then laying out the deepest page there is at the bottom
+    // (boxes nested to `layout::MAX_BOX_DEPTH` about table cells, real
+    // tables to the parser's cap, shadow trees' slots past the DOM's),
+    // lays it out, and one going deeper throws a RangeError it catches,
+    // the page working on; never the process's end. On a thread of
+    // 26 MiB, this ended the process (measured).
+    let pages = [
+        format!(
+            "<style>.c {{ display: table-cell }}</style>{}<i id=d>x</i>",
+            "<div class=c>".repeat(dom::MAX_DEPTH - 4)
+        ),
+        format!(
+            "{}<i id=d>x</i>",
+            "<table><tr><td>".repeat(dom::MAX_DEPTH / 4 - 2)
+        ),
+        // Its shadow trees made by the script below.
+        "<body>".to_owned(),
+    ];
+    on_engine_stack(move |engine| {
+        for page in pages {
+            engine.load_document(&page);
+            engine.frame(200, 100);
+            if page == "<body>" {
+                crate::differential::run_script(engine, &format!("{SLOTTED_DEEP} slotted(2, 300)"));
+            }
+            crate::differential::run_script(
+                engine,
+                "const d = document.getElementById('d'); \
+                 function plain(n) { return n === 0 ? 0 : 1 + plain(n - 1); } \
+                 let limit = 0; \
+                 try { for (let n = 100; ; n += 100) { plain(n); limit = n; } } \
+                 catch (e) { console.log('limit ' + (limit >= 4000) + ' ' + e.name); } \
+                 let w = 0; \
+                 function deep(n) { \
+                   if (n === 0) { d.style.width = (++w) + 'px'; return d.getBoundingClientRect().width; } \
+                   return deep(n - 1); } \
+                 const out = []; \
+                 for (const back of [400, 100, 25, 10, -50]) { \
+                   try { out.push(typeof deep(limit - back)); } catch (e) { out.push(e.name); } } \
+                 console.log(out.join(' '));",
+            );
+            crate::differential::run_script(engine, "console.log('after')");
+            assert_eq!(
+                console_of(engine),
+                [
+                    "limit true RangeError",
+                    "number number number number RangeError",
+                    "after"
+                ],
+                "{page:.60}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_flat_tree_deeper_than_a_tree_may_be_is_drawn_to_the_cap() {
+    // G253: hosts slotted into each other's shadow trees, each tree within
+    // the DOM's cap, nest past it in the flat tree the boxes are built
+    // from: drawn, its boxes stopping at the cap, the content past it
+    // making none; before, the boxes' recursion ended the process.
+    on_engine_stack(|engine| {
+        engine.load_document("<body></body>");
+        engine.frame(200, 100);
+        crate::differential::run_script(
+            engine,
+            &format!(
+                "document.body.innerHTML = '<span id=top>top</span>'; \
+                 {SLOTTED_DEEP} slotted(3, 300); \
+                 const top = document.getElementById('top').getBoundingClientRect(); \
+                 const last = document.getElementById('d').getBoundingClientRect(); \
+                 console.log((top.width > 0) + ' ' + (last.width + last.height));"
+            ),
+        );
+        engine.frame(200, 100);
+        assert_eq!(console_of(engine), ["true 0"]);
+    });
+}
+
+#[test]
+fn every_walk_of_a_page_as_deep_as_it_goes_ends_or_throws() {
+    // G253: a page nested to the DOM's cap and, through shadow trees'
+    // slots, past it in the flat tree; every walk of it a script or the
+    // engine makes either ends or throws, the process never ending.
+    on_engine_stack(|engine| {
+        engine.load_document(&format!(
+            "<style>.x div {{ color: #00f }}</style><body>{}<b id=light tabindex=0>x</b>",
+            "<div>".repeat(dom::MAX_DEPTH - 4)
+        ));
+        engine.frame(200, 100);
+        let walks = "const deep = document.getElementById('light'); \
+            const nested = (n) => { let o = {}; for (let i = 0; i < n; i++) o = { o }; return o; }; \
+            const walks = { \
+              innerHTML: () => document.body.innerHTML.length, \
+              outerHTML: () => document.documentElement.outerHTML.length, \
+              textContent: () => document.body.textContent.length, \
+              normalize: () => document.body.normalize(), \
+              cloneNode: () => document.body.cloneNode(true).childNodes.length, \
+              importNode: () => document.importNode(document.body, true).childNodes.length, \
+              range: () => { const r = document.createRange(); r.selectNodeContents(document.body); \
+                return r.toString().length + r.cloneContents().childNodes.length; }, \
+              selection: () => { getSelection().selectAllChildren(document.body); \
+                return getSelection().toString().length; }, \
+              hitTest: () => String(document.elementFromPoint(5, 5)), \
+              focus: () => { deep.focus(); return document.activeElement === deep; }, \
+              computedStyle: () => getComputedStyle(document.getElementById('d')).color, \
+              invalidation: () => { document.body.classList.toggle('x'); \
+                return getComputedStyle(deep).color; }, \
+              structuredClone: () => typeof structuredClone(nested(10000)), \
+              jsonStringify: () => JSON.stringify(nested(10000)).length, \
+              jsonParse: () => typeof JSON.parse('['.repeat(10000) + ']'.repeat(10000)), \
+            }; \
+            for (const [name, walk] of Object.entries(walks)) { \
+              try { walk(); console.log(name + ' ended'); } \
+              catch (e) { console.log(name + ' threw ' + e.name); } }";
+        crate::differential::run_script(
+            engine,
+            &format!("{SLOTTED_DEEP} slotted(2, 300); {walks}"),
+        );
+        // The engine's own walks: the frame, hit testing, the sequential
+        // focus navigation each way, the inspector's tree opened all the
+        // way down.
+        engine.frame(200, 100);
+        let _ = engine.hit_test(5.0, 5.0);
+        let _ = engine.focus_next(false);
+        let _ = engine.focus_next(true);
+        let document = engine.document().clone();
+        let open: Vec<String> = document
+            .subtree(document.root())
+            .map(|node| node.to_bits().to_string())
+            .collect();
+        engine.inspect(&format!(
+            "{{\"id\":1,\"method\":\"dom.tree\",\"params\":{{\"open\":[{}]}}}}",
+            open.join(",")
+        ));
+        let lines = console_of(engine);
+        eprintln!("{lines:#?}");
+        assert_eq!(lines.len(), 15, "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.ends_with(" ended") || line.contains(" threw ")),
+            "{lines:?}"
+        );
+    });
+}

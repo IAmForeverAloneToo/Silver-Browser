@@ -1159,10 +1159,12 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "icu_time",
+ "libc",
  "rquickjs",
  "wasmi",
  "wasmi_core",
  "wasmparser",
+ "windows-sys 0.61.2",
  "writeable",
 ]
 

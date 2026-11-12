@@ -42,7 +42,7 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = 256 << 20;
 /// bytes.
 pub(crate) const MAX_QUEUED_BYTES: usize = 512 << 20;
 /// A worker thread's stack: the engine's own.
-const WORKER_STACK: usize = 32 << 20;
+const WORKER_STACK: usize = crate::STACK_SIZE;
 /// The threads a worker's fetches run on at once.
 const MAX_WORKER_FETCH_THREADS: usize = 6;
 /// How often a worker's animation frames run: sixty times a second.
@@ -1722,7 +1722,7 @@ impl WorkerHost {
     fn uncaught(&self, error: ScriptError) {
         match error.kind {
             ErrorKind::Exception => self.tell(FromWorker::Error(Some(error))),
-            ErrorKind::Rejection | ErrorKind::Heap => {
+            ErrorKind::Rejection | ErrorKind::Heap | ErrorKind::Stack => {
                 if let Some(entry) = ConsoleEntry::of_error(&error) {
                     self.tell(FromWorker::Console(Box::new(entry)));
                 }

@@ -1507,6 +1507,11 @@ mod tests {
         // media crate denies `unsafe` but in that module.
         const AV1: &str = "crates/media/src/av1.rs";
         const AV1_BLOCKS: usize = 12;
+        // G253's question of the calling thread's stack's bounds, one
+        // block for each system that answers it, reviewed: the js crate's
+        // second module that allows `unsafe`.
+        const STACK: &str = "crates/js/src/stack.rs";
+        let mut stack_blocks = 0;
         let mut blocks = 0;
         let mut bytecode_blocks = 0;
         let mut av1_blocks = 0;
@@ -1529,7 +1534,10 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    name == "crates/shell/src/platform.rs" || name == BYTECODE || name == AV1,
+                    name == "crates/shell/src/platform.rs"
+                        || name == BYTECODE
+                        || name == AV1
+                        || name == STACK,
                     "unsafe in {name} at line {}",
                     n + 1
                 );
@@ -1558,6 +1566,8 @@ mod tests {
                     bytecode_blocks += 1;
                 } else if name == AV1 {
                     av1_blocks += 1;
+                } else if name == STACK {
+                    stack_blocks += 1;
                 } else {
                     blocks += 1;
                 }
@@ -1583,12 +1593,26 @@ mod tests {
         assert!(blocks >= 4, "the platform module's blocks found: {blocks}");
         assert_eq!(bytecode_blocks, 1, "the bytecode's one reviewed block");
         assert_eq!(av1_blocks, AV1_BLOCKS, "the AV1 module's reviewed blocks");
+        assert_eq!(stack_blocks, 3, "the stack module's reviewed blocks");
         // The shell denies it but where the platform module allows it.
         let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
         assert!(shell.contains("\n#![deny(unsafe_code)]\n"));
     }
 
     use super::*;
+
+    #[test]
+    fn the_main_threads_stack_is_the_engines() {
+        // The build script cannot read `engine::STACK_SIZE` (G253): its own
+        // copy is held to it here.
+        let script = include_str!("../build.rs");
+        let line = format!(
+            "const STACK_SIZE: usize = {} << 20;",
+            engine::STACK_SIZE >> 20
+        );
+        assert!(script.contains(&line), "build.rs lacks {line:?}");
+        assert_eq!(engine::STACK_SIZE % (1 << 20), 0);
+    }
 
     #[cfg(not(feature = "single-process"))]
     #[test]

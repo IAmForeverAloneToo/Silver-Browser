@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicBool;
 mod dom;
 mod pattern;
 mod quickjs;
+mod stack;
 
 #[cfg(test)]
 mod chunk_tests;
@@ -46,6 +47,7 @@ pub use dom::{
 };
 pub use pattern::pattern_matches;
 pub use quickjs::{QuickJs, set_windows_time_zone, warm_bindings};
+pub use stack::remaining_stack;
 
 /// The most heap a realm may hold, in bytes. An allocation past it
 /// throws; one that escapes a run with the heap still full leaves the
@@ -56,13 +58,34 @@ pub const MAX_SCRIPT_HEAP: usize = 256 << 20;
 /// the script is stopped ([`ErrorKind::Budget`]).
 pub const MAX_SCRIPT_STEPS: u32 = 10_000;
 /// The native stack a realm's scripts may use, in bytes, measured from
-/// where its runtime began (G165): a megabyte in either build. A call
-/// of a script's function takes some 2.5 KiB of it, QuickJS's frame in
-/// C, so that 256 KiB gave a page fewer than a hundred frames, a page
-/// that recursed 90 deep (WPT's `scope-deep.html`) running out on
-/// Windows CI; browsers give some ten thousand, which the threads that
-/// run scripts have to have room for first (G253).
-pub const MAX_SCRIPT_STACK: usize = 1 << 20;
+/// where its runtime began (G165): a call of a script's function takes
+/// some 3.5 KiB of it, QuickJS's frame in C, in either build (G253,
+/// measured: 2,360 frames in 8 MiB), so that this gives a page some
+/// 4,700 frames, where it was 256 KiB, fewer than a hundred. A realm is
+/// made only on a thread with this much left and [`NATIVE_STACK`] under
+/// it ([`remaining_stack`]).
+///
+/// No more than 16 MiB: rquickjs takes a larger limit for none at all
+/// (its `set_max_stack_size`, so that QuickJS's subtraction from the
+/// stack's top cannot underflow), and a script's recursion would then
+/// end the process. Browsers give some ten thousand frames; if a page
+/// needs them, QuickJS's own limit set past rquickjs is the lever (G253).
+pub const MAX_SCRIPT_STACK: usize = 16 << 20;
+
+const _: () = assert!(
+    MAX_SCRIPT_STACK <= 16 << 20,
+    "rquickjs takes more for no limit"
+);
+
+/// The stack a thread that runs scripts keeps under their limit, in
+/// bytes: the deepest native work a script's call can start when its
+/// stack is all but spent, a layout of a page as deep as the boxes go
+/// (`layout::MAX_BOX_DEPTH`; tables' boxes about cells, shadow trees'
+/// slots), its style and its boxes, in a debug build. Measured (G253):
+/// a script recursing to its limit, then laying out each of those pages
+/// at the bottom, needs a thread of 27 MiB, 11 MiB of it under the
+/// scripts' 16; this keeps half as much again.
+pub const NATIVE_STACK: usize = 16 << 20;
 
 /// What a realm may use; each field defaults to its constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +289,9 @@ pub enum Completion {
 pub enum ErrorKind {
     /// A syntax error or an exception the script did not catch.
     Exception,
+    /// The thread had too little stack for a realm (G253): none was
+    /// made, and no script runs on it.
+    Stack,
     /// The step budget ran out and the script was stopped.
     Budget,
     /// The heap ran out.

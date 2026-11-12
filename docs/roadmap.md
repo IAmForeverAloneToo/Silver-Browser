@@ -3856,22 +3856,23 @@ Deferred from the milestones above, each with what it waits on:
        offsets to be compared, or the fresh engine's left its own; any
        difference that turns up looked at before the site sweep. Found
        by G247 (C's snapping test, which asserts the offsets itself).
-- [ ] G253 A page's scripts recurse about as deep as a browser's: a
-       trivial function ten thousand frames deep in a release build,
-       where a call takes some 2.5 KiB of native stack (QuickJS's frame,
-       measured and recorded, not changed). `js::MAX_SCRIPT_STACK` was
-       256 KiB, fewer than a hundred frames (a megabyte since, about
-       four hundred). Every thread that runs scripts given the room,
-       found by search (the shell's and the content process's main
-       threads, workers of each kind, worklets, the WPT and engine test
-       runners), one that cannot be refusing to run them; the room left
-       under the scripts' limit measured against the deepest native
-       work a script can start (layout and style, parsing, JSON,
-       structured clone, regular expressions), and their own depth
-       guards checked. Tests: ten thousand frames; unbounded recursion
-       a RangeError the page outlives; the same through
-       `getBoundingClientRect` at each level; a thread's stack shrunk
-       caught. Found by G247 (D1 tipped `scope-deep.html` on CI).
+- [x] G253 A page's scripts recurse deep enough, and no page ends its
+       renderer by recursion: `js::MAX_SCRIPT_STACK` was 256 KiB, fewer
+       than a hundred frames (a call takes some 3.5 KiB, QuickJS's
+       frame, measured); 16 MiB now, some 4,700, the most `rquickjs`
+       keeps a limit at (past it, none). Every thread that runs scripts
+       has `engine::STACK_SIZE`, 40 MiB, its scripts' and 16 MiB under
+       them, half as much again as the deepest native work a script's
+       call starts at its limit (measured in a debug build); a realm is
+       made only where the thread says it has that
+       (`js::remaining_stack`, the crate's second reviewed `unsafe`),
+       none elsewhere. Shadow trees' slots let hosts nest past
+       `dom::MAX_DEPTH` in the flat tree, and the boxes' recursion ended
+       the process: boxes are built to that depth of the flat tree and
+       nest no deeper than `layout::MAX_BOX_DEPTH`. Every other walk of
+       such a page ends or throws (tested). If a page needs browsers'
+       ten thousand frames, QuickJS's limit set past `rquickjs` is the
+       lever. Found by G247 (D1 tipped `scope-deep.html` on CI).
 - [ ] G254 An animated or transitioned property that no child
        inherits and that changes no layout costs a restyle of the
        element's subtree and a layout at every frame: a `border-color`
@@ -4114,6 +4115,15 @@ Deferred from the milestones above, each with what it waits on:
   the sync root; keep it that way; consider relocating the repo off
   OneDrive entirely when M34 work starts (process spawning under a
   synced folder is a known annoyance).
+- **R8 - Linux's main thread and scripts.** A realm is made only on a
+  thread with room for its scripts' stack and the native work under it
+  (G253, 40 MiB); Linux gives a main thread what its limits say, 8 MiB
+  by default, and no link argument changes it. The many-process build
+  runs each renderer's engine on a thread of its own, so pages' scripts
+  run; the one-process build and `--print-to-pdf`, whose engine is the
+  window's main thread, run none on Linux, and say why on the console.
+  Accepted while the browser is Windows-first; the way out is the
+  engine on a thread of its own there too.
 - **R7 — Scope capture by this document.** The roadmap is a map, not a
   contract for its own sake: amend it whenever reality argues. Every
   amendment updates §9.

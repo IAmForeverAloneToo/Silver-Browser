@@ -44,32 +44,43 @@ const LIMITS: Limits = Limits {
 };
 
 fuzz_target!(|data: &[u8]| {
-    let source = String::from_utf8_lossy(data);
-    let mut realm = QuickJs.realm::<Recorder>(LIMITS).expect("a realm");
-    let mut host = Recorder::default();
-    let script = Script {
-        source: &source,
-        url: "https://example.com/fuzz.html",
-        line: 1,
-        muted: false,
-        base: "",
-        options: 0,
-    };
-    // Twice, so that a second run meets what the first left.
-    for _ in 0..2 {
-        let calls = host.calls;
-        let result = realm.run(&script, &mut host);
-        assert!(host.calls >= calls, "the host came back");
-        let errors = realm.checkpoint(&mut host);
-        assert!(realm.heap() <= LIMITS.heap, "the heap limit held");
-        if realm.dead().is_some() {
-            let again = realm.run(&script, &mut host).expect_err("a dead realm");
-            assert_eq!(again.kind, ErrorKind::Dead);
-            return;
-        }
-        if let Err(error) = result {
-            assert_ne!(error.kind, ErrorKind::Dead);
-        }
-        assert!(errors.iter().all(|e| e.kind != ErrorKind::Dead));
-    }
+    // On a thread of the engine's stack, which a realm needs for
+    // its scripts (G253): libFuzzer's thread has the system's.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(engine::STACK_SIZE)
+            .spawn_scoped(scope, || {
+                let source = String::from_utf8_lossy(data);
+                let mut realm = QuickJs.realm::<Recorder>(LIMITS).expect("a realm");
+                let mut host = Recorder::default();
+                let script = Script {
+                    source: &source,
+                    url: "https://example.com/fuzz.html",
+                    line: 1,
+                    muted: false,
+                    base: "",
+                    options: 0,
+                };
+                // Twice, so that a second run meets what the first left.
+                for _ in 0..2 {
+                    let calls = host.calls;
+                    let result = realm.run(&script, &mut host);
+                    assert!(host.calls >= calls, "the host came back");
+                    let errors = realm.checkpoint(&mut host);
+                    assert!(realm.heap() <= LIMITS.heap, "the heap limit held");
+                    if realm.dead().is_some() {
+                        let again = realm.run(&script, &mut host).expect_err("a dead realm");
+                        assert_eq!(again.kind, ErrorKind::Dead);
+                        return;
+                    }
+                    if let Err(error) = result {
+                        assert_ne!(error.kind, ErrorKind::Dead);
+                    }
+                    assert!(errors.iter().all(|e| e.kind != ErrorKind::Dead));
+                }
+            })
+            .expect("a thread for the input")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    });
 });

@@ -118,6 +118,29 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             column: 0,
             stack: Vec::new(),
         };
+        // No realm where a deep script would end the process: the thread
+        // must have the scripts' stack and the native work's under it,
+        // and say so (G253).
+        let needed = limits.stack.saturating_add(crate::NATIVE_STACK);
+        let left = crate::remaining_stack();
+        if left.is_none_or(|left| left < needed) {
+            let thread = std::thread::current();
+            return Err(ScriptError {
+                kind: ErrorKind::Stack,
+                message: format!(
+                    "No scripts run on the thread {:?}: it has {} bytes of stack left, and a realm needs {needed}",
+                    thread.name().unwrap_or("(unnamed)"),
+                    left.map_or_else(
+                        || "an unknown number of".to_owned(),
+                        |left| left.to_string()
+                    ),
+                ),
+                url: String::new(),
+                line: 0,
+                column: 0,
+                stack: Vec::new(),
+            });
+        }
         let runtime = Runtime::new().map_err(failed)?;
         runtime.set_memory_limit(limits.heap);
         runtime.set_max_stack_size(limits.stack);

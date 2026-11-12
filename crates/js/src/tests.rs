@@ -552,6 +552,48 @@ fn deep_recursion_throws_a_catchable_range_error() {
 }
 
 #[test]
+fn a_page_recurses_four_thousand_deep_and_no_deeper_than_its_limit() {
+    // G253: the limit holds (rquickjs takes one past 16 MiB for none, and
+    // a script's recursion would end the process), and is deep enough
+    // for what pages do.
+    let done = realm()
+        .run(
+            &script(
+                "function f(n) { return n === 0 ? 0 : 1 + f(n - 1); }                  let deepest = 0;                  try { for (let n = 1000; ; n += 1000) { f(n); deepest = n; } }                  catch (e) { deepest + ' ' + e.name }",
+            ),
+            &mut Recorder::default(),
+        )
+        .expect("it runs");
+    let Completion::String(text) = done else {
+        panic!("{done:?}");
+    };
+    let (deepest, name) = text.split_once(' ').expect("a depth and a name");
+    let deepest: u32 = deepest.parse().expect("a depth");
+    assert_eq!(name, "RangeError");
+    assert!((4_000..10_000).contains(&deepest), "{deepest} frames deep");
+}
+
+#[test]
+fn no_realm_is_made_on_a_thread_without_room_for_its_scripts() {
+    // G253: a thread of 2 MiB, where a page's recursion would end the
+    // process, is refused a realm, and says which thread it was.
+    let refused = std::thread::Builder::new()
+        .name("small".to_owned())
+        .stack_size(2 << 20)
+        .spawn(|| {
+            QuickJs
+                .realm_of::<Recorder>(crate::RealmKind::Window, Limits::default(), None)
+                .err()
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+        .expect("refused");
+    assert_eq!(refused.kind, ErrorKind::Stack);
+    assert!(refused.message.contains("\"small\""), "{}", refused.message);
+}
+
+#[test]
 fn a_realm_has_no_unrounded_clock_and_no_shared_memory() {
     let done = realm()
         .run(

@@ -2832,7 +2832,9 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         .min(tests.len().max(1));
     thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| {
+            // The engine's stack, which its scripts need (G253).
+            let runner = thread::Builder::new().stack_size(engine::STACK_SIZE);
+            let spawned = runner.spawn_scoped(scope, || {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(test) = tests.get(i) else {
@@ -2842,6 +2844,7 @@ fn the_web_platform_tests_subset_runs_as_expected() {
                     results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(outcome);
                 }
             });
+            spawned.expect("a runner's thread");
         }
     });
     let results: Vec<(Test, Outcome)> = tests

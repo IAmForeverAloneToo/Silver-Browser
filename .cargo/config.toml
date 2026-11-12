@@ -1,0 +1,6 @@
+# Every thread the tests start, as every thread the engine starts to run
+# scripts, has the engine's stack, `engine::STACK_SIZE` (G253): a realm
+# is made only where there is room for its scripts' frames
+# and the native work under them. Reserved, not committed.
+[env]
+RUST_MIN_STACK = "41943040"

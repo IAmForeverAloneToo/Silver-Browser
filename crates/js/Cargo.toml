@@ -25,6 +25,13 @@ icu_segmenter.workspace = true
 icu_list.workspace = true
 writeable.workspace = true
 
+# The calling thread's stack's bounds (G253, `stack.rs`).
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 # The text format, for the tests' modules (M29).
 wat = "1"

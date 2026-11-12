@@ -112,51 +112,62 @@ fn module(u: &mut Unstructured<'_>) -> Option<Vec<u8>> {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let mut u = Unstructured::new(data);
-    let count = u.int_in_range(0..=4).unwrap_or(0);
-    let args: Vec<String> = (0..count)
-        .map(|_| u.arbitrary::<i32>().unwrap_or(0).to_string())
-        .collect();
-    let Some(bytes) = module(&mut u) else {
-        return;
-    };
-    let list: Vec<String> = bytes.iter().map(u8::to_string).collect();
-    let source = format!(
-        "const bytes = new Uint8Array([{}]); const args = [{}];{DRIVE}",
-        list.join(","),
-        args.join(",")
-    );
-    let mut realm = QuickJs.realm::<Recorder>(LIMITS).expect("a realm");
-    let mut host = Recorder::default();
-    let script = Script {
-        source: &source,
-        url: "https://example.com/fuzz.html",
-        line: 1,
-        muted: false,
-        base: "",
-        options: 0,
-    };
-    if let Err(error) = realm.run(&script, &mut host) {
-        assert!(
-            matches!(error.kind, ErrorKind::Budget | ErrorKind::Heap),
-            "{error:?}"
-        );
-    }
-    realm.checkpoint(&mut host);
-    assert!(
-        host.lines
-            .iter()
-            .all(|line| !line.starts_with("unexpected")),
-        "{:?}",
-        host.lines
-    );
-    let after = Script {
-        source: "String(typeof WebAssembly)",
-        ..script
-    };
-    if realm.dead().is_none() {
-        realm
-            .run(&after, &mut host)
-            .expect("the realm runs a script after");
-    }
+    // On a thread of the engine's stack, which a realm needs for
+    // its scripts (G253): libFuzzer's thread has the system's.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(engine::STACK_SIZE)
+            .spawn_scoped(scope, || {
+                let mut u = Unstructured::new(data);
+                let count = u.int_in_range(0..=4).unwrap_or(0);
+                let args: Vec<String> = (0..count)
+                    .map(|_| u.arbitrary::<i32>().unwrap_or(0).to_string())
+                    .collect();
+                let Some(bytes) = module(&mut u) else {
+                    return;
+                };
+                let list: Vec<String> = bytes.iter().map(u8::to_string).collect();
+                let source = format!(
+                    "const bytes = new Uint8Array([{}]); const args = [{}];{DRIVE}",
+                    list.join(","),
+                    args.join(",")
+                );
+                let mut realm = QuickJs.realm::<Recorder>(LIMITS).expect("a realm");
+                let mut host = Recorder::default();
+                let script = Script {
+                    source: &source,
+                    url: "https://example.com/fuzz.html",
+                    line: 1,
+                    muted: false,
+                    base: "",
+                    options: 0,
+                };
+                if let Err(error) = realm.run(&script, &mut host) {
+                    assert!(
+                        matches!(error.kind, ErrorKind::Budget | ErrorKind::Heap),
+                        "{error:?}"
+                    );
+                }
+                realm.checkpoint(&mut host);
+                assert!(
+                    host.lines
+                        .iter()
+                        .all(|line| !line.starts_with("unexpected")),
+                    "{:?}",
+                    host.lines
+                );
+                let after = Script {
+                    source: "String(typeof WebAssembly)",
+                    ..script
+                };
+                if realm.dead().is_none() {
+                    realm
+                        .run(&after, &mut host)
+                        .expect("the realm runs a script after");
+                }
+            })
+            .expect("a thread for the input")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    });
 });

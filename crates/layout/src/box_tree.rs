@@ -781,10 +781,12 @@ fn build(
         images,
         generated: OnceCell::new(),
         decorations: RefCell::new(vec![None; document.slot_count()]),
+        depths: RefCell::new(vec![0; document.slot_count()]),
         kept,
     };
     let mut boxes = build_block_container(&styled, Item::Node(document.root()));
     boxes.extend(top_layer_boxes(&styled));
+    cut_too_deep(&mut boxes);
     propagate_overflow(document, &mut boxes);
     place_markers(&mut boxes);
     first_line::apply(&styled, &mut boxes);
@@ -798,6 +800,27 @@ fn build(
         &mut HashSet::new(),
     );
     boxes
+}
+
+/// The deepest boxes nest (G253): twice the DOM's cap on its elements'
+/// nesting, the boxes an element makes beside its own (a table's wrapper,
+/// row group and row about a cell, a pseudo-element's, an anonymous
+/// block's or item's) adding to its depth. The layout and the painting
+/// recurse over the boxes, a frame or more a box: a box this deep keeps
+/// none, so that their recursion is within `engine::STACK_SIZE`.
+pub const MAX_BOX_DEPTH: usize = 2 * dom::MAX_DEPTH;
+
+/// Takes the children of each box [`MAX_BOX_DEPTH`] deep, by a walk of
+/// its own stack, not the thread's.
+fn cut_too_deep(boxes: &mut [LayoutBox]) {
+    let mut stack: Vec<(&mut LayoutBox, usize)> = boxes.iter_mut().map(|b| (b, 1)).collect();
+    while let Some((b, depth)) = stack.pop() {
+        if depth >= MAX_BOX_DEPTH {
+            b.children.clear();
+            continue;
+        }
+        stack.extend(b.children.iter_mut().map(|child| (child, depth + 1)));
+    }
 }
 
 /// `style` for a text box of `text`: under `text-transform: math-auto`
@@ -1108,6 +1131,9 @@ struct Styled<'a> {
     /// The text decorations in force over each element's text, found as
     /// the build asks, by the element's slot in the document.
     decorations: RefCell<Vec<Option<Decorations>>>,
+    /// Each node's depth in the flat tree, by its slot in the document,
+    /// found as the build asks (G253).
+    depths: RefCell<Vec<u32>>,
     /// The layout cache whose box tree the build takes elements' boxes
     /// from (M35.9), if any.
     kept: Option<&'a LayoutCache>,
@@ -1268,11 +1294,52 @@ impl<'a> Styled<'a> {
     /// make theirs at the top level ([`top_layer_boxes`]). Every walk of
     /// the tree the boxes are built from goes through here, so that it is
     /// the one place that says what a node's children are.
+    ///
+    /// A node as deep in the flat tree as the DOM lets a tree be
+    /// (`dom::MAX_DEPTH`) has none (G253): the DOM's cap is a tree's, and
+    /// a shadow tree's slot holds its host's children as deep as it is,
+    /// so that hosts slotted into each other's shadow trees make a flat
+    /// tree as deep as they add up to, which the boxes' recursion would
+    /// overflow any thread's stack on.
     fn boxed_children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        self.document.flat_children(node).filter(|&child| {
-            self.document.is_text(child)
-                || (self.document.is_element(child) && !self.document.in_top_layer(child))
+        let deep = self.too_deep(node);
+        self.document.flat_children(node).filter(move |&child| {
+            !deep
+                && (self.document.is_text(child)
+                    || (self.document.is_element(child) && !self.document.in_top_layer(child)))
         })
+    }
+
+    /// Whether `node` is `dom::MAX_DEPTH` deep in the flat tree or more.
+    fn too_deep(&self, node: NodeId) -> bool {
+        self.flat_depth(node) > dom::MAX_DEPTH
+    }
+
+    /// How deep `node` is in the flat tree, the root 1: up its flat
+    /// ancestors to the first whose depth is known, each on the way
+    /// remembered, so that the build asks each node's once.
+    fn flat_depth(&self, node: NodeId) -> usize {
+        let mut depths = self.depths.borrow_mut();
+        let known =
+            |depths: &[u32], node: NodeId| depths.get(node.index()).copied().filter(|&d| d > 0);
+        let mut path = Vec::new();
+        let mut at = Some(node);
+        let mut depth = 0;
+        while let Some(here) = at {
+            if let Some(d) = known(&depths, here) {
+                depth = d as usize;
+                break;
+            }
+            path.push(here);
+            at = self.document.flat_parent(here);
+        }
+        for &on in path.iter().rev() {
+            depth += 1;
+            if let Some(slot) = depths.get_mut(on.index()) {
+                *slot = u32::try_from(depth).unwrap_or(u32::MAX);
+            }
+        }
+        depth
     }
 
     /// [`Styled::children`], each element of `display: contents` among
