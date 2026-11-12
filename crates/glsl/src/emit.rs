@@ -2114,7 +2114,15 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Binary(op, a, b) => {
                 let mut parts = self.operands(&[a, b])?;
-                if divides_by_a_constant(Some(*op), b) {
+                // Two float constants reach here when what they make is
+                // no finite number (`2.0 / 0.0`, a product past the
+                // largest float): GLSL leaves it to the run, and naga,
+                // folding it, refuses it.
+                let unfinite = a.value.is_some()
+                    && b.value.is_some()
+                    && b.ty.scalar() == Some(Scalar::Float)
+                    && !b.ty.is_matrix();
+                if divides_by_a_constant(Some(*op), b) || unfinite {
                     parts[1] = self.unfolded(&parts[1], &b.ty);
                 }
                 self.binary(*op, &parts[0], &a.ty, &parts[1], &b.ty, &e.ty)?

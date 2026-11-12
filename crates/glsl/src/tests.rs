@@ -549,3 +549,17 @@ fn an_index_a_comma_makes_out_of_range_is_clamped_not_refused() {
         void main() { color = vec4(v_uv[1], v_uv[0]); }\n";
     program(vs, fs, &webgl2());
 }
+
+#[test]
+fn a_float_of_constants_that_is_no_finite_number_is_left_to_the_run() {
+    // The nightly glsl_parse fuzz's: `2./00.F` compiles, GLSL leaving
+    // its value undefined, and naga refused its translation, which
+    // folds to an infinite float. As a quotient, a product past the
+    // largest float, a vector's quotient and a NaN, each left to the run.
+    let vs = "#version 300 es\nin vec4 p;\nvoid main() { gl_PointSize = 2./00.F;\n\
+        float big = 3.0e38 * 10.0; vec2 v = vec2(1.0, -1.0) / vec2(0.0);\n\
+        gl_Position = p + vec4(big, v, 0.0); }\n";
+    let fs = "#version 300 es\nprecision highp float;\nout vec4 color;\n\
+        void main() { color = vec4(0.0 / 0.0); }\n";
+    program(vs, fs, &webgl2());
+}

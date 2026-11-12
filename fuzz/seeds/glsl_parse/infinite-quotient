@@ -1,0 +1,4 @@
+#version 300 es
+layout(location = 2) in;
+uniform Materl {ivec3 tibbbbbbbbbbbbbb, bxxxxxxxxxxxxx,llllllxbbbbbbbBbbbbbbbbbb,bnt; bool lit; };
+void main() { (lit ? 0.0 : 0.0); gl_PointSize = 2./00.F; }
