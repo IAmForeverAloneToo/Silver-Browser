@@ -353,6 +353,7 @@ impl Styles {
     }
 
     fn set(&mut self, node: NodeId, computed: Computed) {
+        dom::hook!("style::set");
         let container = computed.style.container_type;
         self.has_containers |= container.is_size() || container.scroll_state;
         if !self.has_snaps {
@@ -2857,6 +2858,7 @@ impl<'a> Cascader<'a> {
         old: Option<&Computed>,
         styles: &Styles,
     ) -> Computed {
+        dom::hook!("style::style_of");
         let viewport = (self.context.viewport_width, self.context.viewport_height);
         let matched = {
             let containers = Containers {
@@ -3326,6 +3328,7 @@ impl<'a> Cascader<'a> {
         base: &ComputedStyle,
         update: Option<bool>,
     ) -> Option<Animating<'a>> {
+        dom::hook!("style::sample");
         let cell = self.context.animations?;
         let mut before = Vec::new();
         if let Some(rendered) = update {
@@ -3508,6 +3511,7 @@ fn changed_style(
     compute: impl Fn(&ComputedStyle, Option<&Animated<'_>>, Option<&[Transitioning]>) -> ComputedStyle,
     onto: impl Fn(&ComputedStyle, &Animated<'_>) -> Option<ComputedStyle>,
 ) -> (ComputedStyle, Option<Arc<ComputedStyle>>) {
+    dom::hook!("style::changed_style");
     let acts = animating.map_or(WillChange::AUTO, |a| a.acts);
     let animated = animating.and_then(|a| a.animated.as_ref());
     let finish = |mut style: ComputedStyle| {

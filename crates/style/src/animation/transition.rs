@@ -667,6 +667,11 @@ impl Animations {
     /// Cancels `target`'s running transitions and forgets its completed
     /// ones: it is no longer rendered, or no longer in the document.
     pub(crate) fn cancel_transitions(&mut self, target: Target) {
+        // Nothing to cancel, as on most pages: no key hashed (G247), each
+        // element's styling asking this of each pseudo-element unstyled.
+        if self.transitions.is_empty() && self.completed.is_empty() {
+            return;
+        }
         if let Some(running) = take(&mut self.transitions, &target) {
             for id in running {
                 self.cancel_transition(id, target);

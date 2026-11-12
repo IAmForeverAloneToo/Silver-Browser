@@ -185,6 +185,7 @@ struct AxisInputs {
 /// templates make, the automatic repetitions counted in the room each
 /// axis gives.
 fn build<'a>(b: &'a LayoutBox, columns: AxisInputs, rows: AxisInputs) -> Grid<'a> {
+    dom::hook!("layout::grid::build");
     let grid = b.style.grid();
     let areas = grid.template_areas.as_ref();
     let count = |list: Option<&TrackList>, inputs: &AxisInputs| {
@@ -733,6 +734,7 @@ fn column_contribution<'a>(
     known: Option<(f32, f32)>,
     pass: &Pass<'a>,
 ) -> Contribution {
+    dom::hook!("layout::grid::column_contribution");
     let style = &item.b.style;
     let (min_content, max_content) = crate::intrinsic::contribution_with(item.b, pass, known);
     let minimum = match &style.width {
@@ -790,6 +792,7 @@ fn item_width<'a>(
     known: Option<(f32, f32)>,
     pass: &Pass<'a>,
 ) -> f32 {
+    dom::hook!("layout::grid::item_width");
     let style = &item.b.style;
     let horizontal = edges.horizontal();
     let room = (width - margin[LEFT] - margin[RIGHT] - horizontal).max(0.0);
@@ -873,6 +876,7 @@ fn row_contribution(
     margin: &[f32; 4],
     shim: f32,
 ) -> Contribution {
+    dom::hook!("layout::grid::row_contribution");
     let style = &item.b.style;
     let vertical = edges.vertical();
     let minimum = match &style.height {
@@ -933,6 +937,7 @@ pub(crate) fn layout_grid_contents<'a>(
     pass: &Pass<'a>,
     imposed: Option<Imposed>,
 ) -> BlockLayout<'a> {
+    dom::hook!("layout::grid::layout_grid_contents");
     let style = &b.style;
     let Edges { border, padding } = edges;
     let vertical_edges = edges.vertical();
@@ -1584,6 +1589,7 @@ fn container_baselines(
 /// (flex-item-grid-container-auto-repeat-002), where §7.2.3.2's text
 /// would repeat four times.
 pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+    dom::hook!("layout::grid::content_widths");
     let style = &b.style;
     let (non_content, _) = crate::intrinsic::fixed_edges(b);
     let max = match style.max_width {

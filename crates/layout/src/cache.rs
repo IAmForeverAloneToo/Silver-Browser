@@ -427,6 +427,7 @@ impl LayoutCache {
     /// The content widths kept for `node`'s box with the generated text
     /// `generated_text`, if there are.
     pub(crate) fn widths(&self, node: NodeId, generated_text: u64) -> Option<(f32, f32)> {
+        dom::hook!("layout::cache::widths");
         let widths = self.widths.borrow();
         let (_, widths) = widths
             .get(&node)
@@ -438,6 +439,7 @@ impl LayoutCache {
     /// Keeps `widths`, `node`'s box's content widths with the generated
     /// text `generated_text`.
     pub(crate) fn keep_widths(&self, node: NodeId, generated_text: u64, widths: (f32, f32)) {
+        dom::hook!("layout::cache::keep_widths");
         self.widths_measured.add();
         self.widths
             .borrow_mut()
@@ -457,6 +459,7 @@ impl LayoutCache {
         inputs: ItemInputs,
         tree_order: u32,
     ) -> Option<BlockLayout<'a>> {
+        dom::hook!("layout::cache::take_item");
         let items = self.items.borrow();
         let (_, entry) = items.get(&node)?.iter().find(|(i, _)| *i == inputs)?;
         self.items_reused.add();
@@ -467,6 +470,7 @@ impl LayoutCache {
     /// nothing was carried out of it, the oldest of its layouts let go
     /// past [`MAX_ITEM_LAYOUTS`].
     pub(crate) fn keep_item(&self, node: NodeId, inputs: ItemInputs, layout: &BlockLayout<'_>) {
+        dom::hook!("layout::cache::keep_item");
         if !layout.absolutes.is_empty() {
             return;
         }
@@ -494,6 +498,7 @@ impl LayoutCache {
         inputs: Inputs,
         tree_order: u32,
     ) -> Option<BlockLayout<'a>> {
+        dom::hook!("layout::cache::take");
         let entries = self.entries.borrow();
         let (_, entry) = entries.get(&node).filter(|(i, _)| *i == inputs)?;
         self.reused.add();
@@ -505,6 +510,7 @@ impl LayoutCache {
     /// documentation) and nothing was carried out of it; otherwise
     /// forgets any entry `node` had.
     pub(crate) fn keep(&self, node: NodeId, inputs: Inputs, layout: &BlockLayout<'_>, keep: bool) {
+        dom::hook!("layout::cache::keep");
         let mut entries = self.entries.borrow_mut();
         if !keep || !layout.absolutes.is_empty() {
             entries.remove(&node);

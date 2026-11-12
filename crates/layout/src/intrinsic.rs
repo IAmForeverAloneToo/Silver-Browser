@@ -149,6 +149,7 @@ pub(crate) fn content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32
 
 /// [`content_widths`], measured.
 fn measure_content_widths<'a>(b: &'a LayoutBox, pass: &Pass<'a>) -> (f32, f32) {
+    dom::hook!("layout::intrinsic::measure_content_widths");
     pass.measuring();
     // A box with inline-size containment, a size container's or one
     // `contain` or skipped contents give (CSS Conditional 5 section 7.2,
