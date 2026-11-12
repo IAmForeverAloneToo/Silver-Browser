@@ -391,6 +391,7 @@ impl crate::Engine {
         viewport: Viewport,
         offsets: &dyn ScrollOffsets,
     ) -> HashMap<usize, Vec<HighlightOverlay>> {
+        dom::hook!("engine::highlights::highlight_overlays");
         if self.shown.scripts.highlights().is_empty() || self.shown.layout.is_none() {
             return HashMap::new();
         }

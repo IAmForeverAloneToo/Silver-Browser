@@ -274,6 +274,7 @@ pub fn paint_order_in<'a>(
     offsets: &dyn ScrollOffsets,
     margin: f32,
 ) -> Vec<Step<'a>> {
+    dom::hook!("paint::order::paint_order_in");
     order_within(roots, viewport, offsets, margin, 0.0, true)
 }
 
@@ -287,6 +288,7 @@ pub fn paint_order_everywhere<'a>(
     viewport: Viewport,
     offsets: &dyn ScrollOffsets,
 ) -> Vec<Step<'a>> {
+    dom::hook!("paint::order::paint_order_everywhere");
     order_within(roots, viewport, offsets, 1.0e7, 1.0e7, false)
 }
 
@@ -328,6 +330,7 @@ fn order_within<'a>(
     across: f32,
     skips: bool,
 ) -> Vec<Step<'a>> {
+    dom::hook!("paint::order::order_within");
     walk_within(
         roots,
         viewport,

@@ -1123,6 +1123,7 @@ pub fn paint_fragments_with(
     offsets: &dyn ScrollOffsets,
     pictures: &dyn Pictures,
 ) -> DisplayList {
+    dom::hook!("paint::paint_fragments_with");
     // CSS2 §14.2: the root element's background paints the canvas, the
     // whole viewport; when the root's is transparent, the body's — the
     // root's first box child, in an HTML document — does instead and is
@@ -1315,19 +1316,25 @@ pub fn paint_fragments_with(
                             color,
                             font: fragment.font,
                         };
-                        match highlight_spans(overlays, rect, colour).as_slice() {
-                            [] => items.push(text_item(colour)),
-                            [(_, _, color)] => items.push(text_item(*color)),
-                            spans => {
-                                for &(from, to, color) in spans {
-                                    let span = Rect {
-                                        x: from,
-                                        w: to - from,
-                                        ..rect
-                                    };
-                                    push_clipped(&mut items, span, |items| {
-                                        items.push(text_item(color));
-                                    });
+                        // Text no highlight is over, as most is, in its
+                        // colour, nothing made to find its spans (G247).
+                        if overlays.is_empty() {
+                            items.push(text_item(colour));
+                        } else {
+                            match highlight_spans(overlays, rect, colour).as_slice() {
+                                [] => items.push(text_item(colour)),
+                                [(_, _, color)] => items.push(text_item(*color)),
+                                spans => {
+                                    for &(from, to, color) in spans {
+                                        let span = Rect {
+                                            x: from,
+                                            w: to - from,
+                                            ..rect
+                                        };
+                                        push_clipped(&mut items, span, |items| {
+                                            items.push(text_item(color));
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1561,6 +1568,7 @@ fn push_decorations(
     through: bool,
     cast: Option<Cast>,
 ) {
+    dom::hook!("paint::push_decorations");
     use layout::decoration::LineKind;
     use style::computed::DecorationStyle;
     let (dx, dy) = cast.map_or((0.0, 0.0), |c| (c.dx, c.dy));
@@ -2317,6 +2325,7 @@ fn push_box(
     canvas_node: Option<NodeId>,
     backdrop: &Backdrop<'_>,
 ) {
+    dom::hook!("paint::push_box");
     let (rect, gap) = fieldset_border(f, rect);
     let outer = snapped(rect);
     let inner = snapped(padding_box(f, rect));
@@ -2817,6 +2826,7 @@ fn push_layers(
     placed: Placed<'_>,
     backdrop: &Backdrop<'_>,
 ) {
+    dom::hook!("paint::push_layers");
     let Some(background) = &f.style.background else {
         return;
     };
@@ -3283,6 +3293,7 @@ fn scale_channels(c: Rgba8, k: f32) -> Rgba8 {
 /// light [`tones`], the halves of the last two in opposite tones, a
 /// side of `currentcolor` toned from [`CURRENT_3D`] (M33).
 fn push_border(items: &mut Vec<DisplayItem>, f: &Fragment, rect: Rect, widths: [f32; 4]) {
+    dom::hook!("paint::push_border");
     if let Some(rounded) = RoundedRect::of(&f.style, rect) {
         push_rounded_border(items, f, rounded, widths);
         return;

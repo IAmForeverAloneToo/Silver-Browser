@@ -502,6 +502,7 @@ pub(crate) fn layout_inline<'a>(
     pass: &Pass<'a>,
     indented: bool,
 ) -> InlineLayout<'a> {
+    dom::hook!("layout::inline::layout_inline");
     let run = |caps: &[Cap], floats: &mut FloatContext| {
         layout_run(
             items, cb_width, cb_height, container, first_line, floats, at, pass, indented, caps,
@@ -602,9 +603,12 @@ fn layout_run<'a>(
     indented: bool,
     caps: &[Cap],
 ) -> (InlineLayout<'a>, Vec<Paragraph>) {
+    dom::hook!("layout::inline::layout_run");
     let flat = collect_inline_items(items, pass.fonts);
     let strut = font::line(pass.fonts, " ", container);
-    let root = Parent::of(pass.fonts, container);
+    // What the root inline box aligns its content by: measured only for
+    // a line that aligns something by it (G247).
+    let root = container;
     // The items as on the first line, as far as it can reach; the run's
     // own when nothing in it is restyled there.
     let first_items = first_line
@@ -640,7 +644,7 @@ fn layout_run<'a>(
             _ => strut,
         },
         root: match (&first, first_line) {
-            (Some(_), Some(line)) => Parent::of(pass.fonts, &line.style),
+            (Some(_), Some(line)) => &line.style,
             _ => root,
         },
         pass,
@@ -812,8 +816,8 @@ struct FirstLineRun<'a, 'i> {
     /// The strut after the first line: the run's own.
     strut_after: FontMetrics,
     /// What the root inline box aligns its content by after the first
-    /// line: the run's own.
-    root_after: Parent,
+    /// line: the run's own style.
+    root_after: &'i ComputedStyle,
 }
 
 /// The lines of one run as they are built: the line in progress and
@@ -850,9 +854,9 @@ struct Lines<'a, 'i, 'f, 'c> {
     /// The containing block's own font metrics, the least any line is:
     /// on the first line, the innermost `::first-line`'s (M16).
     strut: FontMetrics,
-    /// What the root inline box aligns its content by (CSS2 section
+    /// The style the root inline box aligns its content by (CSS2 section
     /// 10.8.1): the containing block's font, as the strut is.
-    root: Parent,
+    root: &'i ComputedStyle,
     /// The pass the run is laid out in (M17), and its fonts.
     pass: &'f Pass<'a>,
     /// The run's items, and while the first line is being filled the
@@ -1417,6 +1421,7 @@ fn collect<'a>(
     fonts: &FontCollection,
     first_line: Option<Reach>,
 ) -> Vec<InlineItem<'a>> {
+    dom::hook!("layout::inline::collect");
     let mut collector = Collector {
         fonts,
         first_line,
@@ -2721,6 +2726,7 @@ fn is_zero_width(c: char) -> bool {
 /// consistent with what actually gets drawn, instead of drifting apart
 /// by whatever a given font's kerning happens to be).
 fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
+    dom::hook!("layout::inline::measure_word");
     let font = font::font_for(fonts, style, word);
     if style.letter_spacing == 0.0 {
         return fonts.measure_in(font, word, style.font_size_px);
@@ -2766,7 +2772,7 @@ fn flush_line<'a>(
     line_width: f32,
     line_left: f32,
     placement: Placement,
-    (strut, root): (&FontMetrics, Parent),
+    (strut, root): (&FontMetrics, &ComputedStyle),
     fonts: &FontCollection,
     cb: (f32, Option<f32>),
     y: &mut f32,
@@ -2776,6 +2782,7 @@ fn flush_line<'a>(
     first_line: Option<&'a [LayoutBox]>,
     reach: &[Spread],
 ) -> Option<f32> {
+    dom::hook!("layout::inline::flush_line");
     if line.is_empty() {
         return None;
     }
@@ -2799,10 +2806,27 @@ fn flush_line<'a>(
         root: (strut.ascent, strut.descent + strut.line_gap),
         groups: Vec::new(),
     };
-    let mut frames = vec![Aligned {
+    // A line no inline box or atomic inline is on, as most are, has
+    // every item at the root inline box's baseline and no box decorating
+    // its words: nothing is aligned by the root, nor kept for each item
+    // (G247), measuring the root's font and the allocations costing more
+    // than the rest of the line.
+    let plain = open.is_empty()
+        && !line
+            .iter()
+            .any(|p| matches!(p.item, LineItem::Open(..) | LineItem::Atomic(_)));
+    // The root inline box's frame, and those of the inline boxes open
+    // in it, innermost last: none on a plain line, nothing allocated.
+    let root_frame = Aligned {
         at: (None, 0.0),
-        parent: root,
-    }];
+        parent: if plain {
+            Parent::default()
+        } else {
+            Parent::of(fonts, root)
+        },
+    };
+    let mut frames: Vec<Aligned> = Vec::new();
+    let top = |frames: &[Aligned]| frames.last().copied().unwrap_or(root_frame);
     // The places of the open inline elements that decorate their text,
     // outermost first, and whether each open one is among them: a text's
     // lines are drawn where its decorating boxes are (CSS Text Decoration
@@ -2816,21 +2840,24 @@ fn flush_line<'a>(
             Some(line) if first_line.is_some() => &line.style,
             _ => &b.style,
         };
-        let frame = extents.enter(style, frames[frames.len() - 1], fonts);
+        let frame = extents.enter(style, top(&frames), fonts);
         continued.push(frame.at);
         frames.push(frame);
         decorating.open(style, frame.at);
     }
     // Each item's place: its subtree and its baseline's shift in it; and
-    // a word's decorating boxes' places.
-    let mut places = Vec::with_capacity(line.len());
-    let mut decorated_at = Vec::with_capacity(line.len());
+    // a word's decorating boxes' places, none kept for a plain line.
+    let kept = if plain { 0 } else { line.len() };
+    let mut places = Vec::with_capacity(kept);
+    let mut decorated_at = Vec::with_capacity(kept);
     for placed in line.iter() {
-        let frame = frames[frames.len() - 1];
-        decorated_at.push(match &placed.item {
-            LineItem::Word(_) => decorating.places(),
-            _ => None,
-        });
+        let frame = top(&frames);
+        if !plain {
+            decorated_at.push(match &placed.item {
+                LineItem::Word(_) => decorating.places(),
+                _ => None,
+            });
+        }
         let at = match &placed.item {
             LineItem::Word(word) => {
                 // Per-word, not just per-size (M8.1): a word's own
@@ -2869,15 +2896,16 @@ fn flush_line<'a>(
                 inner.at
             }
             LineItem::Close(..) => {
-                if frames.len() > 1 {
-                    frames.pop();
+                if frames.pop().is_some() {
                     decorating.close();
                 }
                 frame.at
             }
             LineItem::Absolute(_) => frame.at,
         };
-        places.push(at);
+        if !plain {
+            places.push(at);
+        }
     }
     let (max_ascent, height, tops) = extents.settle();
     let baseline_y = *y + max_ascent;
@@ -2953,17 +2981,19 @@ fn flush_line<'a>(
         if i > 0 {
             x += placed.lead;
         }
-        let baseline = baseline_of(places[i]);
+        let baseline = baseline_of(places.get(i).copied().unwrap_or((None, 0.0)));
         match placed.item {
             LineItem::Word(word) if word.tab => x += word.width,
             LineItem::Word(word) => {
-                let lines = word.decorations.map(|d| match &decorated_at[i] {
-                    Some(boxes) => {
-                        let at = |place: Place| baseline_of(place) - baseline;
-                        drawn.moved(d, boxes, at, fonts)
-                    }
-                    None => drawn.of(d, fonts),
-                });
+                let lines =
+                    word.decorations
+                        .map(|d| match decorated_at.get(i).and_then(Option::as_ref) {
+                            Some(boxes) => {
+                                let at = |place: Place| baseline_of(place) - baseline;
+                                drawn.moved(d, boxes, at, fonts)
+                            }
+                            None => drawn.of(d, fonts),
+                        });
                 let into = innermost(&mut stack, fragments);
                 let between = if placement.ideographs_only && !of_ideographs(word.text) {
                     0.0
@@ -3092,7 +3122,7 @@ fn flush_line<'a>(
 /// What an inline box aligns its content by (CSS2 section 10.8.1,
 /// `vertical-align`): its font's size, its content area above and
 /// below its baseline, and its x-height.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct Parent {
     font_size: f32,
     ascent: f32,
@@ -3102,6 +3132,7 @@ struct Parent {
 
 impl Parent {
     fn of(fonts: &FontCollection, style: &ComputedStyle) -> Parent {
+        dom::hook!("layout::inline::parent_of");
         let m = font::content(fonts, " ", style);
         let face = fonts.face(font::font_of(fonts, style).face);
         Parent {
@@ -3307,6 +3338,7 @@ fn close_inline<'a>(
     (cb_width, cb_height): (f32, Option<f32>),
     absolutes: &mut [Deferred<'a>],
 ) -> Fragment {
+    dom::hook!("layout::inline::close_inline");
     let (b, own) = (inline.b, inline.style);
     let edges = Edges::of(own, cb_width);
     let margin = |side: usize| own.margin[side].resolve(cb_width, 0.0);
@@ -3671,6 +3703,7 @@ fn text_fragment(
     decorated: Option<Box<Decorated>>,
     font: text::Font,
 ) -> Fragment {
+    dom::hook!("layout::inline::text_fragment");
     let shown = if word.hyphen {
         format!("{}{}", word.text, hyphen_of(word.style))
     } else {

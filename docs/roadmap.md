@@ -3836,6 +3836,23 @@ Deferred from the milestones above, each with what it waits on:
        an insert of a fresh node. About two days, with the lifetime
        tests G247 added. Waits for the site sweep to say whether
        building the DOM from a script is what pages feel. Found by G247.
+- [ ] G251 The GPU backend's frame of the grid garden page scrolled
+       came out once, under a gate's load, with 3 pixels of a caption's
+       glyph unlike the software backend's (at 455,385 to 455,387: ec e8
+       dc against 88 6a 3d), the equivalence test failing; alone it
+       passed three times in three. Output that differs only under load
+       is more likely the GPU path's own nondeterminism (a glyph atlas
+       upload or cache raced, or a scroll offset read at another moment)
+       than a test's timing: the test stays as it is, not quarantined.
+       The images were kept from the run. Found by G247's gate.
+- [ ] G252 The differential tests' comparison with a fresh engine
+       (`differential::compare_with_fresh`) carries the scroll offsets
+       over, so that where a page's scroll containers rest (a snap, a
+       `scroll-initial-target`) is never compared: an engine that
+       failed to snap after a change drew as the fresh one did. The
+       offsets to be compared, or the fresh engine's left its own; any
+       difference that turns up looked at before the site sweep. Found
+       by G247 (C's snapping test, which asserts the offsets itself).
 
 ---
 

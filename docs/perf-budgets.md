@@ -2100,6 +2100,20 @@ back are written here as G247's steps land. An exception:
   an insert: the host's answer and some ten Map operations. Without
   the moves the loop is the base's, 284ms; the calls that move nothing
   cost nothing more. G250 holds the groups otherwise.
+- *A realm made*: 6.61 against 8.12ms in T4.3, x1.23; 6.64 to 7.01
+  against 8.52 when measured again. Batch H's bindings are 343KB more
+  of the bootstrap (747 to 1,090KB), and a realm reads and runs all of
+  it: by marks at each of its sections, the bytecode's reading 2.2 to
+  2.8ms, the rest spread over some thirty new sections at 15 to 130us
+  each, and the reflected attributes' 129 to 165 entries at the same
+  cost each. The A/B: the cleanly separable sections (the Sanitizer's
+  five, the highlights, OpaqueRange, CaretPosition, CloseWatcher;
+  73.6KB) cut out, the realm 8.52 to 8.21 and 8.30ms, some 3.7us a KB.
+  Writing the bytecode without its debug information takes off no
+  more than the noise. Made at first use as chunks (D64), those
+  sections would take back a quarter of a millisecond, the rest being
+  the bindings pages use (shadow trees, custom elements, the top
+  layer); so the realm is left at x1.23.
 
 ### Over budget, and why
 

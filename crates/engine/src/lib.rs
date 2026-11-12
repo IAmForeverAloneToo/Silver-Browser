@@ -6414,6 +6414,7 @@ impl Engine {
     /// matrices, or whose place cannot be told; one elsewhere moves on
     /// unseen.
     fn show_pixels(&mut self, items: &mut [DisplayItem], width: f32, height: f32) {
+        dom::hook!("engine::show_pixels");
         let now = self.shown.animations.borrow().time();
         let frame = self.shown.images.next_frame();
         // First the size each image is drawn at and whether in view, so
@@ -8870,6 +8871,7 @@ impl Engine {
     /// one that cannot be measured is inactive. Without a layout they
     /// keep what they had.
     fn measure_timelines(&mut self) {
+        dom::hook!("engine::measure_timelines");
         let kinds = self.shown.animations.get_mut().progress_timelines();
         if kinds.is_empty() {
             return;
@@ -9326,6 +9328,20 @@ impl Engine {
     /// the touch is lifted, but what it would come to rest on is kept,
     /// which `scrollsnapchanging` tells.
     fn snap_scrolls(&mut self, width: f32) {
+        dom::hook!("engine::snap_scrolls");
+        // No element snaps or starts scrolled to a target: no snap
+        // container to look for (G247).
+        if !self
+            .shown
+            .styled
+            .as_ref()
+            .is_some_and(|styled| styled.styles.has_snaps)
+        {
+            self.shown.snaps.clear();
+            self.shown.snap_direction.clear();
+            self.shown.precise_unsnapped.clear();
+            return;
+        }
         let viewport = (width, self.viewport.1 as f32);
         let layout = self.layout(width);
         let initial = scroll_snap::initial_targets(layout, viewport);
@@ -9425,6 +9441,7 @@ impl Engine {
     /// document out again for them: a scroll changes no layout itself,
     /// so the layout's own passes would not see it.
     fn settle_scroll_states(&mut self, width: f32) {
+        dom::hook!("engine::settle_scroll_states");
         let Some(styled) = self.shown.styled.as_ref() else {
             return;
         };
@@ -9559,6 +9576,7 @@ impl Engine {
     /// document fits in it (or no frame has been drawn), or the user
     /// does not scroll it.
     pub fn scrollbar(&mut self) -> Option<Scrollbar> {
+        dom::hook!("engine::scrollbar");
         let (width, height) = self.viewport;
         let max = self.max_scroll();
         if max <= 0.0 || !self.viewport_takes_user_scrolls() {
@@ -14448,6 +14466,62 @@ mod tests {
             style::computed::Color::rgb8(0, 0, 255),
             "the query holds"
         );
+    }
+
+    #[test]
+    fn snapping_made_after_the_first_frame_snaps_as_a_fresh_engine_would() {
+        // G247: a page where nothing snaps looks for no snap container,
+        // until an element snaps or starts at a target; then its scroll
+        // containers rest where a fresh engine's do, and the page's
+        // styles keep knowing it.
+        for (change, scrolled) in [
+            // A scroll container made to snap, scrolled between two of
+            // its areas: it rests on the nearer.
+            ("scroll-snap-type: y mandatory", 70.0),
+            // One of its boxes made the target it starts scrolled to.
+            ("scroll-initial-target: nearest", 0.0),
+        ] {
+            let page = "<div id=s style='height: 100px; overflow: auto'>                        <div id=a style='height: 60px; scroll-snap-align: start'></div>                        <div id=b style='height: 60px; scroll-snap-align: start'></div>                        <div id=c style='height: 60px; scroll-snap-align: start; background: #00f'></div>                        <div style='height: 300px'></div></div>";
+            let mut engine = test_engine();
+            let mut fresh = test_engine();
+            engine.load_document(page);
+            engine.frame(320, 120);
+            assert!(!engine.cached_styles().has_snaps, "{change}");
+            let by_id = |engine: &Engine, id: &str| {
+                let document = engine.document();
+                document
+                    .subtree(document.root())
+                    .find(|&node| document.attr(node, "id") == Some(id))
+                    .expect("the element")
+            };
+            let s = by_id(&engine, "s");
+            if scrolled > 0.0 {
+                engine.set_element_scroll(s, scrolled);
+                engine.frame(320, 120);
+            }
+            let (target, style) = if change.starts_with("scroll-snap-type") {
+                (s, format!("height: 100px; overflow: auto; {change}"))
+            } else {
+                (
+                    by_id(&engine, "c"),
+                    format!("height: 60px; scroll-snap-align: start; background: #00f; {change}"),
+                )
+            };
+            engine.mutate(|document| {
+                document
+                    .set_attribute(target, "style", &style)
+                    .expect("set");
+            });
+            if let Err(difference) =
+                differential::compare_with_fresh(&mut engine, &mut fresh, 320, 120)
+            {
+                panic!("{change}: {difference}");
+            }
+            assert!(engine.cached_styles().has_snaps, "{change}");
+            // It snapped: to the second box's start, or the third's.
+            let want = if scrolled > 0.0 { 60.0 } else { 120.0 };
+            assert_eq!(engine.element_scroll(s), want, "{change}");
+        }
     }
 
     #[test]

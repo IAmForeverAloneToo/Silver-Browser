@@ -240,6 +240,12 @@ pub struct Styles {
     /// (G247): a page with none measures nothing. Stale as
     /// `uses_viewport_units` is, set and never cleared.
     pub has_containers: bool,
+    /// Whether any element's style, or a pseudo-element's, snaps its
+    /// scrolling or starts it at a target (Scroll Snap 1 and 2), so that
+    /// a frame of these styles looks for snap containers (G247): a page
+    /// with none looks for none. Set and never cleared, as
+    /// `has_containers` is.
+    pub has_snaps: bool,
     /// The root element's font, which the root units measure; `None`
     /// for the initial one.
     root_font: Option<Arc<FontProps>>,
@@ -349,6 +355,17 @@ impl Styles {
     fn set(&mut self, node: NodeId, computed: Computed) {
         let container = computed.style.container_type;
         self.has_containers |= container.is_size() || container.scroll_state;
+        if !self.has_snaps {
+            let snaps = |style: &ComputedStyle| {
+                let effects = style.effects();
+                effects.scroll_snap_type.axis != SnapAxis::None || effects.scroll_initial_target
+            };
+            self.has_snaps = snaps(&computed.style)
+                || computed
+                    .pseudo
+                    .as_deref()
+                    .is_some_and(|pseudo| pseudo.any(snaps));
+        }
         let index = node.index();
         if self.entries.len() <= index {
             self.entries.resize(index + 1, None);
@@ -518,6 +535,24 @@ impl PseudoStyles {
             | PseudoElement::Part
             | PseudoElement::Highlight => None,
         }
+    }
+
+    /// Whether any of the styles kept is one `test` holds of.
+    fn any(&self, test: impl Fn(&ComputedStyle) -> bool) -> bool {
+        [
+            &self.before,
+            &self.after,
+            &self.first_letter,
+            &self.first_line,
+            &self.marker,
+            &self.backdrop,
+            &self.details_content,
+            &self.details_content_before,
+            &self.details_content_after,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|style| test(style))
     }
 }
 
