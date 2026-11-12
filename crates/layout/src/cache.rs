@@ -279,19 +279,24 @@ impl LayoutCache {
         let items = self.items.get_mut();
         let widths = self.widths.get_mut();
         let boxes = self.boxes.get_mut();
+        // The nodes forgotten in this pass: a node's flat ancestors were
+        // forgotten with it, so a walk up stops at the first met again,
+        // each node walked once (G253: through shadow trees' slots the
+        // flat tree is as deep as what is slotted, and a walk to its top
+        // for each change made a frame quadratic in it).
+        let mut forgotten: HashSet<NodeId> = HashSet::new();
         let mut forget = |node: NodeId| {
             // A shadow tree's top is laid out in its host's box, and every
             // box is above its ancestors' in the flat tree (D68).
             let node = document.shadow_host(node).unwrap_or(node);
-            entries.remove(&node);
-            items.remove(&node);
-            widths.remove(&node);
-            boxes.remove(&node);
-            for ancestor in document.flat_ancestors(node) {
-                entries.remove(&ancestor);
-                items.remove(&ancestor);
-                widths.remove(&ancestor);
-                boxes.remove(&ancestor);
+            for at in std::iter::once(node).chain(document.flat_ancestors(node)) {
+                if !forgotten.insert(at) {
+                    break;
+                }
+                entries.remove(&at);
+                items.remove(&at);
+                widths.remove(&at);
+                boxes.remove(&at);
             }
         };
         let mut controls = false;
@@ -380,11 +385,27 @@ impl LayoutCache {
         }
         // A restyled element's decorations and first line reach the boxes
         // of its descendants, which are built again.
+        // Each subtree's once, the shallowest first, one inside another's
+        // already done (G253: a chain inserted an element at a time made
+        // each insertion's subtree the rest of the chain).
         let boxes = self.boxes.get_mut();
         if !boxes.is_empty() {
-            for &node in restyled.iter().chain(&inserted) {
-                if document.contains(node) {
-                    for below in document.subtree(node) {
+            let mut depths: HashMap<NodeId, usize> = HashMap::new();
+            let mut tops: Vec<(usize, NodeId)> = restyled
+                .iter()
+                .chain(&inserted)
+                .copied()
+                .filter(|&node| document.contains(node))
+                .map(|node| (tree_depth(document, node, &mut depths), node))
+                .collect();
+            tops.sort_unstable();
+            let mut done: HashSet<NodeId> = HashSet::new();
+            for (_, node) in tops {
+                if done.contains(&node) {
+                    continue;
+                }
+                for below in document.subtree(node) {
+                    if done.insert(below) {
                         boxes.remove(&below);
                     }
                 }
@@ -639,6 +660,27 @@ fn mark(
         path.pop();
     }
     all
+}
+
+/// How deep `node` is in `document`'s tree, its root 0, each node on
+/// the way up to the first one known kept in `depths`.
+fn tree_depth(document: &Document, node: NodeId, depths: &mut HashMap<NodeId, usize>) -> usize {
+    let mut path = Vec::new();
+    let mut at = Some(node);
+    let mut depth = 0;
+    while let Some(here) = at {
+        if let Some(&known) = depths.get(&here) {
+            depth = known + 1;
+            break;
+        }
+        path.push(here);
+        at = document.parent(here);
+    }
+    for &on in path.iter().rev() {
+        depths.insert(on, depth);
+        depth += 1;
+    }
+    depths[&node]
 }
 
 /// Whether an attribute named `name` may change what a form control

@@ -502,8 +502,10 @@ the browser waits on, and waits; the browser writes a minidump of it
 with `MiniDumpWriteDump`, the exception pointers read in the
 renderer's memory, and signals back; the renderer ends. Dumps go to
 the `Crashes` folder beside the profile, with a text file of the
-panic's message where there is one; at most `MAX_CRASH_DUMPS`, 8, are
-kept, the oldest removed. Nothing is sent anywhere: the page saying
+panic's message where there is one; the newest that hold
+`MAX_CRASH_BYTES`, 200 MiB, together are kept, the oldest removed (a
+dump of a stack overflow holds the renderer's 40 MiB stack, G253).
+Nothing is sent anywhere: the page saying
 the renderer stopped names the file, for the user to share if they
 choose. A kill or an abort leaves no dump (nothing runs to write
 one).
@@ -543,8 +545,8 @@ process's numbers start from its own space, given at its hello.
 
 The limits are `MAX_RENDERERS` (16), `MAX_MESSAGE` (16 MiB),
 `MAX_SURFACE_PIXELS` (4096 by 4096), `MAX_RENDERER_MEMORY` (4 GiB),
-`MAX_CRASH_DUMPS` (8), and a hello not answered in 10 seconds kills the
-renderer. They go in `docs/security.md`'s table of limits.
+`MAX_CRASH_BYTES` (200 MiB), and a hello not answered in 10 seconds
+kills the renderer. They go in `docs/security.md`'s table of limits.
 
 Unit tests in the engine for the codec (every message there and back,
 every bound, every truncation), the channel, ORB's steps, each

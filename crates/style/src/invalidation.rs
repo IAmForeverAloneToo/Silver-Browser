@@ -584,11 +584,14 @@ pub(crate) struct Invalidation {
     /// Nodes removed from the tree and not put back, whose subtrees'
     /// styles are to be forgotten.
     pub(crate) removed: Vec<NodeId>,
+    /// The depths in the flat tree of the nodes met, which the restyle
+    /// sorts by too: each walked to once (G253).
+    pub(crate) depths: dom::FlatDepths,
 }
 
 impl Invalidation {
     fn mark(&mut self, document: &Document, node: NodeId, reach: Reach) {
-        if document.is_element(node) && attached(document, node) {
+        if document.is_element(node) && self.depths.in_flat_tree(document, node) {
             let entry = self.dirty.entry(node).or_insert(reach);
             *entry = (*entry).max(reach);
         }
@@ -753,7 +756,7 @@ pub(crate) fn invalidate(
                 if features.empty {
                     out.mark(document, *parent, Reach::Element);
                 }
-                if !attached(document, *child) {
+                if !out.depths.in_flat_tree(document, *child) {
                     out.removed.push(*child);
                 }
             }
@@ -1015,7 +1018,7 @@ fn has_anchors(document: &Document, has: &HasFeatures, touched: &[Touch], out: &
             Touch::Node(node) => (node, false),
             Touch::Children(parent) => (parent, true),
         };
-        if !attached(document, node) {
+        if !out.depths.in_flat_tree(document, node) {
             continue;
         }
         // The node and its ancestors, the node first when a child of it

@@ -56,8 +56,11 @@ pub use focus_navigation::{
 };
 pub use live::{Boundary, IteratorState, LiveRange, MAX_ITERATORS, MAX_RANGES};
 pub use references::{ELEMENT_REFERENCES, MAX_EXPLICIT_ELEMENTS};
+#[cfg(feature = "flat-steps")]
+pub use shadow::take_flat_steps;
 pub use shadow::{
-    FlatChildren, ShadowRootInit, ShadowRootMode, SlotAssignmentMode, is_valid_custom_element_name,
+    FlatChildren, FlatDepths, ShadowRootInit, ShadowRootMode, SlotAssignmentMode,
+    is_valid_custom_element_name,
 };
 pub use top_layer::{Dialog, MAX_TOP_LAYER, Popover, PopoverList, PopoverMode, Watcher};
 

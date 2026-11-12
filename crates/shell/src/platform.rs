@@ -715,7 +715,7 @@ mod launch {
                 crate::crashes::message_text(&block.message[..length]),
             );
         }
-        crate::crashes::prune(dir, crate::crashes::MAX_CRASH_DUMPS);
+        crate::crashes::prune(dir, crate::crashes::MAX_CRASH_BYTES);
         Some(path)
     }
 

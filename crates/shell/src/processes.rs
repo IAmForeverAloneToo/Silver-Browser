@@ -536,15 +536,17 @@ fn check_crash() -> Result<(), String> {
     checked
 }
 
-/// Crashes two renderers, their dumps going to `dir`, where as many
-/// older dumps as are kept wait to be removed.
+/// Crashes three renderers, their dumps going to `dir`, where older
+/// dumps as large as are kept wait to be removed.
 fn crashed(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("no folder: {error}"))?;
-    let older: Vec<PathBuf> = (0..crate::crashes::MAX_CRASH_DUMPS)
+    let older: Vec<PathBuf> = (0..4)
         .map(|n| dir.join(crate::crashes::dump_name(n as u128, 1)))
         .collect();
     for dump in &older {
-        std::fs::write(dump, b"older").map_err(|error| format!("not written: {error}"))?;
+        let file = std::fs::File::create(dump).map_err(|error| format!("not made: {error}"))?;
+        file.set_len(crate::crashes::MAX_CRASH_BYTES / 4)
+            .map_err(|error| format!("not sized: {error}"))?;
     }
     for (number, how) in [(8, "panic"), (9, "fault"), (10, "overflow")] {
         let launcher = ProcessLauncher::new()
@@ -580,14 +582,16 @@ fn crashed(dir: &Path) -> Result<(), String> {
             return Err(format!("renderer {number}: the message {message:?}"));
         }
     }
-    let kept = std::fs::read_dir(dir)
+    let kept: Vec<u64> = std::fs::read_dir(dir)
         .map_err(|error| format!("not listed: {error}"))?
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|x| x == "dmp"))
-        .count();
-    println!("dumps kept: {kept}");
-    if kept != crate::crashes::MAX_CRASH_DUMPS || older[..2].iter().any(|dump| dump.exists()) {
-        return Err(format!("{kept} dumps kept, the oldest among them"));
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .collect();
+    let held: u64 = kept.iter().sum();
+    println!("files kept: {}, {held} bytes", kept.len());
+    if held > crate::crashes::MAX_CRASH_BYTES || older[0].exists() {
+        return Err(format!("{held} bytes kept, the oldest dump among them"));
     }
     Ok(())
 }

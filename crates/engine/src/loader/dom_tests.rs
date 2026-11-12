@@ -3137,3 +3137,45 @@ fn every_walk_of_a_page_as_deep_as_it_goes_ends_or_throws() {
         );
     });
 }
+
+/// The flat-tree steps of the frame after a script made `hosts` hosts
+/// slotted into each other's shadow trees, each shadow tree a chain of
+/// `deep` plain blocks with its slot at the bottom (G253).
+fn steps_of_a_slotted_restyle(engine: &mut crate::Engine, hosts: usize, deep: usize) -> u64 {
+    engine.load_document("<body></body>");
+    engine.frame(200, 100);
+    crate::differential::run_script(
+        engine,
+        &format!(
+            "let at = document.body; \
+             for (let h = 0; h < {hosts}; h++) {{ \
+               const host = document.createElement('section'); at.append(host); \
+               let inner = host.attachShadow({{mode: 'open'}}); \
+               for (let i = 0; i < {deep}; i++) {{ \
+                 const d = document.createElement('div'); inner.append(d); inner = d; }} \
+               inner.append(document.createElement('slot')); at = host; }} \
+             at.append('deep');"
+        ),
+    );
+    dom::take_flat_steps();
+    engine.frame(200, 100);
+    dom::take_flat_steps()
+}
+
+#[test]
+fn a_restyle_walks_the_flat_tree_once_however_deep_slots_nest_it() {
+    // G253: through shadow trees' slots the flat tree is as deep as what
+    // is slotted; a restyle walked to its top for each changed node, and
+    // the layout cache for each change, which made a frame quadratic in
+    // it (2,000 elements 0.7 s, 4,000 3 s). Counted in steps, not time:
+    // chains twice as long take about twice the steps.
+    on_engine_stack(|engine| {
+        let short = steps_of_a_slotted_restyle(engine, 3, 150);
+        let long = steps_of_a_slotted_restyle(engine, 3, 300);
+        assert!(short > 0, "the steps are counted");
+        assert!(
+            long as f64 <= 2.2 * short as f64,
+            "{short} steps for chains of 150, {long} for 300"
+        );
+    });
+}

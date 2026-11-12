@@ -1477,6 +1477,7 @@ impl Stylesheets {
         // before a node is restyled from its parent's.
         let mut levels: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
         let mut pending = invalidation.dirty;
+        let mut depths = invalidation.depths;
         for &node in animated {
             if document.is_element(node) && styles.get(node).is_some() {
                 pending.entry(node).or_insert(Reach::Element);
@@ -1490,7 +1491,7 @@ impl Stylesheets {
         // Through the flat tree (D68): what an element inherits from.
         for &node in pending.keys() {
             levels
-                .entry(document.flat_ancestors(node).count())
+                .entry(depths.depth(document, node).unwrap_or(0))
                 .or_default()
                 .push(node);
         }

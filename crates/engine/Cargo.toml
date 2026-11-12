@@ -177,6 +177,9 @@ name = "gpu"
 harness = false
 
 [dev-dependencies]
+# The steps up the flat tree counted, for the tests of a restyle's walks
+# (G253).
+dom = { workspace = true, features = ["flat-steps"] }
 # The scripted server the loader's tests fetch from.
 net = { workspace = true, features = ["test-server"] }
 png.workspace = true

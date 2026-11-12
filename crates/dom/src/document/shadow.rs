@@ -813,6 +813,8 @@ impl Document {
     /// assigned nodes, which are not in it, and for a shadow root.
     #[inline]
     pub fn flat_parent(&self, node: NodeId) -> Option<NodeId> {
+        #[cfg(feature = "flat-steps")]
+        FLAT_STEPS.with(|steps| steps.set(steps.get() + 1));
         if self.rare.shadows.hosts.is_empty() {
             return self.parent(node);
         }
@@ -960,6 +962,67 @@ impl Document {
             return Err("an assigned slot is not mirrored".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "flat-steps")]
+thread_local! {
+    /// The steps [`Document::flat_parent`] took on this thread.
+    static FLAT_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The steps up the flat tree taken on this thread since this was last
+/// asked: what the tests hold a restyle's walks to (G253).
+#[cfg(feature = "flat-steps")]
+pub fn take_flat_steps() -> u64 {
+    FLAT_STEPS.with(|steps| steps.replace(0))
+}
+
+/// Each node's depth in a document's flat tree, as one pass over the
+/// document, unchanged meanwhile, asks it: its root 0, none for a node
+/// not in the page's flat tree. Found by a walk up to the first node
+/// asked of before, each node on the way remembered, so that a pass
+/// asking of every node it meets walks the flat tree once, not once a
+/// node (G253: through shadow trees' slots the flat tree is as deep as
+/// what is slotted, and a restyle asked of each changed node walked all
+/// the way up).
+#[derive(Debug, Default)]
+pub struct FlatDepths {
+    known: HashMap<NodeId, Option<u32>>,
+}
+
+impl FlatDepths {
+    /// How deep `node` is in `document`'s flat tree, its root 0; `None`
+    /// when its flat ancestors do not reach the root.
+    pub fn depth(&mut self, document: &Document, node: NodeId) -> Option<usize> {
+        let mut path = Vec::new();
+        let mut at = node;
+        let found = loop {
+            if let Some(&known) = self.known.get(&at) {
+                break known;
+            }
+            if at == document.root() {
+                self.known.insert(at, Some(0));
+                break Some(0);
+            }
+            path.push(at);
+            match document.flat_parent(at) {
+                Some(parent) => at = parent,
+                None => break None,
+            }
+        };
+        let mut depth = found;
+        for &on in path.iter().rev() {
+            depth = depth.map(|d| d.saturating_add(1));
+            self.known.insert(on, depth);
+        }
+        depth.map(|d| d as usize)
+    }
+
+    /// Whether `node` is in `document`'s flat tree, as
+    /// [`Document::in_flat_tree`] says.
+    pub fn in_flat_tree(&mut self, document: &Document, node: NodeId) -> bool {
+        self.depth(document, node).is_some()
     }
 }
 

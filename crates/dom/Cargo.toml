@@ -10,3 +10,5 @@ license.workspace = true
 [features]
 # The hooks' timing (G247, `src/hook_timing.rs`): off, compiled out.
 hook-timing = []
+# A count of the steps up the flat tree, for the tests (G253): off.
+flat-steps = []

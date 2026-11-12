@@ -395,8 +395,9 @@ font folders; a file it cannot read, it scans for.
   saying so, in the tab or in a frame's hole, until a reload brings it
   back in a new renderer; the browser goes on. On Windows the browser
   writes a minidump of a renderer that crashed (by an exception or a
-  panic that ended it) beside the profile, the newest
-  `MAX_CRASH_DUMPS` (8) kept; nothing is sent anywhere.
+  panic that ended it) beside the profile, the newest holding
+  `MAX_CRASH_BYTES` (200 MiB) together kept; nothing is sent anywhere,
+  no code but the process checks' reads them.
 
 ## 5. Unsafe code
 
@@ -759,7 +760,7 @@ earlier milestones say why each is what it is):
 | `audio` | `MAX_FFT_SIZE` | `32768` | An `AnalyserNode`'s FFT: the standard's. |
 | `audio` | `MAX_STREAM_WAITING` | `16_384` | The most frames of a stream kept waiting for its reader: a mixer's wake's worth twice over (gap batch D). |
 | `audio` | `MAX_READERS` | `64` | The most feeds one tap gives to (gap batch D). |
-| `silver-browser` | `MAX_CRASH_DUMPS` | `8` | The most dumps kept: past it, the oldest go. |
+| `silver-browser` | `MAX_CRASH_BYTES` | `200 << 20` | The most the dumps and their messages hold together: past it, the oldest go (G253). |
 | `silver-browser` | `MAX_FORWARDED` | `1024` | The most requests waiting on the page's answers. |
 | `silver-browser` | `MAX_ALL_RENDERERS` | `48` | The most renderers the windows' tabs keep alive together (M37), shared out among the windows: past a window's share, its hidden tab least recently shown is discarded. |
 | `silver-browser` | `MAX_CLOSED` | `10` | The most tabs closed the window keeps, to open again (M37). |

@@ -10187,20 +10187,43 @@ impl Engine {
         let targets = self.shown.scripts.layout_targets();
         let measured = self.measure(&targets);
         // The targets in contents an element skips (`content-visibility`,
-        // gap batch H).
+        // gap batch H): each flat ancestor's answer remembered, so that
+        // the targets' walks up meet each node once (G253).
         let skipped: HashSet<NodeId> = match self.shown.styled.as_ref() {
-            Some(styled) => targets
-                .iter()
-                .copied()
-                .filter(|&target| {
-                    self.shown.document.flat_ancestors(target).any(|a| {
-                        styled
-                            .styles
-                            .get(a)
-                            .is_some_and(|style| style.skips_contents())
-                    })
-                })
-                .collect(),
+            Some(styled) => {
+                let document = &self.shown.document;
+                let skips = |node: NodeId| {
+                    styled
+                        .styles
+                        .get(node)
+                        .is_some_and(|style| style.skips_contents())
+                };
+                // Whether a node's flat ancestors skip what is under them.
+                let mut under: HashMap<NodeId, bool> = HashMap::new();
+                let mut skipped_under = |node: NodeId| {
+                    let mut path = Vec::new();
+                    let mut at = document.flat_parent(node);
+                    let mut found = false;
+                    while let Some(here) = at {
+                        if let Some(&known) = under.get(&here) {
+                            found = known || skips(here);
+                            break;
+                        }
+                        path.push(here);
+                        at = document.flat_parent(here);
+                    }
+                    for &on in path.iter().rev() {
+                        under.insert(on, found);
+                        found = found || skips(on);
+                    }
+                    found
+                };
+                targets
+                    .iter()
+                    .copied()
+                    .filter(|&target| skipped_under(target))
+                    .collect()
+            }
             None => HashSet::new(),
         };
         let origin = self

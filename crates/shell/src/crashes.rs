@@ -1,13 +1,20 @@
 //! The renderers' crash dumps (M34.4, D34, docs/design/processes.md,
 //! "Crashes"): the folder they go to, beside the profile, their names,
-//! how many are kept, and the text file of a panic's message beside a
-//! dump. The browser writes them (the platform module); nothing sends
-//! them anywhere.
+//! how much of them is kept, and the text file of a panic's message
+//! beside a dump. The browser writes them (the platform module), to
+//! that folder alone; nothing sends them anywhere: no code reads them
+//! but the process checks', nor does any reach the network. For whoever
+//! gives `MiniDumpWriteDump` a callback: `windows-sys`'s x86-64
+//! `MINIDUMP_THREAD_CALLBACK` is not packed to four bytes as dbghelp's
+//! is (`pshpack4.h`), so its stack's bounds read through it are not the
+//! thread's (found trying to cut an overflow's stack from its dump, G253).
 
 use std::path::{Path, PathBuf};
 
-/// The most dumps kept: past it, the oldest go.
-pub(crate) const MAX_CRASH_DUMPS: usize = 8;
+/// The most the dumps and their messages may hold together, in bytes:
+/// past it, the oldest go (G253; a dump of a renderer's stack overflow
+/// was its whole stack's, some 40 MiB, before its stack was cut).
+pub(crate) const MAX_CRASH_BYTES: u64 = 200 << 20;
 
 /// The folder the dumps go to beside the profile in `profile`.
 #[cfg_attr(feature = "single-process", allow(dead_code))]
@@ -22,9 +29,10 @@ pub(crate) fn dump_name(millis: u128, id: u32) -> String {
 }
 
 /// Removes the oldest dumps in `dir`, and their messages, past the
-/// newest `keep`. Only Windows writes dumps yet (G113).
+/// newest that hold `keep` bytes together at most. Only Windows writes
+/// dumps yet (G113).
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn prune(dir: &Path, keep: usize) {
+pub(crate) fn prune(dir: &Path, keep: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -40,8 +48,17 @@ pub(crate) fn prune(dir: &Path, keep: usize) {
         })
         .collect();
     dumps.sort();
-    let past = dumps.len().saturating_sub(keep);
-    for dump in &dumps[..past] {
+    let size = |path: &Path| std::fs::metadata(path).map_or(0, |meta| meta.len());
+    let mut held = 0u64;
+    let mut kept = dumps.len();
+    for (at, dump) in dumps.iter().enumerate().rev() {
+        held = held.saturating_add(size(dump) + size(&dump.with_extension("txt")));
+        if held > keep {
+            break;
+        }
+        kept = at;
+    }
+    for dump in &dumps[..kept] {
         let _ = std::fs::remove_file(dump);
         let _ = std::fs::remove_file(dump.with_extension("txt"));
     }
@@ -72,17 +89,19 @@ mod tests {
     }
 
     #[test]
-    fn the_oldest_dumps_go_past_the_most_kept() {
+    fn the_oldest_dumps_go_past_the_most_bytes_kept() {
         let dir = std::env::temp_dir().join(format!("silver-prune-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a folder");
+        // Ten dumps of 90 bytes and their messages of 10: the newest
+        // eight fit in 800.
         for at in 0..10u128 {
             let dump = dir.join(dump_name(1_000 + at * 100, 7));
-            std::fs::write(&dump, b"dump").expect("written");
-            std::fs::write(dump.with_extension("txt"), b"message").expect("written");
+            std::fs::write(&dump, [0u8; 90]).expect("written");
+            std::fs::write(dump.with_extension("txt"), [b'm'; 10]).expect("written");
         }
         std::fs::write(dir.join("other.dmp"), b"not ours").expect("written");
-        prune(&dir, MAX_CRASH_DUMPS);
+        prune(&dir, 800);
         let mut left: Vec<String> = std::fs::read_dir(&dir)
             .expect("listed")
             .map(|entry| {
@@ -95,7 +114,7 @@ mod tests {
             .collect();
         left.sort();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(left.len(), MAX_CRASH_DUMPS * 2 + 1, "{left:?}");
+        assert_eq!(left.len(), 8 * 2 + 1, "{left:?}");
         assert!(!left.contains(&dump_name(1_000, 7)), "{left:?}");
         assert!(!left.contains(&"renderer-0000000001100-7.txt".to_owned()));
         assert!(left.contains(&dump_name(1_200, 7)), "{left:?}");
