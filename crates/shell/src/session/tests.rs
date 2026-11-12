@@ -167,7 +167,8 @@ impl Window {
 
     /// Takes results as the waker says they come, as the shell does,
     /// until `done` holds; a frame is drawn after each, as the window
-    /// asks for one.
+    /// asks for one. A wait that runs out names its caller's line.
+    #[track_caller]
     fn wait_until(&mut self, done: impl Fn(&Session) -> bool) {
         let deadline = Instant::now() + WAIT;
         while !done(&self.session) {
@@ -183,6 +184,7 @@ impl Window {
     }
 
     /// Waits for the page under way to be shown, all there.
+    #[track_caller]
     fn settle(&mut self) {
         self.wait_until(|session| *session.engine().load_state() != LoadState::Loading);
     }
