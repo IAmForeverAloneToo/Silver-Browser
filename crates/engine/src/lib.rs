@@ -10697,6 +10697,9 @@ impl Engine {
         self.shown.snaps.extend(snapped);
         // Moved as a fragment's goal moves it, which a later layout may
         // move again: no user's scroll, which would give the goal up.
+        // The targets are written unclamped: the frame's clamp of every
+        // offset and target to its range, after each layout and before
+        // paint, keeps them in it (G252).
         let smoothly = !self.preferences.reduced_motion;
         for (container, (x, y), smooth) in moves {
             self.shown.moved.insert(container);
@@ -10924,6 +10927,34 @@ mod tests {
             text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
                 .expect("the bundled font parses"),
         )
+    }
+
+    #[test]
+    fn a_smooth_scroll_on_its_way_is_compared_where_it_is_not_where_it_goes() {
+        // CI's input fuzzing (G252's check): ArrowRight began a smooth
+        // scroll across to 17px on a clock that never moved, so the
+        // engine was at 5.67px on its way there; the fresh engine, given
+        // the offset, rests there. A scroll not yet at rest is compared
+        // by its pixels where it is, not by where it goes.
+        let page = "<!DOCTYPE html><style>body { margin: 0; font-size: 10px }</style>             <form><input placeholder=find><input type=checkbox id=c><label for=c>c</label>             <input type=radio name=r><input type=radio name=r checked>             <select><option>one<option selected>two</select><button>go</button></form>             <a href=#t>t</a><p id=t>target</p>";
+        let at = FrameTime::at(Duration::ZERO);
+        let mut engine = test_engine();
+        engine.set_clock(Arc::new(|| Duration::ZERO));
+        engine.load_document(page);
+        engine.frame_at(160, 120, at);
+        assert!(engine.max_scroll_x() > 10.0, "{}", engine.max_scroll_x());
+        let right = Key::new("ArrowRight", "ArrowRight");
+        engine.key_down(&right);
+        engine.key_up(&right);
+        engine.frame_at(160, 120, at);
+        let (x, target) = (engine.scroll_x(), engine.scroll_targets(None).0);
+        assert!(x > 0.0 && x < target, "on its way: {x} to {target}");
+        let mut fresh = test_engine();
+        fresh.set_clock(Arc::new(|| Duration::ZERO));
+        if let Err(difference) = differential::compare_with_fresh(&mut engine, &mut fresh, 160, 120)
+        {
+            panic!("{difference}");
+        }
     }
 
     #[test]

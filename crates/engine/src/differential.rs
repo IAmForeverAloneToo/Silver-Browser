@@ -344,9 +344,17 @@ pub fn compare_with_fresh(
     // Where the page rests its scroll containers (G252): the offsets
     // above are the engine's, and a fresh engine that snaps them, clamps
     // them or puts one at its initial target in its frame says that the
-    // engine left it where the page lets nothing rest.
+    // engine left it where the page lets nothing rest. Only where the
+    // engine is at rest, its offset its target: one still on its way
+    // (a smooth scroll on a clock that has not moved) is compared by its
+    // pixels where it is.
     let rest = |e: &Engine, scroller: Option<NodeId>| e.scroll_targets(scroller);
-    if rest(engine, None) != rest(fresh, None) {
+    let at = |e: &Engine, scroller: Option<NodeId>| match scroller {
+        None => (e.scroll_x(), e.scroll_y()),
+        Some(node) => (e.element_scroll_x(node), e.element_scroll(node)),
+    };
+    let resting = |scroller: Option<NodeId>| rest(engine, scroller) == at(engine, scroller);
+    if resting(None) && rest(engine, None) != rest(fresh, None) {
         return Err(format!(
             "the viewport rests at {:?}, a fresh engine from there at {:?}",
             rest(engine, None),
@@ -355,7 +363,7 @@ pub fn compare_with_fresh(
     }
     for (i, (&node, &fresh_node)) in order.iter().zip(&fresh_order).enumerate() {
         let (here, there) = (rest(engine, Some(node)), rest(fresh, Some(fresh_node)));
-        if here != there {
+        if resting(Some(node)) && here != there {
             return Err(format!(
                 "node {i} ({:?}) rests scrolled at {here:?}, a fresh engine from there at \
                  {there:?}",
