@@ -3,8 +3,8 @@
 //! reference browser's (scratchpad m29 `p1-wasm.html`, Chrome 154)
 //! where the interface leaves them open.
 
-use crate::Limits;
 use crate::tests::{Recorder, realm, realm_with, script};
+use crate::{Limits, Realm};
 
 /// A module's bytes, from its text, as a script's `Uint8Array`.
 fn module(text: &str) -> String {
@@ -17,7 +17,11 @@ fn module(text: &str) -> String {
 /// by `step(name, f)` as `name=` and its value in JSON, or what it
 /// threw.
 fn steps(source: &str) -> Vec<String> {
-    let mut realm = realm();
+    steps_in(realm(), source)
+}
+
+/// [`steps`] in `realm`.
+fn steps_in(mut realm: Box<dyn Realm<Recorder>>, source: &str) -> Vec<String> {
     let mut host = Recorder::default();
     let prelude = "const step = (name, f) => { let v; try { v = JSON.stringify(f()); } \
                    catch (e) { v = 'threw ' + (e && e.constructor && e.constructor.name) + \
@@ -870,8 +874,18 @@ fn calls_nest_only_so_deep() {
   if (result i32) i32.const 0
   else local.get 0 i32.const 1 i32.sub call $deep i32.const 1 i32.add end))"#,
     );
-    let lines = steps(&format!(
-        r#"
+    // A megabyte of stack, as a realm had before G253: the dives below
+    // recurse to its end and, at each depth, a call to its end again,
+    // which a realm's 16 MiB (15,000 frames on macOS) makes outlast the
+    // run's budget; what nests and how it ends is the same.
+    let small = realm_with(Limits {
+        stack: 1 << 20,
+        ..Limits::default()
+    });
+    let lines = steps_in(
+        small,
+        &format!(
+            r#"
 let e;
 let back;
 e = new WebAssembly.Instance(new WebAssembly.Module({nested}), {{ env: {{ back: (x) => back(x) }} }}).exports;
@@ -892,7 +906,8 @@ const d = new WebAssembly.Instance(new WebAssembly.Module({deep})).exports;
 step("recursion", () => d.deep(5000));
 step("tooDeep", () => d.deep(20000));
 "#
-    ));
+        ),
+    );
     assert_eq!(
         lines,
         [
