@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The hooks' timing (G247, dom's `hook_timing`): off, compiled out.
+hook-timing = ["dom/hook-timing", "style/hook-timing"]
+
 [dependencies]
 dom.workspace = true
 images.workspace = true

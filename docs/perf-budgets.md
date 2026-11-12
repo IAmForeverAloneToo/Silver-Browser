@@ -96,6 +96,14 @@ nothing that changes what is shown.
 - **Memory:** `silver-browser --check-processes memory <port> <pages>`
   (M35.1) shows each page in a renderer of its own and prints what the
   renderer holds, its own bytes and its working set.
+- **Hook timing (G247):** `--features hook-timing` (engine, passed to
+  dom, style and layout) builds a timer into each hook named with
+  `dom::hook!`, and the `grid`, `flex`, `dom`, `mutation`, `animation`,
+  `scripts` and `load` benchmarks print each hook's calls and
+  milliseconds after each of their measurements, slowest first. The
+  times are inclusive and carry the timer's own cost; they say where
+  the time goes, the benchmarks' rows built without the feature say
+  how much. Without the feature the hooks are nothing.
 - **Counters** prove work that is not done: `Engine::style_runs`,
   `restyled_elements`, `layout_runs`, `boxes_laid_out`, `boxes_reused`
   and `redrawn`.

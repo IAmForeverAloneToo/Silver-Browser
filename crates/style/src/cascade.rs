@@ -1183,6 +1183,7 @@ impl Stylesheets {
         name: &str,
         media: &Media,
     ) -> Option<Vec<crate::keyframes::CssKeyframe>> {
+        dom::hook!("style::keyframes_named");
         let processed = |rule: &KeyframesInForce<'_>| {
             rule.keyframes
                 .keyframes
@@ -1349,6 +1350,7 @@ impl Stylesheets {
         animated: &[NodeId],
         flushed: Option<&Styles>,
     ) -> Restyle {
+        dom::hook!("style::restyle_flushed");
         if let Some(animations) = context.animations
             && !animations.borrow().is_empty()
         {
@@ -1381,6 +1383,7 @@ impl Stylesheets {
         styles: &mut Styles,
         sizes: &ContainerSizes,
     ) -> Option<Restyle> {
+        dom::hook!("style::restyle_containers");
         let changed = styles.containers_changed(sizes);
         styles.container_sizes = sizes.clone();
         if changed.is_empty() {
@@ -1402,6 +1405,7 @@ impl Stylesheets {
         subtrees: &[NodeId],
         flushed: Option<&Styles>,
     ) -> Restyle {
+        dom::hook!("style::restyle_reaching");
         let invalidation = invalidate(document, &self.features, changes);
         let mut cascader = self.cascader(document, context);
         cascader.root_font = styles.root_font.clone();
@@ -1911,6 +1915,7 @@ impl Recascader<'_> {
         element: NodeId,
         cascade: impl FnOnce(&Matched<'_>, &Resolution<'_>) -> R,
     ) -> R {
+        dom::hook!("style::with_matched");
         self.with_matched_for(element, None, cascade)
     }
 
@@ -1923,6 +1928,7 @@ impl Recascader<'_> {
         highlight: Option<HighlightName>,
         cascade: impl FnOnce(&Matched<'_>, &Resolution<'_>) -> R,
     ) -> R {
+        dom::hook!("style::with_matched_for");
         let mut cascader = self.cascader.borrow_mut();
         let cascader = &mut *cascader;
         let containers = Containers {
@@ -2000,6 +2006,7 @@ impl Recascader<'_> {
         name: HighlightName,
         parent: &ComputedStyle,
     ) -> Option<ComputedStyle> {
+        dom::hook!("style::highlight");
         self.with_matched_for(element, Some(name), |matched, resolution| {
             let applied = matched.of(Target::Element);
             (!applied.is_empty())
@@ -2148,6 +2155,7 @@ fn element_style(
     animated: Option<&Animated<'_>>,
     transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
+    dom::hook!("style::element_style");
     // A MathML script, or a part of a fraction, inherits a smaller font
     // and the compact style (D77).
     let scripted;
@@ -2234,6 +2242,7 @@ fn relevant(document: &Document, element: NodeId) -> bool {
 /// `linethickness`, each a length (MathML Core section 2.2.1), invalid
 /// ones dropped.
 fn set_math_element(document: &Document, element: NodeId, style: &mut ComputedStyle) {
+    dom::hook!("style::set_math_element");
     use crate::computed::MathElement;
     let em = style.font_size_px;
     let length = |name: &str| {
@@ -2299,6 +2308,7 @@ fn script_level(
     element: NodeId,
     parent: &ComputedStyle,
 ) -> Option<ComputedStyle> {
+    dom::hook!("style::script_level");
     use crate::computed::MathStyle;
     if document.namespace(element) != Some(&dom::Namespace::MathMl) {
         return None;
@@ -2328,6 +2338,7 @@ fn script_level(
 /// `switch`, `use`, `tspan`, `textPath` and an inner `svg`), the outer
 /// `svg` among the others.
 fn unboxes_to_nothing(document: &Document, element: NodeId) -> bool {
+    dom::hook!("style::unboxes_to_nothing");
     if let Some(tag) = document.svg_tag(element) {
         let outer = document
             .parent_element(element)
@@ -3162,6 +3173,7 @@ impl<'a> Cascader<'a> {
         parent: &ComputedStyle,
         rem: f32,
     ) -> Option<StyleKey> {
+        dom::hook!("style::style_key");
         if !self.keeps {
             return None;
         }
@@ -3241,6 +3253,7 @@ impl<'a> Cascader<'a> {
     /// that tree's, else the tree of its host's, and so out to the
     /// document's (CSS Scoping 1 section 3.5, D69).
     fn keyframes_named(&self, tree: Option<NodeId>, name: &str) -> Option<KeyframesInForce<'a>> {
+        dom::hook!("style::keyframes_named");
         let mut at = tree;
         let mut steps = 0;
         while let Some(root) = at.filter(|_| steps < dom::MAX_DEPTH) {
@@ -3536,6 +3549,7 @@ fn changed_style(
 /// Whether `style` asks for a transition that runs: one of a combined
 /// duration above zero (Transitions 1 section 3).
 fn transitions_run(style: &ComputedStyle) -> bool {
+    dom::hook!("style::transitions_run");
     style
         .motion()
         .transitions()
@@ -3684,6 +3698,7 @@ impl<'a> Matched<'a> {
         own: &ComputedStyle,
         containers: Option<&Containers<'_>>,
     ) -> Cow<'_, [Applied<'a>]> {
+        dom::hook!("style::of_pseudo");
         let applied = self.of(target);
         if applied.iter().all(|a| a.container.is_none()) {
             return Cow::Borrowed(applied);
@@ -3811,6 +3826,7 @@ type RulesInForce<'r, 'a> = (
 /// How many shadow trees deep the tree at `root` is: its encapsulation
 /// context, as the cascade orders it (D69).
 fn tree_depth(document: &Document, root: NodeId) -> u32 {
+    dom::hook!("style::tree_depth");
     let mut depth = 0;
     let mut tree = root;
     while let Some(host) = document.shadow_host(tree) {
@@ -3837,6 +3853,7 @@ fn declarations_for<'a>(
     frame: FrameMargins,
     containers: Option<&Containers<'_>>,
 ) -> Matched<'a> {
+    dom::hook!("style::declarations_for");
     let mut order = 0u32;
     let mut out = Matched::default();
     let svg = document.svg_tag(element).is_some();
@@ -4001,6 +4018,7 @@ fn scoped_declarations<'a>(
     containers: Option<&Containers<'_>>,
     highlight: Option<HighlightName>,
 ) {
+    dom::hook!("style::scoped_declarations");
     // A host: its shadow tree's rules, which match it featureless, by
     // `:host` alone, and its pseudo-elements by `:host::before`.
     if let Some(root) = document.shadow_root(element)
@@ -4118,6 +4136,7 @@ fn scoped_declarations<'a>(
 /// entry `inner` or `inner: outer` whose inner name is among them gives
 /// its outer one.
 fn exported_parts(exportparts: Option<&str>, names: &[String]) -> Vec<String> {
+    dom::hook!("style::exported_parts");
     let Some(value) = exportparts else {
         return Vec::new();
     };
@@ -4152,6 +4171,7 @@ fn collect_scoped<'a>(
     (document, highlight): (&Document, Option<HighlightName>),
     mut matches: impl FnMut(&'a Selector) -> bool,
 ) {
+    dom::hook!("style::collect_scoped");
     let parent = containers.and_then(|containers| containers.document.flat_parent_element(element));
     let details = document.tag(element) == Some("details");
     let mut next = 0;
@@ -4256,6 +4276,7 @@ fn highlight_declarations<'a>(
     name: HighlightName,
     containers: Option<&Containers<'_>>,
 ) -> Matched<'a> {
+    dom::hook!("style::highlight_declarations");
     let mut order = 0u32;
     let mut out = Matched::default();
     let svg = document.svg_tag(element).is_some();
@@ -4348,6 +4369,7 @@ fn hint_declarations(
 /// table, a row group or a row is not shown (HTML section 15.3.8), and
 /// one in an XML document is.
 fn ua_important_declarations(document: &Document, element: NodeId) -> Vec<css::Declaration> {
+    dom::hook!("style::ua_important_declarations");
     let in_table = document.tag(element) == Some("form")
         && document
             .parent(element)
@@ -4375,6 +4397,7 @@ fn collect_from_sheet<'a>(
     out: &mut Matched<'a>,
     containers: Option<&Containers<'_>>,
 ) {
+    dom::hook!("style::collect_from_sheet");
     collect_from_sheet_for(
         matcher,
         (element, svg),
@@ -4398,6 +4421,7 @@ fn collect_from_sheet_for<'a>(
     containers: Option<&Containers<'_>>,
     highlight: Option<HighlightName>,
 ) {
+    dom::hook!("style::collect_from_sheet_for");
     // The scoping roots of each scope met, for `element`.
     let mut roots: HashMap<u32, Vec<(NodeId, u32)>> = HashMap::new();
     // Whether each `@container` block met holds for the element, whose
@@ -4530,6 +4554,7 @@ fn container_holds(
     from: Option<NodeId>,
     containers: &Containers<'_>,
 ) -> bool {
+    dom::hook!("style::container_holds");
     let mut at = Some(block);
     while let Some(index) = at {
         let block = &blocks[index as usize];
@@ -4559,6 +4584,7 @@ fn scoping_roots<'a>(
     scope: u32,
     element: NodeId,
 ) -> Vec<(NodeId, u32)> {
+    dom::hook!("style::scoping_roots");
     let document = matcher.document();
     let rule = &sheet.scopes[scope as usize];
     let outer = rule
@@ -4635,6 +4661,7 @@ fn limited<'a>(
     root: NodeId,
     element: NodeId,
 ) -> bool {
+    dom::hook!("style::limited");
     let Some(end) = end else {
         return false;
     };
@@ -4673,6 +4700,7 @@ fn compute_style(
     animated: Option<&Animated<'_>>,
     transitioned: Option<&[Transitioning]>,
 ) -> ComputedStyle {
+    dom::hook!("style::compute_style");
     let transitioned = transitioned.unwrap_or_default();
     // `overlay` is the user agent's alone (CSS Position 4 section 3.2):
     // an author's declaration of it, important or not, is valid but
@@ -4723,6 +4751,7 @@ fn compute_style(
     // where they roll back to.
     type Placed<'d> = ((usize, bool), custom::Declaration<'d>);
     fn custom_of<'d>(applied: &[&'d Applied<'_>], first: usize) -> Vec<Placed<'d>> {
+        dom::hook!("style::custom_of");
         applied
             .iter()
             .enumerate()
@@ -5798,6 +5827,7 @@ fn reads_cycle<'d>(
     resolution: &Resolution<'_>,
     units: &[&str],
 ) -> Vec<&'d str> {
+    dom::hook!("style::reads_cycle");
     let registry = &resolution.substitutions.registry;
     let mut cyclic = Vec::new();
     if registry.is_empty() || !custom::has_substitution(value) {
@@ -5857,6 +5887,7 @@ fn apply_revert(
     parent: &ComputedStyle,
     border_color_set: &mut [bool; 4],
 ) {
+    dom::hook!("style::apply_revert");
     match reverted {
         Some(reverted) => {
             apply_css_wide(style, name, CssWide::Inherit, reverted, border_color_set);
@@ -7247,6 +7278,7 @@ fn set_containment<T>(
     v: Option<T>,
     update: impl FnOnce(&mut Containment, T),
 ) -> bool {
+    dom::hook!("style::set_containment");
     v.map(|v| update(style.containment_mut(), v)).is_some()
 }
 
@@ -7256,6 +7288,7 @@ fn copy_containment(
     src: &ComputedStyle,
     copy: impl FnOnce(&mut Containment, &Containment),
 ) {
+    dom::hook!("style::copy_containment");
     if style.containment.is_none() && src.containment.is_none() {
         return;
     }
@@ -8314,6 +8347,7 @@ fn apply_logical(
     parent: &ComputedStyle,
     border_color_set: &mut [bool; 4],
 ) -> bool {
+    dom::hook!("style::apply_logical");
     let groups;
     let (names, values): ([String; 2], [&[Token]; 2]) = match mapped {
         logical::Mapped::One(physical) => {

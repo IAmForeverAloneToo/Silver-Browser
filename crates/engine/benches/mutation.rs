@@ -17,6 +17,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -130,6 +132,7 @@ fn main() {
     let first = draw(&mut engine);
     println!("the first frame of {PARAGRAPHS} paragraphs:");
     report(&[first]);
+    support::hooks("mutation 1");
     println!("  {}", before.since(Work::of(&engine)));
 
     let body = engine
@@ -146,6 +149,7 @@ fn main() {
         stats.push(draw(&mut engine));
     }
     report(&stats);
+    support::hooks("mutation 2");
     println!("  {}", before.since(Work::of(&engine)));
 
     println!("{PARAGRAPHS} more appended in one frame:");
@@ -157,5 +161,6 @@ fn main() {
     });
     let burst = draw(&mut engine);
     report(&[burst]);
+    support::hooks("mutation 3");
     println!("  {}", before.since(Work::of(&engine)));
 }

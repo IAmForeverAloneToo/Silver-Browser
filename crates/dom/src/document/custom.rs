@@ -484,6 +484,7 @@ impl Document {
     /// their registries, now they are `document`'s: the document's, or
     /// their parents', as a global registry.
     pub(super) fn registries_adopted(&mut self, nodes: Vec<(NodeId, bool)>, document: NodeId) {
+        crate::hook!("dom::custom::registries_adopted");
         // A template's contents' document has none.
         let contents = nodes
             .first()
@@ -975,6 +976,7 @@ impl Document {
     /// connected, each custom one's `connectedCallback` and each other
     /// one tried for an upgrade, in shadow-including tree order.
     pub(super) fn custom_inserted(&mut self, node: NodeId, old_owner: Option<NodeId>) {
+        crate::hook!("dom::custom::custom_inserted");
         if old_owner.is_none() && !self.rare.custom.registries.is_empty() {
             self.registries_inserted(node);
         }
@@ -1082,6 +1084,7 @@ impl Document {
     /// and 16): each custom element of its shadow-including inclusive
     /// descendants hears `disconnectedCallback`.
     pub(super) fn custom_removed(&mut self, node: NodeId) {
+        crate::hook!("dom::custom::custom_removed");
         if self.rare.custom.states.is_empty() {
             return;
         }
@@ -1100,6 +1103,7 @@ impl Document {
     /// hears `connectedMoveCallback`, or `disconnectedCallback` and
     /// `connectedCallback` without one.
     pub(super) fn custom_moved(&mut self, node: NodeId) {
+        crate::hook!("dom::custom::custom_moved");
         if self.rare.custom.states.is_empty() || !self.is_connected(node) {
             return;
         }
@@ -1126,6 +1130,7 @@ impl Document {
         old: Option<&str>,
         value: Option<&str>,
     ) {
+        crate::hook!("dom::custom::custom_attribute_changed");
         if self.rare.custom.states.is_empty() {
             return;
         }
@@ -1148,6 +1153,7 @@ impl Document {
 
     /// Forgets what is kept of the nodes `doomed`, which are being freed.
     pub(super) fn forget_custom(&mut self, doomed: &[NodeId]) {
+        crate::hook!("dom::custom::forget_custom");
         let custom = &mut self.rare.custom;
         if custom.states.is_empty()
             && custom.is_values.is_empty()

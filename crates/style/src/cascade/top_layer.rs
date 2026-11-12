@@ -91,6 +91,7 @@ pub(super) fn parse_interest_delay_shorthand(
 ///   all it holds, whatever their own `interactivity` (CSS UI 4 section
 ///   7.1), the modal dialog's own and those in it too.
 pub(super) fn adjust(document: &Document, element: NodeId, style: &mut ComputedStyle) {
+    dom::hook!("style::top_layer::adjust");
     if document.in_top_layer(element) {
         style.top_layer = true;
         if !matches!(style.position, Position::Absolute | Position::Fixed) {

@@ -508,6 +508,7 @@ impl RuleSet {
         answers: &[bool],
         starting: bool,
     ) -> InForce<'s> {
+        dom::hook!("style::rule_set::in_force_of");
         let (holds, places) = self.ordered(answers);
         let last = places[UNLAYERED as usize];
         let mut kept = 0u32;
@@ -663,6 +664,7 @@ impl RuleSet {
         &self,
         answers: &[bool],
     ) -> Vec<&crate::property::PropertyRegistration> {
+        dom::hook!("style::rule_set::properties_in_force");
         if self.properties.is_empty() {
             return Vec::new();
         }

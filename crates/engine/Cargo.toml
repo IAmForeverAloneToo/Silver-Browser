@@ -10,6 +10,9 @@ license.workspace = true
 # which WebGL and WebGPU reach. Off, nothing of wgpu is built.
 default = ["gpu"]
 gpu = ["render/gpu", "dep:wgpu", "dep:pollster"]
+# The hooks' timing (G247, dom's `hook_timing`): off, compiled out;
+# the benchmarks print a table of them after each measurement.
+hook-timing = ["dom/hook-timing", "style/hook-timing", "layout/hook-timing"]
 
 [dependencies]
 js.workspace = true

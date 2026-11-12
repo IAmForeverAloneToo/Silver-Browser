@@ -137,6 +137,7 @@ impl Document {
     /// An attribute set or taken away: the elements a script set for it
     /// go.
     pub(super) fn references_changed(&mut self, change: &Change) {
+        crate::hook!("dom::references::references_changed");
         if self.rare.references.is_empty() {
             return;
         }

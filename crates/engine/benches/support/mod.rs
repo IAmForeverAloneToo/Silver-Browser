@@ -19,3 +19,11 @@ pub fn rounds(n: usize) -> usize {
 pub fn frames(n: u32) -> u32 {
     if quick() { (n / 10).max(1) } else { n }
 }
+
+/// The hooks' table since the last (G247), headed `title`: printed when
+/// the benchmarks are built with the engine's `hook-timing` feature.
+#[allow(dead_code, unused_variables)]
+pub fn hooks(title: &str) {
+    #[cfg(feature = "hook-timing")]
+    print!("{}", dom::hook_timing::take(title));
+}

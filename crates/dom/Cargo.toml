@@ -6,3 +6,7 @@ license.workspace = true
 
 # Leaf crate: no dependencies. See docs/architecture.md.
 [dependencies]
+
+[features]
+# The hooks' timing (G247, `src/hook_timing.rs`): off, compiled out.
+hook-timing = []

@@ -134,6 +134,7 @@ fn main() {
     let first = draw(&mut engine);
     println!("the first frame of a grid of {CARDS} cards:");
     report(&[first]);
+    support::hooks("flex 1");
     println!("  {} boxes laid out", engine.boxes_laid_out() - laid_out);
 
     let titles: Vec<dom::NodeId> = {
@@ -157,6 +158,7 @@ fn main() {
         stats.push(draw(&mut engine));
     }
     report(&stats);
+    support::hooks("flex 2");
     println!(
         "  per frame, {} boxes laid out and {} taken from the cache",
         (engine.boxes_laid_out() - laid_out) / CHANGES as u64,

@@ -15,6 +15,8 @@ use std::fmt;
 
 mod document;
 pub mod forms;
+#[cfg(feature = "hook-timing")]
+pub mod hook_timing;
 mod microsyntax;
 pub mod validity;
 
@@ -271,6 +273,20 @@ impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.pretty_print())
     }
+}
+
+/// Times the rest of the block as the hook `$name` (G247, see
+/// `hook_timing`), when the calling crate is built with its
+/// `hook-timing` feature; else nothing.
+#[macro_export]
+macro_rules! hook {
+    ($name:literal) => {
+        #[cfg(feature = "hook-timing")]
+        let _hook = {
+            static SITE: $crate::hook_timing::Site = $crate::hook_timing::Site::new($name);
+            SITE.enter()
+        };
+    };
 }
 
 #[cfg(test)]

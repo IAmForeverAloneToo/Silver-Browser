@@ -283,6 +283,7 @@ impl Document {
     /// was one already, until the document has processed autofocus (HTML
     /// section 6.6.5's "autofocus steps" of the insertion steps).
     pub(super) fn autofocus_inserted(&mut self, top: NodeId) {
+        crate::hook!("dom::focus::autofocus_inserted");
         if self.rare.focus.autofocus_processed {
             return;
         }
@@ -366,6 +367,7 @@ impl Document {
     /// Before `child` leaves `parent`, at `index`: a starting point in it
     /// is kept where it was, in the scope of the slot it was assigned to.
     pub(super) fn starting_point_leaving(&mut self, parent: NodeId, child: NodeId, index: u32) {
+        crate::hook!("dom::focus::starting_point_leaving");
         let Some(Start::Node(node)) = self.rare.focus.start else {
             return;
         };

@@ -458,6 +458,7 @@ impl Document {
     /// the top layer and the open dialogs, without events; a dialog keeps
     /// its `open` attribute.
     pub(super) fn top_layer_removing(&mut self, removed: NodeId) {
+        crate::hook!("dom::top_layer::top_layer_removing");
         if self.rare.top_layer.is_empty() {
             return;
         }

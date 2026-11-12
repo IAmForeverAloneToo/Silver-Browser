@@ -384,6 +384,7 @@ pub trait Images {
     /// gap batch H): what the engine kept of its size when last laid out
     /// without size containment, which an `auto` intrinsic size takes.
     fn remembered_size(&self, _node: NodeId) -> [Option<f32>; 2] {
+        dom::hook!("layout::box_tree::remembered_size");
         [None; 2]
     }
 }
@@ -762,6 +763,7 @@ pub fn build_box_tree_kept(
     images: &dyn Images,
     cache: &LayoutCache,
 ) -> Vec<LayoutBox> {
+    dom::hook!("layout::box_tree::build_box_tree_kept");
     build(document, styles, recascade, images, Some(cache))
 }
 
@@ -803,6 +805,7 @@ fn build(
 /// its mathematical italic letter, for which the slanted face is taken,
 /// which every font has where few have those letters.
 fn math_auto(style: Arc<ComputedStyle>, text: &str) -> Arc<ComputedStyle> {
+    dom::hook!("layout::box_tree::math_auto");
     if !style.text().transform_extra.math_auto
         || style.font().style != style::computed::FontStyle::Normal
     {
@@ -826,6 +829,7 @@ fn math_auto(style: Arc<ComputedStyle>, text: &str) -> Arc<ComputedStyle> {
 /// [`Styled::boxed_children`] leaves them out of. One the cascade gave
 /// no style, under an element of `display: none`, has none.
 fn top_layer_boxes(styled: &Styled<'_>) -> Vec<LayoutBox> {
+    dom::hook!("layout::box_tree::top_layer_boxes");
     let mut out = Vec::new();
     for &element in styled.document.top_layer() {
         let item = Item::Node(element);
@@ -860,6 +864,7 @@ fn top_layer_boxes(styled: &Styled<'_>) -> Vec<LayoutBox> {
 /// cascade's. The root is an `html` element's, as a page's is; a tree
 /// whose top element is another stands for content in a page.
 fn propagate_overflow(document: &Document, boxes: &mut [LayoutBox]) {
+    dom::hook!("layout::box_tree::propagate_overflow");
     let Some(root) = document
         .document_element()
         .filter(|&root| document.tag(root) == Some("html"))
@@ -1251,6 +1256,7 @@ impl<'a> Styled<'a> {
     /// `summary` element (HTML section 4.11.1), which shows whether or not
     /// the element is open.
     fn summary(&self, details: NodeId) -> Option<NodeId> {
+        dom::hook!("layout::box_tree::summary");
         self.boxed_children(details)
             .find(|&child| self.document.tag(child) == Some("summary"))
     }
@@ -1275,6 +1281,7 @@ impl<'a> Styled<'a> {
     /// a ruby container's bases and annotations are made from, where the
     /// element would have been.
     fn flat_children(&self, item: Item) -> Vec<Item> {
+        dom::hook!("layout::box_tree::flat_children");
         let mut out = Vec::new();
         for child in self.children(item) {
             if self.is_contents(child) {
@@ -1289,6 +1296,7 @@ impl<'a> Styled<'a> {
     /// Whether `item` is an element or a pseudo-element of `display:
     /// contents`, which makes no box.
     fn is_contents(&self, item: Item) -> bool {
+        dom::hook!("layout::box_tree::is_contents");
         self.is_element(item)
             && self
                 .style(item)
@@ -1300,6 +1308,7 @@ impl<'a> Styled<'a> {
     /// flat tree (D68) when that is of `display: contents` and so not
     /// `parent` (D77), as a slot is, else `parent`.
     fn text_owner(&self, parent: Item, child: Item) -> Item {
+        dom::hook!("layout::box_tree::text_owner");
         if let Item::Node(node) = child
             && let Some(up) = self.document.flat_parent(node)
             && Item::Node(up) != parent
@@ -1467,6 +1476,7 @@ impl<'a> Styled<'a> {
     /// checkbox or a radio button of `appearance: none` is not, as the
     /// reference browser has it (CSS UI 4 section 7.1).
     fn replaced_element(&self, node: NodeId) -> bool {
+        dom::hook!("layout::box_tree::replaced_element");
         if !self.document.tag(node).is_some_and(is_replaced) {
             return false;
         }
@@ -1549,6 +1559,7 @@ impl<'a> Styled<'a> {
     /// gap batch H), when its box has size containment and the engine
     /// remembers one: what the box is then sized by.
     fn remembered(&self, item: Item, style: Arc<ComputedStyle>) -> Arc<ComputedStyle> {
+        dom::hook!("layout::box_tree::remembered");
         let Item::Node(node) = item else {
             return style;
         };

@@ -1083,6 +1083,7 @@ impl Scripts {
     /// queued. With no realm to run them the parser makes the element
     /// itself and the reactions are dropped.
     pub(crate) fn custom_elements(&mut self, lent: &mut Lent<'_>, stop: html::Stop) {
+        dom::hook!("engine::scripts::custom_elements");
         let runs = !self.aborted && !self.stopped && self.realm.is_some();
         match stop {
             html::Stop::Construct if runs => {
@@ -1843,6 +1844,7 @@ impl Scripts {
     /// Makes the realm if there is none: whether there is one now. A
     /// realm that cannot be made stops the document's scripts.
     fn ensure_realm(&mut self, secure: bool) -> bool {
+        dom::hook!("engine::scripts::ensure_realm");
         if self.stopped {
             return false;
         }

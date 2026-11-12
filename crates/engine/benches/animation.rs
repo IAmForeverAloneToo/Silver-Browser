@@ -137,6 +137,7 @@ fn run(gpu: bool, name: &str) {
         engine.boxes_laid_out() - laid_out
     );
     report(&stats);
+    support::hooks("animation 1");
 }
 
 /// Two seconds of frames.
@@ -214,6 +215,7 @@ fn animated(label: &str, source: &str) {
         work.since(Work::of(&engine))
     );
     report(&stats);
+    support::hooks("animation 2");
 }
 
 /// The body of `engine`'s document.
@@ -261,6 +263,7 @@ fn class_changed(transitions: bool) {
         }
     );
     report(&stats);
+    support::hooks("animation 3");
 }
 
 /// `composite.rs`'s twelve cards, inline blocks, the first with the id
@@ -315,6 +318,7 @@ fn turned_card() {
         work.since(Work::of(&engine))
     );
     report(&stats);
+    support::hooks("animation 4");
 }
 
 fn main() {

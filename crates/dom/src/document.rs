@@ -914,6 +914,7 @@ impl Document {
     /// The hosts the focus in their shadow trees gave the focus flag
     /// lose it.
     fn unfocus_hosts(&mut self) {
+        crate::hook!("dom::document::unfocus_hosts");
         for host in std::mem::take(&mut self.rare.shadows.focused_hosts) {
             if self.contains(host) {
                 let _ = self.set_state(host, self.state(host).with(ElementState::FOCUS, false));
@@ -1188,6 +1189,7 @@ impl Document {
     /// A new, detached element; the tag name is lowercased, as an HTML
     /// document's `createElement` does.
     pub fn create_element(&mut self, tag: &str) -> Result<NodeId, MutationError> {
+        crate::hook!("dom::document::create_element");
         self.check_room()?;
         self.check_data(tag.len())?;
         let tag = if self.rare.xml {
@@ -1300,6 +1302,7 @@ impl Document {
     /// Inserts `child` as `parent`'s last child, taking it from where it
     /// was first, as the DOM's `appendChild` does.
     pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), MutationError> {
+        crate::hook!("dom::document::append_child");
         self.insert_before(parent, child, None)
     }
 
@@ -1313,6 +1316,7 @@ impl Document {
         child: NodeId,
         reference: Option<NodeId>,
     ) -> Result<(), MutationError> {
+        crate::hook!("dom::document::insert_before");
         if !self.contains(parent) || !self.contains(child) {
             return Err(MutationError::NoSuchNode);
         }
@@ -1499,6 +1503,7 @@ impl Document {
 
     /// Removes `child` from `parent`; it stays valid and detached.
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), MutationError> {
+        crate::hook!("dom::document::remove_child");
         if !self.contains(parent) || !self.contains(child) {
             return Err(MutationError::NoSuchNode);
         }
@@ -1519,6 +1524,7 @@ impl Document {
         name: &str,
         value: &str,
     ) -> Result<(), MutationError> {
+        crate::hook!("dom::document::set_attribute");
         let name = self.attribute_name(element, name);
         let renames = self.names_by(element, &name) && self.connected(element);
         if renames {
@@ -2006,6 +2012,7 @@ impl Document {
     /// changes, with the watched nodes among its target's inclusive
     /// ancestors; the oldest goes past [`MAX_OBSERVED`].
     fn observed(&mut self, made: impl FnOnce() -> Mutated) {
+        crate::hook!("dom::document::observed");
         let Some(observing) = &self.observing else {
             return;
         };

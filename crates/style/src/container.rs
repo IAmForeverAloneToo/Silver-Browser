@@ -1043,6 +1043,7 @@ impl ContainerRule {
     /// Whether one of its queries holds for an element whose query
     /// containers are `from` and its ancestors.
     pub(crate) fn holds(&self, from: Option<NodeId>, containers: &Containers<'_>) -> bool {
+        dom::hook!("style::container::holds");
         self.queries
             .iter()
             .any(|query| query.evaluate(from, containers) == Truth::True)
@@ -1941,6 +1942,7 @@ impl Containers<'_> {
     /// eligible `size` one's height; the small viewport's where none is,
     /// or it was not laid out.
     pub(crate) fn unit_sizes(&self, from: Option<NodeId>) -> (f32, f32) {
+        dom::hook!("style::container::unit_sizes");
         let (mut width, mut height) = (None, None);
         let mut at = from;
         while let Some(node) = at {

@@ -57,6 +57,7 @@ impl Document {
     /// one: its `open` is a change from closed, as appending the
     /// attribute is.
     pub(super) fn details_made(&mut self, element: NodeId) {
+        crate::hook!("dom::details::details_made");
         self.dialog_made(element);
         if !self.is_details(element) {
             return;

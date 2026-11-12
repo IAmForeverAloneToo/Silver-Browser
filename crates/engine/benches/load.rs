@@ -202,7 +202,9 @@ fn main() {
         parsed.push(ms(start.elapsed()));
     }
     println!("  the document fetched alone: {}", spread(&mut fetched));
+    support::hooks("load 1");
     println!("  parsed alone: {}", spread(&mut parsed));
+    support::hooks("load 2");
 
     let mut shown = Vec::new();
     let mut total = Vec::new();
@@ -236,8 +238,10 @@ fn main() {
     .zip(stages.iter_mut())
     {
         println!("  the first frame, {name}: {}", spread(times));
+        support::hooks("load 3");
     }
     println!("  load to the first frame drawn: {}", spread(&mut total));
+    support::hooks("load 4");
 
     for (kept, name) in [(true, "from the cache"), (false, "fetched again")] {
         let mut times: Vec<f64> = (0..support::rounds(RUNS))

@@ -413,6 +413,7 @@ impl DocumentLayout {
     /// and units read after this layout; the scroll states the engine
     /// adds, which the scroll offsets give.
     pub fn container_sizes(&self, viewport_width: f32) -> style::container::ContainerSizes {
+        dom::hook!("layout::block::container_sizes");
         let mut sizes = style::container::ContainerSizes::new();
         let mut stack: Vec<(&Fragment, f32)> =
             self.roots.iter().map(|f| (f, viewport_width)).collect();
@@ -615,6 +616,7 @@ pub fn layout_document_cached(
     fonts: &FontCollection,
     cache: &LayoutCache,
 ) -> DocumentLayout {
+    dom::hook!("layout::block::layout_document_cached");
     cache.begin_pass();
     layout_document_with(boxes, viewport_width, viewport_height, fonts, Some(cache))
 }

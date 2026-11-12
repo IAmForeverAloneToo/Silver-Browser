@@ -309,6 +309,7 @@ impl<'a> Matcher<'a> {
         slot: NodeId,
         selector: &'a Selector,
     ) -> bool {
+        dom::hook!("style::matcher::matches_slotted");
         let Some(ending) = &selector.pseudo_element else {
             return false;
         };
@@ -339,6 +340,7 @@ impl<'a> Matcher<'a> {
         names: &[&str],
         selector: &'a Selector,
     ) -> bool {
+        dom::hook!("style::matcher::matches_part");
         let Some(ending) = &selector.pseudo_element else {
             return false;
         };
@@ -398,6 +400,7 @@ impl<'a> Matcher<'a> {
         selector: &'a Selector,
         pseudo: PseudoElement,
     ) -> bool {
+        dom::hook!("style::matcher::matches_pseudo_element");
         let Some(ending) = &selector.pseudo_element else {
             return false;
         };
@@ -643,6 +646,7 @@ impl<'a> Matcher<'a> {
     /// tree's host, featureless, matches a compound of `:host`,
     /// `:host()` and `:host-context()` alone (CSS Scoping 1 section 3.1).
     fn matches_compound(&mut self, element: NodeId, compound: &'a CompoundSelector) -> bool {
+        dom::hook!("style::matcher::matches_compound");
         #[cfg(test)]
         {
             self.compounds_tried += 1;
@@ -677,6 +681,7 @@ impl<'a> Matcher<'a> {
     /// of its own tree, for `:host-context()` against it or one of its
     /// shadow-including ancestors.
     fn matches_host(&mut self, host: NodeId, pc: &'a PseudoClass) -> bool {
+        dom::hook!("style::matcher::matches_host");
         let scope = self.shadow.take();
         let matched = match pc {
             PseudoClass::Host(None) => true,
@@ -1170,6 +1175,7 @@ impl<'a> Matcher<'a> {
     /// combinator, as many as its `+` reach when it has no `~`, and their
     /// descendants when a descendant or a child combinator follows.
     fn has(&mut self, anchor: NodeId, relative: &'a Selector) -> bool {
+        dom::hook!("style::matcher::has");
         let id = std::ptr::from_ref(relative) as usize;
         // A scoped rule's `:scope` differs from one root to the next.
         let scope = self.rule_scoped.then_some(self.scope).flatten();
@@ -1297,6 +1303,7 @@ impl<'a> Matcher<'a> {
     /// The `direction` property does not change it (Selectors 4 section
     /// 7.1). Kept for every element walked.
     fn direction(&mut self, element: NodeId) -> Direction {
+        dom::hook!("style::matcher::direction");
         let document = self.document;
         if self.directions.len() < document.slot_count() {
             self.directions.resize(document.slot_count(), None);

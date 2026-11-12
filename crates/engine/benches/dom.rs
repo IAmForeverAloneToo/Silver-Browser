@@ -20,6 +20,8 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::hint::black_box;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
@@ -216,6 +218,7 @@ fn main() {
         }
         spread("the script", &mut runs);
         report(&stats);
+        support::hooks("dom 1");
         println!("  {}", work[0]);
         let mut engine = engine.expect("built");
 
@@ -233,6 +236,7 @@ fn main() {
             }
             spread("the script", &mut runs);
             report(&stats);
+            support::hooks("dom 2");
             println!("  {}", before.since(Work::of(&engine), CHANGES));
         }
     }

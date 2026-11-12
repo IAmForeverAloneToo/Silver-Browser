@@ -2270,6 +2270,7 @@ fn autospaced(text: &str, style: &ComputedStyle) -> Vec<usize> {
 /// Whether `style`'s `text-autospace` puts space between ideographs and
 /// letters, and between ideographs and digits; `None` for neither.
 fn autospace_classes(style: &ComputedStyle) -> Option<(bool, bool)> {
+    dom::hook!("layout::inline::autospace_classes");
     use style::computed::TextAutospace;
     match style.text().text_autospace {
         TextAutospace::Normal => Some((true, true)),
@@ -3176,6 +3177,7 @@ impl Extents {
     /// The inline box styled `style` opened in `parent`: aligned by its
     /// line-height box, its font's metrics with its leading.
     fn enter(&mut self, style: &ComputedStyle, parent: Aligned, fonts: &FontCollection) -> Aligned {
+        dom::hook!("layout::inline::enter");
         let m = font::line(fonts, " ", style);
         Aligned {
             at: self.align(style, m.ascent, m.descent + m.line_gap, parent, fonts),
@@ -3189,6 +3191,7 @@ impl Extents {
     /// top-aligned one hanging below the rest, a taller bottom-aligned
     /// one standing above it, as the reference browser grows the line.
     fn settle(&self) -> (f32, f32, Vec<f32>) {
+        dom::hook!("layout::inline::settle");
         let (mut ascent, mut below) = self.root;
         for &(top, a, b) in &self.groups {
             let short = a + b - (ascent + below);
@@ -3222,6 +3225,7 @@ fn baseline_shift(
     parent: &Parent,
     fonts: &FontCollection,
 ) -> f32 {
+    dom::hook!("layout::inline::baseline_shift");
     use style::computed::VerticalAlign;
     let line_height = || font::line(fonts, " ", style).line_height();
     match &style.vertical_align {

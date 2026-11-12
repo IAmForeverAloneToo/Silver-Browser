@@ -159,6 +159,7 @@ fn main() {
     let first = draw(&mut engine);
     println!("the first frame of a gallery of {FIGURES} figures:");
     report(&[first]);
+    support::hooks("grid 1");
     println!("  {} boxes laid out", engine.boxes_laid_out() - laid_out);
 
     let captions: Vec<dom::NodeId> = {
@@ -182,6 +183,7 @@ fn main() {
         stats.push(draw(&mut engine));
     }
     report(&stats);
+    support::hooks("grid 2");
     println!(
         "  per frame, {} boxes laid out and {} taken from the cache",
         (engine.boxes_laid_out() - laid_out) / CHANGES as u64,
@@ -199,6 +201,7 @@ fn main() {
         stats.push(engine.frame_stats());
     }
     report(&stats);
+    support::hooks("grid 3");
 
     // The chains: a fresh engine for each run, so that the layout is
     // the pass's own and not the cache's.

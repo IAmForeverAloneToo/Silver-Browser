@@ -999,6 +999,7 @@ enum Touch {
 /// parent and the parent's ancestors, and every sibling, whose places
 /// among them it moved.
 fn has_anchors(document: &Document, has: &HasFeatures, touched: &[Touch], out: &mut Invalidation) {
+    dom::hook!("style::invalidation::has_anchors");
     if touched.is_empty() {
         return;
     }
@@ -1103,6 +1104,7 @@ fn has_anchors(document: &Document, has: &HasFeatures, touched: &[Touch], out: &
 /// D74): the nearest of `node` and its ancestors that has a valid `dir`,
 /// or is a `bdi` without one, when that is `auto`.
 fn auto_around(document: &Document, node: NodeId, out: &mut Invalidation) {
+    dom::hook!("style::invalidation::auto_around");
     let nearest = std::iter::once(node)
         .chain(document.ancestors(node))
         .filter(|&n| document.is_element(n))

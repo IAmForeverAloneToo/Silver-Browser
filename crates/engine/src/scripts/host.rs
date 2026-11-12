@@ -491,6 +491,7 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
+        dom::hook!("engine::host::dom");
         self.work += 1;
         // What changed before the call (the parser's) is a record a
         // change; the call's own changes are one operation, unless the
@@ -528,6 +529,7 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn take_mutation_wake(&mut self) -> bool {
+        dom::hook!("engine::host::take_mutation_wake");
         // A slot signaled waits for the same microtask (D68), and a
         // `details` toggled is taken then (gap batch H).
         self.mutations.take_wake()
@@ -536,14 +538,17 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn take_reaction_wake(&mut self) -> bool {
+        dom::hook!("engine::host::take_reaction_wake");
         self.document.has_reactions()
     }
 
     fn take_construct(&mut self) -> Option<(String, Option<String>)> {
+        dom::hook!("engine::host::take_construct");
         self.construct.take()
     }
 
     fn take_named_changes(&mut self) -> Option<(bool, Vec<(String, bool)>)> {
+        dom::hook!("engine::host::take_named_changes");
         // The realm's first time, or more than were kept: all of them.
         let changes = match std::mem::take(&mut self.named_synced) {
             true => self.document.take_named_changes(),
@@ -561,6 +566,7 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn take_script(&mut self) -> Option<NestedScript> {
+        dom::hook!("engine::host::take_script");
         loop {
             if let Some(source) = self.now.pop_front() {
                 let written = source.element.is_some_and(|e| !self.made.contains(&e));

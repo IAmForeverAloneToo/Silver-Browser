@@ -682,6 +682,7 @@ impl Document {
     /// shadow tree with no assigned nodes is signaled for its fallback
     /// content, and a shadow tree a slot came into is assigned again.
     pub(super) fn shadow_inserted(&mut self, parent: NodeId, node: NodeId) {
+        crate::hook!("dom::shadow::shadow_inserted");
         if self.rare.shadows.hosts.is_empty() {
             return;
         }
@@ -733,6 +734,7 @@ impl Document {
     /// slots left a shadow tree, they lose their assigned nodes and the
     /// tree is assigned again.
     pub(super) fn shadow_removed(&mut self, parent: NodeId, child: NodeId) {
+        crate::hook!("dom::shadow::shadow_removed");
         if self.rare.shadows.hosts.is_empty() {
             return;
         }
@@ -767,6 +769,7 @@ impl Document {
     /// steps for slots and slottables): a slot's `name`, or a host's
     /// child's `slot`, assigns its tree again.
     pub(super) fn shadow_attribute_changed(&mut self, element: NodeId, name: &str) {
+        crate::hook!("dom::shadow::shadow_attribute_changed");
         if self.rare.shadows.hosts.is_empty() {
             return;
         }
@@ -884,6 +887,7 @@ impl Document {
     /// Forgets what the shadow roots' maps say of the nodes `doomed`,
     /// which are being freed.
     pub(super) fn forget_shadows(&mut self, doomed: &[NodeId]) {
+        crate::hook!("dom::shadow::forget_shadows");
         let shadows = &mut self.rare.shadows;
         if shadows.hosts.is_empty() && shadows.manual.is_empty() {
             return;

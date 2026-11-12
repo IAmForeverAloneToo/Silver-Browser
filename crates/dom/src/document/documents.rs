@@ -385,6 +385,7 @@ impl Document {
     /// A node inserted into a tree is its parent's document's: it is no
     /// longer a top with an owner of its own.
     pub(super) fn owned_by_tree(&mut self, node: NodeId) {
+        crate::hook!("dom::documents::owned_by_tree");
         if !self.rare.documents.owners.is_empty() {
             self.rare.documents.owners.remove(&node);
         }

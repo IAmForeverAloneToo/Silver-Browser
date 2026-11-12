@@ -150,6 +150,7 @@ fn main() {
         black_box(realm.heap());
     }
     println!("a realm made: {}", spread(&mut made));
+    support::hooks("scripts 1");
 
     let mut realm = QuickJs
         .realm::<Host>(Limits::default())
@@ -173,6 +174,7 @@ fn main() {
             ran.push(ms(start.elapsed()));
         }
         println!("{what}: {}", spread(&mut ran));
+        support::hooks("scripts 2");
     }
     assert_eq!(host.lines, 1000 * support::rounds(RUNS));
 
@@ -198,5 +200,6 @@ fn main() {
             .collect();
         let on = if scripting { "on" } else { "off" };
         println!("  scripts {on}: {}", spread(&mut loads));
+        support::hooks("scripts 3");
     }
 }
