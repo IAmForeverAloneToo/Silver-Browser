@@ -14460,6 +14460,72 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_changed_on_an_element_reaches_its_children_as_they_read_it() {
+        // G254: an element's children are restyled for a change of it
+        // only when they can read it, what they inherit or an explicit
+        // `inherit`: each colour below set on a card after the first
+        // frame, its children drawn as a fresh engine draws them; the
+        // card's `color`, which they inherit, among them.
+        for (property, value) in [
+            ("color", "#00f"),
+            ("background-color", "#0f0"),
+            ("border-color", "#f0f"),
+            ("outline-color", "#0ff"),
+            ("text-decoration-color", "#f80"),
+            ("box-shadow", "4px 4px 0 #08f"),
+            ("caret-color", "#808"),
+            ("fill", "#f00"),
+            ("stroke", "#0a0"),
+        ] {
+            let page = "<style>.card { border: 4px solid #000; outline: 3px solid #000; \
+                 text-decoration: underline; padding: 6px; margin: 8px; } \
+                 .own { border: 3px solid; border-color: inherit }</style>\
+                 <div class=card><h2>Heading</h2><p class=own>Text</p>\
+                 <svg width=40 height=20><rect width=40 height=20 stroke-width=3></rect></svg>\
+                 </div>";
+            let mut engine = test_engine();
+            let mut fresh = test_engine();
+            engine.load_document(page);
+            engine.frame(320, 200);
+            // Its `style` attribute, which restyles the card alone, its
+            // children as they read the change.
+            engine.mutate(|document| {
+                let root = document.root();
+                let card = document
+                    .subtree(root)
+                    .find(|&node| document.attr(node, "class") == Some("card"))
+                    .expect("the card");
+                document
+                    .set_attribute(card, "style", &format!("{property}: {value}"))
+                    .expect("set");
+            });
+            if let Err(difference) =
+                differential::compare_with_fresh(&mut engine, &mut fresh, 320, 200)
+            {
+                panic!("{property}: {difference}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_animated_border_colour_restyles_the_card_alone_each_frame() {
+        // G254: a border's colour no child inherits: each frame of its
+        // animation restyles the card, not its two children as well.
+        let page = "<style>@keyframes b { from { border-color: #f00 } to { border-color: #00f } } \
+             .card { border: 4px solid; animation: b 1s linear infinite }</style>\
+             <div class=card><h2>Heading</h2><p>Text</p></div>";
+        let mut engine = test_engine();
+        engine.load_document(page);
+        let mut restyled = Vec::new();
+        for frame in 0..6u64 {
+            let before = engine.restyled_elements();
+            engine.frame_at(320, 200, FrameTime::at(Duration::from_millis(50 * frame)));
+            restyled.push(engine.restyled_elements() - before);
+        }
+        assert!(restyled[2..].iter().all(|&n| n == 1), "{restyled:?}");
+    }
+
+    #[test]
     fn a_container_made_after_the_first_frame_is_measured_and_queried() {
         // G247: a page with no container measures none, until one is
         // made; then its size queries and units answer as a fresh

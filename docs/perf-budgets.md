@@ -2198,6 +2198,14 @@ none of batch H's features is either within 10% or here.
   heap from run to run, in both trees.
 - Another global allocator: mimalloc halved the first frame's layout
   gap above; it touches the whole engine and its dependencies.
+- A colour's change drawn without a layout (G254, deferred): an
+  animated or transitioned colour (a hover's, a skeleton loader's
+  shimmer) costs a restyle of the element and a layout of its boxes'
+  chain at each frame, 1 element and 4 boxes for a link in a card,
+  measured, for each element animated; transforms and opacity alone
+  are patched into the boxes (M22.4). The colours' list patched so too
+  is the lever, if the sweep or the dogfood shows such a page jank.
+  Its children are restyled only when they read the change (G254).
 
 **What the features cost a page that uses them.** The `features`
 bench: 1,000 cards, each feature at a time against the plain page,

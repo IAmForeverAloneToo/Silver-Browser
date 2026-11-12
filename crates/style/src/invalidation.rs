@@ -598,6 +598,27 @@ impl Invalidation {
     }
 }
 
+/// Whether `declaration` inherits a property no child otherwise
+/// inherits: its value a CSS-wide keyword that takes the parent's
+/// value (`inherit`) or may come to (`revert`, `revert-layer`), its
+/// property one that is not inherited, a shorthand among them, or a
+/// custom property, which may be registered not to be (G254).
+pub(crate) fn inherits_explicitly(declaration: &css::Declaration) -> bool {
+    let mut words = declaration
+        .value
+        .iter()
+        .filter(|token| !matches!(token, css::Token::Whitespace));
+    let (Some(css::Token::Ident(word)), None) = (words.next(), words.next()) else {
+        return false;
+    };
+    let keyword = ["inherit", "revert", "revert-layer"]
+        .iter()
+        .any(|keyword| word.eq_ignore_ascii_case(keyword));
+    keyword
+        && (declaration.name.starts_with("--")
+            || !crate::cascade::is_inherited(&declaration.name.to_ascii_lowercase()))
+}
+
 /// The attributes a control's validity and the form pseudo-classes read
 /// (M26.9b).
 const VALIDITY_ATTRIBUTES: &[&str] = &[
@@ -1478,14 +1499,14 @@ mod tests {
             d.set_attribute(x, "style", "color: #00f").unwrap();
         });
         assert_eq!((r.computed, r.changed.len()), (3, 3));
-        // One they do not inherit leaves them as they were: restyled,
-        // since `inherit` can take any property from a parent, found
-        // unchanged, and gone no further.
+        // One they do not inherit leaves them as they were, and they are
+        // not restyled: none of them takes a property it does not inherit
+        // by `inherit` (G254).
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "style", "color: #00f; padding: 4px")
                 .unwrap();
         });
-        assert_eq!((r.computed, r.changed.len()), (3, 1));
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
         // A style attribute set to what it was restyles nothing.
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "style", "color: #00f").unwrap();
@@ -1496,16 +1517,34 @@ mod tests {
     }
 
     #[test]
+    fn a_child_that_inherits_a_property_explicitly_is_restyled_for_it() {
+        // G254: a child that takes its parent's border colour by
+        // `inherit` is restyled for a change of it; its sibling, which
+        // takes nothing it does not inherit, is not.
+        let (mut d, sheets, mut styles) = setup(
+            "<div id=x><p id=y>one</p><p>two</p></div>",
+            "#y { border: 1px solid; border-color: inherit }",
+        );
+        let x = by_id(&d, "x");
+        let r = change(&mut d, &sheets, &mut styles, |d| {
+            d.set_attribute(x, "style", "border-color: #00f").unwrap();
+        });
+        assert_eq!((r.computed, r.changed.len()), (2, 2));
+    }
+
+    #[test]
     fn a_list_attribute_restyles_its_element() {
         // HTML's list hints (M21.6): `start` on an `ol` resets
         // `list-item`, and `type` on an `li` gives its style, which its
         // marker inherits.
         let (mut d, sheets, mut styles) = setup("<ol id=x><li id=y>a</li></ol><p id=z>b</p>", "");
         let (x, y, z) = (by_id(&d, "x"), by_id(&d, "y"), by_id(&d, "z"));
+        // The `ol`'s `counter-reset`, which its `li` does not inherit (the
+        // box tree counts the items again): the `ol` alone (G254).
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(x, "start", "4").unwrap();
         });
-        assert_eq!((r.computed, r.changed.len()), (2, 1));
+        assert_eq!((r.computed, r.changed.len()), (1, 1));
         let r = change(&mut d, &sheets, &mut styles, |d| {
             d.set_attribute(y, "type", "I").unwrap();
         });

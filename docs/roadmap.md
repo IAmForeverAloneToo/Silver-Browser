@@ -3873,20 +3873,28 @@ Deferred from the milestones above, each with what it waits on:
        such a page ends or throws (tested). If a page needs browsers'
        ten thousand frames, QuickJS's limit set past `rquickjs` is the
        lever. Found by G247 (D1 tipped `scope-deep.html` on CI).
-- [ ] G254 An animated or transitioned property that no child
-       inherits and that changes no layout costs a restyle of the
-       element's subtree and a layout at every frame: a `border-color`
-       animation on 1,000 cards restyles 3,002 elements and lays out
-       4,005 boxes a frame, some 86us an element (the base does the
-       same). A hover's colour transition on a long page relays it out
-       at each frame. Descendants restyled only when what they can
-       depend on changed (an inherited property, a custom property,
-       the font size); colours alone (`color`, `background-color`, the
-       borders', outline's and decoration's colours, a shadow's colour,
-       `fill`, `stroke`) repainted without a layout. Differential tests
-       of each, a layout-changing animation still laid out, one hovered
-       link one element restyled and no box laid out. Taken out of the
-       freeze by the lead: hovers on every site meet it. Found by G247.
+- [x] G254 An animated or transitioned property that no child inherits
+       and that changes no layout costs a restyle of the element's
+       subtree and a layout at every frame: a `border-color` animation
+       on 1,000 cards restyles 3,002 elements and lays out 4,005 boxes a
+       frame, some 86us an element (the base does the same). A hover's
+       colour transition on a long page relays it out at each frame.
+       Descendants restyled only when what they can depend on changed
+       (an inherited property, a custom property, the font size);
+       colours alone (`color`, `background-color`, the borders',
+       outline's and decoration's colours, a shadow's colour, `fill`,
+       `stroke`) repainted without a layout. Differential tests of each,
+       a layout-changing animation still laid out, one hovered link one
+       element restyled and no box laid out. Taken out of the freeze by
+       the lead: hovers on every site meet it. Found by G247. Done in
+       part: an element's children are restyled for a change of it only
+       when they can read it (what they inherit, its display, whether it
+       is rendered, or anything for a child that inherits explicitly); a
+       border colour's animation on a card of two children restyles 1
+       element a frame, not 3. Measured, a hover's colour transition
+       restyles 1 element and lays out its 4 boxes' chain a frame, not
+       the page; drawing colours without a layout is deferred
+       (`docs/perf-budgets.md`).
 
 ---
 

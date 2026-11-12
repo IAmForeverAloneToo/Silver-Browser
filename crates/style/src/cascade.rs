@@ -426,6 +426,11 @@ struct Computed {
     /// differs from [`Computed::style`]: its after-change style
     /// (Transitions 1 §3), which its children's inherit from.
     after_change: Option<Arc<ComputedStyle>>,
+    /// Whether one of the element's own declarations inherits a property
+    /// no child otherwise inherits (`border-color: inherit`): it reads
+    /// more of its parent than what it inherits, and is restyled for any
+    /// change of its parent's (G254).
+    reads_parent: bool,
 }
 
 /// What an element's style inherits from, and what is known of its
@@ -1548,6 +1553,12 @@ impl Stylesheets {
                 let composited = old
                     .filter(|_| shown)
                     .and_then(|old| composited_change(node, old, &computed));
+                // Whether its children can be styled otherwise for it
+                // (G254): a change of what none of them reads, a border's
+                // colour at an animation's frame, restyles none but those
+                // that read it whole.
+                let children_read =
+                    changed && old.is_none_or(|old| reaches_children(old, &computed));
                 // An equal style leaves the one in place, whose effects
                 // the layout's boxes carry: what a later composited
                 // change finds them by (M22.4).
@@ -1573,9 +1584,15 @@ impl Stylesheets {
                     } else {
                         Reach::Element
                     };
+                    // Each child when they can read the change, else those
+                    // that read their parent whole, and any not styled yet.
+                    let every = children_read || child_reach == Reach::Subtree;
                     let children: Vec<NodeId> = document
                         .flat_children(node)
                         .filter(|&child| document.is_element(child))
+                        .filter(|&child| {
+                            every || styles.computed(child).is_none_or(|c| c.reads_parent)
+                        })
                         .collect();
                     for child in children {
                         match pending.get_mut(&child) {
@@ -2670,6 +2687,24 @@ fn ua() -> &'static UserAgent {
     })
 }
 
+/// Whether an element's children, styled under `old`, its computed
+/// style before a change, can be styled otherwise under `new` (G254):
+/// through what they inherit of its style and of its after-change style
+/// (which their own after-change styles are made from), its display (a
+/// flex or a grid container's items are blockified), or whether it is
+/// rendered. What a child that inherits a property no child otherwise
+/// inherits reads of it the caller asks apart.
+fn reaches_children(old: &Computed, new: &Computed) -> bool {
+    let inherited = |style: &ComputedStyle| ComputedStyle::inherited_from(style);
+    let after = |computed: &Computed| computed.after_change.as_deref().map(inherited);
+    old.display_none != new.display_none
+        || old.unrendered != new.unrendered
+        || old.style.display != new.style.display
+        || old.style.contents_in_items != new.style.contents_in_items
+        || inherited(&old.style) != inherited(&new.style)
+        || after(old) != after(new)
+}
+
 /// The most base styles a cascade keeps for the elements after made of
 /// the same (M35.2): a few megabytes; past it they are forgotten and
 /// computed again.
@@ -3198,12 +3233,17 @@ impl<'a> Cascader<'a> {
             Some(shared) if *shared == style => shared,
             _ => Arc::new(style),
         };
+        let reads_parent = matched
+            .of(Target::Element)
+            .iter()
+            .any(|applied| crate::invalidation::inherits_explicitly(&applied.decl));
         Computed {
             style,
             pseudo,
             display_none,
             unrendered,
             after_change,
+            reads_parent,
         }
     }
 
@@ -3439,6 +3479,7 @@ impl<'a> Cascader<'a> {
                     display_none: p.display_none,
                     unrendered: p.unrendered,
                     after_change: p.after_change.clone(),
+                    reads_parent: p.reads_parent,
                 })
                 .unwrap_or_default();
             // The flat tree's children (D68): a host's shadow tree's, a
@@ -7754,7 +7795,7 @@ pub fn all_longhands() -> impl Iterator<Item = &'static str> {
 
 /// Whether `name` is an inherited property (css-cascade-5 §7.1 and
 /// each property's own definition): what `unset` means for it.
-fn is_inherited(name: &str) -> bool {
+pub(crate) fn is_inherited(name: &str) -> bool {
     matches!(
         name,
         "color"
