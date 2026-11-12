@@ -523,13 +523,43 @@
       group = { root, members: new $Map(), lone: null, owner: null, shared: false };
       MapSet(groups, root, new $WeakRef(group));
       Register(groupGone, group, root);
+      // The root's object, left without a group while it was the tree's
+      // only one (`joinGroup`), is the group's first.
+      const rootRef = MapGet(objects, root);
+      const rootObject = rootRef === undefined ? undefined : WeakRefDeref(rootRef);
+      if (rootObject !== undefined && groupOf(rootObject) === null) {
+        enterGroup(group, rootObject);
+        setGroupOf(rootObject, group);
+      }
     }
     return group;
   }
 
+  // Whether the tree whose root `root` names has a group.
+  function hasGroup(root) {
+    const ref = MapGet(groups, root);
+    return ref !== undefined && WeakRefDeref(ref) !== undefined;
+  }
+
   // Puts `object` in the group of the tree whose root is `root`, owned
   // by the document `owner`; a custom element's object holds the group.
-  function joinGroup(object, root, owner) {
+  function joinGroup(object, root, owner, handle) {
+    // The root of a tree no other object of is in, owned by the page's
+    // document and no custom element's, gets no group (G247): one would
+    // hold it weakly as the object map does, and hold the page's group,
+    // which is held for good; the group is made once a second object
+    // joins its tree (`groupFor` takes it in then), or it moves to
+    // another, or becomes a custom element's (`holdObject`).
+    if (
+      handle === root &&
+      root !== pageRoot &&
+      owner === pageRoot &&
+      groupOf(object) === null &&
+      !hasGroup(root) &&
+      !WeakSetHas(customObjects, object)
+    ) {
+      return;
+    }
     const group = groupFor(root);
     const old = groupOf(object);
     if (old !== group) {
@@ -619,7 +649,7 @@
         opaqueControlLeft(handle);
       }
       if (moved[i] !== undefined) {
-        joinGroup(moved[i], pins[3 * i + 1], pins[3 * i + 2]);
+        joinGroup(moved[i], pins[3 * i + 1], pins[3 * i + 2], handle);
       }
     }
   }
@@ -669,7 +699,10 @@
     const object = make(handle, answer[0], answer[2], +answer[3], answer[4]);
     MapSet(objects, handle, new $WeakRef(object));
     Register(registry, object, handle);
-    joinGroup(object, +answer[1], +answer[5]);
+    if (pageRoot === undefined) {
+      pageRoot = native.document();
+    }
+    joinGroup(object, +answer[1], +answer[5], handle);
     for (let i = 6; i < answer.length; i++) {
       attributeHandler(object, answer[i], true);
     }
@@ -719,7 +752,7 @@
     MapSet(objects, handle, new $WeakRef(object));
     Register(registry, object, handle);
     WeakSetAdd(customObjects, object);
-    joinGroup(object, +answer[1], +answer[5]);
+    joinGroup(object, +answer[1], +answer[5], handle);
   }
 
   // Holds the object of the node `handle` names while a script may reach
@@ -729,8 +762,10 @@
     const object = ref === undefined ? undefined : WeakRefDeref(ref);
     if (object !== undefined) {
       WeakSetAdd(customObjects, object);
-      const group = groupOf(object);
-      if (group !== null && group !== pageGroup) {
+      // One left without a group is its lone tree's root: the group is
+      // made now, to be held.
+      const group = groupOf(object) === null ? groupFor(handle) : groupOf(object);
+      if (group !== pageGroup) {
         holdGroup(group);
       }
     }
@@ -9518,6 +9553,14 @@
       const handle = self(this);
       need(arguments.length, 1, "createElement", "Document");
       const name = str(localName);
+      // No definition to look up, nor options to read (G247).
+      if (definedCount === 0 && options === undefined) {
+        try {
+          return wrap(native.createElement(name, handle));
+        } catch (error) {
+          throw failed(error, "createElement", "Document");
+        }
+      }
       const given = creationOptions(options, "createElement");
       const local = inHtmlDocument(this) ? ToLowerCase(name) : name;
       try {

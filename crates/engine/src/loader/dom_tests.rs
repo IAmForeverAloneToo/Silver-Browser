@@ -217,6 +217,109 @@ fn an_object_lives_while_its_tree_can_be_reached() {
 }
 
 #[test]
+fn a_tree_made_alone_keeps_its_objects_once_another_joins() {
+    // G247: a node's object alone in its tree out of the document has no
+    // group until a second object joins the tree; then the group holds
+    // both, whichever way the second came. Each tree's root has an
+    // expando and is let go of; a node under it, held, reaches it.
+    let (mut tab, console) = scripted("<p>x</p><script>var k = null</script>", true);
+    assert!(console.is_empty(), "{console:?}");
+    let cases = [
+        (
+            "appendChild",
+            "var r = document.createElement('div'); r.mark = 'appendChild'; \
+             k = r.appendChild(document.createElement('i')); r = null",
+        ),
+        (
+            "insertBefore",
+            "var r = document.createElement('div'); r.mark = 'insertBefore'; \
+             k = r.insertBefore(document.createElement('i'), null); r = null",
+        ),
+        (
+            "innerHTML",
+            "var r = document.createElement('div'); r.mark = 'innerHTML'; \
+             r.innerHTML = '<i></i>'; k = r.firstChild; r = null",
+        ),
+        (
+            "parser",
+            "var r = document.createRange().createContextualFragment('<i></i>'); \
+             r.mark = 'parser'; k = r.firstChild; r = null",
+        ),
+        (
+            "adoptNode",
+            "var o = document.implementation.createHTMLDocument(''); \
+             var r = o.createElement('div'); r.appendChild(o.createElement('i')); \
+             document.adoptNode(r); r.mark = 'adoptNode'; k = r.firstChild; r = null; o = null",
+        ),
+        (
+            "moveBefore",
+            "var r = document.createElement('div'); r.mark = 'moveBefore'; \
+             var a = r.appendChild(document.createElement('i')); \
+             k = r.appendChild(document.createElement('b')); r.moveBefore(k, a); \
+             r = null; a = null",
+        ),
+        (
+            "reordered",
+            "var r = document.createElement('div'); r.mark = 'reordered';              var a = r.appendChild(document.createElement('i'));              k = r.appendChild(document.createElement('b')); r.insertBefore(k, a);              r = null; a = null",
+        ),
+        (
+            "a child's object",
+            "var r = document.createElement('div'); r.append(document.createElement('i')); \
+             r.mark = \"a child's object\"; k = r.firstChild; r = null",
+        ),
+    ];
+    for (name, script) in cases {
+        let seen = collected_then(&mut tab, script);
+        assert!(seen.is_empty(), "{name}: {seen:?}");
+        let seen = collected_then(&mut tab, "console.log(k.parentNode.mark)");
+        assert_eq!(seen, [name]);
+    }
+}
+
+#[test]
+fn trees_made_and_let_go_of_leave_nothing_behind() {
+    // G247: ten thousand trees out of the document, with expandos and
+    // without, made and let go of, round after round: once collected,
+    // the document's nodes are back where they were, and the realm's
+    // heap no bigger than after the first round, whose objects' room its
+    // maps keep (they do not shrink).
+    let (mut tab, _) = scripted("<p>x</p><script>var a = 1</script>", true);
+    collected_then(&mut tab, "var b = 2");
+    collected_then(&mut tab, "var c = 3");
+    let nodes = tab.engine.document().len();
+    let mut heap = 0;
+    for round in 0..3 {
+        let seen = collected_then(
+            &mut tab,
+            "(function () { \
+               for (var i = 0; i < 10000; i++) { \
+                 var t = document.createElement('table'); \
+                 var row = t.appendChild(document.createElement('tr')); \
+                 row.appendChild(document.createElement('td')).textContent = 'cell ' + i; \
+                 if (i % 2 === 0) { t.mark = i; row.mark = t; } \
+                 document.createTextNode('alone ' + i); \
+               } \
+             })()",
+        );
+        assert!(seen.is_empty(), "{seen:?}");
+        collected_then(&mut tab, "var d = 4");
+        collected_then(&mut tab, "var e = 5");
+        let document = tab.engine.document();
+        document.validate().unwrap();
+        assert_eq!(document.len(), nodes, "round {round}");
+        let now = tab.engine.shown.scripts.heap();
+        if round == 0 {
+            heap = now;
+        } else {
+            assert!(
+                now <= heap + heap / 100,
+                "round {round}: the heap grew from {heap} to {now} bytes"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_tree_nothing_reaches_is_freed_with_its_objects() {
     // The objects of a tree out of the document hold each other, their
     // listeners and expandos among them, and nothing else holds them.

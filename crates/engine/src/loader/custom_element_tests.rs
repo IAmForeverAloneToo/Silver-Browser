@@ -396,6 +396,51 @@ fn a_custom_elements_object_lives_while_its_tree_is_reached() {
 }
 
 #[test]
+fn a_custom_element_alone_out_of_the_document_keeps_its_object_while_held() {
+    // G247: a custom element's object alone in its tree, made by its
+    // constructor or upgraded after, has its tree's group made and held,
+    // though no other object joins it: the host holds the node, for a
+    // range here, and what the constructor set stays.
+    let (mut tab, console) = scripted(
+        "<p>x</p><script>\
+         class E extends HTMLElement {\
+           constructor() { super(); this.made = 'made'; }\
+         }\
+         customElements.define('x-e', E);\
+         var made = document.createRange();\
+         (function () { made.setStart(new E(), 0); })();\
+         var up = document.createRange();\
+         (function () {\
+           var e = document.createElement('x-up');\
+           customElements.define('x-up', class extends HTMLElement {\
+             constructor() { super(); this.made = 'upgraded'; }\
+           });\
+           customElements.upgrade(e);\
+           up.setStart(e, 0);\
+         })();\
+         </script>",
+        true,
+    );
+    assert!(console.is_empty(), "{console:?}");
+    for _ in 0..3 {
+        tab.engine.shown.scripts.collect();
+        tab.engine.evaluate_script("var tick = 1");
+        tab.engine.run_tasks();
+    }
+    tab.engine.take_console();
+    tab.engine
+        .evaluate_script("console.log(made.startContainer.made, up.startContainer.made)");
+    tab.engine.run_tasks();
+    let console: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(console, ["made upgraded"]);
+}
+
+#[test]
 fn a_custom_element_a_mutation_record_holds_keeps_its_object() {
     // Taken out of the document with nothing of a script's holding it, a
     // custom element's object stays the node's while the host holds the

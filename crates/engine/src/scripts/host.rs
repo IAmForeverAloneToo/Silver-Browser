@@ -7104,18 +7104,19 @@ impl DocumentHost {
         if document.first_child(node).is_some() {
             self.work += document.subtree(node).count() as u64;
         }
-        // A fragment's children go in its place.
-        let moved: Vec<NodeId> = match document.data(node) {
+        // A fragment's children go in its place, each with the root of the
+        // tree it was in.
+        let moved: Vec<(NodeId, NodeId)> = match document.data(node) {
             Some(NodeData::DocumentFragment | NodeData::ShadowRoot(_)) => {
-                document.children(node).collect()
+                document.children(node).map(|child| (child, node)).collect()
             }
-            _ => vec![node],
+            _ => vec![(node, self.group_root(node))],
         };
         self.document
             .insert_before(parent, node, before)
             .map_err(refused)?;
-        for node in moved {
-            self.put_in(node);
+        for (node, was) in moved {
+            self.put_in_from(node, Some(was));
         }
         Ok(())
     }
@@ -7631,7 +7632,16 @@ impl DocumentHost {
     /// document: the bindings keep the objects of the nodes in its
     /// subtree with the tree it is in now.
     fn put_in(&mut self, node: NodeId) {
-        self.pin(node);
+        self.put_in_from(node, None);
+    }
+
+    /// [`Self::put_in`] of a node that was in the tree of the root `was`,
+    /// if known: one moved within its tree keeps its objects' group, and
+    /// the bindings hear nothing of it (G247).
+    fn put_in_from(&mut self, node: NodeId, was: Option<NodeId>) {
+        if was != Some(self.group_root(node)) {
+            self.pin(node);
+        }
         // Its elements' nonces hidden, now they are connected.
         if self.connected(node)
             && let Some(page) = self.page.as_mut()
