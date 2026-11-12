@@ -2617,7 +2617,7 @@ fn ua() -> &'static UserAgent {
         let sheet = css::parse_stylesheet(UA_STYLESHEET_SRC)
             .expect("the built-in UA stylesheet (assets/ua.css) is valid CSS");
         let mut features = SelectorFeatures::default();
-        let rules = RuleSet::new(std::slice::from_ref(&sheet), &mut features);
+        let rules = RuleSet::user_agent(std::slice::from_ref(&sheet), &mut features);
         UserAgent {
             sheet,
             rules,
@@ -3700,7 +3700,7 @@ impl<'a> Matched<'a> {
     ) -> Cow<'_, [Applied<'a>]> {
         dom::hook!("style::of_pseudo");
         let applied = self.of(target);
-        if applied.iter().all(|a| a.container.is_none()) {
+        if applied.iter().all(|a| a.container().is_none()) {
             return Cow::Borrowed(applied);
         }
         let containers = containers.map(|c| Containers {
@@ -3711,7 +3711,7 @@ impl<'a> Matched<'a> {
         Cow::Owned(
             applied
                 .iter()
-                .filter(|a| match a.container {
+                .filter(|a| match a.container() {
                     None => true,
                     Some((blocks, block)) => *held
                         .entry((blocks.as_ptr() as usize, block))
@@ -3757,18 +3757,44 @@ struct Applied<'a> {
     /// CSS Scoping 1 section 3.3, D69): how many shadow trees deep the
     /// tree of its rule is, the element's own for one not a rule's.
     context: u32,
-    /// That tree's shadow root, `None` for the document's: where a name
-    /// it gives, as `animation-name` does, is looked up first (CSS
-    /// Scoping 1 section 3.5).
+    /// A stylesheet's declaration, borrowed, or an inline style's, parsed
+    /// for the element.
+    decl: Decl<'a>,
+    /// What few declarations have besides (G247): kept apart, shared by a
+    /// rule's, so that the many without are small to push and to sort.
+    extra: Option<Arc<Extra<'a>>>,
+}
+
+/// A declaration an [`Applied`] holds: a stylesheet's, borrowed, or one
+/// made for the element.
+#[derive(Clone)]
+enum Decl<'a> {
+    Sheet(&'a css::Declaration),
+    Own(Arc<css::Declaration>),
+}
+
+impl std::ops::Deref for Decl<'_> {
+    type Target = css::Declaration;
+
+    fn deref(&self) -> &css::Declaration {
+        match self {
+            Decl::Sheet(declaration) => declaration,
+            Decl::Own(declaration) => declaration,
+        }
+    }
+}
+
+/// What an [`Applied`] has besides, when it has any of it.
+struct Extra<'a> {
+    /// The shadow root of its rule's tree, `None` for the document's:
+    /// where a name it gives, as `animation-name` does, is looked up
+    /// first (CSS Scoping 1 section 3.5).
     tree: Option<NodeId>,
     /// For a `::part()` rule's declaration, the host the element is a
     /// part of in the rule's tree: its originating element, whose
     /// attributes `attr()` reads (Values 5 section 7.7, as the reference
     /// browser has it).
     originating: Option<NodeId>,
-    /// A stylesheet's declaration, borrowed, or an inline style's, parsed
-    /// for the element.
-    decl: Cow<'a, css::Declaration>,
     /// For a pseudo-element's declaration, the `@container` block of its
     /// sheet's blocks it is in, if any: whether it holds is known once
     /// the element's own style is, the element being the pseudo-element's
@@ -3776,14 +3802,47 @@ struct Applied<'a> {
     container: Option<(&'a [crate::rule_set::ContainerBlock], u32)>,
 }
 
-impl Applied<'_> {
+impl<'a> Extra<'a> {
+    /// The extra of `tree`, `originating` and `container`, none when
+    /// each is.
+    fn of(
+        tree: Option<NodeId>,
+        originating: Option<NodeId>,
+        container: Option<(&'a [crate::rule_set::ContainerBlock], u32)>,
+    ) -> Option<Arc<Extra<'a>>> {
+        (tree.is_some() || originating.is_some() || container.is_some()).then(|| {
+            Arc::new(Extra {
+                tree,
+                originating,
+                container,
+            })
+        })
+    }
+}
+
+impl<'a> Applied<'a> {
+    /// The shadow root of its rule's tree ([`Extra::tree`]).
+    fn tree(&self) -> Option<NodeId> {
+        self.extra.as_ref().and_then(|extra| extra.tree)
+    }
+
+    /// Its `::part()` rule's originating element ([`Extra::originating`]).
+    fn originating(&self) -> Option<NodeId> {
+        self.extra.as_ref().and_then(|extra| extra.originating)
+    }
+
+    /// Its `@container` block ([`Extra::container`]).
+    fn container(&self) -> Option<(&'a [crate::rule_set::ContainerBlock], u32)> {
+        self.extra.as_ref().and_then(|extra| extra.container)
+    }
+
     /// The declaration's place in memory, when it is a stylesheet's,
     /// which every element it applies to shares and which stays put
     /// while the stylesheets live (M21.1); `None` for an inline style's.
     fn identity(&self) -> Option<usize> {
         match &self.decl {
-            Cow::Borrowed(declaration) => Some(std::ptr::from_ref(*declaration) as usize),
-            Cow::Owned(_) => None,
+            Decl::Sheet(declaration) => Some(std::ptr::from_ref(*declaration) as usize),
+            Decl::Own(_) => None,
         }
     }
 }
@@ -3884,10 +3943,8 @@ fn declarations_for<'a>(
             order,
             rule: ua_important,
             context: own,
-            tree: own_root,
-            originating: None,
-            decl: Cow::Owned(decl),
-            container: None,
+            decl: Decl::Own(Arc::new(decl)),
+            extra: Extra::of(own_root, None, None),
         });
         order += 1;
     }
@@ -3904,10 +3961,8 @@ fn declarations_for<'a>(
             order,
             rule: hints,
             context: own,
-            tree: own_root,
-            originating: None,
-            decl: Cow::Owned(decl),
-            container: None,
+            decl: Decl::Own(Arc::new(decl)),
+            extra: Extra::of(own_root, None, None),
         });
         order += 1;
     }
@@ -3926,14 +3981,12 @@ fn declarations_for<'a>(
             order,
             rule: order,
             context: own,
-            tree: own_root,
-            originating: None,
-            decl: Cow::Owned(css::Declaration {
+            decl: Decl::Own(Arc::new(css::Declaration {
                 name: "overlay".to_owned(),
                 value: vec![Token::Ident(keyword.into())],
                 important: true,
-            }),
-            container: None,
+            })),
+            extra: Extra::of(own_root, None, None),
         });
         order += 1;
     }
@@ -3992,10 +4045,8 @@ fn declarations_for<'a>(
                 order,
                 rule,
                 context: own,
-                tree: own_root,
-                originating: None,
-                decl: Cow::Owned(decl),
-                container: None,
+                decl: Decl::Own(Arc::new(decl)),
+                extra: Extra::of(own_root, None, None),
             });
             order += 1;
         }
@@ -4184,6 +4235,7 @@ fn collect_scoped<'a>(
         let rule = &sheet[place as usize];
         let list: &'a SelectorList = rule.list;
         let mut best: [Option<Specificity>; Target::ALL.len()] = [None; Target::ALL.len()];
+        let mut hit = 0u16;
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
             let Some(ending) = selector.pseudo_element.as_ref().filter(|ending| {
@@ -4216,10 +4268,17 @@ fn collect_scoped<'a>(
             };
             if matches(selector) {
                 let at = target as usize;
+                hit |= 1 << at;
                 best[at] = best[at].max(Some(selector.specificity));
             }
         }
+        if hit == 0 {
+            continue;
+        }
         for target in Target::ALL {
+            if hit & 1 << target as u16 == 0 {
+                continue;
+            }
             let Some(specificity) = best[target as usize] else {
                 continue;
             };
@@ -4240,6 +4299,7 @@ fn collect_scoped<'a>(
                     container = Some((sheet.containers, block));
                 }
             }
+            let extra = Extra::of(tree, originating, container);
             for (offset, decl) in rule.declarations.iter().enumerate() {
                 out.targets[target as usize].push(Applied {
                     tier: tier(base, decl.important),
@@ -4253,10 +4313,8 @@ fn collect_scoped<'a>(
                     order: *order + offset as u32,
                     rule: *order,
                     context,
-                    tree,
-                    originating,
-                    decl: Cow::Borrowed(decl),
-                    container,
+                    decl: Decl::Sheet(decl),
+                    extra: extra.clone(),
                 });
             }
         }
@@ -4456,6 +4514,9 @@ fn collect_from_sheet_for<'a>(
         // those the nearest scoping root (Cascade 6 section 6.5).
         let list: &'a SelectorList = rule.list;
         let mut best: [Option<(Specificity, Reverse<u32>)>; 10] = [None; 10];
+        // The targets matched, a bit each (G247): most rules match none,
+        // and the rest one.
+        let mut hit = 0u16;
         for &(_, index) in &candidates[start..next] {
             let selector = &list.0[index as usize];
             let target = match (&selector.pseudo_element, highlight) {
@@ -4489,15 +4550,19 @@ fn collect_from_sheet_for<'a>(
                 }
             };
             if let Some(proximity) = proximity {
+                hit |= 1 << target as u16;
                 let best = &mut best[target as usize];
                 *best = (*best).max(Some((selector.specificity, Reverse(proximity))));
             }
         }
-        if best.iter().all(Option::is_none) {
+        if hit == 0 {
             continue;
         }
-        for (target, best) in Target::ALL.into_iter().zip(best) {
-            let Some((specificity, Reverse(proximity))) = best else {
+        for target in Target::ALL {
+            if hit & 1 << target as u16 == 0 {
+                continue;
+            }
+            let Some((specificity, Reverse(proximity))) = best[target as usize] else {
                 continue;
             };
             // A pseudo-element's block is weighed once the element's
@@ -4521,6 +4586,7 @@ fn collect_from_sheet_for<'a>(
                 .map(|block| (sheet.containers, block));
             // The same order for each target: within one, it is the
             // declarations' order in the sheets.
+            let extra = Extra::of(tree, None, container);
             for (offset, decl) in rule.declarations.iter().enumerate() {
                 out.targets[target as usize].push(Applied {
                     tier: tier(base, decl.important),
@@ -4534,10 +4600,8 @@ fn collect_from_sheet_for<'a>(
                     order: *order + offset as u32,
                     rule: *order,
                     context,
-                    tree,
-                    originating: None,
-                    decl: Cow::Borrowed(decl),
-                    container,
+                    decl: Decl::Sheet(decl),
+                    extra: extra.clone(),
                 });
             }
         }
@@ -5661,7 +5725,7 @@ fn compute_style(
             .iter()
             .rev()
             .find(|a| matches!(canonical_name(&a.decl.name), "animation-name" | "animation"))
-            .and_then(|a| a.tree)
+            .and_then(|a| a.tree())
     {
         style.motion_mut().animation_names_tree = Some(tree);
     }
@@ -5907,7 +5971,7 @@ fn specified<'v>(
 ) -> Specified<'v> {
     // A `::part()` rule's `attr()` reads its originating host's.
     let of_host;
-    let resolution = match (a.originating, resolution.containers) {
+    let resolution = match (a.originating(), resolution.containers) {
         (Some(host), Some(containers)) => {
             of_host = Resolution {
                 attributes: containers.document.attrs(host).unwrap_or_default(),

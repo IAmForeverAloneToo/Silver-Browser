@@ -57,7 +57,8 @@ use crate::keyframes::{Keyframe, Keyframes, keyframes_name};
 use crate::media::{Media, MediaQueryList, parse_media_query_list, split_commas, trim};
 use crate::page::{PageSelector, parse_page_selectors};
 use crate::selector_matching::{
-    Namespaces, Nest, Relative, SelectorList, SimpleSelector, parse_nested_selector_list,
+    AttrNamespace, Namespaces, Nest, PseudoElement, Relative, SelectorList, SimpleSelector,
+    parse_nested_selector_list,
 };
 
 /// The style rules of a set of sheets, in the order they appear.
@@ -173,14 +174,19 @@ impl<'s> KeyframesInForce<'s> {
 /// `docs/design/performance.md`, "Rules in buckets by their rightmost
 /// compound"): a selector whose subject names an id is kept under the
 /// id; else, one that names a class under its first class; else, one
-/// that names a tag under the tag, lowercased; else under none, the
-/// universal bucket. A selector can only match an element its bucket
-/// is looked up for, so trying the buckets' alone changes no answer.
+/// that names a tag under the tag, lowercased; else, one that names an
+/// attribute of no written namespace under its name, lowercased (G247);
+/// else, the user agent's of `::backdrop` in a bucket an element in the
+/// top layer alone looks in (G247); else under none, the universal
+/// bucket. A selector can only match an element its bucket is looked up
+/// for, so trying the buckets' alone changes no answer.
 #[derive(Debug, Clone, Default)]
 struct RuleIndex {
     ids: HashMap<Box<str>, Vec<Indexed>>,
     classes: HashMap<Box<str>, Vec<Indexed>>,
     tags: HashMap<Box<str>, Vec<Indexed>>,
+    attrs: HashMap<Box<str>, Vec<Indexed>>,
+    backdrops: Vec<Indexed>,
     universal: Vec<Indexed>,
 }
 
@@ -198,11 +204,14 @@ enum Requires<'s> {
     Id(&'s str),
     Class(&'s str),
     Tag(&'s str),
+    Attr(&'s str),
+    Backdrop,
 }
 
 impl RuleIndex {
-    /// The index of `rules`, each bucket in the rules' order.
-    fn of(rules: &[StyleRule]) -> RuleIndex {
+    /// The index of `rules`, each bucket in the rules' order; with
+    /// `user_agent`, their `::backdrop` selectors kept apart.
+    fn of(rules: &[StyleRule], user_agent: bool) -> RuleIndex {
         let mut index = RuleIndex::default();
         for (rule, style_rule) in rules.iter().enumerate() {
             for (selector, parsed) in style_rule.list.0.iter().enumerate() {
@@ -230,6 +239,25 @@ impl RuleIndex {
                                 _ => None,
                             })
                         })
+                        .or_else(|| {
+                            simple.iter().find_map(|s| match s {
+                                SimpleSelector::Attribute {
+                                    name,
+                                    namespace: AttrNamespace::Unwritten,
+                                    ..
+                                } => Some(Requires::Attr(name)),
+                                _ => None,
+                            })
+                        })
+                        .or_else(|| {
+                            parsed
+                                .pseudo_element
+                                .as_ref()
+                                .filter(|ending| {
+                                    user_agent && ending.element == PseudoElement::Backdrop
+                                })
+                                .map(|_| Requires::Backdrop)
+                        })
                 });
                 let bucket = match requires {
                     Some(Requires::Id(id)) => index.ids.entry(id.into()).or_default(),
@@ -238,6 +266,11 @@ impl RuleIndex {
                         .tags
                         .entry(tag.to_ascii_lowercase().into())
                         .or_default(),
+                    Some(Requires::Attr(name)) => index
+                        .attrs
+                        .entry(name.to_ascii_lowercase().into())
+                        .or_default(),
+                    Some(Requires::Backdrop) => &mut index.backdrops,
                     None => &mut index.universal,
                 };
                 bucket.push(entry);
@@ -277,7 +310,8 @@ impl InForce<'_> {
     /// The selectors that may match `element`, by their rules' places
     /// among these and their own in the rules' lists, in order and each
     /// once, into `out`: those of its id's bucket, each of its classes',
-    /// its tag's, and the universal one (M35.2).
+    /// its tag's, each of its attributes' and, in the top layer, the
+    /// backdrops' (G247), and the universal one (M35.2).
     pub(crate) fn candidates(
         &self,
         document: &dom::Document,
@@ -316,6 +350,25 @@ impl InForce<'_> {
             if let Some(entries) = entries {
                 add(entries);
             }
+        }
+        // A foreign element keeps its attributes in their case, which a
+        // selector's name matches in any.
+        if !index.attrs.is_empty()
+            && let Some(attrs) = document.attrs(element)
+        {
+            for (name, _) in attrs {
+                let entries = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+                    index.attrs.get(name.to_ascii_lowercase().as_str())
+                } else {
+                    index.attrs.get(name.as_str())
+                };
+                if let Some(entries) = entries {
+                    add(entries);
+                }
+            }
+        }
+        if !index.backdrops.is_empty() && document.in_top_layer(element) {
+            add(&index.backdrops);
         }
         add(&index.universal);
         out.sort_unstable();
@@ -431,6 +484,25 @@ impl RuleSet {
     /// declarations depend on added to `features`, from every style rule
     /// whatever the media around it.
     pub(crate) fn new(sheets: &[css::Stylesheet], features: &mut SelectorFeatures) -> RuleSet {
+        RuleSet::made(sheets, features, false)
+    }
+
+    /// [`RuleSet::new`] for the user agent's sheet, whose `::backdrop`
+    /// rules style an element in the top layer alone (G247): kept in a
+    /// bucket only such an element looks in. An author's style any
+    /// element's, which `getComputedStyle` reads.
+    pub(crate) fn user_agent(
+        sheets: &[css::Stylesheet],
+        features: &mut SelectorFeatures,
+    ) -> RuleSet {
+        RuleSet::made(sheets, features, true)
+    }
+
+    fn made(
+        sheets: &[css::Stylesheet],
+        features: &mut SelectorFeatures,
+        user_agent: bool,
+    ) -> RuleSet {
         let mut builder = Builder {
             set: RuleSet {
                 layers: vec![Layer { parent: UNLAYERED }],
@@ -459,7 +531,7 @@ impl RuleSet {
             builder.walk(&stylesheet.rules, &place);
         }
         let mut set = builder.set;
-        set.index = RuleIndex::of(&set.rules);
+        set.index = RuleIndex::of(&set.rules, user_agent);
         set
     }
 
@@ -1332,24 +1404,41 @@ mod tests {
     }
 
     /// The bucket each selector of `src` is kept in, in order: `#` an
-    /// ID's, `.` a class's, `<` a tag's, `*` the universal one.
-    fn buckets(src: &str) -> Vec<String> {
+    /// ID's, `.` a class's, `<` a tag's, `[` an attribute's, `::backdrop`
+    /// the user agent's backdrops', `*` the universal one; the user
+    /// agent's set with `user_agent`.
+    fn buckets_of(src: &str, user_agent: bool) -> Vec<String> {
         let sheets = sheets(src);
-        let set = RuleSet::new(&sheets, &mut SelectorFeatures::default());
+        let set = match user_agent {
+            true => RuleSet::user_agent(&sheets, &mut SelectorFeatures::default()),
+            false => RuleSet::new(&sheets, &mut SelectorFeatures::default()),
+        };
         let index = &set.index;
         let mut out: Vec<(u32, u32, String)> = Vec::new();
-        for (kind, map) in [('#', &index.ids), ('.', &index.classes), ('<', &index.tags)] {
+        for (kind, map) in [
+            ('#', &index.ids),
+            ('.', &index.classes),
+            ('<', &index.tags),
+            ('[', &index.attrs),
+        ] {
             for (name, entries) in map {
                 for entry in entries {
                     out.push((entry.rule, entry.selector, format!("{kind}{name}")));
                 }
             }
         }
+        for entry in &index.backdrops {
+            out.push((entry.rule, entry.selector, "::backdrop".to_owned()));
+        }
         for entry in &index.universal {
             out.push((entry.rule, entry.selector, "*".to_owned()));
         }
         out.sort();
         out.into_iter().map(|(.., bucket)| bucket).collect()
+    }
+
+    fn buckets(src: &str) -> Vec<String> {
+        buckets_of(src, false)
     }
 
     /// D71: a nested rule's selectors as heavy as `&` makes them past
@@ -1375,7 +1464,8 @@ mod tests {
     }
 
     /// M35.2: a selector is kept by its subject's ID, else its first
-    /// class, else its tag, lowercased, else in the universal bucket.
+    /// class, else its tag, lowercased, else (G247) an attribute of no
+    /// written namespace, lowercased, else in the universal bucket.
     #[test]
     fn selectors_are_kept_by_what_their_subjects_require() {
         assert_eq!(
@@ -1388,7 +1478,7 @@ mod tests {
                 ".c",
                 "<p",
                 "*",
-                "*",
+                "[x",
                 "*",
                 ".y",
                 ".z",
@@ -1396,6 +1486,33 @@ mod tests {
                 "<lineargradient",
                 "<a",
                 "*"
+            ]
+        );
+    }
+
+    /// G247: an attribute's name is kept lowercased, one of a written
+    /// namespace in the universal bucket; the user agent's `::backdrop`
+    /// apart, which an element in the top layer alone looks in, and an
+    /// author's in the universal bucket, `getComputedStyle` reading it
+    /// of any element.
+    #[test]
+    fn attributes_and_the_user_agents_backdrops_have_buckets() {
+        let src = "[Popover] {} [*|x] {} [dir]:dir(ltr) {} ::backdrop {} \
+                   :popover-open::backdrop {} dialog::backdrop {} [y]::backdrop {}";
+        assert_eq!(
+            buckets(src),
+            ["[popover", "*", "[dir", "*", "*", "<dialog", "[y"]
+        );
+        assert_eq!(
+            buckets_of(src, true),
+            [
+                "[popover",
+                "*",
+                "[dir",
+                "::backdrop",
+                "::backdrop",
+                "<dialog",
+                "[y"
             ]
         );
     }
@@ -1410,12 +1527,13 @@ mod tests {
              div#a.b, .c.d, p, * {} [x] {} .x span.y, div > span {} svg|rect {}
              linearGradient {} LINEARGRADIENT {} foreignobject {} #g, .r {}
              p::before {} div:hover {} :is(p, span) {} #a .y {} input[x] {}
-             .c + p {} html div p.c {} span.y ~ p {} @media (max-width: 1px) { p {} }",
+             .c + p {} html div p.c {} span.y ~ p {} @media (max-width: 1px) { p {} }
+             [X] {} [viewBox] {} [VIEWBOX] {} [*|x] {}",
         );
         let set = RuleSet::new(&sheets, &mut SelectorFeatures::default());
         let in_force = set.in_force(&sheets, &[true]);
         let html = "<div id=a class='b c'><span class='y x'>s</span><p class='c d'>p</p>\
-                    <svg><linearGradient id=g></linearGradient><rect class=r></rect>\
+                    <svg viewBox='0 0 1 1'><linearGradient id=g></linearGradient><rect class=r></rect>\
                     <foreignObject></foreignObject></svg><input type=text x=1>                    <b class='c c d'>twice</b></div>";
         let document = dom::Document::from_node(&html::parse_document(html).expect("parses"));
         let mut matcher = Matcher::new(&document);
