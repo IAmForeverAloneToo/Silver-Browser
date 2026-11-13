@@ -444,6 +444,9 @@ pub struct Engine {
     restyled_elements: u64,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// How many recascades the outer `<svg>`s' trees were built under:
+    /// what proves a frame's are built under one, not one each.
+    svg_recascades: u64,
     /// What the site sweep counted of the documents this engine showed
     /// and left (`sweep`); the shown one's are its scripts'.
     sweep_left: sweep::SweepCounts,
@@ -1680,6 +1683,7 @@ impl Engine {
             style_runs: 0,
             restyled_elements: 0,
             layout_runs: 0,
+            svg_recascades: 0,
             sweep_left: sweep::SweepCounts::default(),
             frame_margins: style::FrameMargins::default(),
             layouts_kept: 0,
@@ -6500,6 +6504,21 @@ impl Engine {
         if !self.shown.svgs.is_empty() {
             self.shown.svgs.retain(|node, _| svgs.contains(node));
         }
+        // The outer `<svg>`s' trees that changed, built under one
+        // recascade before they are drawn.
+        let svg_wanted: Vec<(NodeId, (f32, f32))> = items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayItem::Image { image, w, h, .. }
+                | DisplayItem::Pattern { image, w, h, .. } => {
+                    paint::svg_node(image.id).map(|node| (node, (*w, *h)))
+                }
+                _ => None,
+            })
+            .collect();
+        if !svg_wanted.is_empty() {
+            self.svg_trees(&svg_wanted);
+        }
         let mut next: Option<f64> = None;
         let mut seen = seen.into_iter();
         let mut sizes = sizes.into_iter();
@@ -10393,20 +10412,42 @@ impl Engine {
     /// CSS pixels big (M32), as the document and its styles stand: built
     /// again when either has changed, or the size.
     fn svg_tree(&mut self, node: NodeId, size: (f32, f32)) -> Option<Arc<svg::Tree>> {
+        self.svg_trees(&[(node, size)]);
+        self.shown
+            .svgs
+            .get(&node)
+            .map(|drawing| Arc::clone(&drawing.tree))
+    }
+
+    /// [`Engine::svg_tree`] of each of `wanted`, those whose document,
+    /// styles or size changed built again under one recascade: a page of
+    /// thousands of icons (the site sweep's reddit) made one for each,
+    /// over its whole sheets, at every frame its document changed.
+    fn svg_trees(&mut self, wanted: &[(NodeId, (f32, f32))]) {
         self.cached_styles();
         let key = (
             self.shown.document.version(),
             self.style_runs,
             self.restyled_elements,
         );
-        if let Some(drawing) = self.shown.svgs.get(&node)
-            && drawing.key == key
-            && drawing.size == size
-        {
-            return Some(Arc::clone(&drawing.tree));
+        let stale: Vec<(NodeId, (f32, f32))> = wanted
+            .iter()
+            .copied()
+            .filter(|(node, size)| {
+                self.shown
+                    .svgs
+                    .get(node)
+                    .is_none_or(|drawing| drawing.key != key || drawing.size != *size)
+            })
+            .collect();
+        if stale.is_empty() {
+            return;
         }
-        let tree = {
-            let styles = &self.shown.styled.as_ref()?.styles;
+        let built: Vec<(NodeId, (f32, f32), Arc<svg::Tree>)> = {
+            let Some(styled) = self.shown.styled.as_ref() else {
+                return;
+            };
+            let styles = &styled.styles;
             let fonts = FontMeasurer(crate::web_fonts::fonts_of(
                 self.shown.web_fonts.as_ref(),
                 &self.layout_fonts,
@@ -10423,29 +10464,32 @@ impl Engine {
                 self.shown
                     .stylesheets
                     .recascader(&self.shown.document, styles, &context);
-            let context = svg::Context {
-                document: &self.shown.document,
-                styles,
-                recascade: Some(&recascade),
-                fonts: Some(&self.layout_fonts),
-            };
-            Arc::new(svg::build(
-                context,
-                node,
-                f64::from(size.0),
-                f64::from(size.1),
-            ))
+            self.svg_recascades += 1;
+            stale
+                .into_iter()
+                .map(|(node, size)| {
+                    let context = svg::Context {
+                        document: &self.shown.document,
+                        styles,
+                        recascade: Some(&recascade),
+                        fonts: Some(&self.layout_fonts),
+                    };
+                    let tree = svg::build(context, node, f64::from(size.0), f64::from(size.1));
+                    (node, size, Arc::new(tree))
+                })
+                .collect()
         };
-        self.shown.svgs.insert(
-            node,
-            SvgDrawing {
-                key,
-                size,
-                tree: Arc::clone(&tree),
-                drawn: None,
-            },
-        );
-        Some(tree)
+        for (node, size, tree) in built {
+            self.shown.svgs.insert(
+                node,
+                SvgDrawing {
+                    key,
+                    size,
+                    tree,
+                    drawn: None,
+                },
+            );
+        }
     }
 
     /// The drawing of the outer `<svg>` `node` placed `place` CSS pixels
@@ -14653,6 +14697,36 @@ mod tests {
             style::computed::Color::rgb8(0, 0, 255),
             "the query holds"
         );
+    }
+
+    #[test]
+    fn a_frames_svgs_are_built_under_one_recascade() {
+        // The site sweep's reddit: thousands of inline icons, each built
+        // under a recascade of its own over the page's sheets at every
+        // frame its document changed, held its renderer a second a frame.
+        let mut page = String::from("<style>rect { fill: #08f } p { color: #333 }</style>");
+        for n in 0..20 {
+            page.push_str(&format!(
+                "<svg width=10 height=10><rect width={} height=10></rect></svg>",
+                n % 10 + 1
+            ));
+        }
+        let mut engine = test_engine();
+        engine.load_document(&page);
+        engine.frame(300, 200);
+        let before = engine.svg_recascades;
+        engine.mutate(|document| {
+            let root = document.root();
+            let body = document
+                .subtree(root)
+                .find(|&node| document.tag(node) == Some("body"))
+                .expect("a body");
+            let p = document.create_element("p").expect("made");
+            document.append_child(body, p).expect("appended");
+        });
+        engine.frame(300, 200);
+        assert_eq!(engine.svg_recascades - before, 1);
+        assert_eq!(engine.shown.svgs.len(), 20);
     }
 
     #[test]
