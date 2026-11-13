@@ -56,6 +56,31 @@ fn nodes_a_script_makes_and_moves_are_the_documents() {
 }
 
 #[test]
+fn a_reference_child_undefined_is_null_and_the_node_goes_last() {
+    // `Node?` (WebIDL's nullable types take undefined as null), which
+    // the site sweep's youtube passes; one argument alone still throws,
+    // as does a reference that is no node.
+    let said = logged(
+        "<div id=d><b></b></div><script>\
+         var d = document.getElementById('d');\
+         d.insertBefore(document.createElement('i'), undefined);\
+         d.moveBefore(d.firstChild, undefined);\
+         console.log(d.lastChild.tagName, d.children[0].tagName, d.children.length);\
+         try { d.insertBefore(document.createElement('s')); } catch (e) { console.log(e.name); }\
+         try { d.insertBefore(document.createElement('s'), {}); } catch (e) { console.log(e.message); }\
+         </script>",
+    );
+    assert_eq!(
+        said,
+        [
+            "B I 2",
+            "TypeError",
+            "Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'."
+        ]
+    );
+}
+
+#[test]
 fn a_failed_call_throws_what_the_reference_browser_throws() {
     let console = logged(
         "<p>x</p><script>\

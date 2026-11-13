@@ -8202,7 +8202,12 @@
       const parent = self(this);
       need(arguments.length, 2, "insertBefore", "Node");
       const handle = nodeArgument(node, 1, "insertBefore", "Node");
-      const before = child === null ? null : nodeArgument(child, 2, "insertBefore", "Node");
+      // `Node?`: undefined is null too (WebIDL's nullable types), as
+      // youtube's bootstrap passes it.
+      const before =
+        child === null || child === undefined
+          ? null
+          : nodeArgument(child, 2, "insertBefore", "Node");
       try {
         native.insert(parent, handle, before);
       } catch (error) {
@@ -8452,7 +8457,9 @@
       const iface = parentIface(this);
       need(arguments.length, 2, "moveBefore", iface);
       const handle = nodeArgument(node, 1, "moveBefore", iface);
-      const before = child === null ? null : nodeArgument(child, 2, "moveBefore", iface);
+      // `Node?`: undefined is null too (WebIDL's nullable types).
+      const before =
+        child === null || child === undefined ? null : nodeArgument(child, 2, "moveBefore", iface);
       try {
         native.moveBefore(parent, handle, before);
       } catch (error) {
