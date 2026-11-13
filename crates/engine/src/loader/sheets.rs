@@ -1062,18 +1062,23 @@ impl Page {
             .map(|owner| (owner.node, owner))
             .collect();
         let mut owners = Vec::with_capacity(found.len());
+        // Whether a sheet came, went or was made again: a change of the
+        // sheets no document journal says ([`Page::sheets_generation`]).
+        let mut changed = false;
         for found in found {
             let kept = old.remove(&found.node);
             let makes_now = matches!(&found.key, Key::Style { .. });
             match kept {
                 Some(mut owner) if owner.key == found.key || !makes_now => {
                     if owner.key == found.key {
+                        changed |= owner.title != found.title || owner.media != found.media;
                         owner.title = found.title;
                         owner.media = found.media;
                     }
                     owners.push(owner);
                 }
                 kept if makes_now => {
+                    changed = true;
                     if let Some(kept) = kept {
                         self.detach(kept);
                     }
@@ -1087,9 +1092,11 @@ impl Page {
             }
         }
         for (_, owner) in old {
+            changed = true;
             self.detach(owner);
         }
         self.owners = owners;
+        self.sheets_generation += u64::from(changed);
         self.forget_shadow_sheets(document);
     }
 

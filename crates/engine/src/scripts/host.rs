@@ -302,6 +302,11 @@ pub(crate) struct DocumentHost {
     /// How many flushes started from the frame's styles
     /// ([`FLUSH_FROM_FRAME`]): what the tests see the path taken by.
     pub(crate) flushes_from_frame: u64,
+    /// How many times the document was lent to a run: a rule list's
+    /// `generation`, which a sheet arriving between runs changes.
+    lends: u64,
+    /// How many times a rule list read its sheet's rules: for the tests.
+    pub(crate) rule_reads: u64,
     /// The time the check of those flushes against a whole cascade has
     /// taken on this page ([`DocumentHost::crosscheck_this`]).
     crosscheck_spent: std::time::Duration,
@@ -4409,6 +4414,7 @@ impl DocumentHost {
         // deferred ones in turn), and each sees the same window.
         self.window = lent.window.clone();
         self.lent_version = self.document.version();
+        self.lends += 1;
         self.animations_lent = lent.animations.is_some();
         *self.animations.get_mut() = lent
             .animations
@@ -4692,6 +4698,18 @@ impl DocumentHost {
             self.snap_containers = None;
             return Ok(Answer::Nothing);
         }
+        // What tells the rules a script's rule list read from those it
+        // would read now: the sheets' changes (a CSSOM edit, a `<style>`
+        // made again, come or gone) and the run (a sheet that arrived
+        // between runs is neither). A list keeps what it read while they
+        // stand: a script that reads `cssRules[i]` for each `i` read every
+        // rule of the sheet at each (the site sweep's bbc: 2,200 reads,
+        // 13 s), and one that changes the document between them too.
+        if op == "generation" {
+            self.inline_sheets();
+            let sheets = self.page.as_ref().map_or(0, Page::sheets_generation);
+            return Ok(Answer::Numbers(vec![sheets as f64, self.lends as f64]));
+        }
         if owner.is_none() && op != "sheets" {
             return self.constructed_cssom(op, path, text, index);
         }
@@ -4796,7 +4814,23 @@ impl DocumentHost {
                 let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
                 let flat = super::rules::rules(view.rules, rule_path);
                 self.work += flat.len() as u64;
+                self.rule_reads += 1;
                 Ok(Answer::Strings(flat))
+            }
+            // How many rules the list has.
+            "count" => {
+                let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
+                Ok(Answer::Numbers(vec![
+                    super::rules::count(view.rules, rule_path) as f64,
+                ]))
+            }
+            // One rule's strings, at `index` of the list.
+            "rule" => {
+                let view = page.cssom_sheet(owner, imports).ok_or_else(gone)?;
+                self.work += 1;
+                Ok(Answer::Strings(super::rules::rule_at(
+                    view.rules, rule_path, index,
+                )))
             }
             "insert" | "delete" | "set" => {
                 let mut failure = None;
@@ -4942,7 +4976,23 @@ impl DocumentHost {
                 let view = page.constructed_sheet(serial).ok_or_else(gone)?;
                 let flat = super::rules::rules(view.rules, &rule_path);
                 self.work += flat.len() as u64;
+                self.rule_reads += 1;
                 Ok(Answer::Strings(flat))
+            }
+            // How many rules the list has.
+            "count" => {
+                let view = page.constructed_sheet(serial).ok_or_else(gone)?;
+                Ok(Answer::Numbers(vec![
+                    super::rules::count(view.rules, &rule_path) as f64,
+                ]))
+            }
+            // One rule's strings, at `index` of the list.
+            "rule" => {
+                let view = page.constructed_sheet(serial).ok_or_else(gone)?;
+                self.work += 1;
+                Ok(Answer::Strings(super::rules::rule_at(
+                    view.rules, &rule_path, index,
+                )))
             }
             "insert" | "delete" | "set" => {
                 let mut failure = None;

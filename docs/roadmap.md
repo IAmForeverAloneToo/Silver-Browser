@@ -3959,6 +3959,11 @@ site sweep or the dogfood sessions show a site breaking on it.
 - No test for `:target` after a hash navigation in the fast-path flush
   (G46): the flush tests' documents have no URL to navigate within.
   `:target` is element state, which the journal carries.
+- A `<style>`'s sheet replaced (its text changed) reads, through the
+  sheet object a script held, the rules of the sheet that replaced it:
+  the native side finds a sheet by its owner, not its serial. The
+  reference browser keeps the old sheet's rules. Found by the rule
+  list's kept rules (bbc).
 
 ---
 

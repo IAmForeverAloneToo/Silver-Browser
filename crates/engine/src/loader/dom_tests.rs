@@ -2487,6 +2487,204 @@ fn font_palette_values_rules_and_font_palette_as_the_reference_has_them() {
 }
 
 #[test]
+fn a_loop_over_a_sheets_rules_reads_the_sheet_once() {
+    // The site sweep's bbc: `cssRules[i]` and `cssRules.length` at each
+    // turn of a loop read the whole sheet each time, 2,200 reads and 13 s
+    // past the sweep's patience, the document changed at each turn. A
+    // list keeps what it read while nothing could have changed it.
+    let mut rules = String::from("<style id=s>");
+    for n in 0..300 {
+        rules.push_str(&format!(".r{n} {{ top: {n}px }}"));
+    }
+    rules.push_str(
+        "</style><script>\
+         var list = document.getElementById('s').sheet.cssRules, last = '';\
+         for (var i = 0; i < list.length; i++) {\
+           last = list[i].selectorText; document.documentElement.dataset.i = i;\
+         }\
+         console.log(list.length, last);\
+         </script>",
+    );
+    let page: &'static str = Box::leak(rules.into_boxed_str());
+    let (tab, said) = scripted(page, true);
+    assert_eq!(said, ["300 .r299"]);
+    let reads = tab.engine.shown.scripts.rule_reads();
+    assert!(reads <= 2, "the sheet was read {reads} times");
+}
+
+#[test]
+fn a_sheet_built_rule_by_rule_is_not_read_whole_at_each_rule() {
+    // A CSS-in-JS library's pattern (the site sweep's bbc): a rule
+    // inserted, the list's length read, 300 times, and some deleted. The
+    // list keeps its rules past its own edits, and they are the sheet's.
+    let server = serve(|path| match path {
+        "/page.html" => Some(Reply::ok(
+            "text/html",
+            b"<style id=s></style><script>\
+              var sheet = document.getElementById('s').sheet, list = sheet.cssRules;\
+              function texts() {\
+                var out = [];\
+                for (var i = 0; i < list.length; i++) { out.push(list[i].cssText); }\
+                return out.join('|');\
+              }\
+              for (var i = 0; i < 300; i++) {\
+                sheet.insertRule('.r' + i + ' { top: ' + i + 'px }', list.length);\
+                if (i % 50 == 49) { sheet.deleteRule(0); }\
+              }\
+              sheet.insertRule('@media (min-width: 1px) { b { top: 0 } }', 3);\
+              var kept = texts();\
+              console.log(list.length);\
+              setTimeout(function () { console.log(texts() === kept); });\
+              </script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let said = tab.run_until(|lines| lines.len() >= 2);
+    // The second run's list read the sheet again, and found the same.
+    assert_eq!(said, ["295", "true"]);
+    let reads = tab.engine.shown.scripts.rule_reads();
+    assert!(reads <= 3, "the sheet was read {reads} times");
+}
+
+#[test]
+fn a_rule_list_reads_its_sheet_again_once_it_changed() {
+    // What a list keeps goes with an edit through the CSSOM, a `<style>`'s
+    // text changed, and the run: a sheet may have come between runs.
+    let said = logged(
+        "<style id=s>p { top: 0 }</style><script>\
+         var s = document.getElementById('s'), list = s.sheet.cssRules;\
+         console.log(list.length);\
+         s.sheet.insertRule('b { top: 1px }', 1); console.log(list.length);\
+         s.textContent = 'i { top: 2px } u { top: 3px } q { top: 4px }';\
+         var again = s.sheet.cssRules; console.log(again.length, again[2].selectorText);\
+         s.sheet.deleteRule(0); console.log(again.length, again[0].selectorText);\
+         </script>",
+    );
+    assert_eq!(said, ["1", "2", "3 q", "2 u"]);
+}
+
+/// A rule list read and kept, `edit` made, then the kept list's texts
+/// (`list`, the sheet's, unless `edit` sets `list` to another) said; in a
+/// later task, when every list reads its sheet again, whether a fresh
+/// read of each of `lists` says the same.
+fn kept_then_fresh(style: &str, edit: &str) -> Vec<String> {
+    let page = format!(
+        "<style id=s>{style}</style><script>\
+         function texts(l) {{\
+           var out = [];\
+           for (var i = 0; i < l.length; i++) {{ out.push(l[i].cssText); }}\
+           return out.join(' | ');\
+         }}\
+         var s = document.getElementById('s'), sheet = s.sheet, list = sheet.cssRules;\
+         texts(list);\
+         {edit}\
+         var kept = texts(list); console.log(kept);\
+         setTimeout(function () {{ console.log(texts(list) === kept); }});\
+         </script>"
+    )
+    .into_bytes();
+    let server = serve(move |path| match path {
+        "/page.html" => Some(Reply::ok("text/html", &page)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    tab.run_until(|lines| lines.len() >= 2)
+}
+
+#[test]
+fn a_kept_rule_list_sees_a_rules_declarations_changed() {
+    let said = kept_then_fresh(
+        ".a { color: red }",
+        "list[0].style.setProperty('top', '1px');",
+    );
+    assert_eq!(said, [".a { color: red; top: 1px; }", "true"]);
+    let said = kept_then_fresh(
+        ".a { color: red; top: 1px }",
+        "list[0].style.removeProperty('color');",
+    );
+    assert_eq!(said, [".a { top: 1px; }", "true"]);
+    let said = kept_then_fresh(".a { color: red }", "list[0].style.cssText = 'left: 2px';");
+    assert_eq!(said, [".a { left: 2px; }", "true"]);
+}
+
+#[test]
+fn a_kept_rule_list_sees_a_selector_changed() {
+    let said = kept_then_fresh(".a { color: red }", "list[0].selectorText = '.b > i';");
+    assert_eq!(said, [".b > i { color: red; }", "true"]);
+}
+
+#[test]
+fn a_kept_rule_list_sees_a_nested_list_changed() {
+    // The `@media` rule's own list and the sheet's, which holds its text.
+    let said = kept_then_fresh(
+        "@media print { .a { top: 0px } }",
+        "var inner = list[0].cssRules; texts(inner);\
+         inner.length; list[0].insertRule('.b { left: 1px }', 1);\
+         list[0].deleteRule(0);\
+         console.log(texts(inner));",
+    );
+    assert_eq!(
+        said,
+        [
+            ".b { left: 1px; }",
+            "@media print {\n  .b { left: 1px; }\n}",
+            "true"
+        ]
+    );
+}
+
+#[test]
+fn a_kept_rule_list_sees_a_constructed_sheet_replaced() {
+    let said = kept_then_fresh(
+        "",
+        "var c = new CSSStyleSheet(); c.replaceSync('.a { top: 0px }');\
+         list = c.cssRules; texts(list);\
+         c.replaceSync('.b { top: 1px } .c { top: 2px }');",
+    );
+    assert_eq!(said, [".b { top: 1px; } | .c { top: 2px; }", "true"]);
+}
+
+#[test]
+fn a_kept_rule_list_sees_a_styles_text_changed() {
+    // The list kept reads the `<style>`'s rules as they stand (what the
+    // sheet it replaced says is a known gap, roadmap), and so does the
+    // new sheet's.
+    let said = kept_then_fresh(
+        ".a { top: 0px }",
+        "s.textContent = '.b { top: 1px }';\
+         console.log(texts(list) === texts(s.sheet.cssRules));\
+         list = s.sheet.cssRules;",
+    );
+    assert_eq!(said, ["true", ".b { top: 1px; }", "true"]);
+}
+
+#[test]
+fn two_references_to_a_sheet_see_one_anothers_inserts() {
+    // A list held, a rule inserted through the sheet and through another
+    // reference to it: the list and a fresh one say what a fresh read
+    // says.
+    let said = kept_then_fresh(
+        ".a { top: 0px }",
+        "var held = list; sheet.insertRule('.b { top: 1px }', 1);\
+         document.styleSheets[0].insertRule('.c { top: 2px }', 2);\
+         console.log(texts(held) === texts(sheet.cssRules), held === sheet.cssRules);",
+    );
+    assert_eq!(
+        said,
+        [
+            "true true",
+            ".a { top: 0px; } | .b { top: 1px; } | .c { top: 2px; }",
+            "true"
+        ]
+    );
+}
+
+#[test]
 fn style_sheets_and_their_rules_as_the_reference_browser_has_them() {
     // D66: document.styleSheets, a sheet's rules read and changed, the
     // cascade following; a new text a new sheet.

@@ -305,6 +305,32 @@ pub(crate) fn rules(sheet: &Stylesheet, path: &[usize]) -> Vec<String> {
     out
 }
 
+/// [`rules`]' four strings of the rule at `index` of the list `path`
+/// names, as a script sees the list; none when there is none. What a
+/// rule list a script inserted into takes in, not reading every rule
+/// again.
+pub(crate) fn rule_at(sheet: &Stylesheet, path: &[usize], index: usize) -> Vec<String> {
+    let Some((list, place, ns)) = list(sheet, path) else {
+        return Vec::new();
+    };
+    let Some(&(at, kind)) = visible(list, place, &ns).get(index) else {
+        return Vec::new();
+    };
+    let rule = &list[at];
+    let (a, b) = parts(rule, kind, place, &ns);
+    vec![
+        kind.name().to_owned(),
+        css_text(rule, kind, "", place, &ns),
+        a,
+        b,
+    ]
+}
+
+/// How many rules the list `path` names has, as a script sees it.
+pub(crate) fn count(sheet: &Stylesheet, path: &[usize]) -> usize {
+    list(sheet, path).map_or(0, |(list, place, ns)| visible(list, place, &ns).len())
+}
+
 /// The two strings by kind [`rules`] gives, of `rule` in a list at
 /// `place`: a nested declarations rule's declarations second; an
 /// `@scope` rule's roots and limits, each after a `1` when it has them.

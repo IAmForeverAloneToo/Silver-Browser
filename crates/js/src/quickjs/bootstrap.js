@@ -13746,10 +13746,24 @@
     return state;
   }
 
-  // The rules of a list as the native answers: four strings a rule.
+  // The rules of a list as the native answers: four strings a rule. Kept
+  // while the native's generation stands (the sheets' changes and the
+  // run's): a script reading `cssRules[i]` for each `i` reads the sheet
+  // once, not once a rule.
   function listData(state) {
     const sheet = state.sheet;
-    return native.cssom("rules", sheet.handle, cssomPath(sheet, state.path), "", 0);
+    const generation = native.cssom("generation", null, [], "", 0);
+    const kept = state.read;
+    if (
+      kept !== undefined &&
+      kept.generation[0] === generation[0] &&
+      kept.generation[1] === generation[1]
+    ) {
+      return kept.data;
+    }
+    const data = native.cssom("rules", sheet.handle, cssomPath(sheet, state.path), "", 0);
+    state.read = { generation, data };
+    return data;
   }
 
   // The list's rule objects brought up to the rules now there: one of the
@@ -13850,15 +13864,46 @@
 
   // Inserts `text` as a rule at `index` of the list, its objects moved
   // to make room: CSSOM's "insert a CSS rule".
+  // What a list keeps of its rules brought past its own edit: `edit`
+  // changes the kept strings, and the list takes the generation after it.
+  // Kept only when what it read was of the generation before: no other
+  // rule's strings change with an edit (an `@namespace` rule is inserted
+  // or deleted only among `@import` and `@namespace` rules), so a sheet
+  // a script builds rule by rule is not read whole at each rule.
+  function keptPastEdit(state, before, edit) {
+    const kept = state.read;
+    state.read = undefined;
+    if (
+      kept === undefined ||
+      kept.generation[0] !== before[0] ||
+      kept.generation[1] !== before[1] ||
+      !edit(kept.data)
+    ) {
+      return;
+    }
+    state.read = { generation: native.cssom("generation", null, [], "", 0), data: kept.data };
+  }
+
   function insertInList(state, text, index, method, iface) {
     listObjects(state);
     const sheet = state.sheet;
+    const path = cssomPath(sheet, state.path);
+    const before = native.cssom("generation", null, [], "", 0);
     let at;
     try {
-      at = native.cssom("insert", sheet.handle, cssomPath(sheet, state.path), text, index);
+      at = native.cssom("insert", sheet.handle, path, text, index);
     } catch (error) {
       throw failed(error, method, iface);
     }
+    keptPastEdit(state, before, (data) => {
+      const count = native.cssom("count", sheet.handle, path, "", 0)[0];
+      const rule = native.cssom("rule", sheet.handle, path, "", at);
+      if (rule.length !== 4 || at * 4 > data.length || count * 4 !== data.length + 4) {
+        return false;
+      }
+      ArraySplice(data, at * 4, 0, rule[0], rule[1], rule[2], rule[3]);
+      return true;
+    });
     ArraySplice(state.objects, at, 0, undefined);
     listObjects(state);
     return at;
@@ -13867,11 +13912,21 @@
   function deleteFromList(state, index, method, iface) {
     listObjects(state);
     const sheet = state.sheet;
+    const path = cssomPath(sheet, state.path);
+    const before = native.cssom("generation", null, [], "", 0);
     try {
-      native.cssom("delete", sheet.handle, cssomPath(sheet, state.path), "", index);
+      native.cssom("delete", sheet.handle, path, "", index);
     } catch (error) {
       throw failed(error, method, iface);
     }
+    keptPastEdit(state, before, (data) => {
+      const count = native.cssom("count", sheet.handle, path, "", 0)[0];
+      if ((index + 1) * 4 > data.length || count * 4 !== data.length - 4) {
+        return false;
+      }
+      ArraySplice(data, index * 4, 4);
+      return true;
+    });
     const gone = state.objects[index];
     ArraySplice(state.objects, index, 1);
     if (gone !== undefined) {

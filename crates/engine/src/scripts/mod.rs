@@ -2982,6 +2982,12 @@ impl Scripts {
         self.host.flushes_from_frame
     }
 
+    /// How many times a rule list read its sheet's rules: for the tests.
+    #[cfg(test)]
+    pub(crate) fn rule_reads(&self) -> u64 {
+        self.host.rule_reads
+    }
+
     /// The console's entries since it was last taken.
     pub(crate) fn take_console(&mut self) -> Vec<ConsoleEntry> {
         self.console.drain(..).collect()
