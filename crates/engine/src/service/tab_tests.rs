@@ -866,7 +866,12 @@ fn the_tabs_of_a_context_share_its_connections() {
     settle(&mut first, |_| context.transport().idle_connections() == 1);
     let mut second = RemoteTab::in_context(launcher, fonts(), &context);
     second.navigate(server.url("/"));
-    settle(&mut second, |tab| *tab.load_state() == LoadState::Loaded);
+    // Its page's own title too: its renderer may say its first, blank
+    // document loaded after the navigation began (CI's Linux run found
+    // the test ending before the second tab had asked).
+    settle(&mut second, |tab| {
+        *tab.load_state() == LoadState::Loaded && tab.title() == "t"
+    });
     assert_eq!(server.requests().len(), 2, "a request a tab");
     assert_eq!(server.connections(), 1);
 }
