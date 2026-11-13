@@ -3812,32 +3812,51 @@ Deferred from the milestones above, each with what it waits on:
        taken by the hooks' timing (`docs/perf-budgets.md`, "Gap batch H
        (G247)"), the rows still past 10% written there by cause, the
        features' own costs measured by the `features` bench.
-- [ ] G248 Six WPT tests that pass or fail by the machine's timing,
-       each `either:` until found: in
-       `execution-timing/077.html` two async `data:` scripts run as
-       their fetches end, which can end out of order where the reference
-       browser's end as they were asked (Linux, once in nine nights); in
-       `mediaElementAudioSourceToScriptProcessorTest.html` the comparison
-       50 ms after `ended` can come before the script processor's last
-       buffer or two (macOS, three in nine); in `audio_loop_base.html`
-       the runner's ten seconds of page time can pass before the audio,
-       played at the real clock, loops twice (always when run alone),
-       as in `audio_loop_seek_to_eos.html`; in
+- [ ] G248 Six WPT tests that pass or fail by the machine's timing, each
+       `either:` until found: in `execution-timing/077.html` two async
+       `data:` scripts run as their fetches end, which can end out of
+       order where the reference browser's end as they were asked
+       (Linux, once in nine nights); in
+       `mediaElementAudioSourceToScriptProcessorTest.html` the
+       comparison 50 ms after `ended` can come before the script
+       processor's last buffer or two (macOS, three in nine); in
+       `audio_loop_base.html` the runner's ten seconds of page time can
+       pass before the audio, played at the real clock, loops twice
+       (always when run alone), as in `audio_loop_seek_to_eos.html`; in
        `WorkerPerformanceNow.html` a worker's `performance.now()` reads
        the real clock and the page's the runner's, which the worker can
        get ahead of (macOS); in
        `cross-origin-transfer-resizable-arraybuffer.html` the runner can
        find nothing left to wait for before the cross-origin frame has
        loaded (always here, never on CI's Windows runner). Found by CI's
-       runs and the gate.
+       runs and the gate. track-active-cues.html too (2026-11-13), its
+       whole test timed out twice in CI's last 200 runs (October,
+       November), seventh of the ten: its video is H.264 and its `error`
+       ends it, but the runner moves the page's clock on while no fetch
+       is in flight, a frame at a time for the playing video, while the
+       decoder's probe runs in real time; the engine telling the runner
+       of a media resource still probed would let it hold the clock.
+       Range-mutations-dataChange.html and all-prop-revert-layer.html
+       timed out only under a gate's load, never in CI (some 13s both,
+       alone or beside the engine's tests), and are not marked.
 - [ ] G249 The fuzz targets that make a realm for every input, dom_api
        and script, take 0.8 and 0.5s an input under the address
        sanitizer (a one-byte input), against 0.03s for those that make
-       none: their corpora load in half an hour or more (dom_api's
-       2,826 inputs, minimized, 1,875s), so that five minutes of
-       fuzzing at a batch's exit is mostly loading. The realm's
-       bindings made lazily (G247) to shorten it; the realm is not to
-       be shared between inputs. Found by G247's corpus minimization.
+       none: their corpora load in half an hour or more (dom_api's 2,826
+       inputs, minimized, 1,875s), so that five minutes of fuzzing at a
+       batch's exit is mostly loading. The realm's bindings made lazily
+       (G247) to shorten it; the realm is not to be shared between
+       inputs. Found by G247's corpus minimization. Measured 2026-11-13
+       (a 100-input sample of dom_api's corpus): 0.643s an input by
+       default, 0.241s with ASAN_OPTIONS malloc_context_size=2 (MSVC's
+       sanitizer unwinds 30 frames a malloc, most of the time; 0 and 1
+       no faster, 4 at 0.346s), the fuzz runner's default now; the other
+       allocator options nothing, a build without comparisons traced
+       0.219s (dropped: it fuzzes worse). A one-byte input takes 0.19s
+       of it, the two engines' realms made: the rest is the bindings
+       made lazily. dom_api's corpus minimized again, 4,537 to 3,156
+       inputs, loads in 779s, from some 48 minutes; script's, 220 to
+       137, in 19s.
 - [ ] G250 Node objects' groups held otherwise (D70): an object holds
        its tree's group and a group only its roots', so that a node a
        script makes and puts into another tree moves no object between

@@ -1596,6 +1596,7 @@ html/semantics/embedded-content/media-elements/track/track-element/src-clear-cue
 html/semantics/embedded-content/media-elements/track/track-element/src-clear-cues.html	track element changing "track URL" and clearing cues, set mode, set src, add cue, change src	no text tracks (docs/design/audio-video.md, section 2)
 html/semantics/embedded-content/media-elements/track/track-element/src-clear-cues.html	track element changing "track URL" and clearing cues, set mode, add cue, change mode to disabled, set src	no text tracks (docs/design/audio-video.md, section 2)
 html/semantics/embedded-content/media-elements/track/track-element/src-empty-string.html no text tracks (docs/design/audio-video.md, section 2)
+html/semantics/embedded-content/media-elements/track/track-element/track-active-cues.html    either: its video (H.264, D36) ends it by `error`, which the decoder's probe gives in real time while the runner moves the page's clock on a frame at a time; twice in CI's last 200 runs (G248)
 html/semantics/embedded-content/media-elements/track/track-element/track-active-cues.html	Ensure that no text track cues are active after the video is unloaded	no text tracks (docs/design/audio-video.md, section 2)
 html/semantics/embedded-content/media-elements/track/track-element/track-add-remove-cue.html no text tracks (docs/design/audio-video.md, section 2)
 html/semantics/embedded-content/media-elements/track/track-element/track-add-track.html	'addtrack' event is fired when a TextTrack is created	no text tracks (docs/design/audio-video.md, section 2)
