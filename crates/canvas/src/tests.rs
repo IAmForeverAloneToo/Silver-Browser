@@ -1678,6 +1678,65 @@ fn a_stroke_cut_into_too_many_dashes_is_stroked_whole() {
 }
 
 #[test]
+fn a_dashed_stroke_with_a_shadow_under_a_vast_skew_holds_its_outline_bounded() {
+    // The fuzzer's (nightly, 2026-11-13): five curves reaching 1e18 under
+    // a transform skewed by as much, dashed and round joined, with a
+    // shadow. Its outline held 24 million points, which cutting it down
+    // for its shadow took gigabytes and twelve seconds to copy.
+    let tiny = f64::MIN_POSITIVE;
+    let mut canvas = Canvas::new(16, 10, false);
+    let mut path = Path::new();
+    let m = &Matrix::IDENTITY;
+    path.move_to(16.0, tiny, m);
+    path.cubic_to(16.0, tiny, 16.0, 16.0, tiny, 1e9, m);
+    path.cubic_to(146.5, -8.5, tiny, tiny, 191.75, -59.25, m);
+    path.cubic_to(1.6e10, 16.0, 3.2e10, 1616.0, 1.0000001e18, 10016.0, m);
+    path.cubic_to(1.6e10, 1616.0, 1.6e10, 16.0, 2.04e11, 6416.0, m);
+    path.cubic_to(
+        1.38e11,
+        -834.0,
+        4.450147717014403e-299,
+        16.0,
+        1.325e11,
+        -5909.0,
+        m,
+    );
+    canvas.transform(&Matrix::new(
+        1e18,
+        2.2250738585072014e-299,
+        1.6e10,
+        1600.0,
+        1.00000003825e18,
+        100000000016.0,
+    ));
+    let state = canvas.state_mut();
+    state.set_line_width(191.75);
+    state.line_join = crate::LineJoin::Round;
+    state.dash.set(&[140.0, 64.0, 134.0, 146.5]);
+    state.set_dash_offset(7.0);
+    state.shadow_color = Rgba::new(255, 0, 0, 255);
+    state.set_shadow_offset(Some(16.0), Some(16.0));
+    let inverse = canvas.state().transform.invert().expect("invertible");
+    let user = path.transformed(&inverse);
+    if let Some(outline) = canvas.stroke_outline(&user) {
+        assert!(
+            outline.points().len() <= 1 << 20,
+            "{} points",
+            outline.points().len()
+        );
+    }
+    // And the stroke, its shadow and all, is drawn in good time.
+    let began = std::time::Instant::now();
+    canvas.with_path(|current, _| *current = path.clone());
+    canvas.stroke(None);
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+#[test]
 fn a_rectangle_of_values_not_finite_clears_nothing() {
     // WPT's 2d.clearRect.nonfinite, which found the bitmap dropped.
     let inf = f64::INFINITY;

@@ -58,6 +58,24 @@ const FAR_STROKE: f64 = 4_194_304.0;
 /// the largest bitmap a pixel at a time.
 pub(crate) const MAX_STROKE_DASHES: f64 = 16_384.0;
 
+/// The most points a stroke's outline, or the dashes it is cut into,
+/// may hold: past it the dashes give way to the whole path, then the
+/// outline is traced again coarser, then nothing is drawn. Five thousand
+/// dashes along a curve a billion pixels round, each traced to a
+/// thousand lines, made an outline of 24 million points that took
+/// gigabytes to cut down for its shadow (found by fuzzing, nightly
+/// 2026-11-13).
+pub(crate) const MAX_OUTLINE_POINTS: usize = 1 << 20;
+
+/// How much coarser a stroke's outline is traced again when the first
+/// tracing made more than [`MAX_OUTLINE_POINTS`].
+const COARSER: f32 = 256.0;
+
+/// How many times [`MAX_OUTLINE_POINTS`] steps a path's control polygon
+/// may be traced into: a path that long in the bitmap's pixels is traced
+/// a pixel a step, one longer coarser.
+const TRACED: f64 = 8.0;
+
 /// The length of `path`'s control polygon, which is at least that of
 /// its lines and curves: what bounds the dashes it is cut into.
 fn control_length(path: &tiny_skia::Path) -> f64 {
@@ -220,13 +238,24 @@ impl Canvas {
         .fold(0.0, f64::max)
             + state.line_width * state.transform.scale();
         let far = (reach / FAR_STROKE).max(1.0);
-        let resolution = (state.transform.scale().max(1.0) / far).min(MAX_STROKE_RESOLUTION) as f32;
+        // Nor finer than a path [`TRACED`] times [`MAX_OUTLINE_POINTS`]
+        // steps long along its control polygon holds: what bounds the
+        // points its dashes and outline are traced to.
+        let length = control_length(&path);
+        let traced = TRACED * MAX_OUTLINE_POINTS as f64 / length.max(f64::MIN_POSITIVE);
+        let resolution = (state.transform.scale().max(1.0) / far)
+            .min(MAX_STROKE_RESOLUTION)
+            .min(traced) as f32;
         let interval: f64 = state.dash.list.iter().sum();
-        let dashes = control_length(&path) * (state.dash.list.len() / 2) as f64 / interval;
+        let dashes = length * (state.dash.list.len() / 2) as f64 / interval;
         if !state.dash.list.is_empty() && interval > 0.0 && dashes <= MAX_STROKE_DASHES {
             let list: Vec<f32> = state.dash.list.iter().map(|&v| v as f32).collect();
             let dash = StrokeDash::new(list, state.dash.offset as f32)?;
-            path = path.dash(&dash, resolution)?;
+            // Dashes past the bound of points: the path is stroked whole.
+            path = path
+                .dash(&dash, resolution)
+                .filter(|dashed| dashed.points().len() <= MAX_OUTLINE_POINTS)
+                .unwrap_or(path);
         }
         let stroke = tiny_skia::Stroke {
             width: state.line_width as f32,
@@ -243,8 +272,12 @@ impl Canvas {
             },
             dash: None,
         };
-        path.stroke(&stroke, resolution)?
-            .transform(state.transform.to_skia())
+        let fits = |outline: &tiny_skia::Path| outline.points().len() <= MAX_OUTLINE_POINTS;
+        let outline = path
+            .stroke(&stroke, resolution)
+            .filter(fits)
+            .or_else(|| path.stroke(&stroke, resolution / COARSER).filter(fits))?;
+        outline.transform(state.transform.to_skia())
     }
 
     /// `fillRect()`.
