@@ -311,7 +311,12 @@ pub(crate) struct DocumentHost {
     /// How many times a rule list read its sheet's rules: for the tests.
     pub(crate) rule_reads: u64,
     /// The time the check of those flushes against a whole cascade has
-    /// taken on this page ([`DocumentHost::crosscheck_this`]).
+    /// taken on this page ([`DocumentHost::crosscheck_this`]); read only
+    /// where the check is built.
+    #[cfg_attr(
+        not(any(debug_assertions, fuzzing, feature = "style-crosscheck")),
+        allow(dead_code)
+    )]
     crosscheck_spent: std::time::Duration,
     /// The nodes a script holds an object for: handles given out and not
     /// released (M25). None of them is freed.

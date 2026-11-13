@@ -1292,8 +1292,15 @@ impl Scripts {
         // at once.
         loop {
             let Scripts { realm, host, .. } = self;
-            host.modules
-                .advance(&mut |url, text| scan(realm, url, text));
+            let (modules, sources) = (&mut host.modules, &mut host.sources);
+            modules.advance(&mut |name, text| {
+                // A module's text is kept for what its errors name: never
+                // muted, a module is fetched by CORS.
+                if let (url, js::ModuleKind::Js) = js::module_of_name(name) {
+                    sources.keep(url, 1, text);
+                }
+                scan(realm, name, text)
+            });
             for text in self.host.modules.take_said() {
                 self.push(ConsoleEntry::of(
                     ConsoleSource::Network,
@@ -1796,6 +1803,11 @@ impl Scripts {
         // modules the realm was not given.
         if let Some(graph) = source.module {
             if let Some(run) = self.host.modules.take_run(graph) {
+                // An inline one's text kept, as a classic script's, as it
+                // runs: the document's other scripts share its URL.
+                if let Some((text, line)) = &run.inline {
+                    self.host.sources.keep(&run.url, *line, text);
+                }
                 let options = ScriptOptions::of_request(&run.template);
                 let script = js::ModuleScript {
                     url: &run.url,

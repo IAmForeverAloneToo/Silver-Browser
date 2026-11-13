@@ -891,14 +891,21 @@ fn a_page_answers_what_the_site_sweep_counts_of_it() {
     // The scoreboard's counters (`crate::sweep`): names the engine has
     // not, a stack too deep, a media type it does not play, a policy's
     // refusal, and a frame of the page's own origin refused (G90).
-    let server = crate::testing::serve(|path| match path {
+    let server = crate::testing::serve(|path| {
+        match path {
+        "/m.js" => Some(net::test_server::Reply::ok(
+            "text/javascript",
+            b"var fetched = { notThere: 1 };
+fetched.notThere();",
+        )),
         "/page.html" => Some(html(
             "<meta http-equiv=Content-Security-Policy content=\"img-src 'none'\">\
              <img src=/a.png><iframe srcdoc='<p>child</p>'></iframe>\
              <script>notInThisEngine();</script>\
              <script>document.body.animateX();</script>\
              <script>var holder = { notAThing: 1 };\nholder.notAThing();</script>\
-             <script>function deep(n) { return deep(n + 1) + 1; } deep(0);</script>\
+             <script type=module>var inModule = { notHere: 1 };
+inModule.notHere();</script>             <script type=module src=/m.js></script>             <script>function deep(n) { return deep(n + 1) + 1; } deep(0);</script>\
              <script>document.createElement('video').canPlayType('video/x-nothing');\
              onload = () => {\
                try { frames[0].document; } catch (e) {}\
@@ -907,6 +914,7 @@ fn a_page_answers_what_the_site_sweep_counts_of_it() {
              };</script>",
         )),
         _ => None,
+    }
     });
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
@@ -929,6 +937,9 @@ fn a_page_answers_what_the_site_sweep_counts_of_it() {
     // where the call was.
     assert_eq!(named("missing", "animateX"), Some(1), "{answer:?}");
     assert_eq!(named("missing", "notAThing"), Some(1), "{answer:?}");
+    // A module's too, inline or fetched.
+    assert_eq!(named("missing", "notHere"), Some(1), "{answer:?}");
+    assert_eq!(named("missing", "notThere"), Some(1), "{answer:?}");
     assert_eq!(named("missing", "(not a function)"), None, "{answer:?}");
     assert_eq!(number("stackOverflows"), Some(1), "{answer:?}");
     assert_eq!(
