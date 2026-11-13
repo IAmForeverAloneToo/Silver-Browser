@@ -298,6 +298,13 @@ pub(crate) struct InForce<'s> {
 /// The place of a rule the medium leaves out.
 const NOT_IN_FORCE: u32 = u32::MAX;
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread made a set's rules in force: what the
+    /// tests see a restyle make no more of than it needs by.
+    pub(crate) static IN_FORCE_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'s> Deref for InForce<'s> {
     type Target = [ParsedRule<'s>];
 
@@ -581,6 +588,8 @@ impl RuleSet {
         starting: bool,
     ) -> InForce<'s> {
         dom::hook!("style::rule_set::in_force_of");
+        #[cfg(test)]
+        IN_FORCE_MADE.with(|made| made.set(made.get() + 1));
         let (holds, places) = self.ordered(answers);
         let last = places[UNLAYERED as usize];
         let mut kept = 0u32;

@@ -102,7 +102,7 @@
 //! process.
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1319,14 +1319,7 @@ impl Stylesheets {
         let mut cascader = Cascader::new(document, ua_rules, author, context, media, self.id);
         cascader.substitutions = Substitutions::new(self.id).with_registry(Arc::new(registry));
         cascader.keyframes = keyframes;
-        cascader.shadow = self
-            .shadow
-            .iter()
-            .map(|(&root, set)| {
-                let answers = set.rules.answers(&context.media);
-                (root, set.rules.in_force(&set.sheets, &answers))
-            })
-            .collect();
+        cascader.shadow = ShadowRules::new(&self.shadow, &context.media);
         // Each shadow tree's `@keyframes` rules, its names its own (CSS
         // Scoping 1 section 3.5).
         if context.animations.is_some() {
@@ -2782,7 +2775,7 @@ struct Cascader<'a> {
     ua: InForce<'a>,
     author: InForce<'a>,
     /// Each shadow tree's rules in force, by its root (D69).
-    shadow: HashMap<NodeId, InForce<'a>>,
+    shadow: ShadowRules<'a>,
     /// The selectors an element is tried against, made again for each
     /// (M35.2): kept to spare an allocation an element.
     candidates: Vec<(u32, u32)>,
@@ -2851,7 +2844,7 @@ impl<'a> Cascader<'a> {
             matcher: Matcher::with_language(document, context.language),
             ua,
             author,
-            shadow: HashMap::new(),
+            shadow: ShadowRules::default(),
             candidates: Vec::new(),
             kept: HashMap::new(),
             keeps: !plain(),
@@ -3964,11 +3957,42 @@ fn tier(base: TierBase, important: bool) -> u8 {
 
 /// The rules the cascade matches an element against: the user agent's,
 /// the document's, and each shadow tree's by its root (D69).
-type RulesInForce<'r, 'a> = (
-    &'r InForce<'a>,
-    &'r InForce<'a>,
-    &'r HashMap<NodeId, InForce<'a>>,
-);
+type RulesInForce<'r, 'a> = (&'r InForce<'a>, &'r InForce<'a>, &'r ShadowRules<'a>);
+
+/// Each shadow tree's rules in force, by its root (D69), made when the
+/// cascade first matches an element of the tree: a restyle of a few
+/// elements outside them makes none. A page of 430 shadow trees made
+/// each tree's at every cascader, twice a frame for a spinner of five
+/// elements' styles (the site sweep's reddit, 60 ms a frame).
+#[derive(Default)]
+pub(crate) struct ShadowRules<'a> {
+    trees: HashMap<NodeId, (&'a Stylesheets, OnceCell<InForce<'a>>)>,
+    media: Option<&'a Media>,
+}
+
+impl<'a> ShadowRules<'a> {
+    /// The trees of `sets`, their rules to be made under `media`.
+    fn new(sets: &'a HashMap<NodeId, Arc<Stylesheets>>, media: &'a Media) -> ShadowRules<'a> {
+        ShadowRules {
+            trees: sets
+                .iter()
+                .map(|(&root, set)| (root, (&**set, OnceCell::new())))
+                .collect(),
+            media: Some(media),
+        }
+    }
+
+    /// The rules in force of the tree whose root is `root`, made now if
+    /// they were not; `None` for a tree with no sheets.
+    pub(crate) fn get(&self, root: &NodeId) -> Option<&InForce<'a>> {
+        let (set, made) = self.trees.get(root)?;
+        let media = self.media?;
+        Some(made.get_or_init(|| {
+            let answers = set.rules.answers(media);
+            set.rules.in_force(&set.sheets, &answers)
+        }))
+    }
+}
 
 /// How many shadow trees deep the tree at `root` is: its encapsulation
 /// context, as the cascade orders it (D69).
@@ -4152,7 +4176,7 @@ fn scoped_declarations<'a>(
     document: &Document,
     (matcher, candidates): (&mut Matcher<'a>, &mut Vec<(u32, u32)>),
     (element, svg): (NodeId, bool),
-    (author, shadow): (&InForce<'a>, &HashMap<NodeId, InForce<'a>>),
+    (author, shadow): (&InForce<'a>, &ShadowRules<'a>),
     (order, out): (&mut u32, &mut Matched<'a>),
     containers: Option<&Containers<'_>>,
     highlight: Option<HighlightName>,

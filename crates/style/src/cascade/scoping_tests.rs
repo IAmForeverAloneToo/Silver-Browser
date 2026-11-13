@@ -526,3 +526,53 @@ fn defined_and_state_match_what_the_document_keeps() {
     assert_eq!(color(&styles, custom), GREEN);
     assert_eq!(color(&styles, waiting), GREEN);
 }
+
+#[test]
+fn a_restyle_outside_the_shadow_trees_makes_none_of_their_rules() {
+    // The site sweep's reddit: 430 shadow trees, each tree's rules in
+    // force made at every cascader, twice a frame for a spinner of five
+    // elements. A tree's rules are made once an element of it is matched.
+    let mut page = String::from("<p id=lone>l</p>");
+    for n in 0..100 {
+        page.push_str(&format!("<div id=host{n}></div>"));
+    }
+    let mut document = Document::from_node(&html::parse_document(&page).expect("parses"));
+    let mut trees = Vec::new();
+    for n in 0..100 {
+        let host = by_id(&document, document.root(), &format!("host{n}"));
+        let root = document
+            .attach_shadow(host, ShadowRootInit::open(), false)
+            .expect("a div hosts it");
+        fill(&mut document, root, host, &format!("<p id=inner{n}>i</p>"));
+        trees.push((root, vec![sheet("p { color: green }")], vec![None]));
+    }
+    let sheets = Stylesheets::new(vec![sheet("p { color: red } .on { color: blue }")])
+        .with_shadow_trees(trees.clone());
+    let context = CascadeContext::default();
+    let mut styles = sheets.cascade(&document, &context);
+    document.take_changes();
+    let lone = by_id(&document, document.root(), "lone");
+    document.set_attribute(lone, "class", "on").unwrap();
+    let changes = document.take_changes();
+    let made = || crate::rule_set::IN_FORCE_MADE.with(std::cell::Cell::get);
+    let before = made();
+    sheets.restyle_animated(&document, &context, &mut styles, &changes, &[]);
+    assert_eq!(color(&styles, lone), BLUE);
+    let outside = made() - before;
+    assert!(
+        outside <= 3,
+        "{outside} sets' rules made for an element outside the trees"
+    );
+    // One inside a tree makes that tree's.
+    let inner = by_id(&document, trees[7].0, "inner7");
+    document.set_attribute(inner, "class", "on").unwrap();
+    let changes = document.take_changes();
+    let before = made();
+    sheets.restyle_animated(&document, &context, &mut styles, &changes, &[]);
+    assert_eq!(color(&styles, inner), GREEN);
+    let inside = made() - before;
+    assert!(
+        inside <= 4,
+        "{inside} sets' rules made for an element of one tree"
+    );
+}
