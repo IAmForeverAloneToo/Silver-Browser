@@ -871,6 +871,11 @@ pub(crate) struct Frame {
     pub(crate) told: Option<PageId>,
     /// The frame's last drawing.
     pub(crate) drawn: Option<Drawn>,
+    /// Whether the page's last frame showed any of it: its `iframe`
+    /// rendered and in the viewport. One that is not is drawn no more,
+    /// nor wants its page's frames, until it is (as the reference browser
+    /// throttles a frame out of view or not rendered).
+    pub(crate) in_view: bool,
     tree: SharedTree,
 }
 
@@ -1244,6 +1249,7 @@ impl Engine {
             source: Source::Blank,
             told: None,
             drawn: None,
+            in_view: true,
             tree: self.frame.tree.clone(),
         })
     }
@@ -1806,7 +1812,7 @@ impl Engine {
         self.shown
             .frames
             .values()
-            .any(|frame| frame.engine.needs_frame())
+            .any(|frame| frame.in_view && frame.engine.needs_frame())
     }
 
     /// When a frame next wants to be drawn, as [`Engine::next_frame_at`]
@@ -2131,6 +2137,16 @@ impl Engine {
     /// passed: Tab past a frame's last.
     pub(crate) fn focus_after_frame(&mut self, node: NodeId, backward: bool) -> bool {
         self.focus_from(Some(node), backward)
+    }
+
+    /// The frame of the `iframe` `node`'s last drawing and its pixels:
+    /// what one out of view keeps showing.
+    pub(crate) fn frame_drawn(&self, node: NodeId) -> Option<(u32, Arc<images::Image>)> {
+        let frame = self.shown.frames.get(&node)?;
+        frame
+            .drawn
+            .as_ref()
+            .map(|drawn| (drawn.frame, drawn.pixels.clone()))
     }
 
     /// The pixels the frame of the `iframe` `node` last drew, for a print

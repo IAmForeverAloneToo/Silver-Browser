@@ -99,6 +99,50 @@ fn width_height_and_frameborder_are_hints() {
     assert_eq!((w, h), (304.0, 154.0), "a frameborder of 1 keeps it");
 }
 
+/// A frame whose page animates for ever, `style` its `iframe`'s.
+fn animating_frame(style: &str) -> String {
+    format!(
+        "<iframe style='border:0; {style}' srcdoc=\"<style>@keyframes k {{ to {{ margin-left: 40px }} }}         div {{ width: 9px; height: 9px; background: red; animation: k 1s infinite }}</style>         <div></div>\"></iframe>"
+    )
+}
+
+/// Whether the page still wants frames once a few are drawn.
+fn wants_frames_after_a_few(tab: &mut Tab) -> bool {
+    for _ in 0..3 {
+        tab.engine.frame(400, 200);
+    }
+    tab.engine.needs_frame()
+}
+
+#[test]
+fn a_frame_not_rendered_or_out_of_view_wants_no_frames_of_its_page() {
+    // As the reference browser throttles them: a frame whose `iframe` is
+    // not rendered, or lies out of the viewport, animates for no one.
+    let mut tab = Tab::new();
+    tab.engine.load_document(&format!(
+        "<body style='margin:0'>{}",
+        animating_frame("display: none")
+    ));
+    settle_frames(&mut tab);
+    assert!(!wants_frames_after_a_few(&mut tab), "not rendered");
+    let mut tab = Tab::new();
+    tab.engine.load_document(&format!(
+        "<body style='margin:0'><div style='height: 2000px'></div>{}",
+        animating_frame("")
+    ));
+    settle_frames(&mut tab);
+    assert!(!wants_frames_after_a_few(&mut tab), "out of view");
+    // Scrolled to, it draws again.
+    tab.engine.scroll_to(1950.0);
+    assert!(wants_frames_after_a_few(&mut tab), "scrolled into view");
+    // One in view goes on drawing.
+    let mut tab = Tab::new();
+    tab.engine
+        .load_document(&format!("<body style='margin:0'>{}", animating_frame("")));
+    settle_frames(&mut tab);
+    assert!(wants_frames_after_a_few(&mut tab), "in view");
+}
+
 #[test]
 fn a_srcdoc_is_drawn_into_its_box_and_its_canvas_is_clear() {
     // The frame's document fills the content box; where it gives its

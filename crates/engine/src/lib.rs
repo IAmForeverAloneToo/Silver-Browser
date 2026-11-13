@@ -6593,6 +6593,11 @@ impl Engine {
         if !svg_wanted.is_empty() {
             self.svg_trees(&svg_wanted);
         }
+        // Which frames the page shows is found again: one whose `iframe`
+        // is not rendered has no item, and is out of view.
+        for frame in self.shown.frames.values_mut() {
+            frame.in_view = false;
+        }
         let mut next: Option<f64> = None;
         let mut seen = seen.into_iter();
         let mut sizes = sizes.into_iter();
@@ -6612,8 +6617,19 @@ impl Engine {
                 }
                 continue;
             }
-            // A frame's document (M33.2), drawn at the size it lands on.
+            // A frame's document (M33.2), drawn at the size it lands on,
+            // when any of it shows: one out of view keeps its last drawing.
             if let Some(node) = paint::frame_node(image.id) {
+                if let Some(frame) = self.shown.frames.get_mut(&node) {
+                    frame.in_view |= seen;
+                }
+                if !seen {
+                    if let Some((frame, pixels)) = self.frame_drawn(node) {
+                        image.pixels = Some(pixels);
+                        image.frame = frame;
+                    }
+                    continue;
+                }
                 let time = self.drawing_at;
                 if let Some((frame, pixels)) = self.frame_pixels(node, place, size, time) {
                     image.pixels = Some(pixels);
