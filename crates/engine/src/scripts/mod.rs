@@ -2111,6 +2111,12 @@ impl Scripts {
         script: &Script<'_>,
         how: How,
     ) -> Option<Completion> {
+        // Kept for what its errors name: a muted one's name nothing.
+        if !script.muted {
+            self.host
+                .sources
+                .keep(script.url, script.line, script.source);
+        }
         self.run_with(lent, how, |realm, host| realm.run(script, host).map(Some))
     }
 
@@ -2859,7 +2865,9 @@ impl Scripts {
     /// uncaught exception and where it was thrown, or a rejection with no
     /// handler; a dead realm's refusal is not an error of the page's.
     pub(crate) fn report(&mut self, error: &ScriptError) {
-        self.host.sweep.note_error(error.kind, &error.message);
+        let host = &mut self.host;
+        let callee = host.sources.callee(&error.url, error.line, error.column);
+        host.sweep.note_error(error.kind, &error.message, callee);
         let Some(entry) = ConsoleEntry::of_error(error) else {
             return;
         };

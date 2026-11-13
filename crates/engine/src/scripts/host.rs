@@ -299,6 +299,9 @@ pub(crate) struct DocumentHost {
     pub(crate) document: Document,
     /// What the site sweep counts of the page (`crate::sweep`).
     pub(crate) sweep: crate::sweep::SweepCounts,
+    /// The texts of the scripts the document ran last, which an error's
+    /// place is read in for the sweep.
+    pub(crate) sources: crate::sweep::KeptSources,
     /// How many flushes started from the frame's styles
     /// ([`FLUSH_FROM_FRAME`]): what the tests see the path taken by.
     pub(crate) flushes_from_frame: u64,
@@ -660,7 +663,8 @@ impl ScriptingHost for DocumentHost {
     fn report(&mut self, error: ScriptError) {
         // A callback's (a timer's, a listener's) is the page's error too,
         // counted as a run's is.
-        self.sweep.note_error(error.kind, &error.message);
+        let callee = self.sources.callee(&error.url, error.line, error.column);
+        self.sweep.note_error(error.kind, &error.message, callee);
         if let Some(text) = report_text(&error) {
             self.outputs.errors += 1;
             self.say(ConsoleLevel::Error, text);

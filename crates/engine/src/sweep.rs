@@ -4,7 +4,8 @@
 //! of them reaches the page, and they cost a page nothing but a few
 //! additions where the engine meets what it does not do.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use devtools::Json;
 
@@ -66,7 +67,10 @@ pub(crate) const TASK_KINDS: [&str; 6] = [
 impl SweepCounts {
     /// Counts an error the console said, by its kind and its message as
     /// the reference browser words it.
-    pub(crate) fn note_error(&mut self, kind: js::ErrorKind, message: &str) {
+    /// `callee`: what the source names where the error was thrown, when
+    /// it was kept ([`KeptSources::callee`]), which a call of what is no
+    /// function is counted by, QuickJS's message naming nothing.
+    pub(crate) fn note_error(&mut self, kind: js::ErrorKind, message: &str, callee: Option<&str>) {
         match kind {
             js::ErrorKind::Budget => self.budget_stops += 1,
             js::ErrorKind::Exception | js::ErrorKind::Rejection => {
@@ -75,8 +79,11 @@ impl SweepCounts {
                 {
                     self.stack_overflows += 1;
                 } else if let Some(name) = missing_name(message) {
-                    let name = name.to_owned();
-                    self.name(Which::Missing, name, 1);
+                    let name = match (name, callee) {
+                        (UNNAMED_CALL, Some(callee)) => callee,
+                        (name, _) => name,
+                    };
+                    self.name(Which::Missing, name.to_owned(), 1);
                 }
             }
             _ => {}
@@ -197,8 +204,72 @@ enum Which {
 }
 
 /// What QuickJS says of a call of what is no function, naming nothing:
-/// counted as one name.
+/// counted as one name, unless the source says what was called.
 pub(crate) const UNNAMED_CALL: &str = "(not a function)";
+
+/// The most scripts [`KeptSources`] keeps, and the most bytes of them.
+const MAX_KEPT_SOURCES: usize = 64;
+const MAX_KEPT_SOURCE_BYTES: usize = 16 << 20;
+
+/// The texts of the classic scripts a document ran last, by their URL
+/// and the line of it they start on, what an error's place is read in:
+/// the name a call of what is no function was made by, which QuickJS's
+/// message leaves out (the site sweep's "(not a function)").
+#[derive(Default)]
+pub(crate) struct KeptSources {
+    kept: VecDeque<(String, u32, Arc<str>)>,
+    bytes: usize,
+}
+
+impl KeptSources {
+    /// Keeps `text`, a script of `url` starting on its line `line`; the
+    /// oldest go past [`MAX_KEPT_SOURCES`] or [`MAX_KEPT_SOURCE_BYTES`].
+    pub(crate) fn keep(&mut self, url: &str, line: u32, text: &str) {
+        if text.len() > MAX_KEPT_SOURCE_BYTES {
+            return;
+        }
+        self.bytes += text.len();
+        self.kept.push_back((url.to_owned(), line, Arc::from(text)));
+        while self.kept.len() > MAX_KEPT_SOURCES || self.bytes > MAX_KEPT_SOURCE_BYTES {
+            let Some((_, _, gone)) = self.kept.pop_front() else {
+                break;
+            };
+            self.bytes -= gone.len();
+        }
+    }
+
+    /// The name called at line `line`, column `column` of `url`, as
+    /// QuickJS places a call of what is no function: the identifier
+    /// there, followed by the call's `(` (or a template's backtick, or the
+    /// `)` of `(0, f)()`); none for a member named by brackets, or where
+    /// no kept script lies. QuickJS counts the columns of a script's first
+    /// line from 0, and of the others from 1, within the script's own
+    /// text.
+    pub(crate) fn callee(&self, url: &str, line: u32, column: u32) -> Option<&str> {
+        let (_, start, text) = self.kept.iter().rev().find(|(kept, start, text)| {
+            kept == url && line >= *start && (line - start) as usize <= text.lines().count()
+        })?;
+        let row = text.lines().nth((line - start) as usize)?;
+        let column = match line == *start {
+            true => column,
+            false => column.checked_sub(1)?,
+        };
+        callee_at(row, column as usize)
+    }
+}
+
+/// The identifier at `column` (in characters, from 0) of `row`, when a
+/// call follows it.
+fn callee_at(row: &str, column: usize) -> Option<&str> {
+    let at = row.char_indices().nth(column)?.0;
+    let rest = &row[at..];
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let end = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+    let name = &rest[..end];
+    let next = rest[end..].trim_start().chars().next();
+    let starts = name.chars().next().is_some_and(|c| !c.is_ascii_digit());
+    (starts && matches!(next, Some('(' | ')' | '`'))).then_some(name)
+}
 
 /// The name an error's message says a script reached for and did not
 /// find: `x` of `ReferenceError: x is not defined`, the last part of
@@ -252,15 +323,81 @@ mod tests {
         counts.note_error(
             js::ErrorKind::Exception,
             "RangeError: Maximum call stack size exceeded",
+            None,
         );
-        counts.note_error(js::ErrorKind::Rejection, "ReferenceError: x is not defined");
-        counts.note_error(js::ErrorKind::Exception, "ReferenceError: x is not defined");
-        counts.note_error(js::ErrorKind::Budget, "");
-        counts.note_error(js::ErrorKind::Handled, "ReferenceError: y is not defined");
+        counts.note_error(
+            js::ErrorKind::Rejection,
+            "ReferenceError: x is not defined",
+            None,
+        );
+        counts.note_error(
+            js::ErrorKind::Exception,
+            "ReferenceError: x is not defined",
+            None,
+        );
+        counts.note_error(js::ErrorKind::Budget, "", None);
+        counts.note_error(
+            js::ErrorKind::Handled,
+            "ReferenceError: y is not defined",
+            None,
+        );
         assert_eq!(counts.stack_overflows, 1);
         assert_eq!(counts.budget_stops, 1);
         assert_eq!(counts.missing.get("x"), Some(&2));
         assert_eq!(counts.missing.get("y"), None, "handled by the page");
+        // A call of what is no function, by the name its source calls it
+        // by when kept, else unnamed.
+        counts.note_error(
+            js::ErrorKind::Exception,
+            "TypeError: not a function",
+            Some("observe"),
+        );
+        counts.note_error(js::ErrorKind::Exception, "TypeError: not a function", None);
+        assert_eq!(counts.missing.get("observe"), Some(&1));
+        assert_eq!(counts.missing.get(UNNAMED_CALL), Some(&1));
+    }
+
+    #[test]
+    fn a_call_of_what_is_no_function_is_named_by_its_source() {
+        // Where QuickJS places it: the called name's first character,
+        // from 1, in the script's own line; the line the document's.
+        let mut sources = KeptSources::default();
+        sources.keep(
+            "https://a.test/",
+            10,
+            "
+foo123(1, 2);
+(0, o.a.other)();
+p['x y']();
+zz.call(1); n.x `t`;",
+        );
+        sources.keep(
+            "https://a.test/s.js",
+            1,
+            "a.b.missing();
+  c.gone();",
+        );
+        let at = |url, line, column| sources.callee(url, line, column);
+        assert_eq!(at("https://a.test/", 11, 1), Some("foo123"));
+        assert_eq!(at("https://a.test/", 12, 9), Some("other"));
+        assert_eq!(
+            at("https://a.test/", 13, 1),
+            None,
+            "a member named by brackets"
+        );
+        assert_eq!(at("https://a.test/", 14, 4), Some("call"));
+        assert_eq!(at("https://a.test/", 14, 15), Some("x"), "a tag");
+        // Its first line counted from 0.
+        assert_eq!(at("https://a.test/s.js", 1, 4), Some("missing"));
+        assert_eq!(at("https://a.test/s.js", 2, 5), Some("gone"));
+        assert_eq!(at("https://a.test/s.js", 3, 1), None, "past its lines");
+        assert_eq!(at("https://b.test/", 11, 1), None, "no script kept");
+        // Kept to their bound, the oldest gone.
+        for n in 0..MAX_KEPT_SOURCES {
+            sources.keep(&format!("https://c.test/{n}"), 1, "f();");
+        }
+        assert_eq!(sources.callee("https://a.test/s.js", 1, 4), None);
+        assert_eq!(sources.callee("https://c.test/63", 1, 0), Some("f"));
     }
 
     #[test]
