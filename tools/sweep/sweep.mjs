@@ -4,8 +4,8 @@
 // (screenshots side by side and the top causes across sites) and
 // appends the numbers alone to docs/sweep-log.md.
 //
-//   node tools/sweep/sweep.mjs [--only id,id] [--no-chrome] [--no-log]
-//     [--silver <exe>] [--chrome <exe>] [--out <dir>]
+//   node tools/sweep/sweep.mjs [--sites <file>] [--only id,id] [--no-chrome]
+//     [--no-log] [--silver <exe>] [--chrome <exe>] [--out <dir>]
 //
 // Needs Node 22 or later (its WebSocket) and nothing else. Never signs
 // in, never types credentials; every permission is denied, consent
@@ -26,35 +26,20 @@ const SETTLE_MS = 2_000;
 const PARALLEL = 3;
 const SCROLL_SCREENS = 3;
 
-// The beta list (the lead's, 2026-11-13): the login sites are their
-// signed-out landings.
-export const SITES = [
-  ["wikipedia", "https://en.wikipedia.org/wiki/Web_browser"],
-  ["mdn", "https://developer.mozilla.org/en-US/docs/Web/CSS/display"],
-  ["hn", "https://news.ycombinator.com/"],
-  ["bbc", "https://www.bbc.com/news"],
-  ["verge", "https://www.theverge.com/"],
-  ["stackoverflow", "https://stackoverflow.com/questions/tagged/rust"],
-  ["github", "https://github.com/rust-lang/rust"],
-  ["docsrs", "https://docs.rs/tokio/latest/tokio/"],
-  ["cratesio", "https://crates.io/crates/serde"],
-  ["mslearn", "https://learn.microsoft.com/en-us/windows/win32/"],
-  ["google", "https://www.google.com/search?q=rust+programming"],
-  ["ddg", "https://duckduckgo.com/?q=rust+programming"],
-  ["bing", "https://www.bing.com/search?q=rust+programming"],
-  ["youtube", "https://www.youtube.com/"],
-  ["twitch", "https://www.twitch.tv/directory"],
-  ["vimeo", "https://vimeo.com/"],
-  ["maps", "https://www.google.com/maps"],
-  ["reddit", "https://www.reddit.com/r/rust/"],
-  ["x", "https://x.com/"],
-  ["gmail", "https://mail.google.com/"],
-  ["gdocs", "https://docs.google.com/"],
-  ["claude", "https://claude.ai/"],
-  ["amazon", "https://www.amazon.com/s?k=usb+c+cable"],
-  ["ebay", "https://www.ebay.com/sch/i.html?_nkw=usb+c+cable"],
-  ["weather", "https://weather.com/"],
-];
+// The sites: the lead's list, kept beside the repository (an id and a
+// URL a line, tab-separated, `#` for a comment), or `--sites <file>`.
+const DEFAULT_LIST = path.join(ROOT, "..", "silver-work", "tooling", "sweep-list.tsv");
+
+export function readList(file) {
+  return fs
+    .readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => line.split("\t"))
+    .filter((parts) => parts.length >= 2)
+    .map(([id, url]) => [id, url]);
+}
 
 // ---- Arguments ----------------------------------------------------------
 
@@ -68,6 +53,7 @@ function args(argv) {
     else if (a === "--silver") out.silver = argv[++i];
     else if (a === "--chrome") out.chromeExe = argv[++i];
     else if (a === "--out") out.out = argv[++i];
+    else if (a === "--sites") out.sites = argv[++i];
     else throw new Error(`unknown argument ${a}`);
   }
   return out;
@@ -446,7 +432,9 @@ export async function run(options) {
   const exe = options.chrome ? chromeExe(options.chromeExe) : null;
   if (options.chrome && !exe) throw new Error("no Chrome found");
   const chrome = exe ? await startChrome(exe) : null;
-  const sites = SITES.filter(([id]) => !options.only || options.only.includes(id));
+  const list = options.sites || DEFAULT_LIST;
+  if (!fs.existsSync(list)) throw new Error(`no site list: ${list} (or --sites <file>)`);
+  const sites = readList(list).filter(([id]) => !options.only || options.only.includes(id));
   const began = Date.now();
   const rows = await pool(sites, PARALLEL, async ([id, url]) => {
     const dir = path.join(out, id);
