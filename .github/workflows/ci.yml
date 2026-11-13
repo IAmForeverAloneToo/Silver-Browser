@@ -140,6 +140,22 @@ jobs:
       - if: ${{ !cancelled() }}
         run: cargo test -p silver-browser --features single-process --locked --no-fail-fast
 
+  windowed:
+    # The browser left alone in a real window uses next to no CPU
+    # (crates/shell/tests/idle_cpu.rs), which the maintainer's gate runs.
+    # Tried here on the Windows runner, which may show no window: until
+    # it has, the push does not depend on it.
+    name: windowed (windows, trial)
+    runs-on: windows-latest
+    continue-on-error: true
+    env:
+      SILVER_WINDOWED_TESTS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test -p silver-browser --test idle_cpu --locked -- --nocapture
+
   benches:
     # T4.2 (M35.1): every benchmark is built and run once, in its quick
     # mode, so that one that no longer builds or panics fails the push.
