@@ -64,6 +64,9 @@ impl ScriptingHost for Recorder {
             Call::Now => Ok(Answer::Number(self.now)),
             Call::TimeOrigin => Ok(Answer::Number(1_700_000_000_000.5)),
             // A navigation whose response has begun, no later step come.
+            Call::RandomBytes(count) => Ok(Answer::Bytes(
+                (0..count).map(|i| (i * 37 + 11) as u8).collect(),
+            )),
             Call::NavigationTiming => Ok(Answer::Numbers(vec![
                 0.0, 200.0, 1.5, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
             ])),

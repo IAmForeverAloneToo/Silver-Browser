@@ -50,3 +50,9 @@ pub use mime::MimeType;
 pub use referrer::{Referrer, ReferrerPolicy};
 pub use url::Partition;
 pub use url::{Host, Origin, Site, Url, start_opaque_origins_at};
+
+/// Fills `bytes` from the cryptographically secure generator TLS uses
+/// (aws-lc-rs's): `crypto.getRandomValues()`'s. Whether it could.
+pub fn fill_random(bytes: &mut [u8]) -> bool {
+    aws_lc_rs::rand::fill(bytes).is_ok()
+}

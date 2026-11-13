@@ -1089,6 +1089,9 @@ const NATIVES: &[(&str, Decode)] = &[
     ("now", |_| Ok(Call::Now)),
     ("timeOrigin", |_| Ok(Call::TimeOrigin)),
     ("navigationTiming", |_| Ok(Call::NavigationTiming)),
+    ("randomBytes", |a| {
+        Ok(Call::RandomBytes(a.integer(0).clamp(0.0, 65_536.0) as u32))
+    }),
     ("ancestors", |a| Ok(Call::Ancestors(a.handle(0)?))),
     ("activator", |a| Ok(Call::Activator(a.handle(0)?))),
     ("activate", |a| Ok(Call::Activate(a.handle(0)?))),

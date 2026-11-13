@@ -396,6 +396,7 @@ fn a_workers_scope_has_its_location_imports_fetches_and_canvases() {
             "navigator Mozilla/5.0 string en-US true [object WorkerNavigator]",
             "performance number true true",
             "timeline w false false function undefined undefined [\"timeOrigin\"]",
+            "crypto true 36 function",
             "imported a,b",
             "missing NetworkError 19 Failed to execute 'importScripts' on 'WorkerGlobalScope': \
              The script at '/missing.js' failed to load.",
@@ -432,6 +433,8 @@ out.push(['timeline', performance.getEntries().map(function (e) { return e.name;
   'timing' in performance, 'navigation' in performance, typeof PerformanceObserver, \
   typeof PerformanceNavigationTiming, typeof PerformanceTiming, \
   JSON.stringify(Object.keys(performance.toJSON()))].join(' '));\
+out.push(['crypto', crypto.getRandomValues(new Uint32Array(4)).some(function (x) { return x; }), \
+  crypto.randomUUID().length, typeof Crypto].join(' '));\
 importScripts('a.js', 'b.js');\
 out.push('imported ' + self.order.join(','));\
 try { importScripts('missing.js'); } catch (e) { \

@@ -288,7 +288,7 @@
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, PerformanceEntry: true, PerformanceMark: true, PerformanceMeasure: true,
     PerformanceObserver: true, PerformanceObserverEntryList: true,
-    PerformanceResourceTiming: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
+    PerformanceResourceTiming: true, Crypto: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
     Response: true, TextDecoder: true, TextEncoder: true, TextMetrics: true, URL: true,
     URLSearchParams: true, Worker: "notservice", FileReader: true,
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
@@ -21268,6 +21268,10 @@
       return performance;
     }
 
+    get crypto() {
+      return crypto;
+    }
+
     // HTML's simple dialogs (section 8.8.1): the host asks the user, the
     // script waiting (gap batch A, D43); null is Cancel, or no dialog.
     alert() {
@@ -21779,6 +21783,10 @@
 
     get performance() {
       return performance;
+    }
+
+    get crypto() {
+      return crypto;
     }
 
     get location() {
@@ -32471,6 +32479,72 @@
   }
   expose(Performance, "Performance");
   const performance = new Performance(KEY);
+
+  // ---- Crypto (Web Cryptography section 10) -------------------------------
+
+  // The most bytes getRandomValues() fills at once.
+  const MAX_RANDOM_BYTES = 65536;
+  const INTEGER_ARRAYS = [
+    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array",
+    "Uint32Array", "BigInt64Array", "BigUint64Array",
+  ];
+
+  // `count` random bytes from the host's cryptographic generator.
+  function randomBytes(count) {
+    return new $Uint8Array(native.randomBytes(count));
+  }
+
+  class Crypto {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("Crypto");
+      }
+    }
+
+    getRandomValues(array) {
+      need(arguments.length, 1, "getRandomValues", "Crypto");
+      const where = prefix("getRandomValues", "Crypto");
+      if (!IsView(array)) {
+        throw new $TypeError(where + "parameter 1 is not of type 'ArrayBufferView'.");
+      }
+      const tag = TypedArrayTag(array);
+      if (!ArrayIncludes(INTEGER_ARRAYS, tag)) {
+        const kind = tag === undefined ? "DataView" : StringSlice(tag, 0, tag.length - 5);
+        throw new $DOMException(where + "The provided ArrayBufferView is of type '" + kind +
+          "', which is not an integer array type.", "TypeMismatchError");
+      }
+      const length = TypedArrayLength(array);
+      if (length > MAX_RANDOM_BYTES) {
+        throw new QuotaExceededError(where + "The ArrayBufferView's byte length (" + length +
+          ") exceeds the number of bytes of entropy available via this API (" +
+          MAX_RANDOM_BYTES + ").", { quota: MAX_RANDOM_BYTES, requested: length });
+      }
+      if (length > 0) {
+        const bytes = new $Uint8Array(TypedArrayBuffer(array), TypedArrayOffset(array), length);
+        TypedArraySet(bytes, randomBytes(length));
+      }
+      return array;
+    }
+
+    // A version 4 UUID (RFC 9562 section 5.4), its 122 bits random.
+    randomUUID() {
+      const bytes = randomBytes(16);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      let text = "";
+      for (let i = 0; i < 16; i++) {
+        if (i === 4 || i === 6 || i === 8 || i === 10) text += "-";
+        text += StringSlice(NumberToString(bytes[i] + 0x100, 16), 1);
+      }
+      return text;
+    }
+  }
+  // randomUUID() is a secure context's alone.
+  if (!SECURE) {
+    ReflectDeleteProperty(Crypto.prototype, "randomUUID");
+  }
+  expose(Crypto, "Crypto");
+  const crypto = new Crypto(KEY);
 
   // ---- Animation frames (HTML section 8.10, M26) ---------------------------
 

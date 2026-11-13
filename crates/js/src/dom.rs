@@ -973,6 +973,9 @@ pub enum Call {
     /// end, the document complete, and `load`'s start and end, each -1
     /// until it has come.
     NavigationTiming,
+    /// `crypto`'s random values: this many bytes, at most 65,536, from
+    /// the host's cryptographically secure generator.
+    RandomBytes(u32),
     /// The node's ancestors, its parent first (M26): an event's path.
     Ancestors(Handle),
     /// The nearest inclusive ancestor of the node with an activation

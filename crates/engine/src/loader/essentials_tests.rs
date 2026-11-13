@@ -1014,3 +1014,61 @@ fn a_reads_load_and_loadend_have_a_microtask_checkpoint_between_and_a_style_left
     );
     assert_eq!(lines, ["records 2", "load", "microtask", "loadend"]);
 }
+
+#[test]
+fn crypto_gives_random_values_and_uuids() {
+    // Web Cryptography's Crypto: integer arrays filled in place from the
+    // host's secure generator, at most 65,536 bytes; a version 4 UUID.
+    let lines = logged(
+        "function tell(f) { try { console.log(f()); } catch (e) {\
+           console.log(e.name + ': ' + e.message + (e.quota ? ' ' + e.quota + ' ' + e.requested : ''));\
+         } }\
+         var a = new Uint8Array(64);\
+         tell(function () { return crypto.getRandomValues(a) === a; });\
+         tell(function () { return a.some(function (x) { return x !== 0; }); });\
+         var b = new Uint8Array(64); crypto.getRandomValues(b);\
+         tell(function () { return a.join() !== b.join(); });\
+         var view = new Uint16Array(new ArrayBuffer(16), 4, 2);\
+         crypto.getRandomValues(view);\
+         tell(function () { return new Uint8Array(view.buffer, 0, 4).join() + ' ' +\
+           new Uint8Array(view.buffer, 8, 8).join(); });\
+         tell(function () { return typeof crypto.getRandomValues(new BigInt64Array(1))[0]; });\
+         tell(function () { return crypto.getRandomValues(new Uint8Array(65536)).length; });\
+         tell(function () { return crypto.getRandomValues(new Uint8Array(65537)); });\
+         tell(function () { return crypto.getRandomValues(new Float32Array(1)); });\
+         tell(function () { return crypto.getRandomValues(new DataView(new ArrayBuffer(4))); });\
+         tell(function () { return crypto.getRandomValues(5); });\
+         tell(function () { return crypto.getRandomValues(); });\
+         tell(function () { return new Crypto(); });\
+         var u = crypto.randomUUID();\
+         tell(function () { return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u)\
+           && u !== crypto.randomUUID(); });\
+         tell(function () { return Object.prototype.toString.call(crypto) + ' ' +\
+           ('crypto' in window) + ' ' + (self.crypto === crypto); });",
+    );
+    assert_eq!(
+        lines,
+        [
+            "true",
+            "true",
+            "true",
+            "0,0,0,0 0,0,0,0,0,0,0,0",
+            "bigint",
+            "65536",
+            "QuotaExceededError: Failed to execute 'getRandomValues' on 'Crypto': The \
+             ArrayBufferView's byte length (65537) exceeds the number of bytes of entropy \
+             available via this API (65536). 65536 65537",
+            "TypeMismatchError: Failed to execute 'getRandomValues' on 'Crypto': The provided \
+             ArrayBufferView is of type 'Float32', which is not an integer array type.",
+            "TypeMismatchError: Failed to execute 'getRandomValues' on 'Crypto': The provided \
+             ArrayBufferView is of type 'DataView', which is not an integer array type.",
+            "TypeError: Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of \
+             type 'ArrayBufferView'.",
+            "TypeError: Failed to execute 'getRandomValues' on 'Crypto': 1 argument required, \
+             but only 0 present.",
+            "TypeError: Failed to construct 'Crypto': Illegal constructor",
+            "true",
+            "[object Crypto] true true",
+        ]
+    );
+}

@@ -1280,6 +1280,7 @@ impl ScriptingHost for WorkerHost {
                 Ok(Answer::Number(tenths as f64 / 10.0))
             }
             Call::TimeOrigin => Ok(Answer::Number(self.epoch_ms)),
+            Call::RandomBytes(count) => super::host::random_bytes(count),
             Call::Origin => Ok(Answer::String(self.origin.serialization())),
             Call::SecureContext => Ok(Answer::Bool(self.secure)),
             // The worker's URL is the base its URLs are parsed against

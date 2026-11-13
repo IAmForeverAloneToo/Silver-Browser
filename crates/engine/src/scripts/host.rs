@@ -3095,6 +3095,7 @@ impl DocumentHost {
                     .map(|origin| origin.epoch_ms)
                     .unwrap_or_default(),
             )),
+            Call::RandomBytes(count) => random_bytes(count),
             Call::NavigationTiming => Ok(Answer::Numbers(
                 self.navigation_timing
                     .answer(self.origin.map(|origin| origin.at).unwrap_or_default()),
@@ -9053,5 +9054,19 @@ fn text_before(document: &Document, styles: &Styles, node: NodeId) -> Option<Str
             last = document.children(n).last();
         }
         at = prev;
+    }
+}
+
+/// `crypto`'s random bytes, `count` of them (at most 65,536, as the
+/// bindings ask): an `OperationError` should the generator fail.
+pub(crate) fn random_bytes(count: u32) -> Result<Answer, DomError> {
+    let mut bytes = vec![0; count.min(65_536) as usize];
+    if net::fill_random(&mut bytes) {
+        Ok(Answer::Bytes(bytes))
+    } else {
+        Err(DomError::new(
+            "OperationError",
+            "The random generator failed.",
+        ))
     }
 }
