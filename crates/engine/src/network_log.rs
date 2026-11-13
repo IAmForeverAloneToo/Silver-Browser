@@ -260,6 +260,10 @@ impl NetworkLog {
             ("errorStatusByDestination", map(statuses)),
             ("pending", Json::from(pending.len() as f64)),
             ("oldestPending", oldest),
+            // The process's waits that ran out their time beside data that
+            // had come: none is expected (a path not woken by what it
+            // reads).
+            ("lateWakes", Json::from(net::transport::late_wakes() as f64)),
         ])
     }
 
@@ -558,11 +562,14 @@ mod tests {
         log.observe(3, request(net::Destination::Image));
         log.observe(3, Observed::End(Err(&net::NetworkError::Aborted)));
         let summary = log.sweep_summary().write();
-        assert_eq!(
-            summary,
-            "{\"requests\":3,\"failedByDestination\":{\"image\":1,\"script\":1},\
-             \"failedByKind\":{\"cors\":1,\"mixed-content\":1},\"errorStatusByDestination\":{},\
-             \"pending\":0,\"oldestPending\":null}"
+        // `lateWakes` is the process's, whatever else ran in it.
+        assert!(
+            summary.starts_with(
+                "{\"requests\":3,\"failedByDestination\":{\"image\":1,\"script\":1},\
+                 \"failedByKind\":{\"cors\":1,\"mixed-content\":1},\"errorStatusByDestination\":{},\
+                 \"pending\":0,\"oldestPending\":null,\"lateWakes\":"
+            ),
+            "{summary}"
         );
         // One on its way: counted, with its URL and its age.
         log.observe(4, request(net::Destination::Script));

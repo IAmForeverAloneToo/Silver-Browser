@@ -77,7 +77,9 @@ pub(crate) fn asked(args: &[String]) -> Option<Result<Asked, String>> {
 #[derive(Debug, Clone, PartialEq)]
 enum Outcome {
     Ok,
-    Crash(Option<String>),
+    /// The renderer stopped: why, as the tab said it, and its dump's
+    /// path when it left one.
+    Crash(Option<String>, Option<String>),
     Hang,
     LoadError(String),
 }
@@ -153,7 +155,8 @@ fn capture(asked: &Asked) -> Result<(), String> {
         match tab.load_state() {
             LoadState::Loaded if load.is_none() => load = Some(began.elapsed()),
             LoadState::Failed(LoadError::Lost) => {
-                outcome = Outcome::Crash(stopped(&mut tab, &crashes));
+                let why = tab.take_notice();
+                outcome = Outcome::Crash(why, stopped(&crashes));
                 break;
             }
             LoadState::Failed(error) => {
@@ -241,7 +244,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
         .map_or(Json::Null, |log| log.sweep_summary());
     let (name, error, dump) = match &outcome {
         Outcome::Ok => ("ok", None, None),
-        Outcome::Crash(dump) => ("renderer crash", None, dump.clone()),
+        Outcome::Crash(why, dump) => ("renderer crash", why.clone(), dump.clone()),
         Outcome::Hang => ("hang", None, None),
         Outcome::LoadError(why) => ("load error", Some(why.clone()), None),
     };
@@ -365,8 +368,7 @@ fn take_console(tab: &mut RemoteTab, into: &mut Vec<Json>) {
 }
 
 /// The dump of the renderer that stopped, if one was written.
-fn stopped(tab: &mut RemoteTab, crashes: &Path) -> Option<String> {
-    let _ = tab.take_notice();
+fn stopped(crashes: &Path) -> Option<String> {
     std::fs::read_dir(crashes)
         .ok()?
         .filter_map(Result::ok)

@@ -150,6 +150,13 @@ fn a_renderer_that_crashes_is_said_so() {
         Some("renderer crash"),
         "{record:?}"
     );
+    // And why, as the tab said it: what a crash with no dump is known by.
+    assert!(
+        field(&record, "error")
+            .as_str()
+            .is_some_and(|why| why.contains("renderer stopped")),
+        "{record:?}"
+    );
     assert!(!out.join("silver-top.png").exists());
     let _ = std::fs::remove_dir_all(&out);
 }

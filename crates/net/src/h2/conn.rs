@@ -488,10 +488,16 @@ impl Worker {
             why: "the server closed the connection".to_owned(),
             tell: false,
         };
+        let mut late = false;
         loop {
             match self.socket.conn.read_tls(&mut self.socket.sock) {
                 Ok(0) => return Err(closed()),
                 Ok(_) => {
+                    // Data the last wait ran out its time beside: once.
+                    if self.waiter.timed_out() && !late {
+                        late = true;
+                        crate::transport::stream::late_wake();
+                    }
                     self.socket
                         .conn
                         .process_new_packets()

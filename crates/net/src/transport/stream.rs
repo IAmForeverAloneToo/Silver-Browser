@@ -11,6 +11,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use mio::net::TcpStream;
@@ -47,6 +48,23 @@ pub(crate) struct Waiter {
     waker: Arc<Waker>,
     /// Whether the socket's room to write wakes the wait too.
     writable: bool,
+    /// Whether the last wait ran out its time, nothing woken.
+    timed_out: bool,
+}
+
+/// How many waits ran out their time though what came after found data
+/// at once: data that came and woke nothing, a read's latency raised to
+/// the wait's time. None is expected; the site sweep says the count.
+static LATE_WAKES: AtomicU64 = AtomicU64::new(0);
+
+/// [`LATE_WAKES`]' count.
+pub fn late_wakes() -> u64 {
+    LATE_WAKES.load(Ordering::Relaxed)
+}
+
+/// Counts a late wake: a wait that ran out its time, then data at once.
+pub(crate) fn late_wake() {
+    LATE_WAKES.fetch_add(1, Ordering::Relaxed);
 }
 
 impl Waiter {
@@ -60,6 +78,7 @@ impl Waiter {
             events: Events::with_capacity(4),
             waker,
             writable: false,
+            timed_out: false,
         })
     }
 
@@ -90,10 +109,17 @@ impl Waiter {
             self.poll.registry().reregister(tcp, SOCKET, interest)?;
             self.writable = write;
         }
-        match self.poll.poll(&mut self.events, Some(timeout)) {
+        let polled = match self.poll.poll(&mut self.events, Some(timeout)) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(()),
             other => other,
-        }
+        };
+        self.timed_out = polled.is_ok() && self.events.is_empty();
+        polled
+    }
+
+    /// Whether the last wait ran out its time, nothing woken.
+    pub(crate) fn timed_out(&self) -> bool {
+        self.timed_out
     }
 }
 
@@ -181,6 +207,7 @@ impl Stream {
         mut op: impl FnMut(&mut Socket) -> io::Result<T>,
     ) -> io::Result<T> {
         let deadline = Instant::now() + self.timeout;
+        let mut waited_out = false;
         loop {
             if self.aborted() {
                 return Err(io::Error::other(Aborted));
@@ -188,6 +215,12 @@ impl Stream {
             match op(&mut self.socket) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(done) => {
+                    if waited_out {
+                        late_wake();
+                    }
+                    return Ok(done);
+                }
                 other => return other,
             }
             let now = Instant::now();
@@ -197,6 +230,7 @@ impl Stream {
             let write = write || self.socket.tls_wants_write();
             self.waiter
                 .wait(self.socket.tcp_mut(), deadline - now, write)?;
+            waited_out = self.waiter.timed_out();
         }
     }
 

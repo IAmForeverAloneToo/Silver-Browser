@@ -1176,6 +1176,10 @@ impl RemoteTab {
             return;
         }
         let said = stopped_why(&why, code);
+        // Said each time, whatever it showed: a renderer the browser ended
+        // (a message it may not send) or one that ended with no dump (a
+        // fast-fail's 0xc0000409, a stack's overflow) is known by this.
+        eprintln!("renderer {number} stopped: {said}");
         let dump = dump.map(|path| path.display().to_string());
         for (key, url, loading) in shown_here {
             let parent = super::frames::lock(&self.registry)

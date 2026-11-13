@@ -7,6 +7,8 @@
 mod connect;
 mod pool;
 pub(crate) mod stream;
+
+pub use stream::late_wakes;
 mod tls;
 
 use std::collections::HashMap;

@@ -2002,6 +2002,19 @@ once what the cache holds fresh is not preloaded. The scanner's
 tokenizing costs nothing measurable; the rest were paint, raster and
 style stages in code M38 does not touch, within 10% over six rounds.
 
+**A connection's wait (e1a7c7ba9).** Each connection's poll watched
+its socket for room to write as well as for data, and on Windows an
+idle socket that a read found empty woke it at once: every open
+HTTP/2 connection held a core, the browser's process 100% on a page
+left alone and up to 800% while one loaded. It watches for writing
+now only while something waits to be written. The site sweep's three
+sites a single sweep showed slower after it, measured by turns against
+the commit before (5 loads each, release, the site alone): median
+loads stackoverflow 0.92 to 0.78 s, ebay 1.74 to 1.68 s, youtube 7.60
+to 5.70 s, faster or within their spread. No wait ran out its time
+beside data that had come (`lateWakes`, 0 in each): no path waits for
+a response without being woken by it.
+
 ### Service workers (M39)
 
 The Windows machine, release. The `service_workers` bench: a page of
