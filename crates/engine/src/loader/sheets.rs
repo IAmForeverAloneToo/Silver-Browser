@@ -6,7 +6,7 @@
 //! evaluate (docs/design/media.md); only one whose media holds when the
 //! parser meets it holds the page back.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use dom::{Change, Document, NodeId};
@@ -21,13 +21,38 @@ use style::Media;
 use super::{FetchId, LoadError, Network, PageId, Target, rules};
 use crate::sandbox::Sandbox;
 
+/// A parsed `<style>`'s key: the document's base URL and the text.
+type InlineKey = (Option<String>, String);
+
 /// How deep imports go: a sheet's imports are one deeper than it, and
 /// one deeper than this is not fetched.
 pub(crate) const MAX_IMPORT_DEPTH: usize = 16;
 
+/// The most `<style>` texts a page keeps parsed ([`Page`]), and the most
+/// bytes of them all: past either, what it kept is let go of.
+const MAX_PARSED_INLINE: usize = 128;
+const MAX_PARSED_INLINE_BYTES: usize = 8 << 20;
+
 /// One document's stylesheets.
 pub(crate) struct Page {
     context: Context,
+    /// The `<style>` sheets no element owns (a shadow tree's) as parsed,
+    /// by the document's base URL and their text. The text is all the
+    /// parser reads: it takes no quirks mode (the cascade applies that)
+    /// and keeps a URL as written, resolved against the base when used,
+    /// as an owned `<style>`'s is; the base is in the key so that a sheet
+    /// made with it is never one of another base's. With the bytes of
+    /// the texts and bases kept, [`MAX_PARSED_INLINE`] and [`MAX_PARSED_INLINE_BYTES`]
+    /// at most: a flush for a script reads them at every first ask of a
+    /// run, and parsed them each time (the site sweep's reddit, 100 ms or
+    /// more a flush).
+    parsed_inline: RefCell<(HashMap<InlineKey, css::Stylesheet>, usize)>,
+    /// How many times a script's CSSOM changed the sheets (rules edited
+    /// or replaced, sheets adopted, disabled or given media, properties
+    /// registered): none of it is in the document's journal, so a flush
+    /// built on the frame's styles checks the frame was made at this
+    /// count.
+    sheets_generation: u64,
     /// The encoding the document is in when the engine cannot decode
     /// it yet, and decoded it as UTF-8 instead.
     undecodable: Option<Encoding>,
@@ -311,6 +336,8 @@ impl Page {
     pub(crate) fn given(id: PageId) -> Page {
         let origin = Origin::new_opaque();
         Page {
+            sheets_generation: 0,
+            parsed_inline: RefCell::default(),
             context: Context {
                 id,
                 url: None,
@@ -360,6 +387,8 @@ impl Page {
         let origin = url.origin();
         let csp = Csp::none(origin.clone()).with_sink();
         Page {
+            sheets_generation: 0,
+            parsed_inline: RefCell::default(),
             context: Context {
                 id,
                 url: Some(url),
@@ -1389,7 +1418,7 @@ impl Page {
         document: &Document,
         media: &Media,
     ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
-        self.scoped_sheets_now_of(document, media, document.root())
+        self.scoped_sheets_now_of(document, media, document.root(), &OnceCell::new())
     }
 
     /// [`Page::sheets_now`] of each shadow tree in `document` (D69), by
@@ -1402,15 +1431,53 @@ impl Page {
         if !document.has_shadow_roots() {
             return Vec::new();
         }
+        // The base URL found once for every tree, not walked for each.
+        let base = OnceCell::new();
         document
             .shadow_including_subtree(document.root())
             .into_iter()
             .filter(|&node| document.is_shadow_root(node))
             .map(|root| {
-                let (sheets, roots) = self.scoped_sheets_now_of(document, media, root);
+                let (sheets, roots) = self.scoped_sheets_now_of(document, media, root, &base);
                 (root, sheets, roots)
             })
             .collect()
+    }
+
+    /// [`Page::sheets_generation`]'s count.
+    pub(crate) fn sheets_generation(&self) -> u64 {
+        self.sheets_generation
+    }
+
+    /// `text` parsed as a sheet, from what was parsed of the same text
+    /// at the same `base`, the document's base URL, before when it was;
+    /// `None` for one that does not parse.
+    fn parse_inline(&self, base: Option<&Url>, text: String) -> Option<css::Stylesheet> {
+        let key = (base.map(|base| base.as_str().to_owned()), text);
+        if let Some(sheet) = self.parsed_inline.borrow().0.get(&key) {
+            return Some(sheet.clone());
+        }
+        let sheet = css::parse_stylesheet(&key.1).ok()?;
+        let size = key.1.len() + key.0.as_ref().map_or(0, String::len);
+        let mut parsed = self.parsed_inline.borrow_mut();
+        let (kept, bytes) = &mut *parsed;
+        if kept.len() >= MAX_PARSED_INLINE || *bytes + size > MAX_PARSED_INLINE_BYTES {
+            kept.clear();
+            *bytes = 0;
+        }
+        if size <= MAX_PARSED_INLINE_BYTES {
+            *bytes += size;
+            kept.insert(key, sheet.clone());
+        }
+        Some(sheet)
+    }
+
+    /// How many `<style>` texts are kept parsed, and their bytes: for the
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn parsed_inline(&self) -> (usize, usize) {
+        let parsed = self.parsed_inline.borrow();
+        (parsed.0.len(), parsed.1)
     }
 
     /// [`Page::scoped_sheets_now`] of the tree at `top`, the document or
@@ -1420,13 +1487,20 @@ impl Page {
         document: &Document,
         media: &Media,
         top: NodeId,
+        base: &OnceCell<Option<Url>>,
     ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
         let preferred = self.preferred();
         let csp = self.policies();
         let mut sheets = Vec::new();
         let mut roots = Vec::new();
+        // The owners by element, found once, not searched for each node.
+        let owners: HashMap<NodeId, &Owner> = self
+            .owners
+            .iter()
+            .map(|owner| (owner.node, owner))
+            .collect();
         for node in document.subtree(top) {
-            match self.owners.iter().find(|owner| owner.node == node) {
+            match owners.get(&node).copied() {
                 Some(owner) => {
                     if let Slot::Ready(sheet) = &owner.sheet
                         && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
@@ -1448,7 +1522,10 @@ impl Page {
                     let nonce = self.nonce(document, node);
                     let violations = csp.inline_violations(Inline::Style, &nonce, &text);
                     if net::csp::enforced(violations).is_ok()
-                        && let Ok(sheet) = css::parse_stylesheet(&text)
+                        && let Some(sheet) = self.parse_inline(
+                            base.get_or_init(|| self.base_url(document)).as_ref(),
+                            text,
+                        )
                     {
                         sheets.push(sheet);
                         roots.push(document.parent_element(node));
@@ -1467,6 +1544,7 @@ impl Page {
     /// Sets the disabled flag of the sheet `serial` (CSSOM's `disabled`):
     /// the cascade leaves it out while it is set.
     pub(crate) fn set_sheet_disabled(&mut self, serial: u64, disabled: bool) {
+        self.sheets_generation += 1;
         let changed = if disabled {
             self.disabled.len() < MAX_CONSTRUCTED_SHEETS && self.disabled.insert(serial)
         } else {
@@ -1478,6 +1556,7 @@ impl Page {
     /// Sets the `media` of the constructed sheet `serial`: its rules apply
     /// where the list holds, none for every medium.
     pub(crate) fn set_constructed_media(&mut self, serial: u64, media: &str) {
+        self.sheets_generation += 1;
         let Some(sheet) = self.constructed.iter_mut().find(|c| c.serial == serial) else {
             return;
         };
@@ -1539,6 +1618,7 @@ impl Page {
         imports: &[usize],
         edit: impl FnOnce(&mut css::Stylesheet) -> Option<(R, Vec<Option<usize>>)>,
     ) -> Option<R> {
+        self.sheets_generation += 1;
         let owner = match self.owners.iter_mut().find(|o| o.node == owner) {
             Some(found) => found,
             None => self.detached.iter_mut().rev().find(|o| o.node == owner)?,
@@ -1584,6 +1664,7 @@ impl Page {
         &mut self,
         registration: style::PropertyRegistration,
     ) -> Result<(), js::DomError> {
+        self.sheets_generation += 1;
         if self.registered.iter().any(|r| r.name == registration.name) {
             return Err(js::DomError::new(
                 "InvalidModificationError",
@@ -1626,6 +1707,7 @@ impl Page {
     /// rules those of `text`, its `@import` rules left out; whether it is
     /// there.
     pub(crate) fn replace_sheet(&mut self, serial: u64, text: &str) -> bool {
+        self.sheets_generation += 1;
         let Some(sheet) = self.constructed.iter_mut().find(|c| c.serial == serial) else {
             return false;
         };
@@ -1658,6 +1740,7 @@ impl Page {
         serial: u64,
         edit: impl FnOnce(&mut css::Stylesheet) -> Option<(R, Vec<Option<usize>>)>,
     ) -> Option<R> {
+        self.sheets_generation += 1;
         let sheet = self.constructed.iter_mut().find(|c| c.serial == serial)?;
         let (result, _) = edit(&mut sheet.rules)?;
         self.cssom_edited |= self.adopted.contains(&serial);
@@ -1667,6 +1750,7 @@ impl Page {
     /// `document.adoptedStyleSheets` set to the constructed sheets
     /// `serials`, in order; those not constructed left out.
     pub(crate) fn adopt_sheets(&mut self, serials: Vec<u64>) {
+        self.sheets_generation += 1;
         let serials: Vec<u64> = serials
             .into_iter()
             .filter(|serial| self.constructed.iter().any(|c| c.serial == *serial))
@@ -1680,6 +1764,7 @@ impl Page {
     /// A shadow root's `adoptedStyleSheets` set to the sheets `serials`
     /// numbers (D69).
     pub(crate) fn adopt_shadow_sheets(&mut self, root: NodeId, serials: Vec<u64>) {
+        self.sheets_generation += 1;
         let serials: Vec<u64> = serials
             .into_iter()
             .filter(|serial| self.constructed.iter().any(|c| c.serial == *serial))
@@ -2164,5 +2249,39 @@ pub(crate) fn may_touch_sheets(document: &Document, change: &Change) -> bool {
         | Change::Moved { .. }
         | Change::FlatTree { .. } => false,
         Change::Everything => true,
+    }
+}
+
+#[cfg(test)]
+mod parsed_inline_tests {
+    use super::*;
+
+    #[test]
+    fn style_texts_are_kept_parsed_by_their_text_and_bounded_by_their_bytes() {
+        // The text is the parser's whole input: one text, one entry, the
+        // same sheet; another text, another entry.
+        let page = Page::given(0);
+        let a = page.parse_inline(None, "p { color: red }".to_owned());
+        let again = page.parse_inline(None, "p { color: red }".to_owned());
+        assert!(a.is_some() && a == again);
+        assert_eq!(page.parsed_inline().0, 1);
+        page.parse_inline(None, "p { color: blue }".to_owned());
+        assert_eq!(page.parsed_inline().0, 2);
+        // The same text at another base is another entry, at the same
+        // base the same one.
+        let one = Url::parse("http://a.test/one/").unwrap();
+        let two = Url::parse("http://a.test/two/").unwrap();
+        page.parse_inline(Some(&one), "p { color: red }".to_owned());
+        assert_eq!(page.parsed_inline().0, 3);
+        page.parse_inline(Some(&two), "p { color: red }".to_owned());
+        page.parse_inline(Some(&two), "p { color: red }".to_owned());
+        assert_eq!(page.parsed_inline().0, 4);
+        // Twelve sheets of a MiB each, kept 8 MiB at most.
+        let rule = "p { color: red }\n".repeat(61_700);
+        for n in 0..12 {
+            page.parse_inline(None, format!("/* {n} */{rule}"));
+            assert!(page.parsed_inline().1 <= MAX_PARSED_INLINE_BYTES, "{n}");
+        }
+        assert!(page.parsed_inline().0 > 0);
     }
 }

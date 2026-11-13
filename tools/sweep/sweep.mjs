@@ -389,6 +389,12 @@ function captureSilver(exe, url, dir) {
     const timer = setTimeout(() => child.kill(), CAP_MS + 30_000);
     child.on("exit", (code) => {
       clearTimeout(timer);
+      // What the browser and its renderers said, kept beside the record:
+      // a build with the style-crosscheck feature says its first
+      // mismatch there.
+      try {
+        fs.writeFileSync(path.join(dir, "silver-stderr.txt"), stderr);
+      } catch {}
       const file = path.join(dir, "silver.json");
       let record;
       try {
@@ -509,6 +515,7 @@ export function topCauses(rows) {
     hit("G90: same-origin frame refused", "counter", row.id, counts.frameRefusedSameOrigin || 0);
     hit("G90: same-origin contentDocument null", "counter", row.id, counts.frameDocumentSameOrigin || 0);
     hit("policy: CSP refusal", "counter", row.id, counts.policyRefusals || 0);
+    hit("style fast path: mismatch", "counter", row.id, counts.styleFastPathMismatches || 0);
     const net = s.network || {};
     for (const [kind, n] of Object.entries(net.failedByKind || {})) hit(`network: ${kind}`, "network", row.id, n);
     for (const [dest, n] of Object.entries(net.failedByDestination || {})) hit(`failed ${dest}`, "subresource", row.id, n);

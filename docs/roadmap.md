@@ -3001,7 +3001,13 @@ Deferred from the milestones above, each with what it waits on:
        and the rest, which are the used values; CSSOM View's layout
        queries (`offsetWidth`, `clientWidth`, `getBoundingClientRect`,
        `scrollTop`, `scrollTo`, `innerText`). Found at M25. Done in gap
-       batch D (D65).
+       batch D (D65). Since 2026-11-13 (the site sweep's reddit) a run's
+       first flush starts from the frame's styles restyled by the run's
+       own changes and its animated elements, not a whole cascade, when
+       no sheet, viewport or media state changed since: a query starts
+       no transition of its own, but its base may be the frame's styles,
+       its animated values as of the timeline's time; a debug and
+       fuzzing check holds it to a whole cascade.
 - [x] G47 More kinds of node: `Comment`, `DocumentFragment`,
        `DocumentType`, `ProcessingInstruction`, `CDATASection`, `Attr`
        and `attributes`, with `createComment`, `createDocumentFragment`
@@ -3939,6 +3945,20 @@ Deferred from the milestones above, each with what it waits on:
        restyles 1 element and lays out its 4 boxes' chain a frame, not
        the page; drawing colours without a layout is deferred
        (`docs/perf-budgets.md`).
+
+### Known gaps (not G items: the list is frozen)
+
+Gaps found while the G list is frozen. Each becomes work only when the
+site sweep or the dogfood sessions show a site breaking on it.
+
+- `getComputedStyle` returns a `url()` as written, not absolute, for
+  inline `<style>` sheets and shadow trees' alike; Chrome resolves it
+  against the sheet's base when parsing. Both paths are to be fixed
+  together. Would matter to, say, a lazy-loader running `new URL()` on
+  a computed `background-image`. Found by the G46 flush work.
+- No test for `:target` after a hash navigation in the fast-path flush
+  (G46): the flush tests' documents have no URL to navigate within.
+  `:target` is element state, which the journal carries.
 
 ---
 

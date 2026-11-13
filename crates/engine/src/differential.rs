@@ -302,7 +302,7 @@ pub fn compare_with_fresh(
     fresh.shown.stylesheets =
         style::Stylesheets::with_scope_roots(prepared.sheets().to_vec(), roots)
             .with_registered(prepared.registered().to_vec());
-    fresh.shown.recascade = true;
+    fresh.shown.set_recascade();
     give_state(engine, fresh, &order, &fresh_order);
     fresh.frame(width, height);
     settle_frames(fresh);

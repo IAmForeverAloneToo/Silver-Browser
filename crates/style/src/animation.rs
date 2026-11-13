@@ -1703,6 +1703,33 @@ impl Animations {
         (&self.touched, self.touches)
     }
 
+    /// Every element an animation, a transition or a script's effect
+    /// acts on: what a flush between frames restyles to the timeline's
+    /// time, the frame's values being of the frame's.
+    pub fn targets(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = self
+            .animations
+            .values()
+            .filter_map(|animation| match &animation.class {
+                Class::Css {
+                    owner: Some(owner), ..
+                }
+                | Class::Transition {
+                    owner: Some(owner), ..
+                } => Some(owner.0),
+                _ => None,
+            })
+            .chain(
+                self.effects
+                    .values()
+                    .filter_map(|effect| effect.target.map(|target| target.0)),
+            )
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
+    }
+
     /// Every CSS animation and transition running, sorted by element,
     /// kind and name: for the tests.
     pub fn running(&self) -> Vec<Running> {

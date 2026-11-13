@@ -442,7 +442,7 @@ impl Engine {
             .as_ref()
             .is_some_and(|cached| cached.styles.uses_font_units)
         {
-            self.shown.recascade = true;
+            self.shown.set_recascade();
         }
     }
 

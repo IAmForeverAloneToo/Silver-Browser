@@ -458,6 +458,8 @@ pub struct Document {
     live: usize,
     root: NodeId,
     journal: Vec<Change>,
+    /// How many times a journal with something in it was drained.
+    drains: u64,
     /// How many changes have been made, ever.
     version: u64,
     /// The bytes of data the live nodes hold ([`MAX_DATA_BYTES`]).
@@ -532,6 +534,7 @@ impl Document {
                 generation: 0,
             },
             journal: Vec::new(),
+            drains: 0,
             version: 0,
             data_bytes: 0,
             max_nodes: MAX_NODES,
@@ -2049,7 +2052,15 @@ impl Document {
 
     /// The changes since the journal was last drained, oldest first.
     pub fn take_changes(&mut self) -> Vec<Change> {
+        self.drains += u64::from(!self.journal.is_empty());
         std::mem::take(&mut self.journal)
+    }
+
+    /// How many times a journal with something in it was drained: a
+    /// reader that keeps every drain's changes counts them too, and
+    /// knows by comparing that none it has not seen was taken.
+    pub fn drains(&self) -> u64 {
+        self.drains
     }
 
     /// The changes since the journal was last drained, oldest first,
@@ -3326,6 +3337,20 @@ mod tests {
         }
         assert_eq!(document.take_changes(), vec![Change::Everything]);
         assert_eq!(document.version(), 3 + MAX_JOURNAL as u64 + 10);
+    }
+
+    #[test]
+    fn drains_count_the_journals_taken_with_something_in_them() {
+        let mut document = Document::from_node(&sample());
+        let body = element(&document, "body");
+        assert_eq!(document.drains(), 0);
+        document.take_changes();
+        assert_eq!(document.drains(), 0, "an empty journal taken is no drain");
+        let p = document.create_element("p").unwrap();
+        document.append_child(body, p).unwrap();
+        assert_eq!(document.drains(), 0, "a change is not a drain");
+        document.take_changes();
+        assert_eq!(document.drains(), 1);
     }
 
     #[test]

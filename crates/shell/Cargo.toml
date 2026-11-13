@@ -15,6 +15,9 @@ gpu = ["engine/gpu"]
 # debugging and for machines short of memory. Without it, each site's
 # pages are shown by a renderer process of their own.
 single-process = []
+# The engine's check of a script's style flush against a whole cascade,
+# counted in the site sweep (G46); off, compiled out.
+style-crosscheck = ["engine/style-crosscheck"]
 
 [dependencies]
 engine.workspace = true

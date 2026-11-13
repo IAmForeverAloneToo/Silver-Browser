@@ -215,6 +215,26 @@ fn capture(asked: &Asked) -> Result<(), String> {
         }
         shot(&mut tab, began, &asked.out.join("silver-scrolled.png"))?;
         shots.push("scrolled");
+        // The counts again, of what the scroll's runs did too: the record
+        // has the page's last.
+        let id = next_id;
+        tab.inspect(format!("{{\"id\":{id},\"method\":\"page.sweep\"}}"));
+        let until = Instant::now() + Duration::from_secs(2);
+        'asked: while Instant::now() < until {
+            let _ = woken.recv_timeout(Duration::from_millis(50));
+            step(&mut tab, began, &mut console);
+            for message in tab.take_inspected() {
+                let Ok(answer) = Json::parse(&message) else {
+                    continue;
+                };
+                if answer.get("id").and_then(Json::as_f64) == Some(id as f64)
+                    && let Some(result) = answer.get("result")
+                {
+                    counters = result.clone();
+                    break 'asked;
+                }
+            }
+        }
     }
     peaks.sample(&tab);
     let network = tab

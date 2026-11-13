@@ -1037,6 +1037,76 @@ fn a_document_is_shown_before_its_body_has_all_arrived_and_grows() {
 }
 
 #[test]
+fn a_script_of_a_streamed_document_reads_the_styles_of_what_was_parsed_since_the_frame() {
+    // A frame of the first piece, then the rest: a sheet, an element and
+    // a script in one slice of the parse. The parser's changes are taken
+    // before the script runs; its flush reads them, not the frame's
+    // styles alone (the site sweep's G46 fast path).
+    let server = slow_page(
+        FIRST,
+        "<style>.b { width: 100px }</style><div class=b id=n></div>\
+         <script>console.log(getComputedStyle(n).width)</script>",
+        Duration::from_millis(300),
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|engine| engine.navigation.is_none());
+    tab.engine.frame(200, 100);
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
+    let said: Vec<String> = tab
+        .engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(said, ["100px"]);
+}
+
+#[test]
+fn a_flush_reads_a_sheet_that_arrived_after_the_frame() {
+    // A sheet a script put in arrives between frames: nothing in the
+    // document's journal says so, the next frame is to cascade whole,
+    // and its `load` listener's flush is not of the frame's styles.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<p id=p>x</p><script>\
+             setTimeout(() => {\
+               const l = document.createElement('link');\
+               l.rel = 'stylesheet'; l.href = 's.css';\
+               l.onload = () => console.log(getComputedStyle(p).color);\
+               document.head.appendChild(l);\
+             }, 50);\
+             </script>",
+        )),
+        "/s.css" => {
+            let body = b"p { color: green }";
+            let mut reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            reply.extend_from_slice(body);
+            Some(Reply::Pieces(vec![(Duration::from_millis(200), reply)]))
+        }
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut said = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while said.is_empty() && std::time::Instant::now() < deadline {
+        tab.engine.frame(200, 100);
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        said.extend(tab.engine.take_console().into_iter().map(|e| e.text));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(said, ["rgb(0, 128, 0)"]);
+}
+
+#[test]
 fn a_late_meta_starts_a_streamed_document_again_in_its_encoding() {
     // Past the prescan, a meta naming windows-1252, arriving after a
     // wait: the first piece is parsed as UTF-8, then all again.

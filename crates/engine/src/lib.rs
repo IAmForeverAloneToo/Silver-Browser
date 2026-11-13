@@ -619,6 +619,12 @@ struct Shown {
     /// The changes made to the document since the cached cascade, in
     /// order, for the next frame to restyle by.
     pending: Vec<Change>,
+    /// The document's drains of its journal ([`Document::drains`]) the
+    /// cached cascade and `pending` account for: fewer than the
+    /// document's while changes taken are on their way to `pending`
+    /// (a script run between), when a script's flush may not restyle
+    /// the frame's styles by `pending` alone.
+    pending_drains: u64,
     /// Whether the stylesheets changed since the cached cascade, which
     /// the next frame cascades the document whole for, as a change of
     /// style from the cached one (M22.1).
@@ -784,6 +790,15 @@ struct Rendered {
 }
 
 impl Shown {
+    /// The next frame cascades the document whole; the styles kept are
+    /// stale until then.
+    fn set_recascade(&mut self) {
+        self.recascade = true;
+        if let Some(styled) = self.styled.as_mut() {
+            styled.stale = true;
+        }
+    }
+
     /// What a rendering of `size` would see of the offsets as they are.
     fn rendered_now(&self, size: (u32, u32)) -> Rendered {
         Rendered {
@@ -830,6 +845,7 @@ impl Shown {
     /// at the top.
     fn new(mut document: Document, page: Page) -> Shown {
         document.take_changes();
+        let pending_drains = document.drains();
         let stylesheets = page.stylesheets(&document);
         let mut scripts = scripts::Scripts::default();
         if page.is_panel() {
@@ -841,6 +857,7 @@ impl Shown {
             stylesheets,
             styled: None,
             pending: Vec::new(),
+            pending_drains,
             recascade: false,
             layout: None,
             layout_cache: LayoutCache::new(),
@@ -1300,6 +1317,21 @@ struct CachedStyle {
     /// The document's version the styles are of, which a script's flush
     /// compares with its own (D75).
     version: u64,
+    /// The page's count of CSSOM changes the styles were made at
+    /// (`Page::sheets_generation`).
+    sheets_generation: u64,
+    /// The elements animations acted on when the styles were last made
+    /// or restyled: a script's flush restyles them too, an animation
+    /// that has finished since having left its value in them.
+    animated: Vec<NodeId>,
+    /// The document's fonts the styles were made with
+    /// ([`scripts::fonts_key`]): a script's flush does not take styles
+    /// whose font-relative units measured others.
+    fonts: (usize, usize, usize),
+    /// Whether the next frame is to cascade the document whole
+    /// ([`Shown::set_recascade`]): something they did not see changed,
+    /// and a script's flush does not take them.
+    stale: bool,
 }
 
 /// The engine's fonts, lent to the cascade for the font-relative units.
@@ -2473,6 +2505,15 @@ impl Engine {
 
     /// What the window reports to a run's scripts (M25.4).
     fn window_env(&self) -> scripts::WindowEnv {
+        // Every change the document's journal gave up is in `pending` by
+        // now, or a whole cascade is to come ([`Engine::document_changed`]
+        // takes them before it runs anything).
+        debug_assert!(
+            self.shown.styled.is_none()
+                || self.shown.recascade
+                || self.shown.pending_drains == self.shown.document.drains(),
+            "a run's window made with changes taken and not yet pending"
+        );
         scripts::WindowEnv {
             viewport: self.viewport,
             media: self.media(self.viewport),
@@ -2480,6 +2521,15 @@ impl Engine {
             fonts: Some(self.layout_fonts.clone()),
             layout_fonts: Some(self.document_fonts().clone()),
             scroll: Arc::new(self.drawn_offsets()),
+            styles_pending: (self.shown.styled.is_some()
+                && !self.shown.recascade
+                && self.shown.pending_drains == self.shown.document.drains())
+            .then(|| {
+                (
+                    self.shown.document.drains(),
+                    Arc::new(self.shown.pending.clone()),
+                )
+            }),
             // A touch's pan or the thumb held is a scroll on its way too,
             // which the scripts' reads do not snap, and so is a precise
             // scroll with its snap to come.
@@ -7833,7 +7883,7 @@ impl Engine {
             &self.shown.stylesheets,
         ) {
             self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
-            self.shown.recascade = true;
+            self.shown.set_recascade();
             self.shown.pending.clear();
             self.shown.layout = None;
             self.changed = true;
@@ -8024,6 +8074,22 @@ impl Engine {
     /// when the stylesheets changed and by restyle otherwise, the
     /// layout, and the scroll offsets of freed elements.
     fn document_changed(&mut self, changes: Vec<Change>) {
+        // The changes are accounted for first, before anything here runs
+        // a script (a module preloaded, a load event): in `pending`, for
+        // the next frame and a run's flush to restyle by, or a whole
+        // cascade to come. A sheet they change clears them below.
+        if self.shown.styled.is_some()
+            && !self.shown.recascade
+            && self.shown.pending.first() != Some(&Change::Everything)
+        {
+            // Past the journal's own bound, the changes count as all.
+            if self.shown.pending.len() + changes.len() > dom::MAX_JOURNAL {
+                self.shown.pending = vec![Change::Everything];
+            } else {
+                self.shown.pending.extend(changes.iter().cloned());
+            }
+        }
+        self.shown.pending_drains += 1;
         // An element taken out of the document, put back or not, loses
         // its animations (M22.2): one put back starts them again, as in
         // the reference browser.
@@ -8126,18 +8192,8 @@ impl Engine {
         }
         if sheets.is_some() {
             self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
-            self.shown.recascade = true;
+            self.shown.set_recascade();
             self.shown.pending.clear();
-        } else if self.shown.styled.is_some()
-            && !self.shown.recascade
-            && self.shown.pending.first() != Some(&Change::Everything)
-        {
-            // Past the journal's own bound, the changes count as all.
-            if self.shown.pending.len() + changes.len() > dom::MAX_JOURNAL {
-                self.shown.pending = vec![Change::Everything];
-            } else {
-                self.shown.pending.extend(changes);
-            }
         }
         let document = &self.shown.document;
         self.shown
@@ -8481,6 +8537,8 @@ impl Engine {
             self.shown.recascade = false;
             self.style_runs += 1;
             self.shown.pending.clear();
+            self.shown.pending_drains = self.shown.document.drains();
+            let fonts = scripts::fonts_key(Some(self.document_fonts()));
             self.shown.animated.clear();
             self.shown.layout = None;
             self.shown.layout_cache.clear();
@@ -8488,6 +8546,10 @@ impl Engine {
                 viewport: self.viewport,
                 styles,
                 version: self.shown.document.version(),
+                sheets_generation: self.shown.page.sheets_generation(),
+                animated: self.shown.animations.get_mut().targets(),
+                fonts,
+                stale: false,
             });
             self.request_css_images();
         } else if !self.shown.pending.is_empty() || !self.shown.animated.is_empty() {
@@ -8526,6 +8588,7 @@ impl Engine {
             // one; any computed now used it.
             cached.viewport = self.viewport;
             cached.version = self.shown.document.version();
+            cached.animated = self.shown.animations.get_mut().targets();
             if restyle.full {
                 self.style_runs += 1;
                 self.shown.layout_cache.clear();
@@ -8796,7 +8859,7 @@ impl Engine {
     pub(crate) fn set_frame_margins(&mut self, margins: style::FrameMargins) {
         if self.frame_margins != margins {
             self.frame_margins = margins;
-            self.shown.recascade = true;
+            self.shown.set_recascade();
             self.changed = true;
         }
     }
@@ -14697,6 +14760,239 @@ mod tests {
             style::computed::Color::rgb8(0, 0, 255),
             "the query holds"
         );
+    }
+
+    /// A page's colours as its scripts say them: a frame, `first` run as a
+    /// task, a frame, then `second` run as a task of its own, each
+    /// logging with `say(element)`, the element's computed colour. What
+    /// a script's flush answers after each kind of sheet change (the
+    /// site sweep's flush from the frame's styles must not miss one).
+    fn flushed_colours(page: &str, first: &str, second: &str) -> Vec<String> {
+        flushed(page, first, second).0
+    }
+
+    /// [`flushed_colours`] whose second run's flush starts from the
+    /// frame's styles, as one whose changes the journal carries does: the
+    /// test is of that path, not of a whole cascade.
+    fn flushed_from_frame(page: &str, first: &str, second: &str) -> Vec<String> {
+        let (said, from_frame) = flushed(page, first, second);
+        assert!(from_frame > 0, "the second run cascaded whole: {said:?}");
+        said
+    }
+
+    /// What the two runs said, and how many of the second's flushes
+    /// started from the frame's styles.
+    fn flushed(page: &str, first: &str, second: &str) -> (Vec<String>, u64) {
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        let say = "function say(e) { console.log(getComputedStyle(e).color); }";
+        engine.load_document(page);
+        engine.frame(200, 100);
+        differential::run_script(&mut engine, &format!("{say} {first}"));
+        engine.frame(200, 100);
+        let before = engine.shown.scripts.flushes_from_frame();
+        differential::run_script(&mut engine, &format!("{say} {second}"));
+        let from_frame = engine.shown.scripts.flushes_from_frame() - before;
+        let said = engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        (said, from_frame)
+    }
+
+    const RED: &str = "rgb(255, 0, 0)";
+    const GREEN: &str = "rgb(0, 128, 0)";
+    const BLUE: &str = "rgb(0, 0, 255)";
+
+    #[test]
+    fn a_flush_sees_a_style_put_in_or_taken_out_of_a_shadow_tree() {
+        let said = flushed_colours(
+            "<div id=h></div>",
+            "var r = h.attachShadow({mode: 'open'}); r.innerHTML = '<p>x</p>';\
+             var p = r.querySelector('p'); say(p);\
+             var s = document.createElement('style'); s.textContent = 'p { color: green }';\
+             r.appendChild(s); say(p);",
+            "var r = h.shadowRoot, p = r.querySelector('p'); say(p);\
+             r.querySelector('style').remove(); say(p);",
+        );
+        assert_eq!(said, ["rgb(0, 0, 0)", GREEN, GREEN, "rgb(0, 0, 0)"]);
+    }
+
+    #[test]
+    fn a_flush_resolves_shadow_tree_urls_at_the_base_url_now() {
+        // One text in two shadow trees, kept parsed once; the `<base>`
+        // changed, the flush is a whole cascade's. A URL computes as
+        // written, as a document `<style>`'s does, and is resolved against
+        // the base when the image is fetched.
+        let tree = "attachShadow({mode: 'open'}).innerHTML =\
+                    '<style>p { background-image: url(i.png) }</style><p>x</p>';";
+        let show = "[h, k].forEach(function (e) {\
+                    console.log(getComputedStyle(e.shadowRoot.querySelector('p'))\
+                    .backgroundImage); });";
+        let said = flushed_colours(
+            "<base href='http://a.test/one/'><div id=h></div><div id=k></div>",
+            &format!("h.{tree} k.{tree} {show}"),
+            &format!("document.querySelector('base').href = 'http://a.test/two/'; {show}"),
+        );
+        let written = "url(\"i.png\")";
+        assert_eq!(said, [written; 4]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_shadow_trees_style_text_changed() {
+        let said = flushed_colours(
+            "<div id=h></div>",
+            "var r = h.attachShadow({mode: 'open'});\
+             r.innerHTML = '<style>p { color: red }</style><p>x</p>';\
+             var p = r.querySelector('p'); say(p);\
+             r.querySelector('style').textContent = 'p { color: green }'; say(p);",
+            "var r = h.shadowRoot, p = r.querySelector('p');\
+             r.querySelector('style').textContent = 'p { color: blue }'; say(p);",
+        );
+        assert_eq!(said, [RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_shadow_tree_attached_to_a_host_it_answered() {
+        let said = flushed_colours(
+            // No document rule for the hosts: one would win over `:host`.
+            "<div id=h>x</div><div id=k>y</div>",
+            "say(h); var r = h.attachShadow({mode: 'open'});\
+             r.innerHTML = '<style>:host { color: green }</style><slot></slot>'; say(h);",
+            "say(k); var r = k.attachShadow({mode: 'open'});\
+             r.innerHTML = '<style>:host { color: blue }</style>'; say(k);",
+        );
+        assert_eq!(said, ["rgb(0, 0, 0)", GREEN, "rgb(0, 0, 0)", BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_sheets_adopted() {
+        let said = flushed_colours(
+            "<div id=h></div><p id=d>z</p>",
+            "var r = h.attachShadow({mode: 'open'}); r.innerHTML = '<p>x</p>';\
+             var p = r.querySelector('p'); say(p);\
+             var g = new CSSStyleSheet(); g.replaceSync('p { color: green }');\
+             r.adoptedStyleSheets = [g]; say(p);",
+            "say(d); var b = new CSSStyleSheet(); b.replaceSync('p { color: blue }');\
+             document.adoptedStyleSheets = [b]; say(d);",
+        );
+        assert_eq!(said, ["rgb(0, 0, 0)", GREEN, "rgb(0, 0, 0)", BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_an_adopted_sheet_replaced_or_edited() {
+        let said = flushed_colours(
+            "<p id=d>z</p>",
+            "var g = new CSSStyleSheet(); g.replaceSync('p { color: red }');\
+             document.adoptedStyleSheets = [g]; say(d);\
+             g.replaceSync('p { color: green }'); say(d);\
+             window.sheet = g;",
+            "say(d); sheet.insertRule('p { color: blue }', 1); say(d);",
+        );
+        assert_eq!(said, [RED, GREEN, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_host_taken_out_and_put_back() {
+        // No sheet changes: the host's colour is where it stands, which its
+        // shadow tree's paragraph inherits; moved, a flush built on the
+        // frame's styles restyles it by the journal.
+        let said = flushed_from_frame(
+            "<style>.in > div { color: red } #other > div { color: blue }</style>\
+             <div class=in id=box></div><div id=other></div>",
+            "var h = document.createElement('div'); box.appendChild(h);\
+             h.attachShadow({mode: 'open'}).innerHTML = '<p>x</p>';\
+             say(h.shadowRoot.querySelector('p')); window.host = h;",
+            "host.remove(); other.appendChild(host);\
+             say(host.shadowRoot.querySelector('p'));",
+        );
+        assert_eq!(said, [RED, BLUE]);
+    }
+
+    // The inputs of the cascade a run's flush from the frame's styles
+    // must see (G46's audit, `DocumentHost::styles_now`): each changed in
+    // the second run, after a frame, and read at its first ask. A debug
+    // build checks each flush against a whole cascade as well.
+
+    #[test]
+    fn a_flush_sees_focus_given_by_a_script() {
+        let said = flushed_from_frame(
+            "<style>input { color: red } input:focus { color: green }\
+             form:focus-within { color: blue }</style><form id=f><input id=i></form>",
+            "say(i);",
+            "i.focus(); say(i); say(f);",
+        );
+        assert_eq!(said, [RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_checked_and_indeterminate_set_by_property() {
+        let said = flushed_from_frame(
+            "<style>input { color: red } input:checked { color: green }\
+             input:indeterminate { color: blue }</style>\
+             <input type=checkbox id=c><input type=checkbox id=d>",
+            "say(c); say(d);",
+            "c.checked = true; d.indeterminate = true; say(c); say(d);",
+        );
+        assert_eq!(said, [RED, RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_value_reach_validity_and_the_placeholder() {
+        let said = flushed_from_frame(
+            "<style>input { color: red } input:placeholder-shown { color: green }\
+             form:invalid { color: blue }</style>\
+             <form id=f><input id=i required placeholder=x></form>",
+            "say(i); say(f);",
+            "i.value = 'a'; say(i); say(f);",
+        );
+        assert_eq!(said, [GREEN, BLUE, RED, "rgb(0, 0, 0)"]);
+    }
+
+    #[test]
+    fn a_flush_sees_an_element_defined() {
+        let said = flushed_from_frame(
+            "<style>x-a { color: red } x-a:defined { color: green }</style><x-a id=a></x-a>",
+            "say(a);",
+            "customElements.define('x-a', class extends HTMLElement {}); say(a);",
+        );
+        assert_eq!(said, [RED, GREEN]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_dialog_and_a_popover_opened() {
+        let said = flushed_from_frame(
+            "<style>dialog, div { color: red } dialog:modal { color: green }\
+             div:popover-open { color: blue }</style>\
+             <dialog id=d>x</dialog><div popover id=p>y</div>",
+            "say(d); say(p);",
+            "d.showModal(); p.showPopover(); say(d); say(p);",
+        );
+        assert_eq!(said, [RED, RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_has_and_siblings_reach_what_changed() {
+        let said = flushed_from_frame(
+            "<style>div { color: red } div:has(> .on) { color: green }\
+             .a + p { color: blue } p { color: red }</style>\
+             <div id=d><span id=s></span></div><span id=b></span><p id=p>x</p>",
+            "say(d); say(p);",
+            "s.className = 'on'; b.className = 'a'; say(d); say(p);",
+        );
+        assert_eq!(said, [RED, RED, GREEN, BLUE]);
+    }
+
+    #[test]
+    fn a_flush_sees_a_property_registered() {
+        let said = flushed_colours(
+            "<style>p { color: var(--c) }</style><p id=p>x</p>",
+            "say(p);",
+            "CSS.registerProperty({ name: '--c', syntax: '<color>', inherits: true,\
+             initialValue: 'green' }); say(p);",
+        );
+        assert_eq!(said, ["rgb(0, 0, 0)", GREEN]);
     }
 
     #[test]

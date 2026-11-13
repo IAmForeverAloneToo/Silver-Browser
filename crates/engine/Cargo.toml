@@ -10,6 +10,11 @@ license.workspace = true
 # which WebGL and WebGPU reach. Off, nothing of wgpu is built.
 default = ["gpu"]
 gpu = ["render/gpu", "dep:wgpu", "dep:pollster"]
+# The check of a script's flush from the frame's styles against a whole
+# cascade (G46), in a release build: a difference is counted for the
+# site sweep (`styleFastPathMismatches`) and the first said on stderr.
+# Debug and fuzzing builds have it always, and panic. Off, compiled out.
+style-crosscheck = []
 # The hooks' timing (G247, dom's `hook_timing`): off, compiled out;
 # the benchmarks print a table of them after each measurement.
 hook-timing = [
@@ -185,3 +190,8 @@ net = { workspace = true, features = ["test-server"] }
 png.workspace = true
 # The print tests' reader of PDFs inflates their streams.
 flate2.workspace = true
+
+# cfg(fuzzing): the fuzz targets' build, which checks what tests do
+# (getComputedStyle's styles from the frame against a whole cascade).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

@@ -39,6 +39,13 @@ pub(crate) struct SweepCounts {
     pub(crate) media_unsupported: BTreeMap<String, u32>,
     /// Names not kept, past [`MAX_NAMES`].
     pub(crate) dropped: u32,
+    /// A script's flush whose styles from the frame differed from a
+    /// whole cascade's: counted by a build with the `style-crosscheck`
+    /// feature alone, none otherwise.
+    pub(crate) style_mismatches: u32,
+    /// The flushes from the frame's styles that build checked: how much
+    /// of the page the mismatches' count covers.
+    pub(crate) style_checks: u32,
 }
 
 impl SweepCounts {
@@ -105,6 +112,8 @@ impl SweepCounts {
         self.frame_document_same_origin += other.frame_document_same_origin;
         self.policy_refusals += other.policy_refusals;
         self.dropped += other.dropped;
+        self.style_mismatches += other.style_mismatches;
+        self.style_checks += other.style_checks;
     }
 
     /// The counts as `page.sweep` answers them, with the layouts run.
@@ -136,6 +145,14 @@ impl SweepCounts {
             ),
             ("mediaUnsupported", map(&self.media_unsupported)),
             ("dropped", Json::from(f64::from(self.dropped))),
+            (
+                "styleFastPathMismatches",
+                Json::from(f64::from(self.style_mismatches)),
+            ),
+            (
+                "styleFastPathChecks",
+                Json::from(f64::from(self.style_checks)),
+            ),
             ("layouts", Json::from(layouts as f64)),
         ])
     }

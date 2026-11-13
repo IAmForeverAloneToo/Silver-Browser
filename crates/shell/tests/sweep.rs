@@ -20,8 +20,10 @@ fn server() -> TestServer {
     TestServer::plain(|request| match request.target.as_str() {
         "/ok.html" => Reply::ok(
             "text/html",
-            b"<!DOCTYPE html><title>ok</title><style>body { background: #0a8 }</style>\
-              <p>A page that loads.</p><script>notInThisEngine();</script>",
+            b"<!DOCTYPE html><title>ok</title><style>body { background: #0a8; height: 5000px }\
+              </style><p>A page that loads.</p><script>\
+              onscroll = () => { onscroll = null; setTimeout(() => notOnScroll()); };\
+              notInThisEngine();</script>",
         ),
         "/hang.html" => Reply::ok(
             "text/html",
@@ -94,6 +96,12 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
     let missing = field(field(&record, "counters"), "missing");
     assert_eq!(
         field(missing, "notInThisEngine").as_u64(),
+        Some(1),
+        "{record:?}"
+    );
+    // Counted after the scroll too: the record has the page's last counts.
+    assert_eq!(
+        field(missing, "notOnScroll").as_u64(),
         Some(1),
         "{record:?}"
     );

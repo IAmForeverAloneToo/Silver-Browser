@@ -160,10 +160,36 @@ struct ComputedStyles {
     touches: u64,
 }
 
+/// Whether a run's first `getComputedStyle` may start from the frame's
+/// styles, restyled by what changed since (G46, the site sweep's
+/// reddit), rather than cascade the document whole. `false` turns that
+/// off everywhere: the one line to rule it out of a misstyled page. Off
+/// while a mismatch the site sweep's check found on one site is looked
+/// into (G46).
+const FLUSH_FROM_FRAME: bool = false;
+
+/// The flushes from the frame's styles a release build with the
+/// `style-crosscheck` feature checks: the first so many of a page's, then
+/// one in so many, within so much of its time
+/// ([`DocumentHost::crosscheck_this`]).
+#[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+const CROSSCHECK_FIRST: u64 = 50;
+#[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+const CROSSCHECK_EVERY: u64 = 20;
+#[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+const CROSSCHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`FLUSH_FROM_FRAME`] as the engine's own tests, the fuzz targets and
+/// a build with the `style-crosscheck` feature have it: on, so that they
+/// go on exercising the path, and checking it against a whole cascade,
+/// while it is off for pages.
+const FLUSH_FROM_FRAME_HERE: bool =
+    FLUSH_FROM_FRAME || cfg!(any(test, fuzzing, feature = "style-crosscheck"));
+
 /// What tells one state of `fonts`' document faces from another: the
 /// faces, how many, and how many came or failed. The styles of the
 /// font-relative units are computed again when it changes.
-fn fonts_key(fonts: Option<&text::FontCollection>) -> (usize, usize, usize) {
+pub(crate) fn fonts_key(fonts: Option<&text::FontCollection>) -> (usize, usize, usize) {
     match fonts.and_then(text::FontCollection::document) {
         Some(faces) => {
             let (len, settled) = faces.settled();
@@ -273,6 +299,12 @@ pub(crate) struct DocumentHost {
     pub(crate) document: Document,
     /// What the site sweep counts of the page (`crate::sweep`).
     pub(crate) sweep: crate::sweep::SweepCounts,
+    /// How many flushes started from the frame's styles
+    /// ([`FLUSH_FROM_FRAME`]): what the tests see the path taken by.
+    pub(crate) flushes_from_frame: u64,
+    /// The time the check of those flushes against a whole cascade has
+    /// taken on this page ([`DocumentHost::crosscheck_this`]).
+    crosscheck_spent: std::time::Duration,
     /// The nodes a script holds an object for: handles given out and not
     /// released (M25). None of them is freed.
     exposed: HashSet<NodeId>,
@@ -621,6 +653,9 @@ impl ScriptingHost for DocumentHost {
     }
 
     fn report(&mut self, error: ScriptError) {
+        // A callback's (a timer's, a listener's) is the page's error too,
+        // counted as a run's is.
+        self.sweep.note_error(error.kind, &error.message);
         if let Some(text) = report_text(&error) {
             self.outputs.errors += 1;
             self.say(ConsoleLevel::Error, text);
@@ -7468,13 +7503,62 @@ impl DocumentHost {
         svg::query_in(context, &tree, node, question)
     }
 
+    /// Whether the flush from the frame's styles just made is checked
+    /// against a whole cascade: every one in debug and fuzzing builds; in
+    /// a release build with the `style-crosscheck` feature, a sample, so
+    /// that a page with a flush in every task (the site sweep's reddit)
+    /// still runs: its first [`CROSSCHECK_FIRST`], then every
+    /// [`CROSSCHECK_EVERY`]th, while the checks have taken less than
+    /// [`CROSSCHECK_BUDGET`] of the page's time.
+    #[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+    fn crosscheck_this(&self) -> bool {
+        let n = self.flushes_from_frame;
+        cfg!(any(debug_assertions, fuzzing))
+            || ((n <= CROSSCHECK_FIRST || n.is_multiple_of(CROSSCHECK_EVERY))
+                && self.crosscheck_spent < CROSSCHECK_BUDGET)
+    }
+
     /// The document's styles as they stand, for `getComputedStyle`
-    /// (M25.4): cascaded whole at a run's first ask, from the page's
-    /// sheets as they stand in the document (those a script put in or
-    /// took out in the run too), and at later asks restyled by the
-    /// journal's changes since (M13.1), or cascaded whole again when it
-    /// was cut short or a change reached a sheet. A copy of the engine's:
-    /// transitions and animations neither start nor show (G46).
+    /// (M25.4): at a run's first ask, the frame's styles (or the last
+    /// run's, of the version lent) restyled by the run's own changes and
+    /// its animated elements, when no sheet, viewport or media state
+    /// changed since; else cascaded whole, from the page's sheets as they
+    /// stand in the document (those a script put in or took out in the
+    /// run too); and at later asks restyled by the journal's changes
+    /// since (M13.1), or cascaded whole again when it was cut short or a
+    /// change reached a sheet. A copy of the engine's (G46): a query
+    /// starts no transition of its own, but its base may be the frame's
+    /// styles, animated values and all, as of the timeline's time.
+    ///
+    /// What the cascade reads besides the document's tree and its sheets,
+    /// and how a flush from the frame's styles learns it changed: by the
+    /// journal (the engine's `pending` and the run's own changes, which
+    /// the next frame restyles by too), by a key the frame's styles
+    /// carry, or by a fallback to the whole cascade. [`FLUSH_FROM_FRAME`]
+    /// turns the path off.
+    ///
+    /// | Input | How |
+    /// |---|---|
+    /// | hover, active, focus (`focus()` too), focus-within, focus-visible | journal: state |
+    /// | `:target` after a hash change | journal: state |
+    /// | `:modal`, `:popover-open`, `:open`, the top layer | journal: state, attribute |
+    /// | `:defined` (an upgrade), `:state()` | journal: state |
+    /// | `:checked`, `:indeterminate` by property; `.value` | journal: control |
+    /// | validity, `:placeholder-shown`, `form:invalid` | journal: control, by reach |
+    /// | `:has()`, sibling combinators | journal, by the rules' reach |
+    /// | `:fullscreen` | none: never matches here |
+    /// | `<style>`, `<link>`, `<base>`, shadow trees' sheets | fallback: sheets touched |
+    /// | a sheet arriving, frame margins, a sheet's set changed | fallback: stale styles |
+    /// | CSSOM edits, adopted sheets, `registerProperty` | key: `sheets_generation` |
+    /// | viewport | key: viewport |
+    /// | media, colour scheme and the other user settings | key: media's answers |
+    /// | web fonts settling (font-relative units) | key: fonts |
+    /// | animations, transitions, effects | restyled: then and now animated |
+    /// | container queries | settled after, as the whole cascade is |
+    /// | changes taken and not yet pending | fallback: drain count |
+    /// | more than the journal keeps | fallback: `Everything` |
+    /// | `lang`, a `content-language` pragma; a policy's `style` checks | journal |
+    /// | the response's language | the page's: fixed |
     fn styles_now(&mut self) -> Option<&Styles> {
         self.inline_sheets();
         let page = self.page.as_ref()?;
@@ -7521,13 +7605,33 @@ impl DocumentHost {
             let (nodes, count) = animations.touched();
             (nodes.to_vec(), count)
         };
+        let first_ask = self.computed.is_none();
         // The shadow trees' sheets (D69): one changed, every tree is
         // cascaded afresh, its elements matched against its new rules.
-        let shadow = page.shadow_sheets_now(&self.document, &self.window.media);
+        // Read only when the styles are to be made or a sheet changed,
+        // not at every ask (the site sweep's reddit, 100 ms each).
+        let shadow = if first_ask || sheets_changed {
+            page.shadow_sheets_now(&self.document, &self.window.media)
+        } else {
+            Vec::new()
+        };
         let shadow_changed = self
             .computed
             .as_ref()
             .is_some_and(|cached| sheets_changed && !cached.sheets.same_shadow_trees(&shadow));
+        // What the frame's styles have not met, at a run's first ask: the
+        // changes the engine took and has not restyled, then the whole
+        // journal since (the parser's and earlier runs' and this run's).
+        let frame_since: Option<Vec<dom::Change>> = first_ask
+            .then(|| self.window.styles_pending.clone())
+            .flatten()
+            .filter(|(drains, _)| *drains == self.document.drains())
+            .map(|(_, pending)| pending.iter().chain(changes.iter()).cloned().collect());
+        let frame_since_sheets = frame_since.as_ref().is_none_or(|since| {
+            since.first() == Some(&dom::Change::Everything)
+                || since.len() > dom::MAX_JOURNAL
+                || touches_sheets(&self.document, since)
+        });
         match &mut self.computed {
             Some(cached) if cached.version == version && cached.touches == touches => {}
             Some(cached) if cached.version == version => {
@@ -7585,11 +7689,98 @@ impl DocumentHost {
                 self.settle_containers();
             }
             _ => {
-                self.work += self.document.len() as u64;
                 let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
                 let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
                     .with_registered(page.registered_properties().to_vec())
                     .with_shadow_trees(shadow);
+                // A run's first ask of a document as the frame styled it
+                // (or the last run, at the version lent), no sheet, no
+                // viewport and no media state changed since: those styles
+                // restyled by the run's own changes, not the document
+                // cascaded whole again (the site sweep's reddit: each
+                // task's first getComputedStyle cascaded 9,000 elements).
+                // A copy: it starts no transition the run's changes do not
+                // (G46).
+                let base = (FLUSH_FROM_FRAME_HERE && first_ask && !whole && !frame_since_sheets)
+                    .then(|| {
+                        self.frame_styled
+                            .as_ref()
+                            // No CSSOM change since the frame, which no
+                            // journal says (an adopted sheet, a rule).
+                            // Nor a font settled that its font-relative
+                            // units would measure otherwise.
+                            .filter(|frame| {
+                                !frame.stale
+                                    && frame.viewport == self.window.viewport
+                                    && frame.sheets_generation == page.sheets_generation()
+                                    && (!frame.styles.uses_font_units || frame.fonts == fonts_now)
+                            })
+                            .map(|frame| &frame.styles)
+                    })
+                    .flatten()
+                    .filter(|styles| !sheets.media_changed(styles, &self.window.media))
+                    .cloned();
+                if let Some(base) = base {
+                    self.flushes_from_frame += 1;
+                    let since = frame_since.unwrap_or_default();
+                    self.work += since.len() as u64;
+                    #[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+                    let check = self.crosscheck_this().then(|| {
+                        (
+                            std::cell::RefCell::new(self.animations.borrow().clone()),
+                            base.clone(),
+                        )
+                    });
+                    // The animated elements too, their values of the
+                    // frame's time, which the clock has moved on from,
+                    // and those animated then whose animations have
+                    // finished or gone since (a transition ended).
+                    let mut animated = touched.clone();
+                    animated.extend(self.animations.borrow().targets());
+                    if let Some(frame) = self.frame_styled.as_ref() {
+                        animated.extend_from_slice(&frame.animated);
+                    }
+                    let mut styles = base;
+                    sheets.restyle_animated(
+                        &self.document,
+                        &context,
+                        &mut styles,
+                        &since,
+                        &animated,
+                    );
+                    #[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+                    if let Some(check) = &check {
+                        let began = std::time::Instant::now();
+                        let mismatch =
+                            first_mismatch(&self.document, &sheets, &context, check, &styles);
+                        self.crosscheck_spent += began.elapsed();
+                        self.sweep.style_checks += 1;
+                        if let Some(line) = mismatch {
+                            #[cfg(any(debug_assertions, fuzzing))]
+                            panic!("{line}");
+                            #[cfg(not(any(debug_assertions, fuzzing)))]
+                            {
+                                self.sweep.style_mismatches += 1;
+                                if self.sweep.style_mismatches == 1 {
+                                    eprintln!("{line}");
+                                }
+                            }
+                        }
+                    }
+                    self.previous_styles = None;
+                    self.computed = Some(ComputedStyles {
+                        sheets,
+                        raw,
+                        styles,
+                        version,
+                        mark: changes.len(),
+                        fonts: fonts_now,
+                        touches,
+                    });
+                    self.settle_containers();
+                    return self.computed.as_ref().map(|computed| &computed.styles);
+                }
+                self.work += self.document.len() as u64;
                 // The before-change style: the last run's styles, or the
                 // frame's when it styled the document since.
                 let previous = self.previous_styles.take();
@@ -8559,11 +8750,66 @@ fn matched_by_changed_rules(
         .collect()
 }
 
+/// The check of [`DocumentHost::styles_now`]'s styles from the frame:
+/// the document cascaded whole from the same before-change styles, on a
+/// copy of the animations, gives every element and pseudo-element the
+/// same style. The first that differs, named with the first computed
+/// property that does and both values, when one does. Built into debug
+/// and fuzzing builds, which panic with it, and into a release build
+/// with the `style-crosscheck` feature, which counts it for the site
+/// sweep and says the first on stderr.
+#[cfg(any(debug_assertions, fuzzing, feature = "style-crosscheck"))]
+fn first_mismatch(
+    document: &dom::Document,
+    sheets: &Stylesheets,
+    context: &CascadeContext<'_>,
+    (animations, before): &(std::cell::RefCell<style::animation::Animations>, Styles),
+    styles: &Styles,
+) -> Option<String> {
+    let context = CascadeContext {
+        animations: Some(animations),
+        ..*context
+    };
+    let whole = sheets.cascade_from(document, &context, before);
+    let root = document.root();
+    let node = document
+        .subtree(root)
+        .filter(|&node| document.is_element(node))
+        .find(|&node| {
+            styles.get(node) != whole.get(node)
+                || styles.pseudo_styles(node) != whole.pseudo_styles(node)
+        })?;
+    let what = match (styles.get(node), whole.get(node)) {
+        (Some(fast), Some(slow)) => style::serialize::COMPUTED_PROPERTIES
+            .iter()
+            .find_map(|&name| {
+                let (a, b) = (
+                    style::serialize::computed_value(fast, name),
+                    style::serialize::computed_value(slow, name),
+                );
+                (a != b).then(|| format!("{name}: {a:?} against {b:?}"))
+            })
+            .unwrap_or_else(|| "a value no property serializes, or a pseudo-element's".to_owned()),
+        (fast, slow) => format!("styled {} against {}", fast.is_some(), slow.is_some()),
+    };
+    // Whether the flush restyled it: one it left as the frame had it
+    // changed by something the journal and the keys did not say.
+    let restyled = styles.get(node) != before.get(node);
+    Some(format!(
+        "getComputedStyle from the frame's styles differs from a whole cascade at {node:?} \
+         ({:?} id={:?} class={:?}, restyled {restyled}): {what}",
+        document.tag(node),
+        document.attr(node, "id"),
+        document.attr(node, "class"),
+    ))
+}
+
 /// Whether one of `changes` reaches a style sheet: a `<style>` or
 /// `<link>` put in or taken out (or a subtree holding one), its text, or
 /// one of the attributes that choose its sheet.
 fn touches_sheets(document: &dom::Document, changes: &[dom::Change]) -> bool {
-    let owner = |node: NodeId| matches!(document.tag(node), Some("style" | "link"));
+    // A `<base>` too: a sheet's URLs are made absolute against the base.
+    let owner = |node: NodeId| matches!(document.tag(node), Some("style" | "link" | "base"));
     // The shadow trees in what came or went hold sheets too (D69).
     let holds = |node: NodeId| {
         document

@@ -504,3 +504,82 @@ fn an_element_first_rendered_transitions_from_its_starting_style() {
         ]
     );
 }
+
+#[test]
+fn a_style_flushed_then_changed_at_the_next_frame_transitions_from_the_flushed_value() {
+    // The pattern sites lean on, kept as a script's first flush starts
+    // from the frame's styles (the site sweep's reddit): a value set and
+    // read back (no transition yet), then at the next frame a transition
+    // put on and the value changed: it runs from the value read.
+    let (mut tab, clock, _) = page(
+        "<style>#t { width: 10px }</style><div id=t></div><script>\
+         var t = document.getElementById('t');\
+         requestAnimationFrame(function () {\
+           t.style.width = '100px';\
+           console.log(getComputedStyle(t).width, t.offsetWidth);\
+           requestAnimationFrame(function () {\
+             t.style.transition = 'width 10s linear';\
+             t.style.width = '200px';\
+             console.log(t.getAnimations().length, getComputedStyle(t).width);\
+           });\
+         });\
+         </script>",
+    );
+    for at in [16, 32, 48, 64] {
+        frame_at(&mut tab, &clock, at);
+    }
+    assert_eq!(lines(&mut tab), ["100px 100", "1 100px"]);
+}
+
+#[test]
+fn a_class_toggled_with_a_flush_between_transitions() {
+    // A class taken off, the style flushed, the class put back: the
+    // flush is the before-change style, so the change transitions.
+    let (mut tab, clock, _) = page(
+        "<style>#t { transition: opacity 10s linear; opacity: 1 } #t.off { opacity: 0 }</style>\
+         <div id=t class=off></div><script>\
+         var t = document.getElementById('t');\
+         requestAnimationFrame(function () {\
+           t.classList.remove('off');\
+           getComputedStyle(t).opacity;\
+           t.classList.add('off');\
+           t.offsetWidth;\
+           t.classList.remove('off');\
+           console.log(t.getAnimations().length, getComputedStyle(t).opacity);\
+         });\
+         </script>",
+    );
+    for at in [16, 32, 48] {
+        frame_at(&mut tab, &clock, at);
+    }
+    let said = lines(&mut tab);
+    assert_eq!(said.len(), 1, "{said:?}");
+    // The change from the flushed 0 back to 1 transitions.
+    assert!(said[0].starts_with("1 "), "{said:?}");
+}
+
+#[test]
+fn a_flush_after_a_transition_ended_sees_its_end_inherited() {
+    // The frame's styles hold the transition's value; it ends before
+    // the next frame, and a flush then reads its end, inherited down
+    // two levels (WPT css-transitions inherit-height-transition).
+    let (mut tab, clock, _) = page(
+        "<style>div { height: inherit } #outer { height: 50px }\
+         #outer.collapsed { height: 0px; transition: height 0.01s }</style>\
+         <div id=outer><div><div id=inner>x</div></div></div><script>\
+         var outer = document.getElementById('outer');\
+         var inner = document.getElementById('inner');\
+         requestAnimationFrame(function () {\
+           outer.offsetTop;\
+           outer.className = 'collapsed';\
+         });\
+         outer.addEventListener('transitionend', function () {\
+           console.log(getComputedStyle(inner).height);\
+         });\
+         </script>",
+    );
+    for at in [16, 32, 48, 64, 80] {
+        frame_at(&mut tab, &clock, at);
+    }
+    assert_eq!(lines(&mut tab), ["0px"]);
+}

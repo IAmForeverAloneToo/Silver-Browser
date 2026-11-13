@@ -177,7 +177,7 @@ pub enum ScriptState {
     Stopped { errors: usize },
 }
 
-pub(crate) use host::{DocumentHost, ScriptScroll, notices_json};
+pub(crate) use host::{DocumentHost, ScriptScroll, fonts_key, notices_json};
 pub(crate) use layout_observers::{Measured, meet};
 pub(crate) use range_rects::{Slot, advance, drawn_chars, match_data, match_text, text_fragments};
 
@@ -389,6 +389,15 @@ pub(crate) struct WindowEnv {
     /// The viewport's scroll offset and each scroll container's, as
     /// drawn (D65).
     pub(crate) scroll: Arc<(f32, paint::Offsets)>,
+    /// The changes the engine took from the journal since its frame's
+    /// styles and has not restyled yet, which a run's first flush
+    /// restyles those styles by with the journal's (the site sweep's
+    /// reddit); `None` when the next frame cascades whole (a sheet
+    /// changed) or there are no styles. With the document's count of
+    /// drains of its journal then ([`dom::Document::drains`]): an
+    /// environment kept past a drain (a parser's slice, its scripts' run
+    /// between) is not of the changes now, and its flush cascades whole.
+    pub(crate) styles_pending: Option<(u64, Arc<Vec<dom::Change>>)>,
     /// Whether a smooth scroll is on its way to where it goes, which the
     /// scroll methods' promises wait for.
     pub(crate) scrolling: bool,
@@ -2965,6 +2974,12 @@ impl Scripts {
     /// What the site sweep counted of the document (`crate::sweep`).
     pub(crate) fn sweep(&self) -> &crate::sweep::SweepCounts {
         &self.host.sweep
+    }
+
+    /// How many flushes started from the frame's styles: for the tests.
+    #[cfg(test)]
+    pub(crate) fn flushes_from_frame(&self) -> u64 {
+        self.host.flushes_from_frame
     }
 
     /// The console's entries since it was last taken.

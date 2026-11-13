@@ -2189,6 +2189,15 @@ none of batch H's features is either within 10% or here.
 
 **Ideas, not taken.** Measured, for when a page needs them:
 
+- `FLUSH_FROM_FRAME` (off, `scripts/host.rs`): a run's first
+  `getComputedStyle` from the frame's styles, about 2 s off reddit's
+  load (12.5 to 14.5 s on, 15.1 to 15.9 s off, 3 runs each). To flip
+  it: the ddg button-colour mismatch explained (2 in 4 runs, then 0 in
+  30; the diagnostic line, with id, class and whether the flush
+  restyled it, is ready), and the sampled cross-check
+  (`style-crosscheck`) clean on maps and weather with
+  `styleFastPathChecks` above 0.
+
 - The bindings made at first use: the separable sections as chunks
   (D64) take 0.27ms off a realm; each interface installed on its
   first access, a bigger lever, is unmeasured.
@@ -2205,6 +2214,14 @@ none of batch H's features is either within 10% or here.
   are patched into the boxes (M22.4). The colours' list patched so too
   is the lever, if the sweep or the dogfood shows such a page jank.
   Its children are restyled only when they read the change (G254).
+- A script's DOM call on a page as busy as the site sweep's reddit
+  (known, ranked with the sweep's item 7): some 80 ms each still, the
+  layout the run's first geometry question makes whole (no layout is
+  built on the frame's as the styles now are), and first flushes that
+  cascade the document whole because the page changed a sheet since
+  the frame, as reddit does all the time. Measured 2026-11-13 after the
+  flush from the frame's styles (G46) and the SVG trees' one recascade
+  a frame: reddit loads in 12 to 15 s, 3 times in 3.
 
 
 **The allocator trial (D79, 2026-11-13).** mimalloc 0.1.52 (v3) and the

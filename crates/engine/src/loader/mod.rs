@@ -1129,8 +1129,9 @@ pub(crate) struct Parsed {
 /// What a navigation's response becomes (docs/design/navigation.md,
 /// "What a response becomes"), in HTML's order.
 pub(crate) enum Outcome {
-    /// A document to show: HTML, or text made into a document.
-    Document(Parsed),
+    /// A document to show: HTML, or text made into a document (boxed:
+    /// the other outcomes are a word or two).
+    Document(Box<Parsed>),
     /// An error status with an empty body: the browser's page naming it.
     Status,
     /// An image, audio or video, of this essence, which this version
@@ -1183,22 +1184,22 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
                 }
             }
         }
-        Outcome::Document(Parsed {
+        Outcome::Document(Box::new(Parsed {
             document,
             encoding,
             undecodable: (!encoding.can_decode()).then_some(encoding),
             language: content_language(response),
             content_type: Some(essence.to_owned()),
-        })
+        }))
     } else if computed.is_html() {
         let decoded = html::parse_document_from_bytes(&response.body, transport);
-        Outcome::Document(Parsed {
+        Outcome::Document(Box::new(Parsed {
             document: decoded.document,
             encoding: decoded.encoding,
             undecodable: decoded.undecodable,
             language: content_language(response),
             content_type: None,
-        })
+        }))
     } else if essence == "image/svg+xml" {
         // An SVG document (M32): the XML parser's, or the page naming its
         // first error, as the reference browser shows one.
@@ -1209,13 +1210,13 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
                 None,
             ),
         };
-        Outcome::Document(Parsed {
+        Outcome::Document(Box::new(Parsed {
             document,
             encoding: encoding::UTF_8,
             undecodable: None,
             language: content_language(response),
             content_type,
-        })
+        }))
     } else if computed.is_xml()
         || computed.is_javascript()
         || computed.is_json()
@@ -1225,13 +1226,13 @@ pub(crate) fn outcome(response: &Response) -> Outcome {
         // decoded as a document's are.
         let (encoding, _) = html::encoding_sniffing::sniff(&response.body, transport);
         let (text, decoded_with) = encoding::decode(&response.body, encoding);
-        Outcome::Document(Parsed {
+        Outcome::Document(Box::new(Parsed {
             document: crate::pages::text(&text),
             encoding: decoded_with,
             undecodable: (!encoding.can_decode()).then_some(encoding),
             language: content_language(response),
             content_type: None,
-        })
+        }))
     } else if computed.is_image() || computed.is_audio_or_video() {
         Outcome::Unshowable(essence.to_owned())
     } else {
