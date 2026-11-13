@@ -94,6 +94,18 @@ jobs:
       # about.
       - run: cargo audit --file fuzz/Cargo.lock
 
+  sweep-driver:
+    # The site sweep's driver (tools/sweep/sweep.mjs): its own parts, the
+    # PNG reader, the likeness, the console's grouping and the causes'
+    # ranking, with no browser and no network. The capture it drives is
+    # the shell's, which the test job holds to its fixture pages.
+    name: sweep driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: node --version
+      - run: node --test tools/sweep/sweep.test.mjs
+
   test:
     # The tests shape, measure and draw the font the text crate bundles
     # for them, so no runner needs a system font and every runner

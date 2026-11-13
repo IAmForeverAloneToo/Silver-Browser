@@ -497,6 +497,7 @@ export function topCauses(rows) {
     const net = s.network || {};
     for (const [kind, n] of Object.entries(net.failedByKind || {})) hit(`network: ${kind}`, "network", row.id, n);
     for (const [dest, n] of Object.entries(net.failedByDestination || {})) hit(`failed ${dest}`, "subresource", row.id, n);
+    for (const [dest, n] of Object.entries(net.errorStatusByDestination || {})) hit(`error status: ${dest}`, "subresource", row.id, n);
     const groups = new Map();
     for (const entry of s.console || []) {
       if (entry.source !== "exception" && entry.level !== "error") continue;

@@ -190,7 +190,11 @@ fn capture(asked: &Asked) -> Result<(), String> {
         if let (Some(_), Some(_), Some((_, since))) = (first_paint, load, layouts)
             && since.elapsed() >= SETTLE
         {
-            settled = Some(since.duration_since(began));
+            // Settled once loaded: layouts that stopped before the load
+            // (the counts of the view the tab showed before) settle it at
+            // the load.
+            let load = load.unwrap_or_default();
+            settled = Some(since.duration_since(began).max(load));
             break;
         }
     }

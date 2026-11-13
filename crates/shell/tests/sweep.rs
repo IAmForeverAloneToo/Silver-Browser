@@ -82,6 +82,11 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
             "{name}: {record:?}"
         );
     }
+    // Settled once loaded, however early its layouts stopped.
+    assert!(
+        field(timings, "settled").as_f64() >= field(timings, "load").as_f64(),
+        "{record:?}"
+    );
     let missing = field(field(&record, "counters"), "missing");
     assert_eq!(
         field(missing, "notInThisEngine").as_u64(),
