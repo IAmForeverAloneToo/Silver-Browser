@@ -1,11 +1,13 @@
 // The site sweep's scoreboard: the release shell against the installed
-// Chrome on the beta list, one load a site, both browsers in the same
-// minute, three sites at a time. Writes target/sweep/<date>/report.html
-// (screenshots side by side and the top causes across sites) and
-// appends the numbers alone to docs/sweep-log.md.
+// Chrome on the beta list, one load a site, one site and one browser at
+// a time, so that a line measures the browser and not the machine's
+// load. Writes target/sweep/<date>/report.html (screenshots side by
+// side and the top causes across sites) and appends the numbers alone
+// to docs/sweep-log.md. `--stress <n>` is another run: <n> sites side by
+// side, both browsers at once, as tabs share a machine; never logged.
 //
 //   node tools/sweep/sweep.mjs [--sites <file>] [--only id,id] [--no-chrome]
-//     [--no-log] [--silver <exe>] [--chrome <exe>] [--out <dir>]
+//     [--no-log] [--stress <n>] [--silver <exe>] [--chrome <exe>] [--out <dir>]
 //
 // Needs Node 22 or later (its WebSocket) and nothing else. Never signs
 // in, never types credentials; every permission is denied, consent
@@ -23,7 +25,6 @@ const WIDTH = 1280;
 const HEIGHT = 800;
 const CAP_MS = 30_000;
 const SETTLE_MS = 2_000;
-const PARALLEL = 3;
 const SCROLL_SCREENS = 3;
 
 // The sites: the lead's list, kept beside the repository (an id and a
@@ -44,12 +45,16 @@ export function readList(file) {
 // ---- Arguments ----------------------------------------------------------
 
 function args(argv) {
-  const out = { only: null, chrome: true, log: true };
+  const out = { only: null, chrome: true, log: true, stress: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--only") out.only = argv[++i].split(",");
     else if (a === "--no-chrome") out.chrome = false;
     else if (a === "--no-log") out.log = false;
+    else if (a === "--stress") {
+      out.stress = Math.max(1, Number.parseInt(argv[++i], 10) || 1);
+      out.log = false;
+    }
     else if (a === "--silver") out.silver = argv[++i];
     else if (a === "--chrome") out.chromeExe = argv[++i];
     else if (a === "--out") out.out = argv[++i];
@@ -444,14 +449,18 @@ export async function run(options) {
   if (!fs.existsSync(list)) throw new Error(`no site list: ${list} (or --sites <file>)`);
   const sites = readList(list).filter(([id]) => !options.only || options.only.includes(id));
   const began = Date.now();
-  const rows = await pool(sites, PARALLEL, async ([id, url]) => {
+  const stress = options.stress;
+  const rows = await pool(sites, stress ?? 1, async ([id, url]) => {
     const dir = path.join(out, id);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
-    const [s, c] = await Promise.all([
-      captureSilver(silver, url, dir),
-      chrome ? captureChrome(chrome, url, dir) : Promise.resolve(null),
-    ]);
+    // The scoreboard: one browser at a time. A stress run: both at once.
+    const [s, c] = stress
+      ? await Promise.all([
+          captureSilver(silver, url, dir),
+          chrome ? captureChrome(chrome, url, dir) : Promise.resolve(null),
+        ])
+      : [await captureSilver(silver, url, dir), chrome ? await captureChrome(chrome, url, dir) : null];
     const host = (u) => {
       try {
         return new URL(u).hostname;
@@ -592,6 +601,7 @@ function appendLog(meta, rows, causes) {
     );
   }
   lines.push(`## ${meta.date}, ${meta.commit}, against ${meta.chrome ?? "no reference"}`, "");
+  lines.push("One site and one browser at a time.", "");
   lines.push("| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |");
   lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   const s1 = (v) => (v === undefined || v === null ? "-" : (v / 1000).toFixed(1));
