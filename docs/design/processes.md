@@ -577,6 +577,27 @@ the renderer is killed where the protocol says so, and the browser
 goes on. The adversarial site's pages (M27.7, M33.17) run again in a
 tab of renderers.
 
+### The site sweep's capture (2026-11-13)
+
+`silver-browser --sweep-site <URL> --sweep-out <dir>` loads one site as
+the window would, in a tab of sandboxed renderers on the network, with
+no window and a context of its own that reads and writes no profile;
+its renderers' crash dumps go to `<dir>/crashes`. Every permission is
+denied and every dialog cancelled. It writes `silver.json` (the
+outcome: ok, renderer crash with its dump, hang, or load error; the
+first paint, the load and the settle, no layout for two seconds; the
+console; the engine's `page.sweep` counts and the network log's
+summary; the peak working set and commit of the renderers and the
+browser) and the page at rest and three screens down as PNGs. A
+renderer that answers nothing for ten seconds has hung: its thread is
+what answers `page.sweep`, asked every quarter second. The one-process
+build has no sweep. `tools/sweep/sweep.mjs` runs it beside the
+installed Chrome over its DevTools protocol, three sites at a time, and
+writes `target/sweep/<date>/report.html` and `docs/sweep-log.md`;
+`crates/shell/tests/sweep.rs` holds it to three local pages, one that
+loads, one whose renderers crash, and one that holds its renderer on a
+synchronous request.
+
 ## 2. Not in this milestone, said rather than hidden
 
 Each item that no milestone holds is registered on the G list at the

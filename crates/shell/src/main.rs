@@ -35,6 +35,8 @@
 //! `--renderer <number>` runs it as one, for the browser that started it,
 //! `--gpu` as the GPU process (M41, D38), and `--check-processes` starts
 //! renderers as the browser does and says what became of them.
+//! `--sweep-site <URL> --sweep-out <dir>` is the site sweep's capture
+//! of one site (`sweep.rs`), with no window.
 
 // `unsafe` in the platform module alone (M33.5), which allows it.
 #![deny(unsafe_code)]
@@ -48,6 +50,8 @@ mod platform;
 mod processes;
 mod session;
 mod startup;
+#[cfg(not(feature = "single-process"))]
+mod sweep;
 mod windows;
 
 use std::cell::RefCell;
@@ -1128,6 +1132,19 @@ fn main() {
             std::process::exit(processes::check(what.as_deref().and_then(|w| w.to_str())))
         }
         _ => {}
+    }
+    // The site sweep's capture of one site (the scoreboard): no window.
+    #[cfg(not(feature = "single-process"))]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        match sweep::asked(&args) {
+            Some(Ok(asked)) => std::process::exit(sweep::run(&asked)),
+            Some(Err(why)) => {
+                eprintln!("silver-browser: {why}");
+                std::process::exit(2);
+            }
+            None => {}
+        }
     }
     if std::env::args_os().any(|arg| arg == "--startup-trace") {
         startup::begin();

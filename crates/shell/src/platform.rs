@@ -288,6 +288,13 @@ pub(crate) fn fault() {
 pub(crate) struct ProcessMemory {
     pub(crate) private: Option<u64>,
     pub(crate) working_set: u64,
+    /// The most of its working set it has had, and of its private bytes
+    /// (its commit), where the system keeps them: for the site sweep,
+    /// which the one-process build has not.
+    #[cfg_attr(feature = "single-process", allow(dead_code))]
+    pub(crate) peak_working_set: u64,
+    #[cfg_attr(feature = "single-process", allow(dead_code))]
+    pub(crate) peak_private: Option<u64>,
 }
 
 /// How long ago this process started, for `--startup-trace` (M35.6):
@@ -335,9 +342,12 @@ pub(crate) fn process_memory(id: u32) -> Option<ProcessMemory> {
                 kb.trim().parse::<u64>().ok().map(|kb| kb * 1024)
             })
         };
+        let working_set = field("VmRSS:")?;
         Some(ProcessMemory {
             private: field("RssAnon:"),
-            working_set: field("VmRSS:")?,
+            working_set,
+            peak_working_set: field("VmHWM:").unwrap_or(working_set),
+            peak_private: None,
         })
     }
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -350,6 +360,8 @@ pub(crate) fn process_memory(id: u32) -> Option<ProcessMemory> {
         Some(ProcessMemory {
             private: None,
             working_set: kb * 1024,
+            peak_working_set: kb * 1024,
+            peak_private: None,
         })
     }
 }
@@ -1602,6 +1614,8 @@ mod windows {
         (read != 0).then_some(super::ProcessMemory {
             private: Some(counters.PrivateUsage as u64),
             working_set: counters.WorkingSetSize as u64,
+            peak_working_set: counters.PeakWorkingSetSize as u64,
+            peak_private: Some(counters.PeakPagefileUsage as u64),
         })
     }
 

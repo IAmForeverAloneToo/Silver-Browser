@@ -18,6 +18,8 @@ single-process = []
 
 [dependencies]
 engine.workspace = true
+# The site sweep's screenshots, encoded as a canvas's PNG is.
+canvas.workspace = true
 # The DevTools' protocol, which the router reads (M36).
 devtools.workspace = true
 # The system's fonts, scanned once and aside as the browser starts (M35.6).
