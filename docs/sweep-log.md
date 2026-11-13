@@ -47,3 +47,46 @@ Top 10 causes (sites, total):
 - 1, 3: console: Uncaught (in promise) SecurityError: Failed to read a named property 'JSON' from 'Window': Blocked a frame with origin "<url>" from accessing a cross-origin frame.
 - 1, 2: console: TypeError: not a function
 
+## 2026-11-13, 3a2e822f1, against Chrome/157.0.8103.52
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.779 | 1.6 / 2.9 / 3.5 | 8.4 | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.792 / 0.799 | 1.1 / 2.4 / 4.1 | 4.9 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.774 / 0.771 | 1.3 / 1.4 / 1.6 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | renderer crash | no | - / - | - / - / - | 2.7 | 0 | 0 | 0 | 0 | 0 | 0 |
+| verge | renderer crash | no | - / - | - / - / - | 20.3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.746 / 0.746 | 0.9 / 1.4 / 1.4 | 3.4 | 0 | 1 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.792 | 6.2 / 6.7 / 6.7 | 3.6 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 1.0 / 1.6 / 1.6 | 4.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.615 / 0.732 | 1.4 / 1.4 / 3.2 | 10.2 | 0 | 1 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.78 / 0.853 | 2.0 / 2.3 / 4.8 | 3.0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.777 / 0.777 | 0.7 / 4.7 / 5.7 | 2.4 | 0 | 4 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.696 / 0.707 | 1.8 / 3.9 / 4.0 | 4.5 | 0 | 3 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.846 / 0.861 | 2.0 / 2.9 / 3.0 | 5.0 | 1 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.693 / 0.692 | 2.7 / 8.8 / 13.2 | 3.6 | 0 | 7 | 0 | 0 | 0 | 0 |
+| twitch | ok | yes | 0.606 / 0.606 | 0.8 / 0.1 / 3.2 | 4.7 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | renderer crash | no | - / - | - / - / - | 15.7 | 0 | 0 | 0 | 0 | 0 | 0 |
+| maps | ok | yes | 0.887 / 0.866 | 1.5 / 8.6 / 20.0 | 4.5 | 0 | 11 | 0 | 0 | 0 | 0 |
+| reddit | hang | yes | 0.688 / - | 0.6 / - / - | 2.6 | 0 | 2 | 0 | 0 | 0 | 0 |
+| x | ok | - | - / - | 1.7 / 4.0 / 4.0 | - | 2 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.811 / 0.811 | 2.1 / 3.5 / 3.6 | 2.3 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 2.2 / 3.2 / 3.3 | 15.1 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.747 / 0.733 | 0.8 / 1.5 / 1.5 | 2.8 | 0 | 4 | 0 | 0 | 0 | 0 |
+| amazon | ok | no | 0.562 / 0.559 | 2.0 / 27.2 / 27.2 | 5.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ebay | ok | yes | 0.997 / 0.997 | 1.1 / 1.8 / 1.8 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | renderer crash | no | - / - | - / - / - | - | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Top 10 causes (sites, total):
+
+- 4, 13: console: Uncaught TypeError: not a function at <url>
+- 4, 4: error status: document
+- 4, 4: outcome: renderer crash
+- 3, 12: G90: same-origin frame refused
+- 3, 11: console: Uncaught NotFoundError: The node is no longer there.
+- 2, 5: missing: (not a function)
+- 2, 2: console: Uncaught TypeError: cannot read property 'getRandomValues' of undefined at <url>
+- 1, 6: console: Uncaught (in promise) ReferenceError: PerformanceObserver is not defined at <url>
+- 1, 6: missing: PerformanceObserver
+- 1, 4: console: Uncaught TypeError: Failed to execute 'insertBefore' on 'Node': parameter N is not of type 'Node'. at bootstrap:N:N
+
