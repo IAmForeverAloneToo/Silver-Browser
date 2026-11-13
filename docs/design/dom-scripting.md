@@ -520,6 +520,15 @@ compatibility mode: `vendor` `Google Inc.`, `productSub` `20030107`),
 for a page that refuses an engine it does not recognize. Net takes the
 string from the request rather than a constant.
 
+**D80 (2026-11-13) makes the compatible string the default**: sites gate
+on the string's shape, and the browser is to be judged on its
+rendering, not its sniffing. Requests and `navigator.userAgent` send the
+reference browser's string with `Silver/<version>` appended, as Edge
+appends its own to Chrome's tokens, and `navigator` takes HTML's Chrome
+compatibility mode; the shell's `--minimal-user-agent` sends D12's
+string and the Gecko mode instead (`--compat-user-agent` is still
+taken, and asks for the default).
+
 **Mutations reach the frame (M25.3).** Nothing new is needed to make a
 script's change visible: it goes through `dom::Document`'s methods,
 the journal records it, and after the run the engine takes the

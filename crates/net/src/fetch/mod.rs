@@ -55,24 +55,24 @@ macro_rules! compat_platform {
     };
 }
 
-/// The `User-Agent` requests send unless the user asks otherwise. It
-/// begins as Fetch encourages and names nothing but the browser: D12,
-/// decided at M25, is an honest, minimal string.
+/// The `User-Agent` requests send unless the user asks otherwise (D80):
+/// what the reference browser on the same system sends, with this
+/// browser named after it, as Edge names itself after Chrome's tokens,
+/// so that a site that gates on the string's shape judges the page's
+/// rendering, not its sniffing.
 pub const USER_AGENT: &str = concat!(
+    "Mozilla/5.0 (",
+    compat_platform!(),
+    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Silver/",
+    env!("CARGO_PKG_VERSION")
+);
+
+/// D12's honest, minimal string, which named nothing but the browser:
+/// sent only when the compatible string is turned off.
+pub const MINIMAL_USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; SilverBrowser/",
     env!("CARGO_PKG_VERSION"),
     ")"
-);
-
-/// The `User-Agent` of D12's compatibility escape hatch, for a page that
-/// refuses an engine it does not recognize: what the reference browser
-/// on the same system sends, with this browser named after it. Never the
-/// default.
-pub const COMPAT_USER_AGENT: &str = concat!(
-    "Mozilla/5.0 (",
-    compat_platform!(),
-    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 SilverBrowser/",
-    env!("CARGO_PKG_VERSION")
 );
 
 /// The `Accept-Language` every request sends, until settings choose
@@ -656,7 +656,7 @@ impl Client {
     }
 
     /// The client, its requests sending `user_agent`: [`USER_AGENT`] or
-    /// [`COMPAT_USER_AGENT`].
+    /// [`MINIMAL_USER_AGENT`].
     pub fn with_user_agent(mut self, user_agent: &'static str) -> Client {
         self.user_agent = user_agent;
         self

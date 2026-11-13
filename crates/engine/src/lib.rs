@@ -1662,7 +1662,7 @@ impl Engine {
             load_state: LoadState::Loaded,
             completed: None,
             waker: None,
-            compat_user_agent: false,
+            compat_user_agent: true,
             scripting: false,
             preload_scanner: true,
             gpu: gpu::local_client(),
@@ -5755,16 +5755,16 @@ impl Engine {
         self.scripting && !self.shown.page.sandbox().has(sandbox::Sandbox::SCRIPTS)
     }
 
-    /// Sends D12's compatibility user agent string in requests and
-    /// `navigator`, for a page that refuses an engine it does not know
-    /// (the shell's `--compat-user-agent`); never the default. Takes the
+    /// Sends the compatible user agent string in requests and
+    /// `navigator`, Chrome's with this browser named after it (D80), the
+    /// default; off, D12's minimal one and Gecko's `navigator`. Takes the
     /// place of the client: a test's own goes.
     pub fn set_compat_user_agent(&mut self, on: bool) {
         self.compat_user_agent = on;
         let agent = if on {
-            net::COMPAT_USER_AGENT
-        } else {
             net::USER_AGENT
+        } else {
+            net::MINIMAL_USER_AGENT
         };
         self.network
             .set_client(net::Client::default().with_user_agent(agent));

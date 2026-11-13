@@ -269,11 +269,17 @@ fn a_request_sends_its_fields() {
         (sent.method.as_str(), sent.target.as_str()),
         ("GET", "/a?b=c")
     );
+    // The reference browser's string, this browser named after it, by
+    // default (D80).
     assert_eq!(sent.header("User-Agent"), Some(USER_AGENT));
-    assert!(USER_AGENT.starts_with("Mozilla/5.0 (compatible; SilverBrowser/"));
-    // D12's escape hatch sends the reference browser's string, this
-    // browser named after it, when a client is made to.
-    let compat = client().with_user_agent(super::COMPAT_USER_AGENT);
+    assert!(
+        USER_AGENT.starts_with("Mozilla/5.0 (")
+            && USER_AGENT.contains(") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/")
+            && USER_AGENT.ends_with(concat!(" Safari/537.36 Silver/", env!("CARGO_PKG_VERSION"))),
+        "{USER_AGENT}"
+    );
+    // D12's minimal string, when a client is made to send it.
+    let compat = client().with_user_agent(super::MINIMAL_USER_AGENT);
     compat
         .fetch(&Request::get(server.url("/style.css"), Destination::Style))
         .unwrap();
@@ -284,11 +290,14 @@ fn a_request_sends_its_fields() {
         .header("User-Agent")
         .map(str::to_owned);
     let agent = agent.unwrap();
-    assert!(
-        agent.starts_with("Mozilla/5.0 (") && agent.contains(" Chrome/"),
-        "{agent}"
+    assert_eq!(
+        agent,
+        concat!(
+            "Mozilla/5.0 (compatible; SilverBrowser/",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        )
     );
-    assert!(agent.ends_with(concat!(" SilverBrowser/", env!("CARGO_PKG_VERSION"))));
     assert_eq!(
         sent.header("Accept"),
         Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")

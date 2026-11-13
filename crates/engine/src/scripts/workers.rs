@@ -1295,9 +1295,9 @@ impl ScriptingHost for WorkerHost {
             Call::Location => Ok(Answer::Strings(location_parts(self.url.as_ref()))),
             Call::NavigatorInfo => {
                 let (agent, mode) = if self.compat {
-                    (net::COMPAT_USER_AGENT, "chrome")
+                    (net::USER_AGENT, "chrome")
                 } else {
-                    (net::USER_AGENT, "gecko")
+                    (net::MINIMAL_USER_AGENT, "gecko")
                 };
                 Ok(Answer::Strings(vec![
                     agent.to_owned(),

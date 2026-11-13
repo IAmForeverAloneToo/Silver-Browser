@@ -140,8 +140,9 @@ fn the_jar_outlives_the_client_and_a_file_page_has_none() {
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/set.html"));
-    // D12's switch makes a new client: the cookies stay the engine's.
-    tab.engine.set_compat_user_agent(true);
+    // The user agent's switch makes a new client: the cookies stay the
+    // engine's.
+    tab.engine.set_compat_user_agent(false);
     load_all(&mut tab, server.url("/next.html"));
     assert_eq!(cookie(&server, "/next.html").as_deref(), Some("a=1"));
     let dir = std::env::temp_dir().join(format!("silver-cookies-{}", std::process::id()));

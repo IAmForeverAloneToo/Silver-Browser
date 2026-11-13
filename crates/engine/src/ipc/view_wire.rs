@@ -268,7 +268,7 @@ impl Default for Settings {
         Settings {
             preferences: Preferences::default(),
             scripting: false,
-            compat_user_agent: false,
+            compat_user_agent: true,
             hidden: false,
             focused: false,
             scale: 1.0,

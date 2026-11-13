@@ -692,9 +692,7 @@ fn print_to_pdf(
     }
     engine.set_preferences(preferences(asked, None, platform::reduced_motion()));
     engine.set_scripting(scripts);
-    if compat {
-        engine.set_compat_user_agent(true);
-    }
+    engine.set_compat_user_agent(compat);
     let (wake, woken) = mpsc::channel();
     engine.set_waker(move || {
         // A receiver gone has nothing to wake.
@@ -954,8 +952,10 @@ struct CommandLine {
     /// `--print-to-pdf`'s page, which the browser's own process shows
     /// (G124), they wait to be asked for (roadmap risk R2).
     scripts: Option<bool>,
-    /// `--compat-user-agent`: send the reference browser's user agent
-    /// string, this browser named after it (D12's escape hatch, M25).
+    /// Whether to send the reference browser's user agent string, this
+    /// browser named after it, the default (D80); `--minimal-user-agent`
+    /// sends D12's minimal one instead. `--compat-user-agent`, which
+    /// asked for it before it was the default, is still taken.
     compat: bool,
     /// Where the browsing keeps what it keeps (M28).
     profile: Keep,
@@ -986,7 +986,7 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
         asked: Asked::default(),
         print_to: None,
         scripts: None,
-        compat: false,
+        compat: true,
         profile: Keep::Default,
     };
     let mut page: Option<OsString> = None;
@@ -1003,8 +1003,8 @@ fn command_line(args: impl Iterator<Item = OsString>) -> Result<CommandLine, Str
             line.scripts = Some(arg == "--enable-scripts");
             continue;
         }
-        if arg == "--compat-user-agent" {
-            line.compat = true;
+        if arg == "--compat-user-agent" || arg == "--minimal-user-agent" {
+            line.compat = arg == "--compat-user-agent";
             continue;
         }
         // Read by `main` before the rest (M35.6).
@@ -1140,7 +1140,7 @@ fn main() {
             eprintln!(
                 "usage: silver-browser [--software] [--layer-budget <MiB>] \
                  [--prefers-color-scheme light|dark] [--prefers-reduced-motion] \
-                 [--enable-scripts | --disable-scripts] [--compat-user-agent] \
+                 [--enable-scripts | --disable-scripts] [--minimal-user-agent] \
                  [--print-to-pdf <path>] [--startup-trace] \
                  [--profile <dir> | --profile-name <name> | --temporary-profile] \
                  [URL or path]"
@@ -1309,9 +1309,7 @@ fn run<V: View + 'static>(
         }
         view.set_scrollbar_across(true);
         view.set_preferences(preferences(asked, None, platform::reduced_motion()));
-        if compat {
-            view.set_compat_user_agent(true);
-        }
+        view.set_compat_user_agent(compat);
         view.set_waker(waker.clone());
         view.set_clock(clock.clone());
         view
@@ -1653,11 +1651,12 @@ mod tests {
     }
 
     #[test]
-    fn the_compatibility_user_agent_is_sent_only_when_asked() {
+    fn the_compatible_user_agent_is_sent_unless_the_minimal_one_is_asked_for() {
         let compat =
             |args: &[&str]| command_line(args.iter().map(OsString::from)).map(|l| l.compat);
-        assert_eq!(compat(&[]), Ok(false));
+        assert_eq!(compat(&[]), Ok(true));
         assert_eq!(compat(&["--compat-user-agent", "example.com"]), Ok(true));
+        assert_eq!(compat(&["--minimal-user-agent", "example.com"]), Ok(false));
     }
 
     #[test]
@@ -1686,7 +1685,7 @@ mod tests {
                 asked: Asked::default(),
                 print_to: None,
                 scripts: None,
-                compat: false,
+                compat: true,
                 profile: Keep::Default,
             })
         );
@@ -1699,7 +1698,7 @@ mod tests {
                 asked: Asked::default(),
                 print_to: None,
                 scripts: None,
-                compat: false,
+                compat: true,
                 profile: Keep::Default,
             })
         );

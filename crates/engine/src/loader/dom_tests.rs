@@ -1804,7 +1804,7 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
              n.onLine, n.cookieEnabled, n.webdriver, n.pdfViewerEnabled, n.plugins.length, \
              n.mimeTypes.length, n.javaEnabled(), n.languages === n.languages, \
              typeof n.hardwareConcurrency, typeof n.userAgentData); \
-             console.log(n.userAgent.indexOf('Mozilla/5.0 (compatible; SilverBrowser/') === 0, \
+             console.log(n.userAgent.indexOf(' Silver/') > 0, \
              ['Win32', 'MacIntel', 'Linux x86_64'].indexOf(n.platform) >= 0); \
              console.log(innerWidth, innerHeight); \
              console.log(screen.width === innerWidth, screen.height === innerHeight, \
@@ -1817,6 +1817,8 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
         )),
         _ => None,
     });
+    // What the reference browser says, this browser named after it, by
+    // default (D80).
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
     tab.engine.frame(400, 200);
@@ -1827,26 +1829,34 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
         .into_iter()
         .map(|entry| entry.text)
         .collect();
+    assert_eq!(console.len(), 8, "{console:?}");
     assert_eq!(
-        console,
+        console[..4],
         [
             "true true true true true",
             "http:|127.0.0.1|/dir/page.html|?q=1|#frag",
             "true true",
             "UTF-8 text/html CSS1Compat",
-            "Mozilla Netscape 5.0 (compatible) Gecko 20100101 \"\" \"\" en-US en-US,en true true \
-             false false 0 0 false true undefined undefined",
+        ]
+    );
+    assert!(
+        console[4].starts_with("Mozilla Netscape 5.0 (")
+            && console[4].contains(" Gecko 20030107 \"Google Inc.\""),
+        "{console:?}"
+    );
+    assert_eq!(
+        console[5..],
+        [
             "true true",
             "400 200",
             "true true true 24 24 1 true true true true 0 null [object Navigator] [object Screen] \
              [object Location]",
         ]
     );
-    // D12's escape hatch: what the reference browser says, by Chrome's
-    // compatibility mode.
+    // D12's minimal string, asked for: Gecko's `navigator`.
     let mut tab = Tab::new();
     tab.engine.set_scripting(true);
-    tab.engine.set_compat_user_agent(true);
+    tab.engine.set_compat_user_agent(false);
     load_all(&mut tab, server.url("/dir/page.html"));
     let console: Vec<String> = tab
         .engine
@@ -1854,9 +1864,13 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
         .into_iter()
         .map(|entry| entry.text)
         .collect();
-    assert!(
-        console[4].starts_with("Mozilla Netscape 5.0 (")
-            && console[4].contains(" Gecko 20030107 \"Google Inc.\""),
+    assert_eq!(
+        console[4..6],
+        [
+            "Mozilla Netscape 5.0 (compatible) Gecko 20100101 \"\" \"\" en-US en-US,en true true \
+             false false 0 0 false true undefined undefined",
+            "false true",
+        ],
         "{console:?}"
     );
 }

@@ -441,9 +441,11 @@ URLs inside CSS are parsed as UTF-8 (css-values-4 §4.5.4).
 **What a request sends.**
 
 - `Host`.
-- `User-Agent: Mozilla/5.0 (compatible; SilverBrowser/<version>)`. It
-  begins as Fetch encourages and names nothing but the browser; D12
-  settles the policy at M25.
+- `User-Agent`: the reference browser's string with `Silver/<version>`
+  appended (D80, 2026-11-13); D12's minimal
+  `Mozilla/5.0 (compatible; SilverBrowser/<version>)`, which named
+  nothing but the browser, when the shell's `--minimal-user-agent`
+  asks.
 - `Accept` by destination, as Fetch lists it: a document's
   `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`,
   a stylesheet's `text/css,*/*;q=0.1`.

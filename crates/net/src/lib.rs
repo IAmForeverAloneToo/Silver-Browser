@@ -41,7 +41,7 @@ pub use cache::{Cache, CacheMode};
 pub use disposition::{Disposition, content_disposition};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
-    COMPAT_USER_AGENT, Client, Credentials, Delivery, Destination, Exposed, Initiator, Method,
+    Client, Credentials, Delivery, Destination, Exposed, Initiator, MINIMAL_USER_AGENT, Method,
     Mode, Redirect, Request, Response, ResponseType, USER_AGENT, blob,
 };
 pub use headers::HeaderList;

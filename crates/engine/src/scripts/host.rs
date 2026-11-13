@@ -2741,9 +2741,9 @@ impl DocumentHost {
             }
             Call::NavigatorInfo => {
                 let (agent, mode) = if self.window.compat {
-                    (net::COMPAT_USER_AGENT, "chrome")
+                    (net::USER_AGENT, "chrome")
                 } else {
-                    (net::USER_AGENT, "gecko")
+                    (net::MINIMAL_USER_AGENT, "gecko")
                 };
                 let mut info = vec![agent.to_owned(), PLATFORM.to_owned(), mode.to_owned()];
                 info.extend(self.window.languages.iter().cloned());

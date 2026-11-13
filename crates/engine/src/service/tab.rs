@@ -1987,8 +1987,8 @@ fn client(
     compat: bool,
 ) -> Client {
     let client = match compat {
-        true => Client::default().with_user_agent(net::COMPAT_USER_AGENT),
-        false => Client::default(),
+        true => Client::default(),
+        false => Client::default().with_user_agent(net::MINIMAL_USER_AGENT),
     };
     client
         .with_cookies(jar.clone())

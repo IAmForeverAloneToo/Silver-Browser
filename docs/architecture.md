@@ -1553,7 +1553,8 @@ inline and external, six levels deep at most (step 5); `classList`,
 `style` over the attribute, `dataset`, reflected attributes and
 listeners kept for M26 (step 6); and `window` v1 (step 7): a script's
 navigations with HTML's handling, `navigator` and `screen` by D12 with
-the shell's `--compat-user-agent`, which net's requests follow too,
+the shell's `--compat-user-agent` (the default since D80), which net's
+requests follow too,
 `getComputedStyle` over a copy of the cascade restyled by the journal
 and serialized by `style::serialize`, and `noscript` computing `inline`
 and making no box. `benches/dom.rs` (step 8) builds a table, toggles a
