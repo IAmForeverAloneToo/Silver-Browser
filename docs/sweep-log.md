@@ -133,3 +133,51 @@ Top 10 causes (sites, total):
 - 2, 4: console: Uncaught TypeError: cannot read property 'getRandomValues' of undefined at <url>
 - 2, 2: console: Uncaught (in promise) ReferenceError: ReadableStream is not defined at <url>
 
+## 2026-11-13, eecdbf6c1, against Chrome/157.0.8103.52
+
+Counting changed (errors from callbacks now counted): not comparable
+with earlier lines. This line is the new baseline. Reddit hung here,
+with the sweep's sites run side by side; alone, it loaded 3 of 3 (15.1
+to 15.9 s) on this commit.
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.809 / 0.776 | 2.1 / 4.2 / 5.0 | - | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.799 | 1.6 / 3.9 / 6.2 | 6.5 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.774 / 0.774 | 1.5 / 1.6 / 1.7 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | hang | yes | 0.701 / - | 1.0 / - / - | 3.8 | 1 | 1 | 0 | 0 | 0 | 0 |
+| verge | ok | yes | 0.798 / 0.701 | 2.2 / 8.8 / 8.8 | 8.8 | 2 | 3 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.743 / 0.743 | 1.0 / 1.7 / 1.7 | - | 1 | 4 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.793 | 6.1 / 6.1 / 6.1 | 19.2 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 1.1 / 1.6 / 1.6 | 15.0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.615 / 0.732 | 2.0 / 2.0 / 3.3 | 3.3 | 0 | 1 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.652 / 0.845 | 2.3 / 2.7 / 2.7 | 6.3 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.77 / 0.77 | 1.0 / 5.4 / 6.0 | 2.3 | 1 | 4 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.695 / 0.701 | 1.8 / 4.4 / 4.4 | 2.8 | 0 | 3 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.845 / 0.859 | 1.8 / 4.2 / 4.2 | 5.4 | 2 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.691 / 0.692 | 2.9 / 13.3 / 15.2 | 4.3 | 0 | 12 | 0 | 0 | 0 | 6 |
+| twitch | ok | yes | 0.738 / 0.675 | 1.1 / 3.6 / 3.6 | 1.1 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | ok | yes | 0.722 / 0.543 | 8.8 / - / - | 9.0 | 1 | 2 | 0 | 0 | 0 | 0 |
+| maps | hang | yes | 0.697 / - | 2.2 / - / - | 7.9 | 0 | 0 | 0 | 0 | 0 | 0 |
+| reddit | hang | yes | 0.684 / - | 1.1 / - / - | 4.6 | 0 | 2 | 0 | 0 | 0 | 0 |
+| x | ok | - | - / - | 4.2 / 8.5 / 8.5 | - | 3 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.806 / 0.806 | 2.6 / 3.7 / 3.9 | 12.6 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.827 | 1.9 / 3.1 / 3.1 | 1.5 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.746 / 0.736 | 0.9 / 1.7 / 1.7 | 2.7 | 0 | 4 | 0 | 0 | 0 | 0 |
+| amazon | ok | yes | 0.717 / 0.719 | 2.1 / - / - | 6.1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| ebay | ok | yes | 0.996 / 0.996 | 0.7 / 1.3 / 1.3 | 0.8 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | hang | yes | 0.622 / - | 1.1 / - / - | - | 0 | 0 | 0 | 0 | 0 | 1 |
+
+Top 10 causes (sites, total):
+
+- 5, 14: console: Uncaught TypeError: not a function at <url>
+- 5, 10: missing: (not a function)
+- 4, 6: error status: document
+- 4, 4: outcome: hang
+- 3, 12: G90: same-origin frame refused
+- 2, 2: console: [Cloudflare Turnstile] Unhandled error: Uncaught TypeError: cannot read property 'getRandomValues' of undefined , with debug info:
+- 2, 2: console: Uncaught Script error.
+- 2, 2: console: Uncaught TypeError: cannot read property 'getRandomValues' of undefined at <url>
+- 2, 2: missing: ReadableStream
+- 1, 6: console: Failed to fetch <url>
+
