@@ -553,7 +553,10 @@ impl Host {
             .values()
             .filter_map(|view| {
                 let task = view.engine.next_task_at();
+                // A hidden view drawn once draws nothing more, so its
+                // frames wake nothing.
                 let frame = match view.engine.needs_frame() || view.owed {
+                    _ if view.engine.is_hidden() && view.drawn.is_some() => None,
                     true if view.taken => {
                         let next = view.drawn.map_or(Duration::ZERO, |drawn| {
                             FRAME_INTERVAL.saturating_sub(drawn.elapsed())
@@ -679,6 +682,13 @@ fn state_of(view: &mut View) -> ViewState {
 /// Draws `view` if a frame is wanted and may be drawn now, and puts in
 /// `out` its rows that changed since the last frame sent, and its end.
 fn draw(view: &mut View, id: u32, now: Instant, time: Duration, out: &mut Vec<ToBrowser>) {
+    // A hidden view draws its first frame, which its tab shows at once
+    // when chosen, and nothing after, whatever the browser takes: a tab
+    // put aside with an animation drew it at sixty frames a second for
+    // no one. What it would have shown is drawn when it is shown again.
+    if view.engine.is_hidden() && view.drawn.is_some() {
+        return;
+    }
     let wanted = view.owed || view.engine.needs_frame();
     let (width, height) = view.raster;
     let paced = view

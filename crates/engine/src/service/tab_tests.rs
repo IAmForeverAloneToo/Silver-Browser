@@ -349,6 +349,48 @@ fn a_renderer_draws_no_frame_while_the_browser_has_not_taken_the_last() {
 }
 
 #[test]
+fn a_hidden_tab_draws_nothing_and_its_timers_slow_to_one_a_second() {
+    // A tab put aside, its page animating and its interval due each
+    // 10 ms: though the browser takes every frame it can, none comes,
+    // and the interval runs about once a second, as in the reference
+    // browser. Shown again, it draws.
+    let server = serve(
+        "<style>@keyframes k { from { margin-left: 0 } to { margin-left: 200px } }         div { width: 20px; height: 20px; background: red;         animation: k 1s linear infinite }</style><div></div><script>         setInterval(function () { console.log('tick'); }, 10);         </script>",
+    );
+    let mut tab = tab();
+    tab.set_scripting(true);
+    tab.navigate(server.url("/"));
+    tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    settle(&mut tab, |tab| {
+        *tab.load_state() == LoadState::Loaded && tab.needs_frame()
+    });
+    tab.set_hidden(true);
+    let _ = tab.take_console();
+    let before = tab.frames_received();
+    let began = Instant::now();
+    let mut ticks = 0;
+    while began.elapsed() < Duration::from_millis(2500) {
+        tab.poll_network();
+        tab.run_tasks();
+        let _ = tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(began.elapsed()));
+        ticks += tab
+            .take_console()
+            .iter()
+            .filter(|entry| entry.text == "tick")
+            .count();
+        thread::sleep(Duration::from_millis(5));
+    }
+    let came = tab.frames_received() - before;
+    assert!(came <= 1, "{came} frames came while hidden");
+    assert!((1..=4).contains(&ticks), "{ticks} ticks in 2.5 s hidden");
+    tab.set_hidden(false);
+    settle(&mut tab, |tab| {
+        let _ = tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+        tab.frames_received() >= before + 3
+    });
+}
+
+#[test]
 fn a_renderer_that_lies_about_frames_is_killed() {
     let forged = lied_to(|| {
         vec![ToBrowser::PostFrame {
