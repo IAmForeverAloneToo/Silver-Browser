@@ -233,11 +233,33 @@ impl NetworkLog {
                     .map(|(name, count)| (name, Json::from(f64::from(count)))),
             )
         };
+        // What is still on its way: a hung page waiting on the network
+        // says on what, and since when.
+        let now = self.began.elapsed().as_secs_f64() * 1000.0;
+        let pending: Vec<&Entry> = log
+            .entries
+            .iter()
+            .filter(|entry| entry.end.is_none() && entry.error_kind.is_none())
+            .collect();
+        let oldest = pending
+            .iter()
+            .min_by(|a, b| a.start.total_cmp(&b.start))
+            .map_or(Json::Null, |entry| {
+                Json::object([
+                    (
+                        "url",
+                        Json::from(entry.urls.last().cloned().unwrap_or_default()),
+                    ),
+                    ("ageMs", Json::from((now - entry.start).max(0.0).round())),
+                ])
+            });
         Json::object([
             ("requests", Json::from(log.entries.len() as f64)),
             ("failedByDestination", map(failed)),
             ("failedByKind", map(kinds)),
             ("errorStatusByDestination", map(statuses)),
+            ("pending", Json::from(pending.len() as f64)),
+            ("oldestPending", oldest),
         ])
     }
 
@@ -539,7 +561,18 @@ mod tests {
         assert_eq!(
             summary,
             "{\"requests\":3,\"failedByDestination\":{\"image\":1,\"script\":1},\
-             \"failedByKind\":{\"cors\":1,\"mixed-content\":1},\"errorStatusByDestination\":{}}"
+             \"failedByKind\":{\"cors\":1,\"mixed-content\":1},\"errorStatusByDestination\":{},\
+             \"pending\":0,\"oldestPending\":null}"
         );
+        // One on its way: counted, with its URL and its age.
+        log.observe(4, request(net::Destination::Script));
+        let summary = log.sweep_summary();
+        assert_eq!(summary.get("pending").and_then(Json::as_f64), Some(1.0));
+        let oldest = summary.get("oldestPending").expect("the oldest");
+        assert_eq!(
+            oldest.get("url").and_then(Json::as_str),
+            Some("https://example.com/a")
+        );
+        assert!(oldest.get("ageMs").and_then(Json::as_f64).is_some());
     }
 }

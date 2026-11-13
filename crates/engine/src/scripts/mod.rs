@@ -2271,6 +2271,19 @@ impl Scripts {
         if self.stopped {
             return false;
         }
+        // A node freed since its event was queued has no one to hear it:
+        // a detached tree is freed only once no script has an object for
+        // any node of it, and its listeners went with those objects (the
+        // site sweep's ddg: a preload `<link>` taken out, its `load` come
+        // after). Its handle names no node, or another in its place.
+        if let js::Task::Dispatch {
+            target: js::Target::Node(node),
+            ..
+        } = task
+            && dom::NodeId::from_bits(node.0).is_none_or(|id| !lent.document.contains(id))
+        {
+            return false;
+        }
         self.guard_code(lent);
         let Some(realm) = self.realm.as_mut() else {
             return false;

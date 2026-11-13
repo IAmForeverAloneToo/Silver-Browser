@@ -167,6 +167,73 @@ fn collected_then(tab: &mut Tab, script: &str) -> Vec<String> {
 }
 
 #[test]
+fn an_element_freed_before_its_load_hears_nothing_and_throws_nothing() {
+    // The site sweep's ddg: a preload `<link>` put in and taken out, no
+    // object of it kept; the realm's garbage collected and the node freed
+    // before its fetch is answered. Its `load` has no one to hear it, and
+    // fires at no other node in its place.
+    let server = serve(|path| match path {
+        "/page.html" => Some(Reply::ok(
+            "text/html",
+            b"<script>\
+              (function () {\
+                var l = document.createElement('link');\
+                l.rel = 'preload'; l.as = 'script'; l.href = 'slow.js';\
+                document.head.appendChild(l);\
+                setTimeout(function () { l.remove(); l = null; }, 100);\
+              })();\
+              </script>",
+        )),
+        "/slow.js" => {
+            let body = b"0";
+            let mut reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            reply.extend_from_slice(body);
+            Some(Reply::Pieces(vec![(
+                std::time::Duration::from_millis(400),
+                reply,
+            )]))
+        }
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    tab.wait_until(|_| server.requests().iter().any(|r| r.target == "/slow.js"));
+    // Taken out, at its timer.
+    let at = std::time::Instant::now();
+    while at.elapsed() < std::time::Duration::from_millis(200) {
+        tab.engine.run_tasks();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // The object collected, then a run for the host to free the node,
+    // and more nodes made, so that its place may be another's.
+    let said = collected_then(
+        &mut tab,
+        "for (var i = 0; i < 50; i++) document.documentElement.appendChild(document.createElement('i'));",
+    );
+    assert!(
+        !said.iter().any(|l| l.contains("no longer there")),
+        "{said:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut said = Vec::new();
+    while std::time::Instant::now() < deadline {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        said.extend(tab.engine.take_console().into_iter().map(|e| e.text));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !said.iter().any(|l| l.contains("no longer there")),
+        "{said:?}"
+    );
+}
+
+#[test]
 fn an_object_lives_while_its_tree_can_be_reached() {
     // Each object here is held only by its tree: a slot's listener, a
     // node's expando of another document, a template's contents, the
