@@ -2284,6 +2284,16 @@ impl Scripts {
         {
             return false;
         }
+        // What the page does, counted for the site sweep.
+        let kind = match task {
+            js::Task::Timer(_) => 0,
+            js::Task::AnimationFrames(_) => 1,
+            js::Task::Dispatch { .. } => 2,
+            js::Task::Fetched { .. } => 3,
+            js::Task::Message { .. } => 4,
+            _ => 5,
+        };
+        self.host.sweep.tasks[kind] += 1;
         self.guard_code(lent);
         let Some(realm) = self.realm.as_mut() else {
             return false;

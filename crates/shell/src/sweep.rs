@@ -33,6 +33,10 @@ pub(crate) const SETTLE: Duration = Duration::from_secs(2);
 pub(crate) const HUNG: Duration = Duration::from_secs(10);
 /// How far the second screenshot is, in screens.
 const SCREENS_DOWN: f32 = 3.0;
+
+/// How long a page is left alone, no input, once scrolled, for what it
+/// still does then (`idleCounters`).
+const IDLE: Duration = Duration::from_secs(10);
 /// The most console entries kept, and characters of each.
 const MAX_ENTRIES: usize = 500;
 const MAX_TEXT: usize = 300;
@@ -129,6 +133,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut load = None;
     let mut settled = None;
     let mut counters = Json::Null;
+    let mut idle = Json::Null;
     // The layouts the renderer last said it had run, and since when.
     let mut layouts: Option<(f64, Instant)> = None;
     // When a renderer last answered, or was first seen to run.
@@ -217,24 +222,18 @@ fn capture(asked: &Asked) -> Result<(), String> {
         shots.push("scrolled");
         // The counts again, of what the scroll's runs did too: the record
         // has the page's last.
-        let id = next_id;
-        tab.inspect(format!("{{\"id\":{id},\"method\":\"page.sweep\"}}"));
-        let until = Instant::now() + Duration::from_secs(2);
-        'asked: while Instant::now() < until {
+        if let Some(result) = ask_counts(&mut tab, &woken, began, &mut console, next_id) {
+            counters = result;
+        }
+        next_id += 1;
+        // Then the page left alone, no input: what it still does, and
+        // what wants its frames, the counts again after it.
+        let until = Instant::now() + IDLE;
+        while Instant::now() < until {
             let _ = woken.recv_timeout(Duration::from_millis(50));
             step(&mut tab, began, &mut console);
-            for message in tab.take_inspected() {
-                let Ok(answer) = Json::parse(&message) else {
-                    continue;
-                };
-                if answer.get("id").and_then(Json::as_f64) == Some(id as f64)
-                    && let Some(result) = answer.get("result")
-                {
-                    counters = result.clone();
-                    break 'asked;
-                }
-            }
         }
+        idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
     }
     peaks.sample(&tab);
     let network = tab
@@ -266,6 +265,10 @@ fn capture(asked: &Asked) -> Result<(), String> {
         ),
         ("console", Json::Array(console)),
         ("counters", counters),
+        // The counts after [`IDLE`] more with no input: less `counters`,
+        // what a page left alone does in that time.
+        ("idleCounters", idle),
+        ("idleSeconds", Json::from(IDLE.as_secs_f64())),
         ("network", network),
         ("memory", peaks.json()),
         (
@@ -283,6 +286,34 @@ fn capture(asked: &Asked) -> Result<(), String> {
 /// Takes what the renderers said, runs what is due, refuses what the
 /// page asks for, draws a frame when one is wanted, and keeps the
 /// console.
+/// The renderer's counts (`page.sweep`), asked as request `id` and
+/// waited for two seconds at most, the tab stepped meanwhile.
+fn ask_counts(
+    tab: &mut RemoteTab,
+    woken: &mpsc::Receiver<()>,
+    began: Instant,
+    console: &mut Vec<Json>,
+    id: u64,
+) -> Option<Json> {
+    tab.inspect(format!("{{\"id\":{id},\"method\":\"page.sweep\"}}"));
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until {
+        let _ = woken.recv_timeout(Duration::from_millis(50));
+        step(tab, began, console);
+        for message in tab.take_inspected() {
+            let Ok(answer) = Json::parse(&message) else {
+                continue;
+            };
+            if answer.get("id").and_then(Json::as_f64) == Some(id as f64)
+                && let Some(result) = answer.get("result")
+            {
+                return Some(result.clone());
+            }
+        }
+    }
+    None
+}
+
 fn step(tab: &mut RemoteTab, began: Instant, console: &mut Vec<Json>) {
     tab.poll_network();
     tab.run_tasks();

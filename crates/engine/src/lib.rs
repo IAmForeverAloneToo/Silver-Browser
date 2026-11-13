@@ -444,6 +444,10 @@ pub struct Engine {
     restyled_elements: u64,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// The frames drawn, by what wanted each ([`FRAME_CAUSES`]; a frame
+    /// wanted by none was the caller's): what the site sweep says a page
+    /// left alone still draws, and why.
+    frame_causes: [u64; FRAME_CAUSES.len() + 1],
     /// How many recascades the outer `<svg>`s' trees were built under:
     /// what proves a frame's are built under one, not one each.
     svg_recascades: u64,
@@ -1334,6 +1338,25 @@ struct CachedStyle {
     stale: bool,
 }
 
+/// What may want a frame ([`Engine::needs_frame`]), as the site sweep
+/// names each in its count of the frames drawn: the document changed,
+/// a canvas drawn, a medium's frame, a scroll on its way, scroll events
+/// due, an animation, a frame callback, an event for the rendering
+/// steps, a frame's own, a focus fixup, a pan's scroll to end.
+pub(crate) const FRAME_CAUSES: [&str; 11] = [
+    "changed",
+    "canvas",
+    "media",
+    "scrolling",
+    "scrollEvents",
+    "animation",
+    "frameCallback",
+    "renderingEvent",
+    "frames",
+    "focusFixup",
+    "unended",
+];
+
 /// The engine's fonts, lent to the cascade for the font-relative units.
 struct FontMeasurer<'a>(&'a text::FontCollection);
 
@@ -1715,6 +1738,7 @@ impl Engine {
             style_runs: 0,
             restyled_elements: 0,
             layout_runs: 0,
+            frame_causes: [0; FRAME_CAUSES.len() + 1],
             svg_recascades: 0,
             sweep_left: sweep::SweepCounts::default(),
             frame_margins: style::FrameMargins::default(),
@@ -8212,18 +8236,29 @@ impl Engine {
     /// `scrollend`. A new viewport size is the caller's to know: the
     /// frame takes it.
     pub fn needs_frame(&self) -> bool {
-        self.changed
-            || self.shown.scripts.canvases_changed()
-            || self.shown.scripts.media_wants_frame()
-            || self.animating()
-            || self.scroll_events_due()
-            || self.shown.animations.borrow().needs_frame()
-            || (self.scripts_run()
-                && !self.hidden
-                && (self.shown.scripts.wants_frame() || !self.pending_events.is_empty()))
-            || self.frames_need_frame()
-            || self.focus_fixup_due()
-            || !self.shown.unended.is_empty()
+        self.frame_wanted_by() != 0
+    }
+
+    /// What wants a frame, a bit each of [`FRAME_CAUSES`]: none, no frame.
+    fn frame_wanted_by(&self) -> u32 {
+        let scripted = self.scripts_run() && !self.hidden;
+        [
+            self.changed,
+            self.shown.scripts.canvases_changed(),
+            self.shown.scripts.media_wants_frame(),
+            self.animating(),
+            self.scroll_events_due(),
+            self.shown.animations.borrow().needs_frame(),
+            scripted && self.shown.scripts.wants_frame(),
+            scripted && !self.pending_events.is_empty(),
+            self.frames_need_frame(),
+            self.focus_fixup_due(),
+            !self.shown.unended.is_empty(),
+        ]
+        .iter()
+        .enumerate()
+        .filter(|(_, wanted)| **wanted)
+        .fold(0, |bits, (at, _)| bits | 1 << at)
     }
 
     /// Whether the element focused can no longer take the focus by the
@@ -9190,6 +9225,18 @@ impl Engine {
     /// Draws a frame and times its stages, overrunning past `budget`.
     fn draw(&mut self, width: u32, height: u32, budget: Duration) -> &[u8] {
         let start = Instant::now();
+        let wanted = self.frame_wanted_by();
+        if wanted == 0 {
+            self.frame_causes[FRAME_CAUSES.len()] += 1;
+        }
+        for (at, count) in self
+            .frame_causes
+            .iter_mut()
+            .take(FRAME_CAUSES.len())
+            .enumerate()
+        {
+            *count += u64::from(wanted >> at & 1);
+        }
         if width as u64 * height as u64 > render::MAX_FRAME_PIXELS {
             self.stats = FrameStats::default();
             return &[];

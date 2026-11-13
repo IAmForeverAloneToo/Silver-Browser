@@ -46,7 +46,22 @@ pub(crate) struct SweepCounts {
     /// The flushes from the frame's styles that build checked: how much
     /// of the page the mismatches' count covers.
     pub(crate) style_checks: u32,
+    /// The tasks the page's scripts ran, by kind: what a page left alone
+    /// still does ([`TASK_KINDS`]).
+    pub(crate) tasks: [u32; TASK_KINDS.len()],
 }
+
+/// The kinds of the tasks [`SweepCounts::tasks`] counts: timers, frame
+/// callbacks' turns, events dispatched, fetches answered, messages, and
+/// the rest.
+pub(crate) const TASK_KINDS: [&str; 6] = [
+    "timers",
+    "animationFrames",
+    "events",
+    "fetched",
+    "messages",
+    "other",
+];
 
 impl SweepCounts {
     /// Counts an error the console said, by its kind and its message as
@@ -114,10 +129,25 @@ impl SweepCounts {
         self.dropped += other.dropped;
         self.style_mismatches += other.style_mismatches;
         self.style_checks += other.style_checks;
+        for (mine, theirs) in self.tasks.iter_mut().zip(other.tasks) {
+            *mine += theirs;
+        }
     }
 
-    /// The counts as `page.sweep` answers them, with the layouts run.
-    pub(crate) fn json(&self, layouts: u64) -> Json {
+    /// The counts as `page.sweep` answers them, with the layouts run and
+    /// the frames drawn by what wanted them (`crate::FRAME_CAUSES`, then
+    /// the caller's).
+    pub(crate) fn json(&self, layouts: u64, frames: &[u64]) -> Json {
+        let causes = crate::FRAME_CAUSES
+            .iter()
+            .chain(std::iter::once(&"asked"))
+            .zip(frames)
+            .filter(|(_, count)| **count > 0)
+            .map(|(name, count)| (*name, Json::from(*count as f64)));
+        let tasks = TASK_KINDS
+            .iter()
+            .zip(self.tasks)
+            .map(|(name, count)| (*name, Json::from(f64::from(count))));
         let map = |map: &BTreeMap<String, u32>| {
             Json::object(
                 map.iter()
@@ -154,6 +184,9 @@ impl SweepCounts {
                 Json::from(f64::from(self.style_checks)),
             ),
             ("layouts", Json::from(layouts as f64)),
+            ("frames", Json::from(frames.iter().sum::<u64>() as f64)),
+            ("frameCauses", Json::object(causes)),
+            ("tasks", Json::object(tasks)),
         ])
     }
 }
@@ -244,7 +277,23 @@ mod tests {
         total.add(&counts);
         total.add(&counts);
         assert_eq!(total.media_unsupported.get("video/x0"), Some(&4));
-        let json = total.json(7).write();
+        let json = total.json(7, &[]).write();
         assert!(json.contains("\"layouts\":7"), "{json}");
+    }
+
+    #[test]
+    fn the_frames_are_said_by_their_cause_and_the_tasks_by_their_kind() {
+        let mut counts = SweepCounts::default();
+        counts.tasks[0] = 3;
+        let mut frames = [0; crate::FRAME_CAUSES.len() + 1];
+        frames[0] = 2;
+        frames[crate::FRAME_CAUSES.len()] = 1;
+        let json = counts.json(0, &frames).write();
+        assert!(json.contains("\"frames\":3"), "{json}");
+        assert!(
+            json.contains("\"frameCauses\":{\"changed\":2,\"asked\":1}"),
+            "{json}"
+        );
+        assert!(json.contains("\"timers\":3"), "{json}");
     }
 }

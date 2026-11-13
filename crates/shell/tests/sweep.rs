@@ -105,6 +105,24 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
         Some(1),
         "{record:?}"
     );
+    // Then left alone: a page with nothing running draws no frame and
+    // runs no task in that time.
+    let idle = field(&record, "idleCounters");
+    let counters = field(&record, "counters");
+    let delta = |name: &str| {
+        field(idle, name).as_f64().unwrap_or(f64::NAN)
+            - field(counters, name).as_f64().unwrap_or(f64::NAN)
+    };
+    assert_eq!(delta("frames"), 0.0, "{record:?}");
+    let tasks = |of: &Json| {
+        field(field(of, "tasks"), "timers")
+            .as_f64()
+            .unwrap_or(f64::NAN)
+            + field(field(of, "tasks"), "animationFrames")
+                .as_f64()
+                .unwrap_or(f64::NAN)
+    };
+    assert_eq!(tasks(idle) - tasks(counters), 0.0, "{record:?}");
     let console = field(&record, "console").as_array().expect("entries");
     assert!(
         console

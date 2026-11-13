@@ -163,12 +163,16 @@ impl Engine {
         let mut total = self.sweep_left.clone();
         total.add(self.shown.scripts.sweep());
         let mut layouts = self.layout_runs;
+        let mut frames = self.frame_causes;
         self.for_each_frame(&mut |frame| {
             total.add(&frame.sweep_left);
             total.add(frame.shown.scripts.sweep());
             layouts += frame.layout_runs;
+            for (all, theirs) in frames.iter_mut().zip(frame.frame_causes) {
+                *all += theirs;
+            }
         });
-        total.json(layouts)
+        total.json(layouts, &frames)
     }
 
     /// Queues `message` for the panel, unless too many wait.
