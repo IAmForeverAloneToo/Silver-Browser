@@ -318,6 +318,8 @@ pub(crate) struct DocumentHost {
         allow(dead_code)
     )]
     crosscheck_spent: std::time::Duration,
+    /// The document's navigation's times, as `performance` tells them.
+    pub(crate) navigation_timing: crate::scripts::NavigationTiming,
     /// The nodes a script holds an object for: handles given out and not
     /// released (M25). None of them is freed.
     exposed: HashSet<NodeId>,
@@ -3092,6 +3094,10 @@ impl DocumentHost {
                 self.origin
                     .map(|origin| origin.epoch_ms)
                     .unwrap_or_default(),
+            )),
+            Call::NavigationTiming => Ok(Answer::Numbers(
+                self.navigation_timing
+                    .answer(self.origin.map(|origin| origin.at).unwrap_or_default()),
             )),
             Call::Ancestors(node) => {
                 let node = self.node(node)?;

@@ -4445,6 +4445,12 @@ impl Engine {
         let document = self.document_target();
         if !self.shown.lifecycle.interactive {
             self.shown.lifecycle.interactive = true;
+            // Its parse over, its response has all come (Navigation
+            // Timing's responseEnd, which the engine does not time apart).
+            let now = self.now();
+            let timing = self.shown.scripts.navigation_timing();
+            timing.response_end.get_or_insert(now);
+            timing.interactive = Some(now);
             self.fire(document, js::EventInit::new("Event", "readystatechange"));
         }
         // `DOMContentLoaded` is a task queued once the deferred scripts
@@ -4461,8 +4467,14 @@ impl Engine {
             && self.load_state == LoadState::Loaded
         {
             self.shown.lifecycle.loaded = true;
+            let now = self.now();
+            self.shown.scripts.navigation_timing().complete = Some(now);
             self.fire(document, js::EventInit::new("Event", "readystatechange"));
+            let now = self.now();
+            self.shown.scripts.navigation_timing().load_start = Some(now);
             self.fire(js::Target::Window, js::EventInit::new("Event", "load"));
+            let now = self.now();
+            self.shown.scripts.navigation_timing().load_end = Some(now);
             // A `<link rel=preload>` nothing took (M38), as the reference
             // browser says.
             for url in self.network.unused_preloads(self.shown.page.id()) {
@@ -4496,10 +4508,14 @@ impl Engine {
         }
         self.shown.lifecycle.content_loaded = true;
         let document = self.document_target();
+        let now = self.now();
+        self.shown.scripts.navigation_timing().content_loaded_start = Some(now);
         self.fire(
             document,
             js::EventInit::new("Event", "DOMContentLoaded").with("bubbles", js::Field::Bool(true)),
         );
+        let now = self.now();
+        self.shown.scripts.navigation_timing().content_loaded_end = Some(now);
         self.lifecycle();
     }
 
@@ -6974,8 +6990,17 @@ impl Engine {
         // requests go to its service worker first.
         let client = self.service_worker_client(&page, &scripts);
         self.network.set_service_client(id, client);
+        let now = self.now();
         if let Some(navigation) = &mut self.navigation {
             scripts.set_time_origin(navigation.started);
+            let timing = scripts.navigation_timing();
+            timing.kind = match navigation.handling {
+                Handling::Reload => 1,
+                Handling::Traverse(_) => 2,
+                Handling::Push | Handling::Replace => 0,
+            };
+            timing.status = response.status;
+            timing.response_start = Some(now);
             navigation.incoming = Incoming::Parsing {
                 page: Box::new(page),
                 document: Box::new(Document::new()),

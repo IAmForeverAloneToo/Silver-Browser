@@ -461,6 +461,49 @@ pub(crate) struct TimeOrigin {
     pub(crate) epoch_ms: f64,
 }
 
+/// A document's navigation as Navigation Timing tells it: how it came
+/// (0 a navigation, 1 a reload, 2 a traversal), its response's status,
+/// and the engine's clock at each of its steps, none until the step has
+/// come. The engine times no step of the fetch before its response: they
+/// are said to be at the navigation's start.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct NavigationTiming {
+    pub(crate) kind: u8,
+    pub(crate) status: u16,
+    pub(crate) response_start: Option<Duration>,
+    pub(crate) response_end: Option<Duration>,
+    pub(crate) interactive: Option<Duration>,
+    pub(crate) content_loaded_start: Option<Duration>,
+    pub(crate) content_loaded_end: Option<Duration>,
+    pub(crate) complete: Option<Duration>,
+    pub(crate) load_start: Option<Duration>,
+    pub(crate) load_end: Option<Duration>,
+}
+
+impl NavigationTiming {
+    /// Its steps as `performance` gives them: milliseconds since `origin`
+    /// to a tenth of one, as `performance.now()` is, or -1 for a step not
+    /// come.
+    pub(crate) fn answer(&self, origin: Duration) -> Vec<f64> {
+        let since = |at: Option<Duration>| match at {
+            Some(at) => (at.saturating_sub(origin).as_micros() / 100) as f64 / 10.0,
+            None => -1.0,
+        };
+        vec![
+            f64::from(self.kind),
+            f64::from(self.status),
+            since(self.response_start),
+            since(self.response_end),
+            since(self.interactive),
+            since(self.content_loaded_start),
+            since(self.content_loaded_end),
+            since(self.complete),
+            since(self.load_start),
+            since(self.load_end),
+        ]
+    }
+}
+
 /// The most timers a document may have set at once (M26): past them
 /// `setTimeout` throws a `RangeError`.
 pub(crate) const MAX_TIMERS: usize = 100_000;
@@ -2550,6 +2593,12 @@ impl Scripts {
     /// Gives the document its time origin, unless it has one.
     pub(crate) fn set_time_origin(&mut self, origin: TimeOrigin) {
         self.host.origin.get_or_insert(origin);
+    }
+
+    /// The document's navigation's times (Navigation Timing), which the
+    /// engine sets as its steps come.
+    pub(crate) fn navigation_timing(&mut self) -> &mut NavigationTiming {
+        &mut self.host.navigation_timing
     }
 
     /// When the document's next task is due (M26): its next timer, or a

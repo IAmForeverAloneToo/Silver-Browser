@@ -63,6 +63,10 @@ impl ScriptingHost for Recorder {
             }
             Call::Now => Ok(Answer::Number(self.now)),
             Call::TimeOrigin => Ok(Answer::Number(1_700_000_000_000.5)),
+            // A navigation whose response has begun, no later step come.
+            Call::NavigationTiming => Ok(Answer::Numbers(vec![
+                0.0, 200.0, 1.5, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+            ])),
             Call::DocumentUrl => Ok(Answer::MaybeString(Some(
                 "https://example.com/page.html".to_owned(),
             ))),
@@ -601,7 +605,9 @@ fn a_realm_has_no_unrounded_clock_and_no_shared_memory() {
             &script(
                 "[typeof SharedArrayBuffer, typeof Atomics, \
                  Object.prototype.toString.call(performance), performance.now(), \
-                 performance.timeOrigin, JSON.stringify(performance), \
+                 performance.timeOrigin, Object.keys(performance.toJSON()).join(' '), \
+                 performance.timing.responseStart - performance.timing.navigationStart, \
+                 performance.timing.responseEnd, \
                  performance instanceof EventTarget].join()",
             ),
             &mut Recorder {
@@ -616,7 +622,7 @@ fn a_realm_has_no_unrounded_clock_and_no_shared_memory() {
         done,
         Completion::String(
             "undefined,object,[object Performance],12.3,1700000000000.5,\
-             {\"timeOrigin\":1700000000000.5},true"
+             timeOrigin timing navigation,1,0,true"
                 .to_owned()
         )
     );

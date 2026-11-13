@@ -286,7 +286,9 @@
     FontFaceSet: true, FontFaceSetLoadEvent: true, FormData: true,
     Headers: true, ImageBitmap: true, ImageData: true, MessageEvent: true,
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
-    Performance: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
+    Performance: true, PerformanceEntry: true, PerformanceMark: true, PerformanceMeasure: true,
+    PerformanceObserver: true, PerformanceObserverEntryList: true,
+    PerformanceResourceTiming: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
     Response: true, TextDecoder: true, TextEncoder: true, TextMetrics: true, URL: true,
     URLSearchParams: true, Worker: "notservice", FileReader: true,
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
@@ -31501,7 +31503,8 @@
   // ---- performance (High Resolution Time) --------------------------------
 
   // The document's clock: milliseconds since its time origin, rounded
-  // by the host to a tenth of one.
+  // by the host to a tenth of one; and its timeline (Performance
+  // Timeline, User Timing).
   class Performance extends EventTarget {
     constructor(key) {
       if (key !== KEY) {
@@ -31518,9 +31521,953 @@
       return native.timeOrigin();
     }
 
-    toJSON() {
-      return { timeOrigin: native.timeOrigin() };
+    mark(markName, markOptions = undefined) {
+      need(arguments.length, 1, "mark", "Performance");
+      const name = str(markName);
+      const [startTime, detail] = makeMark(name, markOptions, prefix("mark", "Performance"));
+      const mark = newMark(name, startTime, detail);
+      queueEntry(mark);
+      return mark;
     }
+
+    // User Timing section 3.1.3.
+    measure(measureName, startOrMeasureOptions = undefined, endMark = undefined) {
+      need(arguments.length, 1, "measure", "Performance");
+      const where = prefix("measure", "Performance");
+      const name = str(measureName);
+      // (DOMString or PerformanceMeasureOptions): an object is the
+      // dictionary, null an empty one.
+      let options = null;
+      let startMark;
+      if (startOrMeasureOptions === null ||
+          (typeof startOrMeasureOptions === "object" ||
+            typeof startOrMeasureOptions === "function")) {
+        options = startOrMeasureOptions;
+      } else if (startOrMeasureOptions !== undefined) {
+        startMark = str(startOrMeasureOptions);
+      }
+      let detail, duration, end, start;
+      if (options !== null) {
+        detail = options.detail;
+        duration = options.duration;
+        if (duration !== undefined) {
+          duration = timeMember(duration, "duration", "PerformanceMeasureOptions", where);
+        }
+        end = options.end;
+        if (end !== undefined) end = markOrTime(end, "end", where);
+        start = options.start;
+        if (start !== undefined) start = markOrTime(start, "start", where);
+      }
+      const given = detail !== undefined || duration !== undefined || end !== undefined ||
+        start !== undefined;
+      const endName = endMark === undefined ? undefined : str(endMark);
+      if (given) {
+        if (endName !== undefined) {
+          throw new $TypeError(where + "If a non-empty PerformanceMeasureOptions object was " +
+            "passed, |end_mark| must not be passed.");
+        }
+        if (start === undefined && end === undefined) {
+          throw new $TypeError(where + "If a non-empty PerformanceMeasureOptions object was " +
+            "passed, at least one of its 'start' or 'end' properties must be present.");
+        }
+        if (start !== undefined && duration !== undefined && end !== undefined) {
+          throw new $TypeError(where + "If a non-empty PerformanceMeasureOptions object was " +
+            "passed, it must not have all of its 'start', 'duration', and 'end' properties " +
+            "defined");
+        }
+      }
+      let endTime;
+      if (endName !== undefined) {
+        endTime = measureTime(endName, name, where);
+      } else if (given && end !== undefined) {
+        endTime = measureTime(end, name, where);
+      } else if (given && start !== undefined && duration !== undefined) {
+        endTime = measureTime(start, name, where) + duration;
+      } else {
+        endTime = native.now();
+      }
+      let startTime;
+      if (given && start !== undefined) {
+        startTime = measureTime(start, name, where);
+      } else if (given && duration !== undefined && end !== undefined) {
+        startTime = endTime - duration;
+      } else if (startMark !== undefined) {
+        startTime = measureTime(startMark, name, where);
+      } else {
+        startTime = 0;
+      }
+      const measure = newMeasure(name, startTime, endTime - startTime,
+        given ? cloneDetail(detail, where) : null);
+      queueEntry(measure);
+      return measure;
+    }
+
+    clearMarks(markName = undefined) {
+      clearEntries("mark", markName === undefined ? undefined : str(markName));
+    }
+
+    clearMeasures(measureName = undefined) {
+      clearEntries("measure", measureName === undefined ? undefined : str(measureName));
+    }
+
+    getEntries() {
+      return timelineEntriesOf(bufferedEntries(undefined), undefined, undefined);
+    }
+
+    getEntriesByType(type) {
+      need(arguments.length, 1, "getEntriesByType", "Performance");
+      const name = str(type);
+      return timelineEntriesOf(bufferedEntries(name), name, undefined);
+    }
+
+    getEntriesByName(name, type = undefined) {
+      need(arguments.length, 1, "getEntriesByName", "Performance");
+      const kind = type === undefined ? undefined : str(type);
+      return timelineEntriesOf(bufferedEntries(kind), kind, str(name));
+    }
+
+    // The engine keeps no resource's timing: there is none to clear,
+    // and no buffer to fill.
+    clearResourceTimings() {}
+
+    setResourceTimingBufferSize(maxSize) {
+      need(arguments.length, 1, "setResourceTimingBufferSize", "Performance");
+      unsigned(maxSize);
+    }
+
+    // The legacy Navigation Timing objects, the window's alone.
+    get timing() {
+      return legacyTimingObject;
+    }
+
+    get navigation() {
+      return legacyNavigationObject;
+    }
+
+    toJSON() {
+      const json = { timeOrigin: native.timeOrigin() };
+      if (!WORKER) {
+        json.timing = this.timing.toJSON();
+        json.navigation = this.navigation.toJSON();
+      }
+      return json;
+    }
+  }
+
+  // ---- Performance Timeline, User Timing, Navigation Timing -------------
+
+  // PerformanceTiming's attributes, in its IDL's order: the names a mark
+  // may not have in a window, and those measure() takes as times.
+  const TIMING_NAMES = [
+    "navigationStart", "unloadEventStart", "unloadEventEnd", "redirectStart", "redirectEnd",
+    "fetchStart", "domainLookupStart", "domainLookupEnd", "connectStart", "connectEnd",
+    "secureConnectionStart", "requestStart", "responseStart", "responseEnd", "domLoading",
+    "domInteractive", "domContentLoadedEventStart", "domContentLoadedEventEnd", "domComplete",
+    "loadEventStart", "loadEventEnd",
+  ];
+
+  // The entry types an observer may ask for: those the engine makes.
+  const SUPPORTED_ENTRY_TYPES = ObjectFreeze(["mark", "measure", "navigation"]);
+
+  // The marks and measures a document keeps (User Timing), in the order
+  // made; past MAX_TIMELINE_ENTRIES a new one is made and returned but
+  // kept nowhere, so that a page marking in a loop does not grow without
+  // end.
+  const MAX_TIMELINE_ENTRIES = 100000;
+  const timeline = [];
+
+  // The navigation's times as the host gives them (milliseconds since
+  // the time origin, -1 for those not yet come): its type (0 navigate,
+  // 1 reload, 2 back_forward), its response's status, then the response's
+  // start and end, the document interactive, DOMContentLoaded's start and
+  // end, the document complete, load's start and end.
+  let navigationTimes = null;
+  function navigationTime(index) {
+    if (navigationTimes === null || navigationTimes[9] < 0) {
+      navigationTimes = native.navigationTiming();
+    }
+    return navigationTimes[index];
+  }
+  // A time of the navigation's, 0 for one not yet come.
+  function navigationField(index) {
+    const time = navigationTime(index);
+    return time < 0 ? 0 : time;
+  }
+  const NAVIGATION_TYPES = ["navigate", "reload", "back_forward"];
+
+  // A PerformanceTiming attribute's value: milliseconds since the Unix
+  // epoch, 0 for a time not come (or not kept: unload and redirects).
+  function legacyTiming(name) {
+    const start = MathFloor(native.timeOrigin());
+    let index;
+    switch (name) {
+      case "navigationStart":
+      case "fetchStart":
+      case "domainLookupStart":
+      case "domainLookupEnd":
+      case "connectStart":
+      case "connectEnd":
+      case "requestStart":
+        return start;
+      case "responseStart":
+      case "domLoading":
+        index = 2;
+        break;
+      case "responseEnd":
+        index = 3;
+        break;
+      case "domInteractive":
+        index = 4;
+        break;
+      case "domContentLoadedEventStart":
+        index = 5;
+        break;
+      case "domContentLoadedEventEnd":
+        index = 6;
+        break;
+      case "domComplete":
+        index = 7;
+        break;
+      case "loadEventStart":
+        index = 8;
+        break;
+      case "loadEventEnd":
+        index = 9;
+        break;
+      default:
+        return 0;
+    }
+    const time = navigationTime(index);
+    return time < 0 ? 0 : start + MathFloor(time);
+  }
+
+  // An entry's internal slots, by entry.
+  class PerformanceEntry {
+    #name;
+    #entryType;
+    #startTime;
+    #duration;
+
+    constructor(key, name, entryType, startTime, duration) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceEntry");
+      }
+      this.#name = name;
+      this.#entryType = entryType;
+      this.#startTime = startTime;
+      this.#duration = duration;
+    }
+
+    get name() {
+      return this.#name;
+    }
+
+    get entryType() {
+      return this.#entryType;
+    }
+
+    get startTime() {
+      return this.#startTime;
+    }
+
+    get duration() {
+      return this.#duration;
+    }
+
+    toJSON() {
+      return {
+        name: this.name,
+        entryType: this.entryType,
+        startTime: this.startTime,
+        duration: this.duration,
+      };
+    }
+  }
+  expose(PerformanceEntry, "PerformanceEntry");
+
+  // A mark's detail, structured-cloned when it was made, or null.
+  function cloneDetail(detail, where) {
+    if (detail === undefined || detail === null) {
+      return null;
+    }
+    return deserialize(serialize(detail, [], where, null));
+  }
+
+  // A DOMHighResTimeStamp member of a dictionary: a finite double.
+  function timeMember(value, member, dictionary, where) {
+    const n = $Number(value);
+    if (n !== n || n === Infinity || n === -Infinity) {
+      throw new $TypeError(where + "Failed to read the '" + member + "' property from '" +
+        dictionary + "': The provided double value is non-finite.");
+    }
+    return n;
+  }
+
+  // A dictionary argument: undefined and null are an empty one; another
+  // value that is not an object is a TypeError.
+  function dictionaryOf(value, dictionary, where) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (typeof value !== "object" && typeof value !== "function") {
+      throw new $TypeError(where + "The provided value is not of type '" + dictionary + "'.");
+    }
+    return value;
+  }
+
+  // Makes a mark (User Timing section 3.1.1), its errors said as by
+  // `where`.
+  function makeMark(name, options, where) {
+    if (!WORKER && ArrayIncludes(TIMING_NAMES, name)) {
+      throw new $DOMException(where + "'" + name + "' is part of the PerformanceTiming " +
+        "interface, and cannot be used as a mark name.", "SyntaxError");
+    }
+    const dict = dictionaryOf(options, "PerformanceMarkOptions", where);
+    const detail = dict === null ? undefined : dict.detail;
+    const given = dict === null ? undefined : dict.startTime;
+    let startTime;
+    if (given === undefined) {
+      startTime = native.now();
+    } else {
+      startTime = timeMember(given, "startTime", "PerformanceMarkOptions", where);
+      if (startTime < 0) {
+        throw new $TypeError(where + "'" + name + "' cannot have a negative start time.");
+      }
+    }
+    return [startTime, cloneDetail(detail, where)];
+  }
+
+  // What performance.mark() made of its arguments, for the mark it
+  // makes.
+  let markMade = null;
+  function newMark(name, startTime, detail) {
+    markMade = [name, startTime, detail];
+    return new PerformanceMark();
+  }
+
+  class PerformanceMark extends PerformanceEntry {
+    #detail;
+
+    constructor(markName, markOptions = undefined) {
+      let made = markMade;
+      markMade = null;
+      if (made === null) {
+        needToConstruct(arguments.length, 1, "PerformanceMark");
+        const name = str(markName);
+        made = [name, ...makeMark(name, markOptions, "Failed to construct 'PerformanceMark': ")];
+      }
+      super(KEY, made[0], "mark", made[1], 0);
+      this.#detail = made[2];
+    }
+
+    get detail() {
+      return this.#detail;
+    }
+  }
+  expose(PerformanceMark, "PerformanceMark");
+
+  // A measure is made by performance.measure() alone.
+  let newMeasure;
+  class PerformanceMeasure extends PerformanceEntry {
+    #detail;
+
+    constructor(key, name, startTime, duration, detail) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceMeasure");
+      }
+      super(KEY, name, "measure", startTime, duration);
+      this.#detail = detail;
+    }
+
+    static {
+      newMeasure = (name, startTime, duration, detail) =>
+        new PerformanceMeasure(KEY, name, startTime, duration, detail);
+    }
+
+    get detail() {
+      return this.#detail;
+    }
+  }
+  expose(PerformanceMeasure, "PerformanceMeasure");
+
+  // The document's response, as a resource's timing (Resource Timing):
+  // the navigation's alone, the engine keeping none of its subresources'.
+  class PerformanceResourceTiming extends PerformanceEntry {
+    constructor(key, name, entryType) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceResourceTiming");
+      }
+      super(KEY, name, entryType, 0, 0);
+    }
+
+    get initiatorType() {
+      return "navigation";
+    }
+
+    get deliveryType() {
+      return "";
+    }
+
+    get nextHopProtocol() {
+      return "";
+    }
+
+    get renderBlockingStatus() {
+      return "non-blocking";
+    }
+
+    get workerStart() {
+      return 0;
+    }
+
+    get redirectStart() {
+      return 0;
+    }
+
+    get redirectEnd() {
+      return 0;
+    }
+
+    // The fetch's start, and its connection's steps, which the engine
+    // does not time apart: the navigation's start.
+    get fetchStart() {
+      return 0;
+    }
+
+    get domainLookupStart() {
+      return 0;
+    }
+
+    get domainLookupEnd() {
+      return 0;
+    }
+
+    get connectStart() {
+      return 0;
+    }
+
+    get secureConnectionStart() {
+      return 0;
+    }
+
+    get connectEnd() {
+      return 0;
+    }
+
+    get requestStart() {
+      return 0;
+    }
+
+    get responseStart() {
+      return navigationField(2);
+    }
+
+    get firstInterimResponseStart() {
+      return 0;
+    }
+
+    get finalResponseHeadersStart() {
+      return navigationField(2);
+    }
+
+    get responseEnd() {
+      return navigationField(3);
+    }
+
+    get transferSize() {
+      return 0;
+    }
+
+    get encodedBodySize() {
+      return 0;
+    }
+
+    get decodedBodySize() {
+      return 0;
+    }
+
+    get responseStatus() {
+      return navigationField(1);
+    }
+
+    get serverTiming() {
+      return [];
+    }
+
+    toJSON() {
+      const json = super.toJSON();
+      const keys = [
+        "initiatorType", "deliveryType", "nextHopProtocol", "renderBlockingStatus",
+        "workerStart", "redirectStart", "redirectEnd", "fetchStart", "domainLookupStart",
+        "domainLookupEnd", "connectStart", "secureConnectionStart", "connectEnd",
+        "requestStart", "responseStart", "firstInterimResponseStart",
+        "finalResponseHeadersStart", "responseEnd", "transferSize", "encodedBodySize",
+        "decodedBodySize", "responseStatus", "serverTiming",
+      ];
+      for (let i = 0; i < keys.length; i++) {
+        json[keys[i]] = this[keys[i]];
+      }
+      return json;
+    }
+  }
+  expose(PerformanceResourceTiming, "PerformanceResourceTiming");
+
+  class PerformanceNavigationTiming extends PerformanceResourceTiming {
+    constructor(key, name) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceNavigationTiming");
+      }
+      super(KEY, name, "navigation");
+    }
+
+    // The navigation lasts until its load event has ended.
+    get duration() {
+      return navigationField(9);
+    }
+
+    get unloadEventStart() {
+      return 0;
+    }
+
+    get unloadEventEnd() {
+      return 0;
+    }
+
+    get domInteractive() {
+      return navigationField(4);
+    }
+
+    get domContentLoadedEventStart() {
+      return navigationField(5);
+    }
+
+    get domContentLoadedEventEnd() {
+      return navigationField(6);
+    }
+
+    get domComplete() {
+      return navigationField(7);
+    }
+
+    get loadEventStart() {
+      return navigationField(8);
+    }
+
+    get loadEventEnd() {
+      return navigationField(9);
+    }
+
+    get type() {
+      return NAVIGATION_TYPES[navigationField(0)] ?? "navigate";
+    }
+
+    get redirectCount() {
+      return 0;
+    }
+
+    get activationStart() {
+      return 0;
+    }
+
+    get criticalCHRestart() {
+      return 0;
+    }
+
+    get notRestoredReasons() {
+      return null;
+    }
+
+    toJSON() {
+      const json = super.toJSON();
+      const keys = [
+        "unloadEventStart", "unloadEventEnd", "domInteractive", "domContentLoadedEventStart",
+        "domContentLoadedEventEnd", "domComplete", "loadEventStart", "loadEventEnd", "type",
+        "redirectCount", "activationStart", "criticalCHRestart", "notRestoredReasons",
+      ];
+      for (let i = 0; i < keys.length; i++) {
+        json[keys[i]] = this[keys[i]];
+      }
+      return json;
+    }
+  }
+  expose(PerformanceNavigationTiming, "PerformanceNavigationTiming");
+
+  // The window's navigation entry, made when first asked for.
+  let navigationEntry = null;
+  function navigationEntries() {
+    if (WORKER) {
+      return [];
+    }
+    if (navigationEntry === null) {
+      navigationEntry = new PerformanceNavigationTiming(KEY, str(global.document.URL));
+    }
+    return [navigationEntry];
+  }
+
+  // The entries of `entries` of `type` (any if undefined) and `name`
+  // (any if undefined), in the order of their start times, the order
+  // they were made where those are the same.
+  function timelineEntriesOf(entries, type, name) {
+    const out = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (type !== undefined && entry.entryType !== type) continue;
+      if (name !== undefined && entry.name !== name) continue;
+      ArrayPush(out, entry);
+    }
+    ArraySort(out, (a, b) => a.startTime - b.startTime);
+    return out;
+  }
+
+  // The performance entry buffer: the navigation's, and the marks and
+  // measures kept.
+  function bufferedEntries(type) {
+    if (type === "navigation") {
+      return navigationEntries();
+    }
+    if (type === "mark" || type === "measure") {
+      return timeline;
+    }
+    if (type === undefined) {
+      const all = navigationEntries();
+      for (let i = 0; i < timeline.length; i++) ArrayPush(all, timeline[i]);
+      return all;
+    }
+    return [];
+  }
+
+  // A time measure() is given (User Timing section 3.1.3): a mark's name,
+  // the latest mark of that name's start time; a PerformanceTiming
+  // attribute's, its time since navigationStart; a number, itself.
+  function measureTime(mark, measure, where) {
+    if (typeof mark === "number") {
+      if (mark < 0) {
+        throw new $TypeError(where + "'" + measure + "' cannot have a negative time stamp.");
+      }
+      return mark;
+    }
+    if (!WORKER && ArrayIncludes(TIMING_NAMES, mark)) {
+      if (mark === "navigationStart") {
+        return 0;
+      }
+      const value = legacyTiming(mark);
+      if (value === 0) {
+        throw new $DOMException(where + "'" + mark + "' is empty: either the event hasn't " +
+          "happened yet, or it would provide cross-origin timing information.",
+          "InvalidAccessError");
+      }
+      return value - MathFloor(native.timeOrigin());
+    }
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const entry = timeline[i];
+      if (entry.entryType === "mark" && entry.name === mark) {
+        return entry.startTime;
+      }
+    }
+    throw new $DOMException(where + "The mark '" + mark + "' does not exist.", "SyntaxError");
+  }
+
+  // A `start` or `end` of PerformanceMeasureOptions: (DOMString or
+  // DOMHighResTimeStamp).
+  function markOrTime(value, member, where) {
+    if (typeof value === "number") {
+      return timeMember(value, member, "PerformanceMeasureOptions", where);
+    }
+    return str(value);
+  }
+
+  // Keeps `entry` in the buffer, and queues it for its observers
+  // (Performance Timeline's "queue a PerformanceEntry").
+  function queueEntry(entry) {
+    if (timeline.length < MAX_TIMELINE_ENTRIES) {
+      ArrayPush(timeline, entry);
+    }
+    queueToObservers(entry);
+  }
+
+  function clearEntries(type, name) {
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const entry = timeline[i];
+      if (entry.entryType === type && (name === undefined || entry.name === name)) {
+        ArraySplice(timeline, i, 1);
+      }
+    }
+  }
+
+  class PerformanceObserverEntryList {
+    #entries;
+
+    constructor(key, entries) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceObserverEntryList");
+      }
+      this.#entries = entries;
+    }
+
+    getEntries() {
+      return timelineEntriesOf(this.#entries, undefined, undefined);
+    }
+
+    getEntriesByType(type) {
+      need(arguments.length, 1, "getEntriesByType", "PerformanceObserverEntryList");
+      return timelineEntriesOf(this.#entries, str(type), undefined);
+    }
+
+    getEntriesByName(name, type = undefined) {
+      need(arguments.length, 1, "getEntriesByName", "PerformanceObserverEntryList");
+      return timelineEntriesOf(this.#entries, type === undefined ? undefined : str(type), str(name));
+    }
+  }
+  expose(PerformanceObserverEntryList, "PerformanceObserverEntryList");
+
+  // The observers observing (Performance Timeline's "registered
+  // performance observer list"), and whether their task is queued.
+  const performanceObservers = [];
+  let observersTask = false;
+
+  // Each observer's internal slots: its callback, the entry types it
+  // observes, the entries queued for it, how it was told to observe
+  // ("multiple" for entryTypes, "single" for type), and whether its
+  // callback has been called since it last began to observe.
+  let observerSlots;
+
+  class PerformanceObserver {
+    #callback;
+    #types = [];
+    #buffer = [];
+    #mode = "";
+    #called = false;
+
+    constructor(callback) {
+      needToConstruct(arguments.length, 1, "PerformanceObserver");
+      if (typeof callback !== "function") {
+        throw new $TypeError("Failed to construct 'PerformanceObserver': parameter 1 is not " +
+          "of type 'Function'.");
+      }
+      this.#callback = callback;
+    }
+
+    static {
+      observerSlots = {
+        types: (o) => o.#types,
+        buffer: (o) => o.#buffer,
+        // Its entries taken, and its callback with whether this is the
+        // first call since it began to observe.
+        take: (o) => {
+          const entries = o.#buffer;
+          o.#buffer = [];
+          const first = !o.#called;
+          o.#called = true;
+          return [entries, o.#callback, first];
+        },
+      };
+    }
+
+    static get supportedEntryTypes() {
+      return SUPPORTED_ENTRY_TYPES;
+    }
+
+    observe(options = undefined) {
+      const where = prefix("observe", "PerformanceObserver");
+      const dict = dictionaryOf(options, "PerformanceObserverInit", where);
+      const buffered = dict === null ? undefined : dict.buffered;
+      const entryTypes = dict === null ? undefined : dict.entryTypes;
+      const type = dict === null ? undefined : dict.type;
+      if (entryTypes === undefined && type === undefined) {
+        throw new $TypeError(where + "An observe() call must include either entryTypes or " +
+          "type arguments.");
+      }
+      if (entryTypes !== undefined && type !== undefined) {
+        throw new $TypeError(where + "An observe() call must not include both entryTypes and " +
+          "type arguments.");
+      }
+      if (entryTypes !== undefined) {
+        if (this.#mode === "single") {
+          throw new $DOMException(where + "This PerformanceObserver has performed " +
+            "observe({type:...}, therefore it cannot perform observe({entryTypes:...})",
+            "InvalidModificationError");
+        }
+        const types = [];
+        for (const given of sequenceOf(entryTypes, where)) {
+          const name = str(given);
+          if (ArrayIncludes(SUPPORTED_ENTRY_TYPES, name) && !ArrayIncludes(types, name)) {
+            ArrayPush(types, name);
+          }
+        }
+        if (types.length === 0) {
+          return;
+        }
+        this.#mode = "multiple";
+        this.#types = types;
+        this.#register();
+        return;
+      }
+      if (this.#mode === "multiple") {
+        throw new $DOMException(where + "This observer has performed observe({entryTypes:...}, " +
+          "therefore it cannot perform observe({type:...})", "InvalidModificationError");
+      }
+      const name = str(type);
+      if (!ArrayIncludes(SUPPORTED_ENTRY_TYPES, name)) {
+        return;
+      }
+      this.#mode = "single";
+      if (!ArrayIncludes(this.#types, name)) {
+        ArrayPush(this.#types, name);
+      }
+      this.#register();
+      if (buffered !== undefined && buffered !== null && !!buffered) {
+        const entries = timelineEntriesOf(bufferedEntries(name), name, undefined);
+        for (let i = 0; i < entries.length; i++) {
+          ArrayPush(this.#buffer, entries[i]);
+        }
+        if (entries.length > 0) {
+          queueObserversTask();
+        }
+      }
+    }
+
+    #register() {
+      if (!ArrayIncludes(performanceObservers, this)) {
+        this.#called = false;
+        ArrayPush(performanceObservers, this);
+      }
+    }
+
+    disconnect() {
+      this.#callback;
+      const at = ArrayIndexOf(performanceObservers, this);
+      if (at >= 0) {
+        ArraySplice(performanceObservers, at, 1);
+      }
+      this.#buffer = [];
+      this.#types = [];
+    }
+
+    takeRecords() {
+      const entries = this.#buffer;
+      this.#buffer = [];
+      return entries;
+    }
+  }
+  expose(PerformanceObserver, "PerformanceObserver");
+
+  // A sequence<DOMString> argument, from an iterable.
+  function sequenceOf(value, where) {
+    if (value === null || (typeof value !== "object" && typeof value !== "function") ||
+        typeof value[iteratorSymbol] !== "function") {
+      throw new $TypeError(where + "Failed to read the 'entryTypes' property from " +
+        "'PerformanceObserverInit': The provided value cannot be converted to a sequence.");
+    }
+    const out = [];
+    for (const item of value) {
+      ArrayPush(out, item);
+    }
+    return out;
+  }
+
+  function queueToObservers(entry) {
+    let queued = false;
+    for (let i = 0; i < performanceObservers.length; i++) {
+      const observer = performanceObservers[i];
+      if (ArrayIncludes(observerSlots.types(observer), entry.entryType)) {
+        ArrayPush(observerSlots.buffer(observer), entry);
+        queued = true;
+      }
+    }
+    if (queued) {
+      queueObserversTask();
+    }
+  }
+
+  // Queues the task that calls the observers with what was queued for
+  // them (Performance Timeline's "queue the PerformanceObserver task").
+  function queueObserversTask() {
+    if (observersTask) {
+      return;
+    }
+    observersTask = true;
+    queueTask(() => {
+      observersTask = false;
+      const observers = ArraySlice(performanceObservers);
+      for (let i = 0; i < observers.length; i++) {
+        const observer = observers[i];
+        if (observerSlots.buffer(observer).length === 0) {
+          continue;
+        }
+        const [entries, callback, first] = observerSlots.take(observer);
+        const list = new PerformanceObserverEntryList(KEY, entries);
+        const options = first ? { droppedEntriesCount: 0 } : {};
+        try {
+          ReflectApply(callback, observer, [list, observer, options]);
+        } catch (error) {
+          reportException(error);
+        }
+      }
+    });
+  }
+
+
+  // The legacy Navigation Timing interfaces, the window's alone.
+  class PerformanceTiming {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceTiming");
+      }
+    }
+
+    toJSON() {
+      const json = {};
+      for (let i = 0; i < TIMING_NAMES.length; i++) {
+        json[TIMING_NAMES[i]] = legacyTiming(TIMING_NAMES[i]);
+      }
+      return json;
+    }
+  }
+  for (let i = 0; i < TIMING_NAMES.length; i++) {
+    const name = TIMING_NAMES[i];
+    const getter = getOwnPropertyDescriptor({
+      get [name]() {
+        return legacyTiming(name);
+      },
+    }, name).get;
+    defineProperty(PerformanceTiming.prototype, name, { get: getter, configurable: true });
+  }
+  expose(PerformanceTiming, "PerformanceTiming");
+
+  class PerformanceNavigation {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("PerformanceNavigation");
+      }
+    }
+
+    get type() {
+      return navigationField(0);
+    }
+
+    get redirectCount() {
+      return 0;
+    }
+
+    toJSON() {
+      return { type: this.type, redirectCount: this.redirectCount };
+    }
+  }
+  const NAVIGATION_CONSTANTS = [
+    ["TYPE_NAVIGATE", 0], ["TYPE_RELOAD", 1], ["TYPE_BACK_FORWARD", 2], ["TYPE_RESERVED", 255],
+  ];
+  for (let i = 0; i < NAVIGATION_CONSTANTS.length; i++) {
+    const [name, value] = NAVIGATION_CONSTANTS[i];
+    defineProperty(PerformanceNavigation, name, { value, enumerable: true });
+    defineProperty(PerformanceNavigation.prototype, name, { value, enumerable: true });
+  }
+  expose(PerformanceNavigation, "PerformanceNavigation");
+
+  const legacyTimingObject = new PerformanceTiming(KEY);
+  const legacyNavigationObject = new PerformanceNavigation(KEY);
+  if (WORKER) {
+    ReflectDeleteProperty(Performance.prototype, "timing");
+    ReflectDeleteProperty(Performance.prototype, "navigation");
   }
   expose(Performance, "Performance");
   const performance = new Performance(KEY);

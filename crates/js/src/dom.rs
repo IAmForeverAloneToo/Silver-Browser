@@ -965,6 +965,14 @@ pub enum Call {
     /// `performance.timeOrigin`: the time origin, in milliseconds since
     /// the Unix epoch.
     TimeOrigin,
+    /// The document's navigation as Navigation Timing gives it
+    /// (`performance`'s navigation entry and `timing`): its type (0 a
+    /// navigation, 1 a reload, 2 a traversal) and its response's status;
+    /// then, in milliseconds since the time origin, its response's start
+    /// and end, the document interactive, `DOMContentLoaded`'s start and
+    /// end, the document complete, and `load`'s start and end, each -1
+    /// until it has come.
+    NavigationTiming,
     /// The node's ancestors, its parent first (M26): an event's path.
     Ancestors(Handle),
     /// The nearest inclusive ancestor of the node with an activation

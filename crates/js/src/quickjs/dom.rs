@@ -1088,6 +1088,7 @@ const NATIVES: &[(&str, Decode)] = &[
     ("clearTimer", |a| Ok(Call::ClearTimer(a.integer(0) as u32))),
     ("now", |_| Ok(Call::Now)),
     ("timeOrigin", |_| Ok(Call::TimeOrigin)),
+    ("navigationTiming", |_| Ok(Call::NavigationTiming)),
     ("ancestors", |a| Ok(Call::Ancestors(a.handle(0)?))),
     ("activator", |a| Ok(Call::Activator(a.handle(0)?))),
     ("activate", |a| Ok(Call::Activate(a.handle(0)?))),
