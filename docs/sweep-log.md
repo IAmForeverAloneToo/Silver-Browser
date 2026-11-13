@@ -226,3 +226,52 @@ Top 10 causes (sites, total):
 - 2, 6: missing: crypto
 - 2, 4: console: Uncaught ReferenceError: crypto is not defined at <url>
 
+## 2026-11-13, a77c0998c, against Chrome/157.0.8103.52
+
+One site and one browser at a time.
+
+Events at nodes freed since they were queued are dropped (ddg's and
+maps' "node no longer there" gone). ai-chat's 163 "(not a function)"
+are one inline timer throwing at each turn (item 5's).
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.78 | 1.6 / 2.8 / 3.2 | 2.1 | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.799 | 0.8 / 1.9 / 3.3 | 3.2 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.776 / 0.771 | 1.0 / 1.1 / 1.1 | 1.3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | ok | yes | 0.674 / 0.645 | 0.8 / 3.4 / 3.6 | 2.3 | 1 | 11 | 0 | 0 | 0 | 0 |
+| verge | ok | yes | 0.838 / 0.71 | 1.4 / 4.5 / 8.5 | 16.8 | 2 | 3 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.746 / 0.746 | 0.5 / 0.7 / 2.8 | 2.5 | 2 | 8 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.713 | 4.4 / 4.4 / 4.4 | 2.5 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 0.8 / 1.3 / 1.3 | 0.7 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.615 / 0.732 | 1.3 / 1.3 / 2.8 | 2.4 | 0 | 1 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.652 / 0.845 | 1.9 / 2.3 / 2.3 | 2.8 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.774 / 0.774 | 0.5 / 3.3 / 3.7 | 1.8 | 1 | 4 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.715 / 0.702 | 1.6 / 6.7 / 10.2 | 2.1 | 0 | 12 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.848 / 0.78 | 1.9 / 2.3 / 2.3 | 4.4 | 2 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.693 / 0.692 | 2.4 / 5.7 / 9.8 | 4.1 | 0 | 12 | 0 | 0 | 0 | 6 |
+| twitch | ok | yes | 0.606 / 0.606 | 0.8 / 2.1 / 2.1 | 3.6 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | ok | yes | 0.726 / 0.762 | 3.7 / - / - | 4.9 | 1 | 2 | 0 | 0 | 0 | 0 |
+| maps | ok | yes | 0.845 / 0.882 | 0.6 / 4.4 / 6.8 | 3.1 | 1 | 2 | 0 | 0 | 0 | 0 |
+| reddit | ok | yes | 0.691 / 0.713 | 0.4 / 15.8 / 17.6 | 2.7 | 17 | 18 | 0 | 0 | 0 | 0 |
+| x | ok | - | - / - | 1.3 / 2.4 / 2.4 | - | 3 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.812 / 0.812 | 2.8 / 3.8 / 3.8 | 2.2 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 1.9 / 2.6 / 2.7 | 0.9 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.746 / 0.746 | 0.7 / 1.1 / 1.1 | 4.1 | 164 | 168 | 0 | 0 | 0 | 0 |
+| amazon | ok | yes | 0.69 / 0.674 | 2.8 / 21.6 / 21.6 | 1.0 | 0 | 2 | 0 | 0 | 0 | 0 |
+| ebay | ok | yes | 0.996 / 0.996 | 0.7 / 1.3 / 1.3 | 0.8 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | ok | yes | 0.713 / 0.684 | 0.9 / 16.2 / 16.2 | - | 2 | 5 | 0 | 25 | 0 | 1 |
+
+Top 10 causes (sites, total):
+
+- 8, 186: missing: (not a function)
+- 8, 182: console: Uncaught TypeError: not a function at <url>
+- 4, 37: G90: same-origin frame refused
+- 4, 5: error status: document
+- 4, 4: error status: image
+- 3, 3: console: Uncaught Script error.
+- 3, 3: missing: ReadableStream
+- 2, 9: console: Uncaught (in promise) TypeError: not a function at <url>
+- 2, 7: missing: PerformanceObserver
+- 2, 6: missing: crypto
+
