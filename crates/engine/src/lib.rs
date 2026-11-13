@@ -1285,6 +1285,9 @@ struct CachedLayout {
     /// the layout says it depends on it.
     height: f32,
     layout: DocumentLayout,
+    /// An empty stand-in for a layout cleared as it was made, which the
+    /// next call makes again.
+    fallback: bool,
 }
 
 struct CachedStyle {
@@ -8617,21 +8620,71 @@ impl Engine {
     /// hit test at that width. Computing it takes from the layout cache
     /// what the changes since did not reach (M13.2).
     pub fn layout(&mut self, viewport_width: f32) -> &DocumentLayout {
+        // A face of the system's that a `local()` source names arrives as
+        // the layout asks for it: the layout is made again with it, at
+        // most `MAX_FONT_RELAYOUTS` times, the rest left to the next
+        // frame (a chain of fallbacks each bringing in another).
+        self.lay_out(viewport_width);
+        for _ in 0..web_fonts::MAX_FONT_RELAYOUTS {
+            if !self.fonts_relayout() {
+                break;
+            }
+            self.lay_out(viewport_width);
+        }
+        // Were a layout still cleared as it was made, a frame of nothing,
+        // laid out again at the next, not a renderer ended.
+        if self.shown.layout.is_none() {
+            debug_assert!(false, "a layout cleared as it was made");
+            self.changed = true;
+        }
+        // An empty layout of the viewport's size, which every reader
+        // takes (no NaN to poison their sums): made again at the next.
+        let height = self.viewport.1 as f32;
+        let cached = self.shown.layout.get_or_insert_with(|| CachedLayout {
+            width: viewport_width,
+            height,
+            layout: DocumentLayout::default(),
+            fallback: true,
+        });
+        &cached.layout
+    }
+
+    /// Whether faces a `local()` found as the layout asked for them want
+    /// it made again.
+    fn fonts_relayout(&self) -> bool {
+        self.shown
+            .web_fonts
+            .as_ref()
+            .is_some_and(|web| web.relayout)
+    }
+
+    /// Computes [`Engine::layout`]'s layout, kept in the shown document;
+    /// what it asks for after (fonts, images) may want it made again.
+    fn lay_out(&mut self, viewport_width: f32) {
         // A viewport change can invalidate the cascade, and with it the
         // layout — so the cascade is checked first.
         self.cached_styles();
         let viewport_height = self.viewport.1 as f32;
         let stale = self.shown.layout.as_ref().is_none_or(|cached| {
-            cached.width != viewport_width
+            cached.fallback
+                || cached.width != viewport_width
                 || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
         });
         if stale {
             self.update_web_fonts();
         }
-        let stale = self.shown.layout.as_ref().is_none_or(|cached| {
-            cached.width != viewport_width
-                || (cached.layout.depends_on_viewport_height && cached.height != viewport_height)
-        });
+        // Faces a `local()` found as the last layout asked for them want
+        // it made again with them.
+        let stale = self.fonts_relayout()
+            || self.shown.layout.as_ref().is_none_or(|cached| {
+                cached.fallback
+                    || cached.width != viewport_width
+                    || (cached.layout.depends_on_viewport_height
+                        && cached.height != viewport_height)
+            });
+        if let Some(web) = &mut self.shown.web_fonts {
+            web.relayout = false;
+        }
         // Laid out again, at most so many times, for the size containers
         // whose sizes changed what their queries and units answer, their
         // subtrees restyled with the sizes laid out each time (D72).
@@ -8683,6 +8736,7 @@ impl Engine {
                 width: viewport_width,
                 height: viewport_height,
                 layout,
+                fallback: false,
             });
             pass += 1;
             let styled = self.shown.styled.as_mut().expect("just computed");
@@ -8716,7 +8770,6 @@ impl Engine {
             self.request_fonts();
             self.request_css_images();
         }
-        &self.shown.layout.as_ref().expect("just computed").layout
     }
 
     /// Gives the document the margins of the iframe its frame is in,

@@ -46,7 +46,17 @@ pub(crate) struct WebFonts {
     /// when nothing began loading (a face had already, or found at once
     /// by `local()`), so that its `load()` settles.
     due: bool,
+    /// A face of the system's that a `local()` source names arrived as
+    /// the layout asked for it: the layout stands, and is made again
+    /// with it (`Engine::layout`, at most [`MAX_FONT_RELAYOUTS`] times a
+    /// call, the rest at the next frame).
+    pub(crate) relayout: bool,
 }
+
+/// The most times one layout is made again for faces a `local()` found
+/// as it asked for them; past it, the next frame's makes it (a chain of
+/// fallbacks each bringing in another).
+pub(crate) const MAX_FONT_RELAYOUTS: usize = 2;
 
 /// A face a script added to `document.fonts` (CSS Font Loading 3): its
 /// number, descriptors and data, a font.
@@ -403,6 +413,7 @@ impl Engine {
                 loading: old.as_ref().is_some_and(|old| old.loading),
                 due: old.as_ref().is_some_and(|old| old.due),
                 period: old.map(|old| old.period).unwrap_or_default(),
+                relayout: false,
             }
         });
         for n in refetch {
@@ -622,8 +633,11 @@ impl Engine {
                     }
                     web.data[face] = Some((data, index));
                     web.period.0.push(face);
+                    // Asked for by the layout as it was made: it stands,
+                    // and is made again with the face (the site sweep:
+                    // clearing it here ended four sites' renderers).
+                    web.relayout = true;
                     shown.layout_cache.clear();
-                    shown.layout = None;
                     self.changed = true;
                     return;
                 }

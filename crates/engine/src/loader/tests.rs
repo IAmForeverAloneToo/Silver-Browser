@@ -2825,3 +2825,91 @@ fn integrity_lets_through_only_what_matches_its_metadata() {
     let fetched: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
     assert!(fetched.contains(&"/u.css".to_string()), "{fetched:?}");
 }
+
+/// Fonts whose only face, the bundled one, is also a face of the
+/// system's that `local()` finds by its names ("DejaVu Sans" and
+/// "DejaVuSans"), from a file in `dir`.
+fn fonts_with_a_local_face(dir: &std::path::Path) -> text::FontCollection {
+    std::fs::create_dir_all(dir).expect("a folder");
+    let path = dir.join("face.ttf");
+    std::fs::write(&path, text::TEST_FONT).expect("written");
+    let path = path.display().to_string();
+    let fonts = text::FontCollection::from_files(&text::FontFiles {
+        primary: (path.clone(), 0),
+        fallbacks: Vec::new(),
+        faces: vec![text::FaceRecord {
+            families: vec!["DejaVu Sans".to_owned()],
+            path,
+            index: 0,
+            weight: 400,
+            style: 0,
+            stretch: 5,
+        }],
+    })
+    .expect("the face reads");
+    assert!(fonts.local_face("DejaVu Sans").is_some());
+    fonts
+}
+
+#[test]
+fn a_face_the_system_has_by_name_lays_the_page_out_without_a_lost_layout() {
+    // The site sweep's crash on four sites (bbc, verge, vimeo,
+    // weather): a `local()` source the system has is taken as it is
+    // asked for, which cleared the layout the request followed, inside
+    // `Engine::layout`, whose end found none. The page lays out with
+    // the face instead.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: Here; src: local(DejaVu Sans); }\
+             p { font-family: Here; font-size: 20px }</style><p>a face of the system's</p>",
+        )),
+        _ => None,
+    });
+    let dir = std::env::temp_dir().join(format!("silver-local-face-{}", std::process::id()));
+    let mut tab = Tab::with_fonts(fonts_with_a_local_face(&dir));
+    tab.load(server.url("/page.html"));
+    tab.engine.frame(300, 100);
+    tab.settle();
+    tab.engine.frame(300, 100);
+    let layout = tab.engine.layout(300.0);
+    assert!(layout.height > 0.0, "{layout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn faces_the_system_has_across_nested_fallbacks_settle_in_a_bounded_layout() {
+    // The lead's bound: faces a `local()` finds as the layout asks for
+    // them have it made again at most `MAX_FONT_RELAYOUTS` times a
+    // call, the rest at the next frame; several rules, nested stacks and
+    // a source list that passes over a face the system lacks settle.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<style>@font-face { font-family: A; src: local(DejaVu Sans); }             @font-face { font-family: B; src: local(No Such Face), local(DejaVuSans); }             @font-face { font-family: C; src: local(DejaVuSans); font-weight: 700; }             @font-face { font-family: D; src: local(Nothing Here), local(DejaVu Sans); }             div { font-family: A, B } span { font-family: B, C } em { font-family: C, D }             b { font-family: D, A, serif }</style>             <div>one <span>two <em>three <b>four</b></em></span></div>",
+        )),
+        _ => None,
+    });
+    let dir = std::env::temp_dir().join(format!("silver-local-faces-{}", std::process::id()));
+    let mut tab = Tab::with_fonts(fonts_with_a_local_face(&dir));
+    tab.load(server.url("/page.html"));
+    let before = tab.engine.layout_runs;
+    tab.engine.frame(300, 100);
+    let first = tab.engine.layout_runs - before;
+    // One layout and at most two made again, however many faces arrive
+    // (and a size container's passes, none here).
+    assert!(
+        first <= 1 + crate::web_fonts::MAX_FONT_RELAYOUTS as u64,
+        "{first}"
+    );
+    for _ in 0..4 {
+        tab.settle();
+        tab.engine.frame(300, 100);
+    }
+    let settled = tab.engine.layout_runs;
+    tab.engine.frame(300, 100);
+    assert_eq!(
+        tab.engine.layout_runs, settled,
+        "a quiet frame lays nothing out"
+    );
+    assert!(tab.engine.layout(300.0).height > 0.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

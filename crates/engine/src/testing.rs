@@ -42,10 +42,15 @@ pub(crate) fn load_view(view: &mut dyn crate::view::View, url: Url) {
 
 impl Tab {
     pub(crate) fn new() -> Tab {
-        let mut engine = Engine::with_fonts(
+        Tab::with_fonts(
             text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
                 .expect("the bundled font parses"),
-        );
+        )
+    }
+
+    /// A tab whose engine has `fonts`.
+    pub(crate) fn with_fonts(fonts: text::FontCollection) -> Tab {
+        let mut engine = Engine::with_fonts(fonts);
         let (wake, woken) = channel();
         engine.set_waker(move || {
             let _ = wake.send(());
