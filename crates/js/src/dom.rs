@@ -785,6 +785,10 @@ pub enum Call {
     FrameClosed(u32),
     /// The frame of this document's `iframe` `element`, or -1.
     FrameOf(Handle),
+    /// Frame `n` refused a script of this document (0) or had its
+    /// `contentDocument` read as null (1): counted for the site sweep
+    /// when it is of this document's origin.
+    FrameSweep(u32, u32),
     /// A message for frame `frame`'s window, its data serialized, for the
     /// target origin `TargetOrigin` gave.
     FramePost {

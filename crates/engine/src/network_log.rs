@@ -57,6 +57,8 @@ struct Entry {
     /// it, an opaque response's.
     hidden: bool,
     error: Option<String>,
+    /// The failure's kind (`net::NetworkError::kind`), for counting.
+    error_kind: Option<&'static str>,
 }
 
 impl Default for NetworkLog {
@@ -113,6 +115,7 @@ impl Observer for NetworkLog {
                 body: Vec::new(),
                 hidden: false,
                 error: None,
+                error_kind: None,
             });
             return;
         }
@@ -173,7 +176,10 @@ impl Observer for NetworkLog {
                         entry.body = Vec::new();
                     }
                     Ok(_) => {}
-                    Err(error) => entry.error = Some(error.to_string()),
+                    Err(error) => {
+                        entry.error = Some(error.to_string());
+                        entry.error_kind = Some(error.kind());
+                    }
                 }
             }
         }
@@ -200,6 +206,41 @@ fn destination_name(destination: net::Destination) -> &'static str {
 }
 
 impl NetworkLog {
+    /// What the site sweep counts of the requests (the scoreboard): the
+    /// failed ones by their destination, the refused by the refusal's
+    /// kind (`cors`, `mixed-content`, `csp` and the rest), and those
+    /// answered with an error status by their destination. An aborted
+    /// request is no failure.
+    pub fn sweep_summary(&self) -> Json {
+        let log = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut failed = std::collections::BTreeMap::<&str, u32>::new();
+        let mut kinds = std::collections::BTreeMap::<&str, u32>::new();
+        let mut statuses = std::collections::BTreeMap::<&str, u32>::new();
+        for entry in &log.entries {
+            if let Some(kind) = entry.error_kind
+                && kind != "aborted"
+            {
+                *failed.entry(entry.destination).or_default() += 1;
+                *kinds.entry(kind).or_default() += 1;
+            }
+            if entry.status.is_some_and(|status| status >= 400) {
+                *statuses.entry(entry.destination).or_default() += 1;
+            }
+        }
+        let map = |map: std::collections::BTreeMap<&str, u32>| {
+            Json::object(
+                map.into_iter()
+                    .map(|(name, count)| (name, Json::from(f64::from(count)))),
+            )
+        };
+        Json::object([
+            ("requests", Json::from(log.entries.len() as f64)),
+            ("failedByDestination", map(failed)),
+            ("failedByKind", map(kinds)),
+            ("errorStatusByDestination", map(statuses)),
+        ])
+    }
+
     /// How many changes the log has had: news when it is not what it was.
     pub fn version(&self) -> u64 {
         self.lock().version
@@ -470,6 +511,35 @@ mod tests {
         assert_eq!(
             field(&log.entry(7).expect("an entry"), "error").as_str(),
             Some(net::NetworkError::Aborted.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn the_sweep_counts_failures_by_destination_and_kind() {
+        let log = NetworkLog::default();
+        let url = Url::parse("https://example.com/a").expect("a URL");
+        let headers = net::HeaderList::new();
+        let request = |destination| Observed::Request {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+            destination,
+            initiator: None,
+        };
+        log.observe(1, request(net::Destination::Image));
+        log.observe(
+            1,
+            Observed::End(Err(&net::NetworkError::Cors("no".to_owned()))),
+        );
+        log.observe(2, request(net::Destination::Script));
+        log.observe(2, Observed::End(Err(&net::NetworkError::MixedContent)));
+        log.observe(3, request(net::Destination::Image));
+        log.observe(3, Observed::End(Err(&net::NetworkError::Aborted)));
+        let summary = log.sweep_summary().write();
+        assert_eq!(
+            summary,
+            "{\"requests\":3,\"failedByDestination\":{\"image\":1,\"script\":1},\
+             \"failedByKind\":{\"cors\":1,\"mixed-content\":1},\"errorStatusByDestination\":{}}"
         );
     }
 }

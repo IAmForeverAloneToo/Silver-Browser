@@ -21308,6 +21308,13 @@
     }
   }
 
+  // `blocked`, counted for the site sweep when the frame is of this
+  // document's origin, which HTML would let it reach (G90).
+  function refused(id, verb, name, iface) {
+    native.frameSweep(id, 0);
+    return blocked(verb, name, iface);
+  }
+
   // A cross-origin Location (HTML 7.2.3): `href` to set and `replace`.
   function frameLocation(id) {
     let location = MapGet(frameLocations, id);
@@ -21327,7 +21334,7 @@
         prop === concatSpreadableSymbol) {
         return undefined;
       }
-      throw blocked("read", prop, "Location");
+      throw refused(id, "read", prop, "Location");
     };
     location = new $Proxy(target, {
       get(_, prop) {
@@ -21338,13 +21345,13 @@
           navigateFrame(id, value, false);
           return true;
         }
-        throw blocked("set", prop, "Location");
+        throw refused(id, "set", prop, "Location");
       },
       has(_, prop) {
         if (prop === "href" || prop === "replace" || prop === "then") {
           return true;
         }
-        throw blocked("read", prop, "Location");
+        throw refused(id, "read", prop, "Location");
       },
       getOwnPropertyDescriptor(_, prop) {
         if (prop === "href") {
@@ -21364,10 +21371,10 @@
           concatSpreadableSymbol];
       },
       defineProperty(_, prop) {
-        throw blocked("set", prop, "Location");
+        throw refused(id, "set", prop, "Location");
       },
       deleteProperty(_, prop) {
-        throw blocked("set", prop, "Location");
+        throw refused(id, "set", prop, "Location");
       },
       getPrototypeOf() {
         return null;
@@ -21439,7 +21446,7 @@
           return windowFor(child);
         }
       }
-      throw blocked("read", prop, "Window");
+      throw refused(id, "read", prop, "Window");
     };
     window = new $Proxy(ObjectCreate(null), {
       get(_, prop) {
@@ -21450,7 +21457,7 @@
           navigateFrame(id, value, false);
           return true;
         }
-        throw blocked("set", prop, "Window");
+        throw refused(id, "set", prop, "Window");
       },
       has(_, prop) {
         if (typeof prop === "string" && includesString(FRAME_WINDOW_KEYS, prop)) {
@@ -21486,10 +21493,10 @@
         return keys;
       },
       defineProperty(_, prop) {
-        throw blocked("set", prop, "Window");
+        throw refused(id, "set", prop, "Window");
       },
       deleteProperty(_, prop) {
-        throw blocked("set", prop, "Window");
+        throw refused(id, "set", prop, "Window");
       },
       getPrototypeOf() {
         return null;
@@ -21658,7 +21665,10 @@
         return windowFor(native.frameOf(self(this)));
       },
       get contentDocument() {
-        self(this);
+        const frame = native.frameOf(self(this));
+        if (frame >= 0) {
+          native.frameSweep(frame, 1);
+        }
         return null;
       },
       get sandbox() {

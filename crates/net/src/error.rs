@@ -107,6 +107,43 @@ pub enum TlsFailure {
     Other(String),
 }
 
+impl NetworkError {
+    /// A short name of what kind of failure it is, for counting (the
+    /// site sweep): `cors`, `mixed-content`, `csp`, `dns`, `tls` and so
+    /// on, one per variant.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            NetworkError::BadScheme(_) => "scheme",
+            NetworkError::BadPort(_) => "port",
+            NetworkError::AddressSpace { .. } | NetworkError::TargetAddressSpace { .. } => {
+                "address-space"
+            }
+            NetworkError::MixedContent => "mixed-content",
+            NetworkError::Resolve(_) => "dns",
+            NetworkError::Connect(_) => "connect",
+            NetworkError::Tls(_) => "tls",
+            NetworkError::Malformed(_) | NetworkError::UnaskedUpgrade => "malformed",
+            NetworkError::Truncated | NetworkError::Io(_) => "io",
+            NetworkError::Integrity => "integrity",
+            NetworkError::HeadersTooLarge | NetworkError::BodyTooLarge => "too-large",
+            NetworkError::ContentCoding => "content-coding",
+            NetworkError::DataUrl | NetworkError::BlobUrl | NetworkError::File(_) => "local",
+            NetworkError::Timeout => "timeout",
+            NetworkError::RedirectLimit | NetworkError::BadRedirect | NetworkError::Redirected => {
+                "redirect"
+            }
+            NetworkError::Aborted => "aborted",
+            NetworkError::Cors(_) => "cors",
+            NetworkError::CrossOriginResourcePolicy => "corp",
+            NetworkError::Refused(_) => "refused",
+            NetworkError::Csp(_) => "csp",
+            NetworkError::NotCached => "not-cached",
+            NetworkError::Moved => "moved",
+            NetworkError::Http2(_) => "http2",
+        }
+    }
+}
+
 impl fmt::Display for NetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

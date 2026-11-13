@@ -266,6 +266,22 @@ stores and records), with an item's deletion and the site's clearing.
 `navigator.storage.estimate()` gives a storage key's usage and quota,
 and `persisted()` false (a profile does not evict yet, below).
 
+### The site sweep's counts (2026-11-13)
+
+**`page.sweep`**, a page's answer beside `page.info`, gives what the
+engine counted of it for the scoreboard of the site sweep (the shell's
+`--sweep-site`): names a script reached for that the engine has not (an
+uncaught `ReferenceError`'s `x is not defined`, a `TypeError`'s `x is
+not a function`; QuickJS names no method it found missing, which is
+counted as `(not a function)`), stacks too deep, scripts stopped for
+running too long, frames of the page's own origin refused or their
+`contentDocument` null (G90), policies' refusals, media types asked
+about and answered no, and the layouts run, which the sweep reads to
+see a page settle. The documents the engine left keep their counts in
+it; its frames' are added. Each map keeps `MAX_NAMES` (256) names. The
+network log's `sweep_summary`, the browser's, gives the failed requests
+by destination and by the failure's kind (`net::NetworkError::kind`).
+
 ### Bounds
 
 Every constant above is a bound a page cannot pass: `MAX_MESSAGE_BYTES`

@@ -651,6 +651,17 @@ impl FrameTree {
         false
     }
 
+    /// Whether frames `a` and `b` show documents of one origin, neither
+    /// opaque: what HTML would let reach each other (G90), for the site
+    /// sweep's count.
+    pub(crate) fn same_origin(&self, a: FrameId, b: FrameId) -> bool {
+        let origin = |id| self.nodes.get(&id).and_then(|node| node.origin.as_ref());
+        match (origin(a), origin(b)) {
+            (Some(a), Some(b)) => !a.is_opaque() && a == b,
+            _ => false,
+        }
+    }
+
     /// The top-level document's origin.
     pub(crate) fn top_origin(&self) -> net::Origin {
         self.nodes

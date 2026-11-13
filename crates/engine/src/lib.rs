@@ -153,6 +153,7 @@ mod shadow_tests;
 mod storage;
 mod submit;
 mod svg_images;
+mod sweep;
 #[cfg(test)]
 mod tables_tests;
 #[cfg(test)]
@@ -443,6 +444,9 @@ pub struct Engine {
     restyled_elements: u64,
     /// How many layouts have run: what proves a scroll does not.
     layout_runs: u64,
+    /// What the site sweep counted of the documents this engine showed
+    /// and left (`sweep`); the shown one's are its scripts'.
+    sweep_left: sweep::SweepCounts,
     /// The margins of the iframe this engine's frame is in, which the
     /// document's `body` takes.
     pub(crate) frame_margins: style::FrameMargins,
@@ -1673,6 +1677,7 @@ impl Engine {
             style_runs: 0,
             restyled_elements: 0,
             layout_runs: 0,
+            sweep_left: sweep::SweepCounts::default(),
             frame_margins: style::FrameMargins::default(),
             layouts_kept: 0,
             boxes_laid_out: 0,
@@ -1786,6 +1791,7 @@ impl Engine {
     /// animation's clock.
     fn show(&mut self, shown: Shown) -> Shown {
         let left = std::mem::replace(&mut self.shown, shown);
+        self.sweep_left.add(left.scripts.sweep());
         // The tab knows the frame's document's origin, and its ports are
         // the tab's (M33.2).
         let mut tree = frames::lock(&self.frame.tree);

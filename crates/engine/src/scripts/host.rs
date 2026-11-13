@@ -271,6 +271,8 @@ impl FontMeasure for Measure<'_> {
 pub(crate) struct DocumentHost {
     /// The document, lent for a run.
     pub(crate) document: Document,
+    /// What the site sweep counts of the page (`crate::sweep`).
+    pub(crate) sweep: crate::sweep::SweepCounts,
     /// The nodes a script holds an object for: handles given out and not
     /// released (M25). None of them is freed.
     exposed: HashSet<NodeId>,
@@ -2466,6 +2468,7 @@ impl DocumentHost {
             | Call::FrameNamed(..)
             | Call::FrameClosed(_)
             | Call::FrameOf(_)
+            | Call::FrameSweep(..)
             | Call::FramePost { .. }
             | Call::FrameNavigate { .. }
             | Call::WindowName
@@ -3619,9 +3622,17 @@ impl DocumentHost {
                 {
                     self.media.heard(node);
                 }
-                self.media
-                    .call(&op, &env, node)
-                    .map(|result| (result, node))
+                let asked = (op.get("op").and_then(devtools::Json::as_str) == Some("canPlayType"))
+                    .then(|| op.get("type").and_then(devtools::Json::as_str))
+                    .flatten()
+                    .map(str::to_owned);
+                let answer = self.media.call(&op, &env, node);
+                if let (Some(kind), Ok(result)) = (&asked, &answer)
+                    && result.as_str() == Some("")
+                {
+                    self.sweep.note_unsupported_media(kind);
+                }
+                answer.map(|result| (result, node))
             });
         match answer {
             // Whether the element is active after, which the bindings hold
@@ -4170,9 +4181,10 @@ impl DocumentHost {
                 Call::FrameLength(_) => Answer::Number(0.0),
                 Call::FrameClosed(_) => Answer::Bool(false),
                 Call::WindowName => Answer::String(String::new()),
-                Call::FramePost { .. } | Call::FrameNavigate { .. } | Call::SetWindowName(_) => {
-                    Answer::Nothing
-                }
+                Call::FramePost { .. }
+                | Call::FrameNavigate { .. }
+                | Call::SetWindowName(_)
+                | Call::FrameSweep(..) => Answer::Nothing,
                 _ => Answer::Number(-1.0),
             });
         };
@@ -4194,6 +4206,15 @@ impl DocumentHost {
                 crate::frames::lock(&env.tree).child_named(id, &name),
             )),
             Call::FrameClosed(id) => Ok(Answer::Bool(!crate::frames::lock(&env.tree).contains(id))),
+            Call::FrameSweep(id, what) => {
+                if crate::frames::lock(&env.tree).same_origin(me, id) {
+                    match what {
+                        0 => self.sweep.frame_refused_same_origin += 1,
+                        _ => self.sweep.frame_document_same_origin += 1,
+                    }
+                }
+                Ok(Answer::Nothing)
+            }
             Call::FrameOf(element) => {
                 // An iframe in the document has its frame now, made later
                 // by the engine under this number (M33.2).

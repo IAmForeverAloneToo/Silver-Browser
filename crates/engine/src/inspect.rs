@@ -157,6 +157,20 @@ impl Engine {
         std::mem::take(&mut self.inspected)
     }
 
+    /// The site sweep's counts of the documents shown and left, the
+    /// frames' among them, with the layouts run.
+    fn sweep_counts(&mut self) -> Json {
+        let mut total = self.sweep_left.clone();
+        total.add(self.shown.scripts.sweep());
+        let mut layouts = self.layout_runs;
+        self.for_each_frame(&mut |frame| {
+            total.add(&frame.sweep_left);
+            total.add(frame.shown.scripts.sweep());
+            layouts += frame.layout_runs;
+        });
+        total.json(layouts)
+    }
+
     /// Queues `message` for the panel, unless too many wait.
     fn tell_panel(&mut self, message: String) {
         if self.inspected.len() < MAX_INSPECTED_MESSAGES {
@@ -198,6 +212,10 @@ impl Engine {
                 ("url", Json::from(self.url().map(Url::to_string))),
                 ("title", Json::from(self.title())),
             ])),
+            // What the site sweep counted of the page and its frames
+            // (`crate::sweep`), and the layouts run, which the sweep reads
+            // to see a page settle.
+            "page.sweep" => Ok(self.sweep_counts()),
             // An expression run in the page (M36.1).
             "console.evaluate" => {
                 let expression = request

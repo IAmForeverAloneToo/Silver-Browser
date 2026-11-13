@@ -2827,6 +2827,7 @@ impl Scripts {
     /// uncaught exception and where it was thrown, or a rejection with no
     /// handler; a dead realm's refusal is not an error of the page's.
     pub(crate) fn report(&mut self, error: &ScriptError) {
+        self.host.sweep.note_error(error.kind, &error.message);
         let Some(entry) = ConsoleEntry::of_error(error) else {
             return;
         };
@@ -2952,10 +2953,18 @@ impl Scripts {
     }
 
     fn push(&mut self, entry: ConsoleEntry) {
+        if entry.source == ConsoleSource::Policy && entry.level == ConsoleLevel::Error {
+            self.host.sweep.policy_refusals += 1;
+        }
         if self.console.len() == MAX_CONSOLE_ENTRIES {
             self.console.pop_front();
         }
         self.console.push_back(entry);
+    }
+
+    /// What the site sweep counted of the document (`crate::sweep`).
+    pub(crate) fn sweep(&self) -> &crate::sweep::SweepCounts {
+        &self.host.sweep
     }
 
     /// The console's entries since it was last taken.

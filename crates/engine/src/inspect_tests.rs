@@ -885,3 +885,55 @@ fn a_pick_selects_what_is_under_the_pointer_and_the_page_hears_nothing() {
     assert_eq!(tab.engine.selected, None);
     assert_eq!(tab.engine.highlighted, None);
 }
+
+#[test]
+fn a_page_answers_what_the_site_sweep_counts_of_it() {
+    // The scoreboard's counters (`crate::sweep`): names the engine has
+    // not, a stack too deep, a media type it does not play, a policy's
+    // refusal, and a frame of the page's own origin refused (G90).
+    let server = crate::testing::serve(|path| match path {
+        "/page.html" => Some(html(
+            "<meta http-equiv=Content-Security-Policy content=\"img-src 'none'\">\
+             <img src=/a.png><iframe srcdoc='<p>child</p>'></iframe>\
+             <script>notInThisEngine();</script>\
+             <script>document.body.animateX();</script>\
+             <script>function deep(n) { return deep(n + 1) + 1; } deep(0);</script>\
+             <script>document.createElement('video').canPlayType('video/x-nothing');\
+             onload = () => {\
+               try { frames[0].document; } catch (e) {}\
+               document.querySelector('iframe').contentDocument;\
+               document.title = 'done';\
+             };</script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/page.html"));
+    tab.wait_until(|engine| engine.title() == "done");
+    tab.engine.frame(200, 100);
+    tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = Json::parse(&answers[0]).expect("JSON");
+    let counts = answer.get("result").expect("a result");
+    let number = |name: &str| counts.get(name).and_then(Json::as_u64);
+    let named = |map: &str, name: &str| {
+        counts
+            .get(map)
+            .and_then(|map| map.get(name))
+            .and_then(Json::as_u64)
+    };
+    assert_eq!(named("missing", "notInThisEngine"), Some(1), "{answer:?}");
+    // QuickJS names no method it found missing.
+    assert_eq!(named("missing", "(not a function)"), Some(1), "{answer:?}");
+    assert_eq!(number("stackOverflows"), Some(1), "{answer:?}");
+    assert_eq!(
+        named("mediaUnsupported", "video/x-nothing"),
+        Some(1),
+        "{answer:?}"
+    );
+    assert!(number("policyRefusals") >= Some(1), "{answer:?}");
+    assert_eq!(number("frameRefusedSameOrigin"), Some(1), "{answer:?}");
+    assert_eq!(number("frameDocumentSameOrigin"), Some(1), "{answer:?}");
+    assert!(number("layouts") >= Some(1), "{answer:?}");
+}

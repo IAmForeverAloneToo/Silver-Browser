@@ -907,6 +907,9 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::FrameClosed(a.integer(0) as u32))
     }),
     ("frameOf", |a| Ok(Call::FrameOf(a.handle(0)?))),
+    ("frameSweep", |a| {
+        Ok(Call::FrameSweep(a.integer(0) as u32, a.integer(1) as u32))
+    }),
     ("framePost", |a| {
         Ok(Call::FramePost {
             frame: a.integer(0) as u32,
