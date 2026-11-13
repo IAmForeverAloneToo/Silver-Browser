@@ -142,12 +142,11 @@ jobs:
 
   windowed:
     # The browser left alone in a real window uses next to no CPU
-    # (crates/shell/tests/idle_cpu.rs), which the maintainer's gate runs.
-    # Tried here on the Windows runner, which may show no window: until
-    # it has, the push does not depend on it.
-    name: windowed (windows, trial)
+    # (crates/shell/tests/idle_cpu.rs). The Windows runner shows the
+    # window (tried 2026-11-13: the static page 0%, the clock under 1%
+    # of a core in each process).
+    name: windowed (windows)
     runs-on: windows-latest
-    continue-on-error: true
     env:
       SILVER_WINDOWED_TESTS: "1"
     steps:
