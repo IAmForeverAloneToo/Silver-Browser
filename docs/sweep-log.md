@@ -181,3 +181,48 @@ Top 10 causes (sites, total):
 - 2, 2: missing: ReadableStream
 - 1, 6: console: Failed to fetch <url>
 
+## 2026-11-13, 0f3b5d8d4, against Chrome/157.0.8103.52
+
+One site and one browser at a time.
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.78 | 1.5 / 2.6 / 3.2 | 2.5 | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.799 | 1.0 / 2.4 / 3.9 | 2.3 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.776 / 0.77 | 1.3 / 1.5 / 1.7 | 1.3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | ok | yes | 0.675 / 0.644 | 0.5 / 3.3 / 4.2 | 2.3 | 1 | 11 | 0 | 0 | 0 | 0 |
+| verge | ok | yes | 0.85 / 0.698 | 1.3 / 3.5 / 8.1 | 10.9 | 2 | 3 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.746 / 0.746 | 0.6 / 1.3 / 1.3 | 2.1 | 1 | 1 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.713 | 4.4 / 4.4 / 4.4 | 2.3 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 0.8 / 1.1 / 1.1 | 1.1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.615 / 0.732 | 1.4 / 1.4 / 2.8 | 2.6 | 0 | 1 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.78 / 0.853 | 2.2 / 2.6 / 3.5 | 3.8 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.772 / 0.772 | 0.5 / 3.1 / 3.8 | 2.0 | 1 | 4 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.717 / 0.704 | 2.0 / 7.3 / 10.9 | 2.4 | 0 | 15 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.841 / 0.844 | 1.7 / 2.4 / 2.5 | 4.5 | 2 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.692 / 0.692 | 2.3 / 7.0 / 10.0 | 2.4 | 0 | 6 | 0 | 0 | 0 | 0 |
+| twitch | ok | yes | 0.606 / 0.606 | 0.6 / 1.7 / 1.8 | 3.4 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | ok | yes | 0.727 / 0.762 | 3.7 / - / - | 8.0 | 1 | 2 | 0 | 0 | 0 | 0 |
+| maps | ok | yes | 0.853 / 0.848 | 0.7 / 3.4 / 8.1 | 3.4 | 1 | 4 | 0 | 0 | 0 | 0 |
+| reddit | ok | yes | 0.691 / 0.699 | 0.5 / 15.4 / 18.4 | 2.3 | 17 | 18 | 0 | 1 | 0 | 0 |
+| x | ok | - | - / - | 1.3 / 2.4 / 2.5 | - | 3 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.811 / 0.811 | 3.0 / 3.9 / 4.2 | 3.1 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 1.5 / 2.2 / 2.4 | 1.0 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.746 / 0.746 | 0.9 / 1.4 / 1.4 | 4.0 | 1 | 2 | 0 | 0 | 0 | 0 |
+| amazon | ok | yes | 0.723 / 0.685 | 1.7 / 20.1 / 20.1 | 3.6 | 0 | 1 | 0 | 0 | 0 | 0 |
+| ebay | ok | yes | 0.996 / 0.996 | 1.2 / 2.0 / 2.0 | 1.0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | ok | yes | 0.714 / 0.672 | 1.0 / 17.9 / 18.2 | 12.4 | 2 | 5 | 0 | 16 | 0 | 1 |
+
+Top 10 causes (sites, total):
+
+- 7, 22: missing: (not a function)
+- 7, 18: console: Uncaught TypeError: not a function at <url>
+- 4, 28: G90: same-origin frame refused
+- 4, 4: error status: document
+- 3, 3: console: Uncaught Script error.
+- 3, 3: missing: ReadableStream
+- 2, 9: console: Uncaught (in promise) TypeError: not a function at <url>
+- 2, 7: missing: PerformanceObserver
+- 2, 6: missing: crypto
+- 2, 4: console: Uncaught ReferenceError: crypto is not defined at <url>
+
