@@ -87,6 +87,10 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
         field(timings, "settled").as_f64() >= field(timings, "load").as_f64(),
         "{record:?}"
     );
+    assert_eq!(
+        field(&record, "finalUrl").as_str(),
+        Some(server.url("/ok.html").as_str())
+    );
     let missing = field(field(&record, "counters"), "missing");
     assert_eq!(
         field(missing, "notInThisEngine").as_u64(),

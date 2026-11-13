@@ -233,6 +233,9 @@ fn capture(asked: &Asked) -> Result<(), String> {
         ("error", Json::from(error)),
         ("dump", Json::from(dump)),
         ("url", Json::from(asked.url.to_string())),
+        // Where the site sent the tab, its redirects followed: the
+        // reference browser may be sent elsewhere (another country's).
+        ("finalUrl", Json::from(tab.url().map(Url::to_string))),
         (
             "timings",
             Json::object([

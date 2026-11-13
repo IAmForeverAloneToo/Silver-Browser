@@ -346,6 +346,8 @@ async function captureChrome(chrome, url, dir) {
       fs.writeFileSync(path.join(dir, name), Buffer.from(data, "base64"));
       result.screenshots[name.replace(/^chrome-|\.png$/g, "")] = name;
     };
+    const served = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }).catch(() => null);
+    result.finalUrl = served?.result?.value ?? null;
     await shot("chrome-top.png");
     await send("Runtime.evaluate", { expression: `window.scrollBy(0, ${SCROLL_SCREENS * HEIGHT})` });
     let settled = Date.now();
@@ -444,7 +446,18 @@ export async function run(options) {
       captureSilver(silver, url, dir),
       chrome ? captureChrome(chrome, url, dir) : Promise.resolve(null),
     ]);
-    const row = { id, url, silver: s, chrome: c, similarity: {} };
+    const host = (u) => {
+      try {
+        return new URL(u).hostname;
+      } catch {
+        return null;
+      }
+    };
+    const served = { silver: s.finalUrl ?? null, chrome: c?.finalUrl ?? null };
+    // The servers sent the two browsers different pages: the likeness
+    // says nothing of the rendering.
+    const differ = Boolean(served.silver && served.chrome && host(served.silver) !== host(served.chrome));
+    const row = { id, url, silver: s, chrome: c, similarity: {}, served, hostsDiffer: differ };
     for (const which of ["top", "scrolled"]) {
       const a = path.join(dir, `silver-${which}.png`), b = path.join(dir, `chrome-${which}.png`);
       if (fs.existsSync(a) && fs.existsSync(b)) {
@@ -531,7 +544,8 @@ function report(meta, rows, causes) {
 paint ${ms(s.timings?.firstPaint)}, load ${ms(s.timings?.load)}, settled ${ms(s.timings?.settled)};
 renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.memory?.rendererPeakCommit)} MiB, browser ${mib(s.memory?.browserPeakWorkingSet)} / ${mib(s.memory?.browserPeakCommit)} MiB.
 <b>Chrome</b> ${esc(c.outcome)}${c.error ? ` (${esc(c.error)})` : ""}; paint ${ms(c.timings?.firstPaint)}, load ${ms(c.timings?.load)}, settled ${ms(c.timings?.settled)}.
-<b>Likeness</b> top ${r.similarity.top ?? "-"}, scrolled ${r.similarity.scrolled ?? "-"}.</p>
+<b>Likeness</b> top ${r.similarity.top ?? "-"}, scrolled ${r.similarity.scrolled ?? "-"}${r.hostsDiffer ? " <b>(served different hosts: discount it)</b>" : ""}.<br>
+Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.</p>
 <p>Missing: ${missing || "none"}; stack ${counts.stackOverflows || 0}; G90 ${(counts.frameRefusedSameOrigin || 0) + (counts.frameDocumentSameOrigin || 0)}; CSP ${counts.policyRefusals || 0}; console errors ${(s.console || []).filter((e) => e.level === "error").length} (Chrome ${(c.console || []).length}).</p>
 <div class=pair>${pic("silver", "top")}${pic("chrome", "top")}</div>
 <div class=pair>${pic("silver", "scrolled")}${pic("chrome", "scrolled")}</div></section>`;
@@ -541,14 +555,14 @@ renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.mem
     .map((c) => `<tr><td>${c.sites}</td><td>${c.total}</td><td>${esc(c.kind)}</td><td>${esc(c.key)}</td><td>${esc(c.siteList.join(" "))}</td></tr>`)
     .join("\n");
   const summary = rows
-    .map((r) => `<tr><td><a href="#${esc(r.id)}">${esc(r.id)}</a></td><td>${esc(r.silver?.outcome)}</td><td>${esc(r.chrome?.outcome ?? "-")}</td><td>${r.similarity.top ?? "-"}</td><td>${r.similarity.scrolled ?? "-"}</td><td>${ms(r.silver?.timings?.settled)}</td><td>${ms(r.chrome?.timings?.settled)}</td></tr>`)
+    .map((r) => `<tr><td><a href="#${esc(r.id)}">${esc(r.id)}</a></td><td>${esc(r.silver?.outcome)}</td><td>${esc(r.chrome?.outcome ?? "-")}</td><td>${r.similarity.top ?? "-"}${r.hostsDiffer ? " *" : ""}</td><td>${r.similarity.scrolled ?? "-"}</td><td>${ms(r.silver?.timings?.settled)}</td><td>${ms(r.chrome?.timings?.settled)}</td></tr>`)
     .join("\n");
   return `<!DOCTYPE html><meta charset=utf-8><title>Site sweep ${esc(meta.date)}</title>
 <style>body{font:14px system-ui,sans-serif;margin:16px;max-width:1400px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:2px 6px;text-align:left}
 .pair{display:flex;gap:8px}.pair figure{margin:0;flex:1}.pair img{width:100%;border:1px solid #999}small{color:#666;font-weight:normal}section{border-top:2px solid #333;margin-top:24px}</style>
 <h1>Site sweep ${esc(meta.date)}</h1>
 <p>Silver ${esc(meta.commit)} against ${esc(meta.chrome ?? "no reference")}, ${rows.length} sites in ${meta.seconds}s, ${WIDTH}x${HEIGHT} at 1x.</p>
-<h2>Sites</h2><table><tr><th>site</th><th>Silver</th><th>Chrome</th><th>likeness top</th><th>scrolled</th><th>settled</th><th>Chrome settled</th></tr>${summary}</table>
+<h2>Sites</h2><p>* the servers sent the browsers to different hosts: the likeness says nothing of the rendering.</p><table><tr><th>site</th><th>Silver</th><th>Chrome</th><th>likeness top</th><th>scrolled</th><th>settled</th><th>Chrome settled</th></tr>${summary}</table>
 <h2>Top causes</h2><table><tr><th>sites</th><th>total</th><th>kind</th><th>cause</th><th>where</th></tr>${causeRows}</table>
 ${siteRows}`;
 }
@@ -569,15 +583,15 @@ function appendLog(meta, rows, causes) {
     );
   }
   lines.push(`## ${meta.date}, ${meta.commit}, against ${meta.chrome ?? "no reference"}`, "");
-  lines.push("| site | outcome | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |");
-  lines.push("|---|---|---|---|---|---|---|---|---|---|---|");
+  lines.push("| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   const s1 = (v) => (v === undefined || v === null ? "-" : (v / 1000).toFixed(1));
   for (const r of rows) {
     const s = r.silver || {};
     const k = s.counters || {};
     const failed = Object.values(s.network?.failedByDestination || {}).reduce((a, b) => a + b, 0);
     lines.push(
-      `| ${r.id} | ${s.outcome ?? "-"} | ${r.similarity.top ?? "-"} / ${r.similarity.scrolled ?? "-"} | ${s1(s.timings?.firstPaint)} / ${s1(s.timings?.load)} / ${s1(s.timings?.settled)} | ${s1(r.chrome?.timings?.settled)} | ${Object.values(k.missing || {}).reduce((a, b) => a + b, 0)} | ${(s.console || []).filter((e) => e.level === "error").length} | ${k.stackOverflows || 0} | ${(k.frameRefusedSameOrigin || 0) + (k.frameDocumentSameOrigin || 0)} | ${k.policyRefusals || 0} | ${failed} |`,
+      `| ${r.id} | ${s.outcome ?? "-"} | ${r.served?.chrome ? (r.hostsDiffer ? "no" : "yes") : "-"} | ${r.similarity.top ?? "-"} / ${r.similarity.scrolled ?? "-"} | ${s1(s.timings?.firstPaint)} / ${s1(s.timings?.load)} / ${s1(s.timings?.settled)} | ${s1(r.chrome?.timings?.settled)} | ${Object.values(k.missing || {}).reduce((a, b) => a + b, 0)} | ${(s.console || []).filter((e) => e.level === "error").length} | ${k.stackOverflows || 0} | ${(k.frameRefusedSameOrigin || 0) + (k.frameDocumentSameOrigin || 0)} | ${k.policyRefusals || 0} | ${failed} |`,
     );
   }
   lines.push("", "Top 10 causes (sites, total):", "");
