@@ -275,3 +275,55 @@ Top 10 causes (sites, total):
 - 2, 7: missing: PerformanceObserver
 - 2, 6: missing: crypto
 
+## 2026-11-13, a9a2c1b45, against Chrome/157.0.8103.52
+
+One site and one browser at a time.
+
+A connection waits for room to write only while it has something to
+(e1a7c7ba9): reddit, weather and amazon load sooner. Of the sites over
+10% slower here, three reloads each put google, cratesio, bing, gdocs
+and maps within their spread; stackoverflow (0.9 to 1.2 s), ebay (1.5
+to 1.8 s) and youtube (6.2 to 6.4 s) stayed slower, to be measured
+against the commit before.
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.78 | 1.4 / 2.6 / 2.9 | 1.9 | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.799 | 0.7 / 1.7 / 2.8 | 2.5 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.78 / 0.774 | 0.8 / 1.0 / 1.1 | 0.9 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | ok | yes | 0.676 / 0.637 | 0.5 / 3.1 / 3.3 | 1.9 | 1 | 11 | 0 | 0 | 0 | 0 |
+| verge | ok | yes | 0.848 / 0.738 | 1.3 / 3.9 / 6.7 | 12.3 | 2 | 3 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.746 / 0.746 | 0.8 / 1.3 / 1.4 | 2.7 | 2 | 12 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.713 | 4.0 / 4.0 / 4.0 | 2.7 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 0.9 / 1.1 / 1.3 | 0.9 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.851 / 0.841 | 1.3 / 1.4 / 4.0 | 2.5 | 0 | 0 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.652 / 0.845 | 2.0 / 2.4 / 2.4 | 1.5 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.771 / 0.771 | 0.6 / 6.8 / 7.7 | 2.0 | 1 | 8 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.719 / 0.702 | 1.3 / 4.9 / 8.4 | 2.5 | 0 | 12 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.848 / 0.774 | 2.2 / 2.7 / 2.8 | 4.9 | 2 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.692 / 0.692 | 2.6 / 6.7 / 8.2 | 2.9 | 0 | 6 | 0 | 0 | 0 | 0 |
+| twitch | ok | yes | 0.606 / 0.606 | 0.4 / 1.7 / 1.8 | 4.0 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | ok | yes | 0.722 / 0.762 | 3.2 / - / - | 6.6 | 1 | 2 | 0 | 0 | 0 | 0 |
+| maps | ok | yes | 0.887 / 0.86 | 0.8 / 4.2 / 7.9 | 3.1 | 1 | 2 | 0 | 0 | 0 | 0 |
+| reddit | ok | yes | 0.7 / 0.649 | 0.8 / 9.6 / 13.1 | 2.3 | 17 | 18 | 0 | 0 | 0 | 0 |
+| x | ok | - | - / - | 1.3 / 2.3 / 2.3 | - | 3 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.812 / 0.812 | 2.0 / 3.0 / 3.2 | 2.1 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 2.2 / 3.1 / 3.3 | 1.2 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.746 / 0.746 | 0.5 / 1.0 / 1.2 | 1.8 | 1 | 1 | 0 | 0 | 0 | 0 |
+| amazon | ok | no | 0.561 / 0.556 | 1.6 / 17.1 / 17.1 | 5.1 | 0 | 8 | 0 | 0 | 0 | 2 |
+| ebay | ok | yes | 0.996 / 0.996 | 0.6 / 1.6 / 1.6 | 0.6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | ok | yes | 0.709 / 0.684 | 1.4 / 9.0 / 13.0 | - | 2 | 10 | 0 | 45 | 0 | 3 |
+
+Top 10 causes (sites, total):
+
+- 7, 23: missing: (not a function)
+- 7, 20: console: Uncaught TypeError: not a function at <url>
+- 4, 57: G90: same-origin frame refused
+- 4, 6: error status: document
+- 3, 22: error status: image
+- 3, 3: console: Uncaught Script error.
+- 3, 3: missing: ReadableStream
+- 2, 9: console: [frame <url>
+- 2, 9: console: Uncaught (in promise) TypeError: not a function at <url>
+- 2, 7: missing: PerformanceObserver
+
