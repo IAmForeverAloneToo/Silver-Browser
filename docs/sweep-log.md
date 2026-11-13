@@ -90,3 +90,46 @@ Top 10 causes (sites, total):
 - 1, 6: missing: PerformanceObserver
 - 1, 4: console: Uncaught TypeError: Failed to execute 'insertBefore' on 'Node': parameter N is not of type 'Node'. at bootstrap:N:N
 
+## 2026-11-13, 9a8ff3116, against Chrome/157.0.8103.52
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.776 | 1.8 / 3.5 / 4.0 | 9.1 | 6 | 6 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.799 | 1.2 / 2.6 / 4.3 | 5.6 | 0 | 7 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.774 / 0.776 | 1.6 / 1.8 / 2.0 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | hang | yes | 0.669 / - | 0.7 / - / - | 2.6 | 0 | 1 | 0 | 0 | 0 | 0 |
+| verge | ok | yes | 0.838 / 0.704 | 2.0 / 7.0 / 11.8 | 13.0 | 2 | 3 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.747 / 0.747 | 1.1 / 1.7 / 1.7 | 3.8 | 0 | 6 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.713 | 8.6 / 8.6 / 8.6 | 8.4 | 0 | 6 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 1.6 / 2.1 / 2.1 | 2.3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.615 / 0.732 | 1.3 / 1.3 / 3.0 | - | 0 | 1 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.652 / 0.845 | 3.3 / 3.6 / 3.6 | 3.0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.776 / 0.776 | 1.2 / 5.6 / 5.9 | 3.5 | 0 | 4 | 0 | 2 | 0 | 0 |
+| ddg | ok | yes | 0.694 / 0.705 | 1.7 / 4.0 / 4.0 | 6.6 | 0 | 14 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.853 / 0.784 | 2.5 / 3.2 / 3.3 | - | 1 | 3 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.693 / 0.692 | 2.5 / 8.4 / 11.6 | 21.8 | 0 | 12 | 0 | 0 | 0 | 6 |
+| twitch | ok | yes | 0.607 / 0.607 | 0.8 / 3.0 / 3.0 | 8.8 | 4 | 4 | 0 | 0 | 0 | 0 |
+| vimeo | ok | yes | 0.776 / 0.761 | 3.6 / - / - | 19.4 | 1 | 2 | 0 | 0 | 0 | 0 |
+| maps | hang | yes | 0.695 / - | 0.8 / - / - | 3.8 | 0 | 0 | 0 | 0 | 0 | 0 |
+| reddit | hang | yes | 0.688 / - | 0.8 / - / - | 3.6 | 0 | 2 | 0 | 0 | 0 | 0 |
+| x | ok | - | - / - | 3.3 / 8.3 / 8.3 | - | 2 | 3 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.812 / 0.806 | 2.6 / 4.2 / 4.2 | 2.8 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 2.5 / 3.9 / 3.9 | 1.6 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.746 / 0.731 | 0.7 / 1.2 / 1.2 | 11.0 | 0 | 4 | 0 | 0 | 0 | 0 |
+| amazon | ok | yes | 0.49 / 0.509 | 2.4 / 2.9 / 3.1 | 5.2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ebay | ok | yes | 0.996 / 0.996 | 0.7 / 1.8 / 1.8 | 1.0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | ok | yes | 0.722 / 0.629 | 1.2 / 19.6 / 19.7 | - | 1 | 5 | 0 | 20 | 0 | 1 |
+
+Top 10 causes (sites, total):
+
+- 5, 14: console: Uncaught TypeError: not a function at <url>
+- 5, 7: error status: document
+- 4, 32: G90: same-origin frame refused
+- 3, 7: missing: (not a function)
+- 3, 3: console: Uncaught Script error.
+- 3, 3: missing: ReadableStream
+- 3, 3: outcome: hang
+- 2, 4: console: [Cloudflare Turnstile] Unhandled error: Uncaught TypeError: cannot read property 'getRandomValues' of undefined , with debug info:
+- 2, 4: console: Uncaught TypeError: cannot read property 'getRandomValues' of undefined at <url>
+- 2, 2: console: Uncaught (in promise) ReferenceError: ReadableStream is not defined at <url>
+

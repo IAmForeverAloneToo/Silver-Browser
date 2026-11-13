@@ -456,7 +456,9 @@ export async function run(options) {
     const served = { silver: s.finalUrl ?? null, chrome: c?.finalUrl ?? null };
     // The servers sent the two browsers different pages: the likeness
     // says nothing of the rendering.
-    const differ = Boolean(served.silver && served.chrome && host(served.silver) !== host(served.chrome));
+    // Only where both loaded: a crashed tab ends on about:blank.
+    const loaded = s.outcome === "ok" && c?.outcome === "ok";
+    const differ = Boolean(loaded && served.silver && served.chrome && host(served.silver) !== host(served.chrome));
     const row = { id, url, silver: s, chrome: c, similarity: {}, served, hostsDiffer: differ };
     for (const which of ["top", "scrolled"]) {
       const a = path.join(dir, `silver-${which}.png`), b = path.join(dir, `chrome-${which}.png`);
