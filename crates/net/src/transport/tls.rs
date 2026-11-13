@@ -80,8 +80,9 @@ pub(crate) fn handshake(
                 if now >= deadline {
                     return Err(NetworkError::Timeout);
                 }
+                let write = connection.wants_write();
                 waiter
-                    .wait(deadline - now)
+                    .wait(&mut tcp, deadline - now, write)
                     .map_err(|e| NetworkError::Io(e.to_string()))?;
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

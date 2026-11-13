@@ -45,19 +45,21 @@ pub(crate) struct Waiter {
     poll: Poll,
     events: Events,
     waker: Arc<Waker>,
+    /// Whether the socket's room to write wakes the wait too.
+    writable: bool,
 }
 
 impl Waiter {
-    /// A poll watching `tcp` for both directions, and its waker.
+    /// A poll watching `tcp` for what comes in, and its waker.
     pub(crate) fn new(tcp: &mut TcpStream) -> io::Result<Waiter> {
         let poll = Poll::new()?;
-        poll.registry()
-            .register(tcp, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
+        poll.registry().register(tcp, SOCKET, Interest::READABLE)?;
         let waker = Arc::new(Waker::new(poll.registry(), WAKE)?);
         Ok(Waiter {
             poll,
             events: Events::with_capacity(4),
             waker,
+            writable: false,
         })
     }
 
@@ -66,10 +68,28 @@ impl Waiter {
         &self.waker
     }
 
-    /// Waits at most `timeout` for the socket to change or the waker to
-    /// be woken. The caller tries again and looks at the clock and the
-    /// abort itself: readiness is a hint, and a wait may end early.
-    pub(crate) fn wait(&mut self, timeout: Duration) -> io::Result<()> {
+    /// Waits at most `timeout` for the socket `tcp` (the one this poll
+    /// watches) to change or the waker to be woken. The caller tries
+    /// again and looks at the clock and the abort itself: readiness is a
+    /// hint, and a wait may end early. `write`: whether something waits
+    /// to be written, when alone the socket's room to write wakes it.
+    /// Windows' poll says an idle socket can be written to at each wait
+    /// after a read found nothing: a connection that watched for it
+    /// always never waited, a core held while the page was read.
+    pub(crate) fn wait(
+        &mut self,
+        tcp: &mut TcpStream,
+        timeout: Duration,
+        write: bool,
+    ) -> io::Result<()> {
+        if write != self.writable {
+            let interest = match write {
+                true => Interest::READABLE | Interest::WRITABLE,
+                false => Interest::READABLE,
+            };
+            self.poll.registry().reregister(tcp, SOCKET, interest)?;
+            self.writable = write;
+        }
         match self.poll.poll(&mut self.events, Some(timeout)) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(()),
             other => other,
@@ -93,6 +113,19 @@ impl Socket {
             Socket::Plain(tcp) => tcp,
             Socket::Tls(tls) => &tls.sock,
         }
+    }
+
+    fn tcp_mut(&mut self) -> &mut TcpStream {
+        match self {
+            Socket::Plain(tcp) => tcp,
+            Socket::Tls(tls) => &mut tls.sock,
+        }
+    }
+
+    /// Whether TLS has records of its own to send (an alert, a key's
+    /// update) besides what a write gives it.
+    fn tls_wants_write(&self) -> bool {
+        matches!(self, Socket::Tls(tls) if tls.conn.wants_write())
     }
 }
 
@@ -140,8 +173,13 @@ impl Stream {
 
     /// Runs `op` on the socket until it does not need to wait, waiting
     /// for the socket between tries: at most the stream's timeout in all,
-    /// and no longer than the fetch's abort.
-    fn io<T>(&mut self, mut op: impl FnMut(&mut Socket) -> io::Result<T>) -> io::Result<T> {
+    /// and no longer than the fetch's abort. `write`: whether `op` writes,
+    /// when the socket's room to write is what it waits for.
+    fn io<T>(
+        &mut self,
+        write: bool,
+        mut op: impl FnMut(&mut Socket) -> io::Result<T>,
+    ) -> io::Result<T> {
         let deadline = Instant::now() + self.timeout;
         loop {
             if self.aborted() {
@@ -156,7 +194,9 @@ impl Stream {
             if now >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            self.waiter.wait(deadline - now)?;
+            let write = write || self.socket.tls_wants_write();
+            self.waiter
+                .wait(self.socket.tcp_mut(), deadline - now, write)?;
         }
     }
 
@@ -180,7 +220,7 @@ impl Stream {
 
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.io(|socket| match socket {
+        self.io(false, |socket| match socket {
             Socket::Plain(tcp) => tcp.read(buf),
             Socket::Tls(tls) => tls.read(buf),
         })
@@ -189,14 +229,14 @@ impl Read for Stream {
 
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.io(|socket| match socket {
+        self.io(true, |socket| match socket {
             Socket::Plain(tcp) => tcp.write(buf),
             Socket::Tls(tls) => tls.write(buf),
         })
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.io(|socket| match socket {
+        self.io(true, |socket| match socket {
             Socket::Plain(tcp) => tcp.flush(),
             Socket::Tls(tls) => tls.flush(),
         })
@@ -254,6 +294,91 @@ mod tests {
     }
 
     const PROMPTLY: Duration = Duration::from_millis(1500);
+
+    #[test]
+    fn a_wait_to_write_wakes_when_the_socket_takes_more() {
+        // The send buffer full, a wait for room to write is woken by the
+        // room the peer's reads make, not by its time running out: what a
+        // TLS handshake, a request's body and an HTTP/2 connection's frames
+        // rest on once the socket is watched for writing only while they
+        // have something to write.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let mut client = non_blocking(client).unwrap();
+        let mut waiter = Waiter::new(&mut client).unwrap();
+        let chunk = vec![0u8; 1 << 16];
+        let mut written = 0usize;
+        loop {
+            match io::Write::write(&mut client, &chunk) {
+                Ok(n) => written += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("{e}"),
+            }
+            assert!(written < 1 << 30, "the send buffer never filled");
+        }
+        // The server reads, after a while, until the client closes: it
+        // sends nothing and stays open, so that only room to write can
+        // wake the client.
+        let _ = written;
+        let reader = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let mut sink = vec![0u8; 1 << 16];
+            while io::Read::read(&mut server, &mut sink).is_ok_and(|n| n > 0) {}
+        });
+        let began = Instant::now();
+        loop {
+            waiter
+                .wait(&mut client, Duration::from_secs(5), true)
+                .unwrap();
+            match io::Write::write(&mut client, &chunk) {
+                Ok(_) => break,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("{e}"),
+            }
+            assert!(began.elapsed() < Duration::from_secs(5), "never woken");
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "woken after {:?}",
+            began.elapsed()
+        );
+        drop(waiter);
+        drop(client);
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_connections_wait_waits() {
+        // Nothing to read and nothing to write: a wait lasts its time, as
+        // an HTTP/2 connection's thread waits between turns (the browser's
+        // idle CPU: a connection that never waited held a core).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let mut client = non_blocking(client).unwrap();
+        let mut waiter = Waiter::new(&mut client).unwrap();
+        // Something written, as a connection's request is: the socket can
+        // take more, which is no reason to wake when there is no more.
+        io::Write::write_all(&mut client, b"hello").unwrap();
+        // The first wait may see the connection made.
+        let _ = waiter.wait(&mut client, Duration::from_millis(50), false);
+        // Each turn reads until there is nothing, as a connection's does,
+        // then waits.
+        let began = Instant::now();
+        for _ in 0..4 {
+            let read = io::Read::read(&mut client, &mut [0; 64]);
+            assert!(matches!(read, Err(ref e) if e.kind() == io::ErrorKind::WouldBlock));
+            waiter
+                .wait(&mut client, Duration::from_millis(50), false)
+                .unwrap();
+        }
+        assert!(
+            began.elapsed() >= Duration::from_millis(150),
+            "four waits of 50 ms took {:?}",
+            began.elapsed()
+        );
+    }
 
     #[test]
     fn a_silent_server_times_out() {

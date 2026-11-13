@@ -681,3 +681,28 @@ fn a_host_at_another_address_is_not_carried() {
     assert!(get(&transport, &at(&server, "d.test", "/")).is_err());
     assert_eq!(server.requests().len(), 1);
 }
+
+#[test]
+fn a_body_larger_than_the_send_buffer_is_sent_without_stalling_on_http2() {
+    // The connection's thread watches the socket for room to write while
+    // it has frames to send: each time the socket fills, the server's
+    // reads wake it, not its tick.
+    let (server, transport) =
+        h2_server(|request| Reply::ok("text/plain", request.body.len().to_string().as_bytes()));
+    let body = vec![7u8; 32 << 20];
+    let began = Instant::now();
+    let received = exchange(
+        &transport,
+        "POST",
+        &server.url("/upload"),
+        Some(&body),
+        &AbortHandle::new(),
+    )
+    .unwrap();
+    assert_eq!(received.response.body, (32 << 20).to_string().as_bytes());
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "32 MiB took {:?}",
+        began.elapsed()
+    );
+}

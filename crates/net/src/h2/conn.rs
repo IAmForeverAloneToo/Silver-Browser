@@ -393,8 +393,11 @@ impl Worker {
                 });
             }
         }
+        // The socket's room to write wakes the wait only while something
+        // waits to be written.
+        let write = !self.output.is_empty() || self.socket.conn.wants_write();
         self.waiter
-            .wait(TICK)
+            .wait(&mut self.socket.sock, TICK, write)
             .map_err(|e| Ending::error(ErrorCode::INTERNAL_ERROR, e.to_string()))
     }
 

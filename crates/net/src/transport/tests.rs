@@ -843,3 +843,36 @@ fn a_partitions_tls_sessions_are_its_own() {
     assert!(Arc::ptr_eq(&transport.tls_for(None), &transport.tls));
     assert!(!Arc::ptr_eq(&a, &transport.tls));
 }
+
+#[test]
+fn a_body_larger_than_the_send_buffer_is_sent_without_stalling() {
+    // The socket fills again and again; each time the room the server's
+    // reads make wakes the write, not the stream's timeout.
+    let server = TestServer::plain(|request| {
+        Reply::ok("text/plain", request.body.len().to_string().as_bytes())
+    });
+    let body = vec![7u8; 32 << 20];
+    let headers = HeaderList::new();
+    let began = Instant::now();
+    let received = transport()
+        .exchange(&Exchange {
+            partition: None,
+            method: "POST",
+            url: &server.url("/upload"),
+            headers: &headers,
+            body: Some(&body),
+            initiator: None,
+            ask: None,
+            target: None,
+            abort: &AbortHandle::new(),
+            body_limit: None,
+            priority: None,
+        })
+        .unwrap();
+    assert_eq!(received.response.body, (32 << 20).to_string().as_bytes());
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "32 MiB took {:?}",
+        began.elapsed()
+    );
+}
