@@ -305,6 +305,9 @@ pub(crate) struct DocumentHost {
     /// How many flushes started from the frame's styles
     /// ([`FLUSH_FROM_FRAME`]): what the tests see the path taken by.
     pub(crate) flushes_from_frame: u64,
+    /// How many times a script's ask brought the styles up to date with
+    /// a restyle or a cascade: what the tests see a call flush by.
+    pub(crate) style_flushes: u64,
     /// How many times the document was lent to a run: a rule list's
     /// `generation`, which a sheet arriving between runs changes.
     lends: u64,
@@ -7698,6 +7701,13 @@ impl DocumentHost {
                 || since.len() > dom::MAX_JOURNAL
                 || touches_sheets(&self.document, since)
         });
+        let fresh = self
+            .computed
+            .as_ref()
+            .is_some_and(|cached| cached.version == version && cached.touches == touches);
+        if !fresh {
+            self.style_flushes += 1;
+        }
         match &mut self.computed {
             Some(cached) if cached.version == version && cached.touches == touches => {}
             Some(cached) if cached.version == version => {

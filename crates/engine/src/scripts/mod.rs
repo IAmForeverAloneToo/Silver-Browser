@@ -3074,6 +3074,13 @@ impl Scripts {
         self.host.flushes_from_frame
     }
 
+    /// How many times a script's ask brought the styles up to date: for
+    /// the tests.
+    #[cfg(test)]
+    pub(crate) fn style_flushes(&self) -> u64 {
+        self.host.style_flushes
+    }
+
     /// How many times a rule list read its sheet's rules: for the tests.
     #[cfg(test)]
     pub(crate) fn rule_reads(&self) -> u64 {

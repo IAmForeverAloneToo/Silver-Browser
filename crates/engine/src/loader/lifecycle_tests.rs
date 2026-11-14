@@ -451,3 +451,31 @@ fn an_animation_a_frame_callback_finishes_is_heard_before_the_next_callbacks() {
     frame_at(&mut tab, 16);
     assert_eq!(lines(&mut tab), ["start", "end", "frame 2"]);
 }
+
+#[test]
+fn a_css_animations_event_flushes_no_styles() {
+    // Its event names its animation, whose object the bindings make: no
+    // read of what styles say, as in the reference browser (github's
+    // page: a whole cascade for each of a frame's events).
+    let (mut tab, _) = scripted(
+        "<style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }\
+         #a { animation: fade 100ms }</style><div id=a>x</div><script>\
+         document.body.addEventListener('animationstart', function (e) { \
+           console.log(e.type, e.animationName); });\
+         </script>",
+        true,
+    );
+    frame_at(&mut tab, 1000);
+    let before = tab.engine.shown.scripts.style_flushes();
+    frame_at(&mut tab, 1016);
+    assert_eq!(lines(&mut tab), ["animationstart fade"]);
+    assert_eq!(tab.engine.shown.scripts.style_flushes(), before);
+    // A read of what styles say still flushes.
+    let before = tab.engine.shown.scripts.style_flushes();
+    crate::differential::run_script(
+        &mut tab.engine,
+        "console.log(document.getAnimations()[0].playState);",
+    );
+    assert_eq!(lines(&mut tab), ["running"]);
+    assert_eq!(tab.engine.shown.scripts.style_flushes(), before + 1);
+}

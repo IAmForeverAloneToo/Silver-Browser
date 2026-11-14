@@ -294,6 +294,12 @@ impl DocumentHost {
             let of_animation = |id: u64| animations.state(id).is_some_and(|s| s.kind != "script");
             match name {
                 "animations" | "animation.commit" => true,
+                // An animation's or effect's object made or let go (an
+                // animation event names its animation): no read of its
+                // state, which the reference browser does not flush for
+                // (a CSS animation's `finished` read after a style that
+                // cancels it is the promise that cancel rejects).
+                "animation.hold" | "animation.release" | "effect.hold" | "effect.release" => false,
                 _ if name.starts_with("animation.") => of_animation(id),
                 _ if name.starts_with("effect.") => animations
                     .effect_animation(effect)
