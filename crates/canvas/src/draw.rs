@@ -76,6 +76,15 @@ const COARSER: f32 = 256.0;
 /// a pixel a step, one longer coarser.
 const TRACED: f64 = 8.0;
 
+/// The length of the outline a stroke of `path` traces, `width` wide: its
+/// control polygon along each side, and at each of its points a join or
+/// cap as round as the line, a turn about it at most. A thick, round
+/// stroke's outline is mostly its joins: a dash of 59 points traced an
+/// outline of 12 million (found by fuzzing, nightly 2026-11-13).
+fn outline_length(path: &tiny_skia::Path, width: f64) -> f64 {
+    2.0 * control_length(path) + path.points().len() as f64 * std::f64::consts::TAU * width
+}
+
 /// The length of `path`'s control polygon, which is at least that of
 /// its lines and curves: what bounds the dashes it is cut into.
 fn control_length(path: &tiny_skia::Path) -> f64 {
@@ -257,6 +266,13 @@ impl Canvas {
                 .filter(|dashed| dashed.points().len() <= MAX_OUTLINE_POINTS)
                 .unwrap_or(path);
         }
+        // Nor finer than the outline's own length, the joins and caps of
+        // the path as dashed among it, lets [`MAX_OUTLINE_POINTS`] hold:
+        // the first tracing fits, whoever asks for it (`stroke()`,
+        // `strokeRect()`, `isPointInStroke()`).
+        let outlined = MAX_OUTLINE_POINTS as f64
+            / outline_length(&path, state.line_width).max(f64::MIN_POSITIVE);
+        let resolution = resolution.min(outlined as f32);
         let stroke = tiny_skia::Stroke {
             width: state.line_width as f32,
             miter_limit: state.miter_limit as f32,

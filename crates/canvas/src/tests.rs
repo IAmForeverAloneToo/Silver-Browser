@@ -1737,6 +1737,66 @@ fn a_dashed_stroke_with_a_shadow_under_a_vast_skew_holds_its_outline_bounded() {
 }
 
 #[test]
+fn a_thick_dashed_stroke_far_out_is_traced_no_finer_than_its_outline_holds() {
+    // The fuzzer's slowest (nightly, 2026-11-13): a rounded rectangle 62
+    // million pixels up, a hundred wide, dashed sixteen on and next to
+    // nothing off, under a transform stretching it a billion times. Its
+    // control polygon is short, so it was traced 46,000 steps a unit and
+    // its 59 points' outline made 12 million: isPointInStroke() took
+    // seconds before the outline was thrown away and traced again.
+    let m = &Matrix::IDENTITY;
+    let (y0, y1, y2, y3) = (
+        -62499988.015625,
+        -62499986.37516834,
+        -62499984.3515625,
+        -62499982.32795666,
+    );
+    let y4 = -62499980.6875;
+    let mut path = Path::new();
+    path.move_to(2.12125e-7, y0, m);
+    path.cubic_to(2.4450269345883026e-7, y0, 2.7075e-7, y1, 2.7075e-7, y2, m);
+    path.cubic_to(2.7075e-7, y3, 2.4450269345883026e-7, y4, 2.12125e-7, y4, m);
+    path.cubic_to(1.7974730654116975e-7, y4, 1.535e-7, y3, 1.535e-7, y2, m);
+    path.cubic_to(1.535e-7, y1, 1.7974730654116975e-7, y0, 2.12125e-7, y0, m);
+    path.close();
+    path.move_to(0.99999996175, -62499993.75, m);
+    path.line_to(0.99999996175, -62499992.75, m);
+    path.close();
+    path.move_to(0.99999996175, -62499993.75, m);
+    path.cubic_to(
+        -2.225e-8,
+        -62500000.0,
+        -2.225e-8,
+        -62499999.0,
+        -3.825e-8,
+        y0,
+        m,
+    );
+    let mut canvas = Canvas::new(48, 48, false);
+    canvas.transform(&Matrix::new(1e9, 0.0, 0.0, 16.0, 38.25, 1e9));
+    let state = canvas.state_mut();
+    state.set_line_width(100.0);
+    state.line_join = crate::LineJoin::Bevel;
+    state.dash.set(&[16.0, f64::MIN_POSITIVE]);
+    state.set_dash_offset(1e9);
+    let outline = canvas.stroke_outline(&path).expect("an outline");
+    assert!(
+        outline.points().len() <= crate::draw::MAX_OUTLINE_POINTS,
+        "{} points",
+        outline.points().len()
+    );
+    let began = std::time::Instant::now();
+    for _ in 0..4 {
+        let _ = canvas.is_point_in_stroke(Some(&path), 20.0, 20.0);
+    }
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+#[test]
 fn a_rectangle_of_values_not_finite_clears_nothing() {
     // WPT's 2d.clearRect.nonfinite, which found the bitmap dropped.
     let inf = f64::INFINITY;
