@@ -1368,6 +1368,13 @@ struct SvgDrawing {
     size: (f32, f32),
     tree: Arc<svg::Tree>,
     drawn: Option<((u32, u32), u32, Arc<images::Image>)>,
+    /// The drawing of the tree this one's replaced, kept until this one
+    /// is drawn: when that comes out the same pixels, it is that frame
+    /// still, so that the display list is the last one's and nothing is
+    /// drawn again (the site sweep's reddit: a spinner's circles moved
+    /// each frame inside an icon that showed none of them, and the
+    /// raster drew 800,000 pixels a frame).
+    previous: Option<((u32, u32), u32, Arc<images::Image>)>,
 }
 
 /// Lands an outer `<svg>`'s drawing, `[x, y, w, h]` under `matrix`, on
@@ -10631,6 +10638,11 @@ impl Engine {
                 .collect()
         };
         for (node, size, tree) in built {
+            let previous = self
+                .shown
+                .svgs
+                .get(&node)
+                .and_then(|drawing| drawing.drawn.clone().or_else(|| drawing.previous.clone()));
             self.shown.svgs.insert(
                 node,
                 SvgDrawing {
@@ -10638,6 +10650,7 @@ impl Engine {
                     size,
                     tree,
                     drawn: None,
+                    previous,
                 },
             );
         }
@@ -10671,6 +10684,15 @@ impl Engine {
         );
         svg::draw(&tree, &mut bitmap, &base);
         let pixels = bitmap.snapshot()?;
+        // The same pixels as the drawing before: its frame still.
+        if let Some(previous) = drawing.previous.take()
+            && previous.0 == raster
+            && previous.2 == pixels
+        {
+            let (frame, pixels) = (previous.1, Arc::clone(&previous.2));
+            drawing.drawn = Some(previous);
+            return Some((frame, pixels));
+        }
         let frame = SVG_FRAMES
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .wrapping_add(1);
@@ -15111,6 +15133,29 @@ mod tests {
         engine.frame(300, 200);
         assert_eq!(engine.svg_recascades - before, 1);
         assert_eq!(engine.shown.svgs.len(), 20);
+    }
+
+    #[test]
+    fn an_svg_drawn_again_the_same_is_not_drawn_again_on_the_frame() {
+        // The site sweep's reddit: a spinner's circles turned at every
+        // frame inside an icon that showed none of them, and the raster
+        // drew most of the page again each time. A circle that shows is
+        // drawn again where it is.
+        let page = |stroke: &str| {
+            format!(
+                "<style>@keyframes spin {{ to {{ transform: rotate(360deg) }} }}                 circle {{ animation: spin 1s linear infinite; fill: none; stroke: {stroke} }}</style>                 <div style='opacity: 0.5'><p>text</p>                 <svg width=16 height=16><circle cx=8 cy=8 r=6 stroke-dasharray='4 4'></circle></svg></div>"
+            )
+        };
+        let redrawn_at = |stroke: &str| {
+            let mut engine = test_engine();
+            engine.load_document(&page(stroke));
+            for ms in [0.0, 100.0, 200.0] {
+                frame_at_ms(&mut engine, ms);
+            }
+            engine.redrawn().clone()
+        };
+        assert_eq!(redrawn_at("none"), render::Redrawn::Rects(Vec::new()));
+        assert_ne!(redrawn_at("blue"), render::Redrawn::Rects(Vec::new()));
     }
 
     #[test]
