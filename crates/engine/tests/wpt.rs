@@ -1791,9 +1791,7 @@ fn harness_results(engine: &Engine) -> Option<Harness> {
         .filter_map(|line| {
             let mut fields = line.splitn(3, '\t');
             let status = fields.next()?.parse().ok()?;
-            let name = ports.iter().fold(fields.next()?.to_string(), |name, port| {
-                name.replace(port.as_str(), "PORT")
-            });
+            let name = without_ports(fields.next()?, &ports);
             Some((name, status, fields.next().unwrap_or("").to_string()))
         })
         .collect();
@@ -1802,6 +1800,44 @@ fn harness_results(engine: &Engine) -> Option<Harness> {
         message: message.to_string(),
         tests,
     })
+}
+
+/// `name` with each of `ports` that stands as a URL's port, after a `:`
+/// and before no digit, written `PORT`: a port's digits elsewhere in it
+/// are the test's own (CI found html5lib's `<?z0123456789>` named
+/// `<?z012PORT89>` when a server drew port 3456).
+fn without_ports(name: &str, ports: &[String]) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    'scan: while let Some(at) = rest.find(':') {
+        out.push_str(&rest[..=at]);
+        rest = &rest[at + 1..];
+        for port in ports {
+            if let Some(after) = rest.strip_prefix(port.as_str())
+                && !after.starts_with(|c: char| c.is_ascii_digit())
+            {
+                out.push_str("PORT");
+                rest = after;
+                continue 'scan;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn a_port_is_named_only_where_it_stands_as_one() {
+    let ports = ["3456".to_owned(), "8000".to_owned()];
+    assert_eq!(
+        without_ports("<body><?z0123456789>", &ports),
+        "<body><?z0123456789>"
+    );
+    assert_eq!(
+        without_ports("to http://a.localhost:3456/x and :80001 and :8000", &ports),
+        "to http://a.localhost:PORT/x and :80001 and :PORT"
+    );
+    assert_eq!(without_ports("::3456	", &ports), "::PORT	");
 }
 
 /// Runs the testharness test at `path` until its harness writes its
