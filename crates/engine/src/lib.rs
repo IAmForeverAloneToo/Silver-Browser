@@ -15375,6 +15375,54 @@ mod tests {
             unpainted("<svg width=40 height=40><rect width=20 height=20 fill=blue style='animation: turn 1s linear'></rect></svg>").0,
             0
         );
+        // A box fixed to the viewport is where it is in it, however the
+        // page scrolls: out of it, not painted; in it, painted. A sticky
+        // one in view is painted.
+        assert!(
+            unpainted(
+                "<div style='position: fixed; top: 200px; animation: slide 1s linear'></div>"
+            )
+            .0 > 0
+        );
+        assert_eq!(
+            unpainted("<div style='position: fixed; top: 10px; animation: slide 1s linear'></div>")
+                .0,
+            0
+        );
+        assert_eq!(
+            unpainted("<div style='position: sticky; top: 0; animation: slide 1s linear'></div><p style='height: 3000px'></p>").0,
+            0
+        );
+        // Within a scroll container in view: out of its view, not
+        // painted; scrolled into it, painted at each frame after.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@keyframes slide { to { transform: translateX(50px) } }             body { margin: 0 } #s { height: 80px; overflow: auto }             #a { margin-top: 500px; width: 20px; height: 20px; background: blue;             animation: slide 1s linear }</style>             <div id=s><div id=a></div><p style='height: 1000px'></p></div>",
+        );
+        for ms in [0.0, 100.0, 200.0] {
+            frame_at_ms(&mut engine, ms);
+        }
+        let hidden = engine.frames_unpainted;
+        assert!(
+            hidden > 0,
+            "the box out of its container's view was painted"
+        );
+        let scroller = engine
+            .document()
+            .subtree(engine.document().root())
+            .find(|&n| engine.document().attr(n, "id") == Some("s"))
+            .expect("the scroller");
+        engine.set_element_scroll(scroller, 480.0);
+        let mut frames = Vec::new();
+        for ms in [300.0, 400.0, 500.0] {
+            let now = Duration::from_secs_f64(ms / 1000.0);
+            frames.push(engine.frame_at(200, 100, FrameTime::at(now)).to_vec());
+        }
+        assert_eq!(
+            engine.frames_unpainted, hidden,
+            "a box scrolled into view was not painted"
+        );
+        assert!(frames.windows(2).all(|w| w[0] != w[1]));
     }
 
     #[test]
