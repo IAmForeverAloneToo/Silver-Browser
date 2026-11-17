@@ -543,6 +543,21 @@ export function topCauses(rows) {
     .sort((a, b) => b.sites - a.sites || b.total - a.total || a.key.localeCompare(b.key));
 }
 
+// What a page left alone did in the sweep's idle time: its record's
+// counts after it less those at its end of load and scroll.
+export function idleSummary(silver) {
+  const at = silver?.counters, after = silver?.idleCounters;
+  if (!at || !after) return "-";
+  const tasks = (k) => Object.values(k?.tasks || {}).reduce((a, b) => a + b, 0);
+  const less = (a, b) => Math.max(0, (a || 0) - (b || 0));
+  const causes = Object.entries(after.frameCauses || {})
+    .map(([name, n]) => [name, less(n, at.frameCauses?.[name])])
+    .filter(([, n]) => n > 0)
+    .map(([name, n]) => `${name} ${n}`)
+    .join(", ");
+  return `frames ${less(after.frames, at.frames)}, tasks ${less(tasks(after), tasks(at))}, layouts ${less(after.layouts, at.layouts)}${causes ? ` (${causes})` : ""} in ${silver.idleSeconds ?? "?"} s`;
+}
+
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const ms = (v) => (v === undefined || v === null ? "-" : `${(v / 1000).toFixed(1)}s`);
 const mib = (v) => (v ? `${Math.round(v / 1048576)}` : "-");
@@ -563,10 +578,12 @@ paint ${ms(s.timings?.firstPaint)}, load ${ms(s.timings?.load)}, settled ${ms(s.
 renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.memory?.rendererPeakCommit)} MiB, browser ${mib(s.memory?.browserPeakWorkingSet)} / ${mib(s.memory?.browserPeakCommit)} MiB.
 <b>Chrome</b> ${esc(c.outcome)}${c.error ? ` (${esc(c.error)})` : ""}; paint ${ms(c.timings?.firstPaint)}, load ${ms(c.timings?.load)}, settled ${ms(c.timings?.settled)}.
 <b>Likeness</b> top ${r.similarity.top ?? "-"}, scrolled ${r.similarity.scrolled ?? "-"}${r.hostsDiffer ? " <b>(served different hosts: discount it)</b>" : ""}.<br>
-Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.</p>
+Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.<br>
+<b>Left alone</b> (Silver): ${esc(idleSummary(s))}.</p>
 <p>Missing: ${missing || "none"}; stack ${counts.stackOverflows || 0}; G90 ${(counts.frameRefusedSameOrigin || 0) + (counts.frameDocumentSameOrigin || 0)}; CSP ${counts.policyRefusals || 0}; console errors ${(s.console || []).filter((e) => e.level === "error").length} (Chrome ${(c.console || []).length}).</p>
 <div class=pair>${pic("silver", "top")}${pic("chrome", "top")}</div>
-<div class=pair>${pic("silver", "scrolled")}${pic("chrome", "scrolled")}</div></section>`;
+<div class=pair>${pic("silver", "scrolled")}${pic("chrome", "scrolled")}</div>
+${(s.screenshots || []).includes("idle") ? `<div class=pair>${pic("silver", "top")}${pic("silver", "idle")}</div>` : ""}</section>`;
     })
     .join("\n");
   const causeRows = causes

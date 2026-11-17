@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 
-import { normalize, readPng, similarity, topCauses } from "./sweep.mjs";
+import { idleSummary, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
 
 // A PNG of `width` by `height`, RGB, each pixel `colour(x, y)`.
 function png(width, height, colour) {
@@ -68,4 +68,14 @@ test("the causes are ranked by the sites they hit", () => {
   assert.equal(causes[0].sites, 2);
   assert.equal(causes[0].total, 3);
   assert.ok(causes.some((c) => c.key === "stack: Maximum call stack" && c.sites === 1));
+});
+
+test("what a page did left alone is its counts after the idle less those before", () => {
+  const silver = {
+    idleSeconds: 10,
+    counters: { frames: 1, layouts: 1, tasks: { timers: 2 }, frameCauses: { changed: 1 } },
+    idleCounters: { frames: 49, layouts: 45, tasks: { timers: 69, events: 3 }, frameCauses: { changed: 21, animation: 27 } },
+  };
+  assert.equal(idleSummary(silver), "frames 48, tasks 70, layouts 44 (changed 20, animation 27) in 10 s");
+  assert.equal(idleSummary({ counters: {} }), "-");
 });

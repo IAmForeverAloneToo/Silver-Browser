@@ -4,7 +4,8 @@
 //! the network, with no window and a context of its own that keeps
 //! nothing, and writes what it saw to `<dir>`: `silver.json`, and the
 //! page at rest and three screens down as `silver-top.png` and
-//! `silver-scrolled.png`. `tools/sweep/sweep.mjs` runs it beside the
+//! `silver-scrolled.png`, and at its top again once left alone as
+//! `silver-idle.png`. `tools/sweep/sweep.mjs` runs it beside the
 //! reference browser.
 //!
 //! Every permission a page asks for is denied and every dialog
@@ -237,6 +238,17 @@ fn capture(asked: &Asked) -> Result<(), String> {
             step(&mut tab, began, &mut console);
         }
         idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
+        // And its top again: what the load's shot showed, once the page
+        // has had its time (a site whose scripts fill it after the load
+        // looked empty at it).
+        tab.scroll_by(-SCREENS_DOWN * SIZE.1 as f32);
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            let _ = woken.recv_timeout(Duration::from_millis(50));
+            step(&mut tab, began, &mut console);
+        }
+        shot(&mut tab, began, &asked.out.join("silver-idle.png"))?;
+        shots.push("idle");
     }
     peaks.sample(&tab);
     let network = tab

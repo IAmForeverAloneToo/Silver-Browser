@@ -138,6 +138,10 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
     );
     assert!(png(&out.join("silver-top.png")));
     assert!(png(&out.join("silver-scrolled.png")));
+    // And the page's top once left alone, as the record lists.
+    assert!(png(&out.join("silver-idle.png")));
+    let shots = field(&record, "screenshots").write();
+    assert!(shots.contains("\"idle\""), "{shots}");
     let _ = std::fs::remove_dir_all(&out);
 }
 
