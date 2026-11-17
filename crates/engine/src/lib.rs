@@ -451,6 +451,12 @@ pub struct Engine {
     /// How many recascades the outer `<svg>`s' trees were built under:
     /// what proves a frame's are built under one, not one each.
     svg_recascades: u64,
+    /// What the last frame drawn was drawn at: a frame of the animations
+    /// alone, all of whose changes are out of view, at the same, shows
+    /// that frame's pixels again rather than paint and raster them.
+    last_drawn: Option<DrawnAt>,
+    /// How many frames showed the last frame's pixels so.
+    frames_unpainted: u64,
     /// What the site sweep counted of the documents this engine showed
     /// and left (`sweep`); the shown one's are its scripts'.
     sweep_left: sweep::SweepCounts,
@@ -1747,6 +1753,8 @@ impl Engine {
             layout_runs: 0,
             frame_causes: [0; FRAME_CAUSES.len() + 1],
             svg_recascades: 0,
+            last_drawn: None,
+            frames_unpainted: 0,
             sweep_left: sweep::SweepCounts::default(),
             frame_margins: style::FrameMargins::default(),
             layouts_kept: 0,
@@ -9312,6 +9320,24 @@ impl Engine {
             let moved = animations.sample();
             self.shown.animated.extend(moved);
         }
+        // A frame the animations alone want, with no other change, whose
+        // restyle reaches nothing in view, before and after, shows the
+        // last frame's pixels again (the site sweep: a spinner nobody
+        // sees, drawn at every frame).
+        let animation_only = 1
+            << FRAME_CAUSES
+                .iter()
+                .position(|c| *c == "animation")
+                .unwrap_or(0);
+        let unseen = (wanted == animation_only
+            && self.shown.pending.is_empty()
+            && self.shown.layout.is_some()
+            && self.last_drawn.is_some()
+            && self.goal.is_none())
+        .then(|| self.unseen_targets())
+        .flatten()
+        .filter(|targets| self.unseen(targets));
+        let layouts_before = self.layout_runs;
         self.cached_styles();
         let animations = self.shown.animations.get_mut();
         animations.styles_seen();
@@ -9381,6 +9407,26 @@ impl Engine {
         self.snap_scrolls(width as f32);
         self.settle_scroll_states(width as f32);
         let (scroll_y, offsets) = self.drawn_offsets();
+        let drawn_at = self.drawn_at((device_width, device_height), scroll_y);
+        if let Some(targets) = unseen
+            && self.layout_runs == layouts_before
+            && self.last_drawn.as_ref() == Some(&drawn_at)
+            && self.backend.last_frame().len() == device_width as usize * device_height as usize * 4
+            && self.unseen(&targets)
+        {
+            self.frames_unpainted += 1;
+            let total = start.elapsed();
+            self.stats = FrameStats {
+                style: style_time,
+                layout: layout_time,
+                paint: Duration::ZERO,
+                raster: Duration::ZERO,
+                total,
+                overran: total > budget,
+            };
+            return self.backend.last_frame();
+        }
+        self.last_drawn = Some(drawn_at);
         let stage = Instant::now();
         let viewport = Viewport {
             width: width as f32,
@@ -10495,6 +10541,108 @@ impl Engine {
     /// through the transforms around it, and the clips around it; from
     /// one walk of the whole paint order, not only what is in view. An
     /// element with no box is not there.
+    /// The elements the frame's animations restyle, as what they draw
+    /// reaches: each one the animations give something new and what
+    /// inherits from it, the outer `<svg>` for what is drawn within one;
+    /// `None` past [`MAX_UNSEEN_TARGETS`].
+    fn unseen_targets(&self) -> Option<HashSet<NodeId>> {
+        let document = &self.shown.document;
+        let mut targets = HashSet::new();
+        for &node in &self.shown.animated {
+            if !document.contains(node) {
+                continue;
+            }
+            if in_svg_content(document, node) {
+                let outer = document
+                    .ancestors(node)
+                    .find(|&n| layout::is_outer_svg(document, n))?;
+                targets.insert(outer);
+            } else {
+                targets.extend(
+                    document
+                        .flat_subtree(node)
+                        .into_iter()
+                        .filter(|&n| document.is_element(n)),
+                );
+            }
+            if targets.len() > MAX_UNSEEN_TARGETS {
+                return None;
+            }
+        }
+        Some(targets)
+    }
+
+    /// Whether nothing `targets` draw, at the layout and styles now, is
+    /// in the viewport: each has no box, or its boxes through the
+    /// transforms around them, with what overflows them and what their
+    /// shadows and outlines reach, lie outside it. A filter is taken as
+    /// reaching it.
+    fn unseen(&mut self, targets: &HashSet<NodeId>) -> bool {
+        let measured = self.measure(targets);
+        let (width, height) = (self.viewport.0 as f32, self.viewport.1 as f32);
+        let (Some(cached), Some(styled)) = (self.shown.layout.as_ref(), self.shown.styled.as_ref())
+        else {
+            return false;
+        };
+        use style::selector_matching::PseudoElement::{After, Before};
+        for (node, at) in &measured {
+            let styles = &styled.styles;
+            let mut reach = 0.0f32;
+            let own = styles.shared(*node).into_iter();
+            let pseudos = [Before, After]
+                .into_iter()
+                .filter_map(|p| styles.pseudo_shared(*node, p));
+            for style in own.chain(pseudos) {
+                match ink_reach(style) {
+                    Some(r) => reach = reach.max(r),
+                    None => return false,
+                }
+            }
+            if let Some(f) = fragment_of(&cached.layout.roots, *node) {
+                let [across, down] = geometry::overflow(f);
+                reach += across.max(down).max(geometry::overflow_left(f));
+            }
+            let [x, y, w, h] = at.bounds;
+            let (sw, sh) = at.size;
+            let scale = [w / sw.max(f32::EPSILON), h / sh.max(f32::EPSILON), 1.0]
+                .into_iter()
+                .filter(|s| s.is_finite())
+                .fold(1.0, f32::max);
+            let m = reach * scale;
+            if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+                return false;
+            }
+            if x - m < width && x + w + m > 0.0 && y - m < height && y + h + m > 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// What a frame drawn now is drawn at ([`DrawnAt`]).
+    fn drawn_at(&self, raster: (u32, u32), scroll_y: f32) -> DrawnAt {
+        let mut elements: Vec<(u64, u32, u32)> = self
+            .shown
+            .element_scroll
+            .iter()
+            .map(|(node, scroll)| {
+                (
+                    node.to_bits(),
+                    scroll.y.round().to_bits(),
+                    scroll.x.round().to_bits(),
+                )
+            })
+            .collect();
+        elements.sort_unstable();
+        DrawnAt {
+            raster,
+            viewport: self.viewport,
+            scale: self.scale.to_bits(),
+            scroll: (scroll_y.to_bits(), self.shown.scroll_x.round().to_bits()),
+            elements,
+        }
+    }
+
     fn measure(&mut self, targets: &HashSet<NodeId>) -> HashMap<NodeId, scripts::Measured> {
         let (width, height) = self.viewport;
         if targets.is_empty() || width == 0 {
@@ -11080,6 +11228,52 @@ fn parsed_or_empty(source: &str) -> Document {
 
 /// The box fragment of the element `node`, if it has one of its own: a
 /// box its `::before` or `::after` generated is not (M16).
+/// What a frame was drawn at, the pixels a frame at the same show when
+/// nothing in view changed: the raster's size, the viewport's, the
+/// display's scale and the scroll offsets, rounded as drawn.
+#[derive(Debug, Clone, PartialEq)]
+struct DrawnAt {
+    raster: (u32, u32),
+    viewport: (u32, u32),
+    scale: u32,
+    scroll: (u32, u32),
+    elements: Vec<(u64, u32, u32)>,
+}
+
+/// The most elements a frame's animations may reach for it to be told
+/// unseen: past them it is painted, as any frame.
+const MAX_UNSEEN_TARGETS: usize = 64;
+
+/// How far past its border box `style` may draw, in its own pixels:
+/// its outer box shadows, its text shadows and its outline, and a pixel
+/// for anti-aliasing; `None` for a filter, whose reach is not told here.
+fn ink_reach(style: &style::computed::ComputedStyle) -> Option<f32> {
+    if !style.effects().filter.is_empty() {
+        return None;
+    }
+    let shadow =
+        |s: &style::computed::Shadow| s.x.abs().max(s.y.abs()) + s.spread.max(0.0) + 1.5 * s.blur;
+    let boxes = style
+        .effects()
+        .box_shadow
+        .iter()
+        .filter(|s| !s.inset)
+        .map(shadow)
+        .fold(0.0, f32::max);
+    let texts = style
+        .decoration()
+        .text_shadow
+        .iter()
+        .map(shadow)
+        .fold(0.0, f32::max);
+    let outline = match style.outline().style {
+        style::computed::OutlineStyle::None => 0.0,
+        style::computed::OutlineStyle::Auto => 2.0 + style.outline().offset.max(0.0),
+        _ => style.used_outline_width() + style.outline().offset.max(0.0),
+    };
+    Some(boxes.max(texts).max(outline) + 1.0)
+}
+
 fn fragment_of(fragments: &[Fragment], node: NodeId) -> Option<&Fragment> {
     for f in fragments {
         if matches!(f.kind, FragmentKind::Box) && f.node == node && f.generated.is_none() {
@@ -15133,6 +15327,54 @@ mod tests {
         engine.frame(300, 200);
         assert_eq!(engine.svg_recascades - before, 1);
         assert_eq!(engine.shown.svgs.len(), 20);
+    }
+
+    #[test]
+    fn a_frame_whose_animations_are_all_out_of_view_is_not_painted() {
+        // The frames the animations alone want, all of whose restyles
+        // reach nothing in the viewport, before and after, show the last
+        // frame's pixels again: those that reach it are painted.
+        let unpainted = |body: &str| {
+            let mut engine = test_engine();
+            engine.load_document(&format!(
+                "<style>@keyframes slide {{ to {{ transform: translateX(50px) }} }}                 @keyframes rise {{ to {{ transform: translateY(-1960px) }} }}                 @keyframes turn {{ to {{ transform: rotate(360deg) }} }}                 body {{ margin: 0 }} div {{ width: 20px; height: 20px; background: blue }}</style>{body}"
+            ));
+            let mut frames = Vec::new();
+            for ms in [0.0, 100.0, 200.0, 300.0] {
+                let now = Duration::from_secs_f64(ms / 1000.0);
+                frames.push(engine.frame_at(200, 100, FrameTime::at(now)).to_vec());
+            }
+            (engine.frames_unpainted, frames)
+        };
+        let far = "position: absolute; top: 2000px";
+        let (skipped, frames) = unpainted(&format!(
+            "<div style='{far}; animation: slide 1s linear'></div>"
+        ));
+        assert!(skipped > 0, "a slide far below was painted");
+        assert!(frames.windows(2).all(|w| w[0] == w[1]));
+        // In view, or its shadow reaching it, or moving into it: painted.
+        assert_eq!(
+            unpainted("<div style='animation: slide 1s linear'></div>").0,
+            0
+        );
+        assert_eq!(
+            unpainted(
+                "<div style='position: absolute; top: 130px; box-shadow: 0 -60px 0 red; animation: slide 1s linear'></div>"
+            )
+            .0,
+            0
+        );
+        // Rising from far below: not painted while out of view, painted
+        // once it is in it (at 300 ms, 40 pixels down).
+        let (skipped, frames) = unpainted(&format!(
+            "<div style='{far}; animation: rise 0.3s linear forwards'></div>"
+        ));
+        assert_eq!(skipped, 2);
+        assert_ne!(frames[3], frames[2], "the risen box was not painted");
+        assert_eq!(
+            unpainted("<svg width=40 height=40><rect width=20 height=20 fill=blue style='animation: turn 1s linear'></rect></svg>").0,
+            0
+        );
     }
 
     #[test]
