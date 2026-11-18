@@ -43,7 +43,19 @@ struct View {
     /// The state last reported, and where the pointer last was.
     state: ViewState,
     pointer: Option<(f32, f32)>,
+    /// What was under the pointer when it was last asked: the cursor and
+    /// the link, at that point and [`Engine::hit_stamp`]. A page left
+    /// alone under the pointer was hit tested twice at every turn of the
+    /// loop (the site sweep's reddit, a millisecond and more each).
+    hit: Option<Hit>,
+    /// How many times it was asked anew: for the tests.
+    #[cfg(test)]
+    hits: u64,
 }
+
+/// What was under a point ([`View::hit`]): the point, the engine's
+/// [`Engine::hit_stamp`] then, the cursor and the link.
+type Hit = ((f32, f32), (u64, u64, u64), crate::Cursor, Option<net::Url>);
 
 /// A renderer's views and what they share.
 pub(crate) struct Host {
@@ -214,6 +226,9 @@ impl Host {
                 owed: true,
                 state: ViewState::default(),
                 pointer: None,
+                hit: None,
+                #[cfg(test)]
+                hits: 0,
             },
         );
         Ok(())
@@ -656,10 +671,24 @@ fn give(view: &mut View, input: Input) -> Option<fn(u32) -> ToBrowser> {
 fn state_of(view: &mut View) -> ViewState {
     let engine = &mut view.engine;
     let (cursor, hover) = match view.pointer {
-        Some((x, y)) => (
-            engine.cursor_at(x, y),
-            engine.link_at(x, y).map(|link| link.url().clone()),
-        ),
+        Some(at) => {
+            let stamp = engine.hit_stamp();
+            match &view.hit {
+                Some((point, held, cursor, hover)) if *point == at && *held == stamp => {
+                    (*cursor, hover.clone())
+                }
+                _ => {
+                    let cursor = engine.cursor_at(at.0, at.1);
+                    let hover = engine.link_at(at.0, at.1).map(|link| link.url().clone());
+                    view.hit = Some((at, stamp, cursor, hover.clone()));
+                    #[cfg(test)]
+                    {
+                        view.hits += 1;
+                    }
+                    (cursor, hover)
+                }
+            }
+        }
         None => (crate::Cursor::Default, None),
     };
     ViewState {
@@ -801,6 +830,54 @@ mod tests {
         assert!(!idle.tick(at(100), false));
         assert!(!idle.tick(at(101), true));
         assert!(idle.tick(at(131), true));
+    }
+
+    #[test]
+    fn a_page_left_alone_under_the_pointer_is_not_hit_tested_again() {
+        // The loop's every turn asked what was under the pointer, twice;
+        // the answer holds while the pointer, the document, its layout
+        // and the frames drawn do.
+        use super::{Host, Link, give, state_of};
+        use crate::ipc::{Input, Sender, Settings, ToRenderer};
+        use std::sync::Arc;
+        let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses");
+        let link = Link::new(Sender::new(std::io::sink()));
+        let mut host = Host::new(link, Some(fonts), Arc::new(|| {}));
+        host.handle(ToRenderer::CreateView {
+            view: 1,
+            frame: 1,
+            settings: Settings::default(),
+        })
+        .expect("made");
+        let view = host.views.get_mut(&1).expect("the view");
+        view.engine.load_document(
+            "<body style='margin:0'><a href='https://a.test/x' style='display:block;height:50px'>x</a><p>y</p>",
+        );
+        view.engine.frame(200, 100);
+        give(view, Input::PointerMove { x: 10.0, y: 10.0 });
+        let first = state_of(view);
+        assert_eq!(
+            first.hover.as_ref().map(|u| u.to_string()).as_deref(),
+            Some("https://a.test/x")
+        );
+        for _ in 0..5 {
+            assert_eq!(state_of(view), first);
+        }
+        assert_eq!(view.hits, 1, "asked again with nothing changed");
+        give(view, Input::PointerMove { x: 10.0, y: 80.0 });
+        assert_eq!(state_of(view).hover, None);
+        assert_eq!(view.hits, 2);
+        let document = view.engine.document();
+        let p = document
+            .subtree(document.root())
+            .find(|&n| document.tag(n) == Some("p"))
+            .expect("a paragraph");
+        view.engine.mutate(|document| {
+            let _ = document.set_attribute(p, "class", "changed");
+        });
+        let _ = state_of(view);
+        assert_eq!(view.hits, 3, "the document changed");
     }
 
     #[test]

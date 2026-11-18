@@ -1878,12 +1878,30 @@ impl Engine {
 
     /// The `iframe`s with frames, in tree order.
     fn frames_in_order(&self) -> Vec<NodeId> {
+        if self.shown.frames.is_empty() {
+            return Vec::new();
+        }
         let document = &self.shown.document;
-        document
+        let mut frames: Vec<NodeId> = self.shown.frames.keys().copied().collect();
+        frames.sort_unstable();
+        let version = document.version();
+        if let Some((at, of, order)) = &*self.shown.frame_order.borrow()
+            && *at == version
+            && *of == frames
+        {
+            return order.clone();
+        }
+        #[cfg(test)]
+        self.shown
+            .frame_order_walks
+            .set(self.shown.frame_order_walks.get() + 1);
+        let order: Vec<NodeId> = document
             .shadow_including_subtree(document.root())
             .into_iter()
             .filter(|node| self.shown.frames.contains_key(node))
-            .collect()
+            .collect();
+        *self.shown.frame_order.borrow_mut() = Some((version, frames, order.clone()));
+        order
     }
 
     /// Every frame, in the order their work is done (M33): their

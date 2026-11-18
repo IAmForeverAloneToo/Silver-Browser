@@ -1027,3 +1027,40 @@ fn a_frames_own_navigation_is_made_from_its_container() {
         &LoadState::Failed(crate::LoadError::Network(net::NetworkError::MixedContent))
     );
 }
+
+#[test]
+fn the_frames_are_ordered_by_a_walk_only_when_the_document_changed() {
+    // Each poll of the network and run of the tasks wanted the frames in
+    // tree order, and walked the whole document for it, frames or not
+    // (the site sweep's reddit: a millisecond a wake).
+    let walks = |tab: &Tab| tab.engine.shown.frame_order_walks.get();
+    let mut tab = Tab::new();
+    tab.engine.load_document("<p>no frame</p>");
+    for _ in 0..10 {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+    }
+    assert_eq!(walks(&tab), 0, "a page with no frame");
+    let mut tab = Tab::new();
+    tab.engine
+        .load_document("<p>one</p><iframe srcdoc='<p>child</p>'></iframe><p>two</p>");
+    settle_frames(&mut tab);
+    let before = walks(&tab);
+    assert!(before > 0);
+    for _ in 0..10 {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+    }
+    assert_eq!(walks(&tab), before, "walked again with nothing changed");
+    let document = tab.engine.document();
+    let p = document
+        .subtree(document.root())
+        .find(|&n| document.tag(n) == Some("p"))
+        .expect("a paragraph");
+    tab.engine.mutate(|document| {
+        let _ = document.set_attribute(p, "class", "changed");
+    });
+    tab.engine.poll_network();
+    tab.engine.run_tasks();
+    assert_eq!(walks(&tab), before + 1, "a change, one walk");
+}

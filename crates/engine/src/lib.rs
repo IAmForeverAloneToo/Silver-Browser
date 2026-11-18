@@ -611,6 +611,10 @@ pub struct Engine {
     overlay: Vec<u8>,
 }
 
+/// The frames' elements in tree order ([`Shown::frame_order`]), with the
+/// document's version and the frames' elements, sorted, it is of.
+type FrameOrder = (u64, Vec<NodeId>, Vec<NodeId>);
+
 /// A document and everything the engine made from it (M15): what the
 /// back-forward cache keeps whole, so that a document shown again needs
 /// no cascade and no layout.
@@ -761,6 +765,14 @@ struct Shown {
     popup: Option<select::Popup>,
     /// The frames of its `iframe`s (M33.2), by element.
     frames: HashMap<NodeId, frames::Frame>,
+    /// The frames' elements in tree order, as the document's version and
+    /// its frames last were: each poll of the network and run of the
+    /// tasks walked the whole document for it, frames or not (the site
+    /// sweep's reddit: a millisecond a wake).
+    frame_order: std::cell::RefCell<Option<FrameOrder>>,
+    /// How many times that order was found by a walk: for the tests.
+    #[cfg(test)]
+    frame_order_walks: std::cell::Cell<u64>,
     /// The `iframe` whose frame the pointer is over, and the one a press
     /// began in while a button is held (M33.2).
     pointer_frame: Option<NodeId>,
@@ -862,6 +874,9 @@ impl Shown {
             scripts.make_panel();
         }
         Shown {
+            frame_order: std::cell::RefCell::new(None),
+            #[cfg(test)]
+            frame_order_walks: std::cell::Cell::new(0),
             document,
             page,
             stylesheets,
@@ -4331,6 +4346,20 @@ impl Engine {
     /// The cursor over the viewport point (CSS UI 4 section 4.1, M26.4):
     /// the `cursor` of the element there; `auto` an I-beam over a text
     /// control, the arrow elsewhere and off the page.
+    /// What the answers of the hit tests ([`Engine::cursor_at`],
+    /// [`Engine::link_at`]) depend on, other than the point: the
+    /// document's version, the layouts run and the frames drawn, one of
+    /// which changes whenever what is under a point may have (a scroll
+    /// or an animation draws a frame). A caller keeps an answer while it
+    /// holds.
+    pub fn hit_stamp(&self) -> (u64, u64, u64) {
+        (
+            self.shown.document.version(),
+            self.layout_runs,
+            self.frame_causes.iter().sum(),
+        )
+    }
+
     pub fn cursor_at(&mut self, x: f32, y: f32) -> Cursor {
         if let Some((node, fx, fy)) = self.frame_under(x, y)
             && let Some(child) = self.frame_engine(node)
