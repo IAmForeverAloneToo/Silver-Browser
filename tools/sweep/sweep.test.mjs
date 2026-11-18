@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 
-import { chromeIdleShares, idleSummary, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
+import { chromeIdleShares, idleSummary, memorySum, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
 
 // A PNG of `width` by `height`, RGB, each pixel `colour(x, y)`.
 function png(width, height, colour) {
@@ -94,4 +94,10 @@ test("Chrome's share of a core left alone is its processes' CPU time over the ti
   ];
   assert.deepEqual(chromeIdleShares(before, after, 10), { renderers: 0.075, browser: 0.01, gpu: 0.02 });
   assert.equal(chromeIdleShares(null, after, 10), null);
+});
+
+test("the processes' memory is the sum of their private bytes and working sets", () => {
+  assert.deepEqual(memorySum("100 40\r\n 200 60 \n"), { private: 300, workingSet: 100, processes: 2 });
+  assert.equal(memorySum(""), null);
+  assert.equal(memorySum("not numbers"), null);
 });

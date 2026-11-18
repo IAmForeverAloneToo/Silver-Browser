@@ -138,6 +138,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut counters = Json::Null;
     let mut idle = Json::Null;
     let mut idle_cpu = Json::Null;
+    let mut memory_idle = Json::Null;
     // The layouts the renderer last said it had run, and since when.
     let mut layouts: Option<(f64, Instant)> = None;
     // When a renderer last answered, or was first seen to run.
@@ -211,6 +212,9 @@ fn capture(asked: &Asked) -> Result<(), String> {
     if outcome == Outcome::Ok && first_paint.is_none() {
         outcome = Outcome::Hang;
     }
+    // The memory of all the tab's processes, at its load and, below,
+    // once left alone.
+    let memory_load = memory_total(&tab);
     let mut shots = Vec::new();
     if matches!(outcome, Outcome::Ok | Outcome::Hang) {
         shot(&mut tab, began, &asked.out.join("silver-top.png"))?;
@@ -255,6 +259,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
             }
         }
         idle_cpu = idle_shares(&cpu_first, &cpu_times(&tab), idle_began.elapsed());
+        memory_idle = memory_total(&tab);
         idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
@@ -305,6 +310,13 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // The share of a core the renderers, together, and the browser's
         // process used while the page was left alone.
         ("idleCpu", idle_cpu),
+        // The private bytes (commit) and working sets of the browser's
+        // process and the tab's renderers, together, at the load and once
+        // left alone.
+        (
+            "memoryTotal",
+            Json::object([("load", memory_load), ("idle", memory_idle)]),
+        ),
         ("network", network),
         ("memory", peaks.json()),
         (
@@ -417,6 +429,28 @@ fn shot(tab: &mut RemoteTab, began: Instant, path: &Path) -> Result<(), String> 
         .to_vec();
     let png = canvas::encode_png(&pixels, SIZE.0, SIZE.1).ok_or("the frame would not encode")?;
     std::fs::write(path, png).map_err(|e| format!("not written: {e}"))
+}
+
+/// The private bytes (commit) and working sets of the browser's own
+/// process and every renderer of the tab, each summed; null where none
+/// could be read.
+fn memory_total(tab: &RemoteTab) -> Json {
+    let mut pids = tab.renderer_processes();
+    pids.push(std::process::id());
+    let read: Vec<platform::ProcessMemory> = pids
+        .into_iter()
+        .filter_map(platform::process_memory)
+        .collect();
+    if read.is_empty() {
+        return Json::Null;
+    }
+    let private: u64 = read.iter().filter_map(|m| m.private).sum();
+    let working: u64 = read.iter().map(|m| m.working_set).sum();
+    Json::object([
+        ("private", Json::from(private as f64)),
+        ("workingSet", Json::from(working as f64)),
+        ("processes", Json::from(read.len() as f64)),
+    ])
 }
 
 /// The CPU time each of the tab's renderers and the browser's own

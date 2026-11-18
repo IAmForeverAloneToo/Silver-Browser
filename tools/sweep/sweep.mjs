@@ -355,6 +355,7 @@ async function captureChrome(chrome, url, dir) {
     };
     const served = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }).catch(() => null);
     result.finalUrl = served?.result?.value ?? null;
+    result.memoryTotal = { load: await chromeMemory(cdp), idle: null };
     await shot("chrome-top.png");
     await send("Runtime.evaluate", { expression: `window.scrollBy(0, ${SCROLL_SCREENS * HEIGHT})` });
     let settled = Date.now();
@@ -373,6 +374,7 @@ async function captureChrome(chrome, url, dir) {
     await sleep(IDLE_MS);
     const after = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
     result.idleCpu = chromeIdleShares(before?.processInfo, after?.processInfo, (Date.now() - began) / 1000);
+    result.memoryTotal.idle = await chromeMemory(cdp);
     return result;
   } catch (error) {
     result.outcome = result.outcome === "ok" ? "harness error" : result.outcome;
@@ -551,6 +553,37 @@ export function topCauses(rows) {
     .sort((a, b) => b.sites - a.sites || b.total - a.total || a.key.localeCompare(b.key));
 }
 
+// The private bytes (commit) and working sets of all of Chrome's
+// processes, summed, as the system reads them: the ids from
+// SystemInfo.getProcessInfo, the sizes from PowerShell's Get-Process on
+// Windows. Null where they cannot be read.
+async function chromeMemory(cdp) {
+  if (process.platform !== "win32") return null;
+  const info = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+  const ids = (info?.processInfo || []).map((p) => p.id).filter((id) => Number.isInteger(id) && id > 0);
+  if (!ids.length) return null;
+  try {
+    const out = execFileSync("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      `Get-Process -Id ${ids.join(",")} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.PrivateMemorySize64) $($_.WorkingSet64)" }`,
+    ], { encoding: "utf8" });
+    return memorySum(out);
+  } catch {
+    return null;
+  }
+}
+
+// Lines of "<private> <working set>", summed.
+export function memorySum(text) {
+  const rows = String(text).trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/).map(Number)).filter((r) => r.length === 2 && r.every(Number.isFinite));
+  if (!rows.length) return null;
+  return {
+    private: rows.reduce((a, r) => a + r[0], 0),
+    workingSet: rows.reduce((a, r) => a + r[1], 0),
+    processes: rows.length,
+  };
+}
+
 // The share of a core Chrome's processes used between two lists of
 // SystemInfo.getProcessInfo, `seconds` apart: the renderers together, a
 // process that came meanwhile counted from nothing; the browser's and
@@ -604,7 +637,8 @@ renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.mem
 Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.<br>
 <b>Left alone</b> (Silver): ${esc(idleSummary(s))}.
 CPU left alone, share of a core: Silver renderers ${s.idleCpu?.renderers ?? "-"}, browser ${s.idleCpu?.browser ?? "-"};
-Chrome renderers ${c.idleCpu?.renderers ?? "-"}, browser ${c.idleCpu?.browser ?? "-"}, GPU ${c.idleCpu?.gpu ?? "-"}.</p>
+Chrome renderers ${c.idleCpu?.renderers ?? "-"}, browser ${c.idleCpu?.browser ?? "-"}, GPU ${c.idleCpu?.gpu ?? "-"}.<br>
+Memory of all processes, private MiB at load / left alone: Silver ${mib(s.memoryTotal?.load?.private)} / ${mib(s.memoryTotal?.idle?.private)}; Chrome ${mib(c.memoryTotal?.load?.private)} / ${mib(c.memoryTotal?.idle?.private)}.</p>
 <p>Missing: ${missing || "none"}; stack ${counts.stackOverflows || 0}; G90 ${(counts.frameRefusedSameOrigin || 0) + (counts.frameDocumentSameOrigin || 0)}; CSP ${counts.policyRefusals || 0}; console errors ${(s.console || []).filter((e) => e.level === "error").length} (Chrome ${(c.console || []).length}).</p>
 <div class=pair>${pic("silver", "top")}${pic("chrome", "top")}</div>
 <div class=pair>${pic("silver", "scrolled")}${pic("chrome", "scrolled")}</div>
