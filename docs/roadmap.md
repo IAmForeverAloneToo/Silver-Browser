@@ -3976,6 +3976,11 @@ site sweep or the dogfood sessions show a site breaking on it.
   to the lead if CI's runs start failing on it.
 - The 2D context's backing-store and `ImageData` size caps are the
   engine's own, not checked against Chrome's (backlog).
+- Fresh about:blank/srcdoc frames are cross-origin to their creator
+  (G90); anti-bot scripts such as Kasada may flag the user at sign-in.
+  (Twitch's Kasada frame reads `TextEncoder` from an about:blank child
+  it made and gets a SecurityError; Chrome gives it the child's
+  `TextEncoder`. G90 is a beta requirement, its design note next.)
 - QuickJS-ng js_parse_skip_parens_token leaves a pending SyntaxError;
   mitigated by clear_stale; not reported upstream, by the user's
   choice. (Its look past a parenthesized expression reads a regular

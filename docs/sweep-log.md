@@ -327,3 +327,65 @@ Top 10 causes (sites, total):
 - 2, 9: console: Uncaught (in promise) TypeError: not a function at <url>
 - 2, 7: missing: PerformanceObserver
 
+## 2026-11-18, 4b834ec15, against Chrome/157.0.8103.80
+
+One site and one browser at a time.
+
+| site | outcome | same host | likeness top / scrolled | paint / load / settled (s) | Chrome settled (s) | missing | console errors | stack | G90 | CSP | failed requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wikipedia | ok | yes | 0.811 / 0.78 | 0.7 / 1.2 / 2.2 | 1.1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| mdn | ok | yes | 0.779 / 0.763 | 0.3 / 1.3 / 4.4 | 1.8 | 0 | 0 | 0 | 0 | 0 | 0 |
+| hn | ok | yes | 0.775 / 0.776 | 0.6 / 0.7 / 0.8 | 0.8 | 0 | 0 | 0 | 0 | 0 | 0 |
+| bbc | ok | yes | 0.835 / 0.777 | 0.3 / 1.1 / 9.3 | 5.1 | 0 | 6 | 0 | 174 | 0 | 0 |
+| verge | ok | yes | 0.836 / 0.701 | 0.8 / 15.8 / - | 13.2 | 2 | 9 | 0 | 0 | 0 | 0 |
+| stackoverflow | ok | yes | 0.72 / 0.512 | 0.2 / 0.4 / 0.5 | 2.5 | 0 | 8 | 0 | 0 | 0 | 0 |
+| github | ok | yes | 0.818 / 0.834 | 4.3 / 4.3 / 4.3 | 1.7 | 0 | 0 | 0 | 0 | 0 | 0 |
+| docsrs | ok | yes | 0.848 / 0.837 | 0.3 / 0.5 / 0.8 | 0.6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| cratesio | ok | yes | 0.851 / 0.844 | 1.4 / 1.4 / 5.0 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| mslearn | ok | yes | 0.78 / 0.853 | 1.3 / 1.6 / 2.7 | 1.7 | 0 | 1 | 0 | 0 | 0 | 0 |
+| google | ok | yes | 0.747 / 0.747 | 0.2 / 0.7 / 2.7 | 1.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| ddg | ok | yes | 0.718 / 0.702 | 0.8 / 4.7 / 7.8 | 1.4 | 0 | 13 | 0 | 0 | 0 | 0 |
+| bing | ok | yes | 0.855 / 0.852 | 0.5 / 0.9 / 7.4 | 1.7 | 0 | 2 | 0 | 0 | 0 | 0 |
+| youtube | ok | yes | 0.692 / 0.691 | 1.2 / 5.2 / 6.3 | 1.7 | 0 | 1 | 0 | 0 | 0 | 0 |
+| twitch | ok | yes | 0.676 / 0.882 | 0.3 / 1.6 / 3.1 | 2.2 | 0 | 1 | 0 | 0 | 0 | 1 |
+| vimeo | ok | yes | 0.661 / 0.661 | 0.7 / 5.9 / 18.4 | 3.8 | 0 | 1 | 0 | 0 | 0 | 0 |
+| maps | ok | yes | 0.856 / 0.87 | 0.3 / 3.0 / 5.1 | 3.0 | 1 | 2 | 0 | 0 | 0 | 0 |
+| reddit | ok | yes | 0.687 / 0.646 | 0.2 / 19.9 / 22.5 | 0.8 | 0 | 3 | 0 | 1 | 0 | 0 |
+| x | ok | - | - / - | 0.5 / 2.5 / 2.7 | - | 2 | 2 | 0 | 0 | 0 | 0 |
+| gmail | ok | yes | 0.812 / 0.812 | 0.8 / 1.2 / 1.4 | 1.1 | 0 | 0 | 0 | 5 | 0 | 0 |
+| gdocs | ok | yes | 0.831 / 0.831 | 0.7 / 1.1 / 1.2 | 0.8 | 0 | 0 | 0 | 5 | 0 | 0 |
+| ai-chat | ok | yes | 0.837 / 0.67 | 0.2 / 0.4 / 0.5 | 2.7 | 0 | 11 | 0 | 2 | 0 | 0 |
+| amazon | ok | yes | 0.73 / 0.727 | 0.8 / 16.2 / 16.2 | 3.1 | 0 | 6 | 0 | 0 | 0 | 2 |
+| ebay | ok | yes | 0.996 / 0.996 | 0.2 / 0.3 / 0.3 | 0.4 | 0 | 0 | 0 | 0 | 0 | 0 |
+| weather | ok | yes | 0.714 / 0.703 | 0.5 / 4.6 / 4.6 | 12.0 | 1 | 6 | 0 | 79 | 0 | 2 |
+| yahoo-mail | ok | no | 0.62 / 0.566 | 0.9 / 1.1 / 1.7 | 3.0 | 0 | 4 | 0 | 0 | 0 | 0 |
+| proton | ok | yes | 0.77 / 0.729 | 1.7 / 20.2 / 21.0 | 4.4 | 0 | 1 | 0 | 0 | 0 | 0 |
+| proton-drive | ok | no | 0.721 / 0.721 | 2.0 / 2.7 / 2.8 | 6.2 | 1 | 1 | 0 | 0 | 0 | 0 |
+| chatgpt | ok | yes | 0.74 / 0.74 | 0.7 / 1.4 / 6.2 | 0.6 | 1 | 2 | 0 | 0 | 0 | 0 |
+| grok | ok | yes | 0.927 / 0.927 | 1.8 / 3.1 / 3.1 | 4.4 | 1 | 2 | 0 | 4 | 0 | 0 |
+| gemini | ok | yes | 0.733 / 0.733 | 0.5 / 2.0 / 2.1 | 3.6 | 0 | 2 | 0 | 0 | 0 | 0 |
+| yt-watch | ok | yes | 0.617 / 0.538 | 1.6 / 9.6 / 11.3 | 4.2 | 0 | 6 | 0 | 2 | 0 | 6 |
+| reddit-home | ok | yes | 0.643 / 0.699 | 0.2 / 20.2 / 20.2 | 0.4 | 0 | 6 | 0 | 0 | 0 | 0 |
+| google-images | ok | yes | 0.771 / 0.771 | 0.5 / 1.7 / 2.0 | 1.4 | 1 | 8 | 0 | 2 | 0 | 0 |
+| amazon-au | ok | yes | 0.668 / 0.712 | 0.4 / 0.5 / 0.8 | 2.7 | 0 | 0 | 0 | 0 | 0 | 0 |
+| etsy | ok | yes | 0.801 / 0.822 | 0.2 / 3.9 / 3.9 | - | 0 | 0 | 0 | 0 | 0 | 0 |
+| onepassword | ok | yes | 0.718 / 0.718 | 1.0 / 2.2 / 4.6 | 3.0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| gdrive | ok | yes | 0.808 / 0.808 | 0.7 / 1.0 / 1.1 | 0.6 | 0 | 0 | 0 | 5 | 0 | 0 |
+| cloudflare | ok | yes | 0.843 / 0.806 | 0.8 / 26.4 / - | - | 0 | 2 | 0 | 0 | 0 | 0 |
+| huggingface | ok | yes | 0.869 / 0.866 | 0.8 / 2.8 / 4.7 | 2.2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| pcpartpicker | ok | yes | 0.828 / 0.831 | 0.3 / 0.5 / 0.6 | 2.7 | 0 | 8 | 0 | 0 | 0 | 0 |
+| plex | ok | yes | 0.737 / 0.737 | 0.3 / 3.3 / 9.5 | 1.4 | 0 | 22 | 0 | 0 | 0 | 0 |
+
+Top 10 causes (sites, total):
+
+- 12, 37: error status: image
+- 9, 275: G90: same-origin frame refused
+- 7, 13: error status: document
+- 4, 37: console: Uncaught TypeError: Promise object expected
+- 4, 16: console: [frame <url>
+- 3, 8: network: dns
+- 3, 5: error status: fetch
+- 3, 4: console: Uncaught Script error.
+- 3, 4: failed image
+- 3, 4: G90: same-origin contentDocument null
+
