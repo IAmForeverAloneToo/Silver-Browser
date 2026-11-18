@@ -157,6 +157,41 @@ impl Engine {
         std::mem::take(&mut self.inspected)
     }
 
+    /// What the page holds, by part, in bytes (the site sweep's memory
+    /// report): its documents' nodes, styles, layout, images and realms'
+    /// heaps, its frames' with them ([`Engine::memory`]); the backend's
+    /// layers, the display items it keeps and the last frame's pixels;
+    /// and the HTTP cache's bodies in memory, which are the session's.
+    fn memory_report(&mut self) -> Json {
+        let mut parts = self.memory();
+        let mut frames = 0;
+        self.for_each_frame(&mut |frame| {
+            let theirs = frame.memory();
+            parts.nodes += theirs.nodes;
+            parts.styles += theirs.styles;
+            parts.layout += theirs.layout;
+            parts.images += theirs.images;
+            parts.heap += theirs.heap;
+            frames += 1;
+        });
+        let (items, pixels) = self.backend.kept_bytes();
+        let (cached, cached_bytes) = self.network.cache().size();
+        let n = |bytes: usize| Json::from(bytes as f64);
+        Json::object([
+            ("jsHeap", n(parts.heap)),
+            ("dom", n(parts.nodes)),
+            ("styles", n(parts.styles)),
+            ("layout", n(parts.layout)),
+            ("images", n(parts.images)),
+            ("layers", n(parts.layers)),
+            ("displayItems", n(items)),
+            ("framePixels", n(pixels)),
+            ("httpCache", n(cached_bytes)),
+            ("httpCacheEntries", n(cached)),
+            ("frames", n(frames)),
+        ])
+    }
+
     /// The site sweep's counts of the documents shown and left, the
     /// frames' among them, with the layouts run.
     fn sweep_counts(&mut self) -> Json {
@@ -220,6 +255,8 @@ impl Engine {
             // (`crate::sweep`), and the layouts run, which the sweep reads
             // to see a page settle.
             "page.sweep" => Ok(self.sweep_counts()),
+            // What the page holds, by part (the site sweep's).
+            "page.memory" => Ok(self.memory_report()),
             // The renderer process's loop turns ([`crate::renderer`]).
             "page.loop" => Ok(Json::object([(
                 "turns",

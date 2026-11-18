@@ -150,6 +150,17 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
         assert!(field(at, "workingSet").as_f64() > Some(0.0), "{record:?}");
         assert!(field(at, "processes").as_f64() >= Some(2.0), "{record:?}");
     }
+    // What the page's renderer holds by part, at the load and left
+    // alone (`page.memory`): a script's heap and nodes at least.
+    for when in ["load", "idle"] {
+        let parts = field(field(&record, "memoryParts"), when);
+        assert!(field(parts, "jsHeap").as_f64() > Some(0.0), "{record:?}");
+        assert!(field(parts, "dom").as_f64() > Some(0.0), "{record:?}");
+        assert!(
+            field(parts, "framePixels").as_f64() > Some(0.0),
+            "{record:?}"
+        );
+    }
     // Its renderers' loops left alone turn a few times a second, not
     // thousands (a wait that never waits).
     let most = field(field(&record, "loopTurns"), "most").as_f64();

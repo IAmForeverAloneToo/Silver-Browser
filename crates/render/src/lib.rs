@@ -582,6 +582,14 @@ pub trait RenderBackend {
         0
     }
 
+    /// What the backend keeps of the frames it drew, in bytes: the
+    /// display items (the last frame's and its layers', each item's own
+    /// size, not what it points to) and the last frame's pixels it draws
+    /// the next by. A memory report's (the site sweep's).
+    fn kept_bytes(&self) -> (usize, usize) {
+        (0, 0)
+    }
+
     /// The layers the backend holds, in a fixed order by key.
     fn layers(&self) -> Vec<LayerInfo> {
         Vec::new()
@@ -3902,6 +3910,20 @@ impl RenderBackend for SoftwareBackend {
 
     fn layer_bytes(&self) -> usize {
         self.layers.bytes()
+    }
+
+    fn kept_bytes(&self) -> (usize, usize) {
+        let item = std::mem::size_of::<DisplayItem>();
+        let layered: usize = self
+            .layers
+            .held
+            .values()
+            .map(|layer| layer.items.len())
+            .sum();
+        let (listed, pixels) = self.retained.as_ref().map_or((0, 0), |kept| {
+            (kept.list.items.len(), kept.pixmap.data().len())
+        });
+        ((listed + layered) * item, pixels)
     }
 
     fn layers(&self) -> Vec<LayerInfo> {

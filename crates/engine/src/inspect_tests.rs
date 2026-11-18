@@ -952,3 +952,64 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
     assert_eq!(number("frameDocumentSameOrigin"), Some(1), "{answer:?}");
     assert!(number("layouts") >= Some(1), "{answer:?}");
 }
+
+/// What a page holds, by part (`page.memory`, the site sweep's memory
+/// report): its scripts' heap and nodes grow with what a script makes,
+/// a frame drawn keeps its items and pixels, and the HTTP cache keeps
+/// the page's body.
+#[test]
+fn the_memory_report_counts_a_pages_parts() {
+    let server =
+        serve("<style>p { color: green }</style><p>a</p><script>document.title = 'done';</script>");
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/"));
+    tab.wait_until(|engine| engine.title() == "done");
+    let report = |tab: &mut Tab, id: u32| {
+        tab.engine
+            .inspect(&format!(r#"{{"id":{id},"method":"page.memory"}}"#));
+        let answers = tab.engine.take_inspected();
+        let answer = Json::parse(&answers[0]).expect("JSON");
+        answer.get("result").expect("a result").clone()
+    };
+    let part = |report: &Json, name: &str| report.get(name).and_then(Json::as_f64).unwrap_or(-1.0);
+    let before = report(&mut tab, 1);
+    for name in [
+        "jsHeap",
+        "dom",
+        "styles",
+        "layout",
+        "images",
+        "layers",
+        "httpCache",
+    ] {
+        assert!(part(&before, name) >= 0.0, "{name}: {before:?}");
+    }
+    assert!(part(&before, "jsHeap") > 0.0, "{before:?}");
+    assert!(part(&before, "dom") > 0.0, "{before:?}");
+    assert_eq!(
+        part(&before, "displayItems"),
+        0.0,
+        "no frame yet: {before:?}"
+    );
+    tab.engine.frame(200, 100);
+    crate::differential::run_script(
+        &mut tab.engine,
+        "for (let i = 0; i < 2000; i++) document.body.appendChild(document.createElement('p')).textContent = 'x' + i; \
+         window.kept = Array.from({ length: 20000 }, (_, i) => ({ i }));",
+    );
+    let after = report(&mut tab, 2);
+    assert!(
+        part(&after, "dom") > part(&before, "dom") + 2000.0,
+        "{before:?} {after:?}"
+    );
+    assert!(
+        part(&after, "jsHeap") > part(&before, "jsHeap") + 100_000.0,
+        "{before:?} {after:?}"
+    );
+    assert!(part(&after, "displayItems") > 0.0, "{after:?}");
+    assert!(
+        part(&after, "framePixels") >= 200.0 * 100.0 * 4.0,
+        "{after:?}"
+    );
+}

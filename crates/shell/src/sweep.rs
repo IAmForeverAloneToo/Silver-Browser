@@ -139,6 +139,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut idle = Json::Null;
     let mut idle_cpu = Json::Null;
     let mut memory_idle = Json::Null;
+    let mut parts_idle = Json::Null;
     let mut loop_turns = Json::Null;
     // The layouts the renderer last said it had run, and since when.
     let mut layouts: Option<(f64, Instant)> = None;
@@ -216,6 +217,15 @@ fn capture(asked: &Asked) -> Result<(), String> {
     // The memory of all the tab's processes, at its load and, below,
     // once left alone.
     let memory_load = memory_total(&tab);
+    // And what the page's renderer holds, by part (`page.memory`).
+    let parts_load = ask(
+        &mut tab,
+        &woken,
+        began,
+        &mut console,
+        (MEMORY_ASKED, "page.memory"),
+    )
+    .unwrap_or(Json::Null);
     let mut shots = Vec::new();
     if matches!(outcome, Outcome::Ok | Outcome::Hang) {
         shot(&mut tab, began, &asked.out.join("silver-top.png"))?;
@@ -232,7 +242,13 @@ fn capture(asked: &Asked) -> Result<(), String> {
         shots.push("scrolled");
         // The counts again, of what the scroll's runs did too: the record
         // has the page's last.
-        if let Some(result) = ask_counts(&mut tab, &woken, began, &mut console, next_id) {
+        if let Some(result) = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (next_id, "page.sweep"),
+        ) {
             counters = result;
         }
         next_id += 1;
@@ -262,9 +278,24 @@ fn capture(asked: &Asked) -> Result<(), String> {
         }
         idle_cpu = idle_shares(&cpu_first, &cpu_times(&tab), idle_began.elapsed());
         memory_idle = memory_total(&tab);
+        parts_idle = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (MEMORY_ASKED + 1, "page.memory"),
+        )
+        .unwrap_or(Json::Null);
         let turns_after = ask_loop_turns(&mut tab, &woken, began, &mut console, 2);
         loop_turns = turn_rates(&turns_before, &turns_after, idle_began.elapsed());
-        idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
+        idle = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (next_id, "page.sweep"),
+        )
+        .unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
         // looked empty at it).
@@ -321,6 +352,14 @@ fn capture(asked: &Asked) -> Result<(), String> {
             "memoryTotal",
             Json::object([("load", memory_load), ("idle", memory_idle)]),
         ),
+        // What the page's renderer holds by part, at the load and once
+        // left alone: its scripts' heap, nodes, styles, layout, images,
+        // layers, the display items and pixels kept of the last frame,
+        // and the HTTP cache's bodies in memory.
+        (
+            "memoryParts",
+            Json::object([("load", parts_load), ("idle", parts_idle)]),
+        ),
         // Each renderer's loop turns a second while left alone, by its
         // number, and the most of them: a wait that never waits turns
         // thousands of times a second.
@@ -342,16 +381,21 @@ fn capture(asked: &Asked) -> Result<(), String> {
 /// Takes what the renderers said, runs what is due, refuses what the
 /// page asks for, draws a frame when one is wanted, and keeps the
 /// console.
-/// The renderer's counts (`page.sweep`), asked as request `id` and
-/// waited for two seconds at most, the tab stepped meanwhile.
-fn ask_counts(
+/// The ids `page.memory` is asked by, past any the counts' polling
+/// reaches, and apart from the loop turns' ([`LOOP_ASK`]).
+const MEMORY_ASKED: u64 = 1 << 41;
+
+/// The renderer's answer to `method` (its counts, `page.sweep`, or what
+/// it holds, `page.memory`), asked as request `id` and waited for two
+/// seconds at most, the tab stepped meanwhile.
+fn ask(
     tab: &mut RemoteTab,
     woken: &mpsc::Receiver<()>,
     began: Instant,
     console: &mut Vec<Json>,
-    id: u64,
+    (id, method): (u64, &str),
 ) -> Option<Json> {
-    tab.inspect(format!("{{\"id\":{id},\"method\":\"page.sweep\"}}"));
+    tab.inspect(format!("{{\"id\":{id},\"method\":\"{method}\"}}"));
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
         let _ = woken.recv_timeout(Duration::from_millis(50));
