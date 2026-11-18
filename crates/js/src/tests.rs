@@ -804,3 +804,29 @@ fn a_host_without_a_document_lets_code_from_strings_compile() {
     realm.run(&script(source), &mut host).expect("it runs");
     assert_eq!(host.console, ["2 3 object"]);
 }
+
+#[test]
+fn an_errors_stack_takes_any_value_as_the_reference_browsers_does() {
+    // QuickJS-ng's setter on Error.prototype threw for a value not a
+    // string (twitch's player): Chrome 156 keeps whatever is set.
+    let done = realm()
+        .run(
+            &script(
+                "var own = function (o) { return Object.prototype.hasOwnProperty.call(o, 'stack'); };\
+                 var e = new Error('x'); e.stack = undefined;\
+                 var f = new Error('x'); f.stack = { a: 1 };\
+                 var o = Object.create(Error.prototype); var before = String(o.stack); o.stack = 5;\
+                 class E extends Error {} var g = new E('y'); g.stack = null;\
+                 var s = new Error('z'); s.stack = 'mine';\
+                 Error.prototype.stack = 7; var p = Error.prototype.stack;\
+                 [String(e.stack), own(e), typeof f.stack, before, o.stack, own(o), String(g.stack),\
+                  s.stack, p].join()",
+            ),
+            &mut Recorder::default(),
+        )
+        .expect("it runs");
+    assert_eq!(
+        done,
+        Completion::String("undefined,true,object,undefined,5,true,null,mine,7".to_owned())
+    );
+}

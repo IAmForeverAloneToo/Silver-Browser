@@ -94,6 +94,35 @@
   // %IteratorPrototype%, which the built-ins' iterators inherit from.
   const IteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf([][iteratorSymbol]()));
 
+  // An error's `stack` takes any value, as the reference browser's does,
+  // where QuickJS-ng's setter on Error.prototype throws for one not a
+  // string ("Error.prototype.stack setter expects a string", twitch's
+  // player): another value, or one set on Error.prototype itself, is an
+  // own property of the object it is set on. A string still goes to
+  // QuickJS-ng's, which keeps it where its getter reads.
+  {
+    const desc = getOwnPropertyDescriptor($Error.prototype, "stack");
+    if (desc !== undefined && typeof desc.set === "function") {
+      const setStack = desc.set;
+      const set = {
+        set stack(value) {
+          const object = this !== null && (typeof this === "object" || typeof this === "function");
+          if (!object || (typeof value === "string" && this !== $Error.prototype)) {
+            ReflectApply(setStack, this, [value]);
+            return;
+          }
+          defineProperty(this, "stack", { value, writable: true, enumerable: false, configurable: true });
+        },
+      };
+      defineProperty($Error.prototype, "stack", {
+        get: desc.get,
+        set: getOwnPropertyDescriptor(set, "stack").set,
+        enumerable: desc.enumerable,
+        configurable: true,
+      });
+    }
+  }
+
   // A key only the bindings have: a class's constructor run without it
   // is a script's `new`, which the DOM's interfaces refuse.
   const KEY = Symbol("key");
