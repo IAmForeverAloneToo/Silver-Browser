@@ -96,6 +96,27 @@ jobs:
       # about.
       - run: cargo audit --file fuzz/Cargo.lock
 
+  # No secret in any commit (2026-11-18): gitleaks, MIT, a pinned
+  # release whose checksum is checked here (the release's own list,
+  # verified when it was pinned), over every commit the clone has, on
+  # every push. Its findings are printed redacted. The licensed action
+  # is not used. The pin is moved by hand, with its checksum.
+  secrets:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: gitleaks 8.30.1 over the whole history
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" \
+            | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git . --log-opts="--all" --redact --no-banner
+
   sweep-driver:
     # The site sweep's driver (tools/sweep/sweep.mjs): its own parts, the
     # PNG reader, the likeness, the console's grouping and the causes'
