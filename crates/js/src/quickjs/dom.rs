@@ -10,6 +10,10 @@ use rquickjs::function::Rest;
 use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Value};
 
 use super::modules::{self, Referrer};
+
+/// The natives a debug build guards, kept until the realm drops
+/// ([`guard_natives`]); none in a release build.
+pub(super) type Guards = Rc<std::cell::RefCell<Vec<rquickjs::Persistent<Function<'static>>>>>;
 use super::{Entries, Slot, evaluate, report, thrown, with_host};
 use crate::{
     Answer, Call, CustomCall, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError,
@@ -1320,7 +1324,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     kind: &RealmKind,
     secure: bool,
     (host, budget): (&Slot<H>, &Budget),
-    entries: &Entries,
+    (entries, guards): (&Entries, &Guards),
     state: &Rc<modules::State>,
     console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
@@ -1453,8 +1457,62 @@ pub(super) fn install<'js, H: ScriptingHost>(
             },
         )?,
     )?;
+    #[cfg(debug_assertions)]
+    guard_natives(ctx, &natives, guards)?;
+    #[cfg(not(debug_assertions))]
+    let _ = guards;
     let bootstrap: Function<'js> = super::bytecode::bootstrap(ctx)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
+}
+
+/// Debug builds: every native the bootstrap is given, wrapped so that one
+/// that returns, not throwing, with an exception left pending panics,
+/// naming it. An error thrown and then dropped (`unwrap_or_default` on a
+/// conversion that throws) leaves its exception for whatever runs next
+/// to throw, far from its cause: the fetch native's "not a string" on
+/// MDN, 2026-11-18.
+/// Each native is kept in `guards`, which the realm empties before its
+/// context goes: a value a native's closure held itself would keep the
+/// realm's every object.
+#[cfg(debug_assertions)]
+fn guard_natives<'js>(
+    ctx: &Ctx<'js>,
+    natives: &Object<'js>,
+    guards: &Guards,
+) -> rquickjs::Result<()> {
+    use rquickjs::function::This;
+    let names = natives
+        .keys::<String>()
+        .collect::<rquickjs::Result<Vec<String>>>()?;
+    for name in names {
+        let Ok(native) = natives.get::<_, Function<'js>>(name.as_str()) else {
+            continue;
+        };
+        let at = guards.borrow().len();
+        guards
+            .borrow_mut()
+            .push(rquickjs::Persistent::save(ctx, native));
+        let (named, kept) = (name.clone(), guards.clone());
+        let guarded = Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, this: This<Value<'js>>, args: Rest<Value<'js>>| {
+                let native = kept.borrow().get(at).cloned();
+                let Some(native) = native else {
+                    return Err(Exception::throw_internal(&ctx, "the realm is gone"));
+                };
+                let native = native.restore(&ctx)?;
+                let result = native.call::<_, Value<'js>>((This(this.0), Rest(args.0)));
+                if result.is_ok() && ctx.has_exception() {
+                    let pending = ctx.catch();
+                    panic!("the native {named} returned with an exception pending: {pending:?}");
+                }
+                result
+            },
+        )?
+        .with_name(name.as_str())?;
+        natives.set(name.as_str(), guarded)?;
+    }
+    Ok(())
 }
 
 /// The natives the bootstrap reports exceptions and compiles code with

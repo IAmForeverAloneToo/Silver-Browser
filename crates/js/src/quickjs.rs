@@ -90,6 +90,9 @@ struct QuickJsRealm<H: ScriptingHost> {
     rejections: Rc<RefCell<Vec<Rejection>>>,
     /// The bootstrap's entry points, which [`Realm::enter`] calls (M26).
     entries: Entries,
+    /// The natives as made, which a debug build's guard of each calls
+    /// (`dom::guard_natives`); emptied with the entries.
+    guards: dom::Guards,
     /// The errors of the jobs run between an engine dispatch's
     /// listeners, which the next checkpoint reports.
     deferred: Vec<ScriptError>,
@@ -211,6 +214,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         };
         let work = budget.work.clone();
         let entries: Entries = Rc::default();
+        let guards: dom::Guards = Rc::default();
         // Module scripts (D61): the realm's resolver and loader; CSS
         // modules a window's only; and the promises code a string
         // compiled makes, which find its active script.
@@ -247,7 +251,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                     limits.secure,
                     &host,
                     &budget,
-                    &entries,
+                    (&entries, &guards),
                     &module_state,
                 )
                 .map(|entries| Persistent::save(&ctx, entries))
@@ -272,6 +276,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             sampler,
             rejections,
             entries,
+            guards,
             deferred: Vec::new(),
             unwind: false,
             host,
@@ -425,6 +430,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         self.rejections.borrow_mut().clear();
         self.modules.clear();
         *self.entries.borrow_mut() = None;
+        self.guards.borrow_mut().clear();
     }
 }
 
@@ -1284,7 +1290,7 @@ fn install<'js, H: ScriptingHost>(
     secure: bool,
     host: &Slot<H>,
     budget: &dom::Budget,
-    entries: &Entries,
+    (entries, guards): (&Entries, &dom::Guards),
     modules: &Rc<modules::State>,
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
@@ -1369,7 +1375,15 @@ fn install<'js, H: ScriptingHost>(
         },
     )?
     .with_name("consoleMessage")?;
-    dom::install(ctx, kind, secure, (host, budget), entries, modules, console)
+    dom::install(
+        ctx,
+        kind,
+        secure,
+        (host, budget),
+        (entries, guards),
+        modules,
+        console,
+    )
 }
 
 /// Calls `f` with the host, which is there only while a run the engine
