@@ -572,6 +572,12 @@ impl Host {
                 // frames wake nothing.
                 let frame = match view.engine.needs_frame() || view.owed {
                     _ if view.engine.is_hidden() && view.drawn.is_some() => None,
+                    // A view of no size draws nothing, so its frames wake
+                    // nothing until a resize gives it one: a frame of 0 by
+                    // 0 (a sign-in page's hidden iframe) had its renderer
+                    // turn 160,000 times a second, a core each (the site
+                    // sweep's baseline, 2026-11-18).
+                    _ if view.raster.0 == 0 || view.raster.1 == 0 => None,
                     true if view.taken => {
                         let next = view.drawn.map_or(Duration::ZERO, |drawn| {
                             FRAME_INTERVAL.saturating_sub(drawn.elapsed())
@@ -830,6 +836,46 @@ mod tests {
         assert!(!idle.tick(at(100), false));
         assert!(!idle.tick(at(101), true));
         assert!(idle.tick(at(131), true));
+    }
+
+    #[test]
+    fn a_view_of_no_size_wakes_its_renderer_for_no_frame() {
+        // A frame of 0 by 0 wanted a frame it could never draw, and its
+        // renderer's loop never waited. Given a size, it draws.
+        use super::{Host, Link};
+        use crate::ipc::{Sender, Settings, ToRenderer};
+        use std::sync::Arc;
+        let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses");
+        let link = Link::new(Sender::new(std::io::sink()));
+        let mut host = Host::new(link, Some(fonts), Arc::new(|| {}));
+        host.handle(ToRenderer::CreateView {
+            view: 1,
+            frame: 1,
+            settings: Settings::default(),
+        })
+        .expect("made");
+        host.handle(ToRenderer::Resize {
+            view: 1,
+            width: 0,
+            height: 0,
+            raster_width: 0,
+            raster_height: 0,
+        })
+        .expect("sized");
+        host.turn();
+        assert_eq!(host.wait(), None, "a view of no size waits for a message");
+        host.handle(ToRenderer::Resize {
+            view: 1,
+            width: 40,
+            height: 30,
+            raster_width: 40,
+            raster_height: 30,
+        })
+        .expect("sized");
+        assert_eq!(host.wait(), Some(Duration::ZERO), "sized, its frame is due");
+        host.turn();
+        assert_eq!(host.views[&1].frame, 1, "and drawn");
     }
 
     #[test]
