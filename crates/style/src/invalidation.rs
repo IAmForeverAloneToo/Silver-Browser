@@ -115,6 +115,25 @@ pub struct SelectorFeatures {
     /// What the `:has()` in the sheets read and where they stand (D74),
     /// if any is there.
     has: Option<Box<HasFeatures>>,
+    /// The parent rules' lists `&` was walked into, during one `add`.
+    walked: Walked,
+}
+
+/// The lists of the nesting selector `&` walked into while one list's
+/// features are added, by address and the place they stood at: each
+/// once. Every selector of a nested rule holds its parent's list, whose
+/// every selector holds its own parent's, so that walking each anew
+/// walked a rule nested twenty deep in lists of four selectors four to
+/// the twentieth times (the nightly fuzzing's timeout, 2026-11-18).
+/// Emptied as each list's adding begins, while the lists it names
+/// live; no part of what the features are, so equal to any other.
+#[derive(Debug, Clone, Default)]
+struct Walked(HashSet<(usize, At)>);
+
+impl PartialEq for Walked {
+    fn eq(&self, _: &Walked) -> bool {
+        true
+    }
 }
 
 /// What the `:has()` pseudo-classes of a set of sheets depend on (D74):
@@ -153,7 +172,7 @@ struct HasAnchor {
 
 /// Where in a selector a simple selector stands, for the state
 /// pseudo-classes' invalidation and the anchors of `:has()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum At {
     Subject,
     Ancestor,
@@ -202,6 +221,7 @@ fn is_sibling(combinator: &Combinator) -> bool {
 impl SelectorFeatures {
     /// Adds what `list`'s selectors depend on.
     pub(crate) fn add(&mut self, list: &SelectorList) {
+        self.forget_walked();
         for selector in &list.0 {
             self.sibling_combinators |= selector.combinators.iter().any(is_sibling);
             for (compound, at) in selector.compounds.iter().zip(places(selector)) {
@@ -233,7 +253,17 @@ impl SelectorFeatures {
     /// element decides the scope of its subtree, a state's subject among
     /// them, as an ancestor's compound does.
     pub(crate) fn add_scope(&mut self, list: &SelectorList) {
+        self.forget_walked();
         self.add_nested(list, At::Ancestor);
+    }
+
+    /// Empties what `&` was walked into, this list's and its `:has()`
+    /// arguments' ([`Walked`]).
+    fn forget_walked(&mut self) {
+        self.walked.0.clear();
+        if let Some(has) = &mut self.has {
+            has.read.forget_walked();
+        }
     }
 
     /// Adds what `list`'s selectors depend on, the list standing at `at`
@@ -358,8 +388,17 @@ impl SelectorFeatures {
             PseudoClass::Not(list) | PseudoClass::Is(list) | PseudoClass::Where(list) => {
                 self.add_nested(list, at);
             }
-            // The parent rule's selectors stand where `&` does.
-            PseudoClass::Nesting(list) => self.add_nested(list, at),
+            // The parent rule's selectors stand where `&` does: each
+            // list once at each place ([`Walked`]).
+            PseudoClass::Nesting(list) => {
+                if self
+                    .walked
+                    .0
+                    .insert((std::sync::Arc::as_ptr(list) as usize, at))
+                {
+                    self.add_nested(list, at);
+                }
+            }
             // The host's own features, and for `:host-context()` its
             // ancestors', whose changes reach the host's flat subtree.
             PseudoClass::Host(compound) => {
@@ -1381,6 +1420,30 @@ mod tests {
             assert!(d.insert_before(root, div, Some(span)).is_err());
         });
         assert_eq!(styles.get(span).unwrap().display, Display::Block);
+    }
+
+    /// A rule nested deep in lists of several selectors has its parent
+    /// rules' lists walked once each, not once for each way down to them:
+    /// fourteen deep in lists of four took 4^14 walks, the nightly
+    /// fuzzing's timeout (a sheet of twenty, 2026-11-18). Still every
+    /// class of every level counts.
+    #[test]
+    fn a_rule_nested_deep_in_lists_has_its_features_gathered_at_once() {
+        let depth = 14;
+        let mut source = String::new();
+        for level in 0..depth {
+            source.push_str(&format!(".a{level}, .b{level}, h1, h2 {{ margin: 0; "));
+        }
+        let sheet = css::parse_stylesheet(&source).unwrap();
+        let began = std::time::Instant::now();
+        let sheets = Stylesheets::new(vec![sheet]);
+        let took = began.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+        let f = sheets.features();
+        for level in 0..depth {
+            assert!(f.classes.contains(&format!("a{level}")), "a{level}");
+            assert!(f.classes.contains(&format!("b{level}")), "b{level}");
+        }
     }
 
     #[test]
