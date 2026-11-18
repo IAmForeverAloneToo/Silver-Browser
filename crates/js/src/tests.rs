@@ -907,3 +907,94 @@ fn a_realm_its_heap_refuses_goes_cleanly() {
         assert!(made.is_err(), "a heap of {heap} bytes");
     }
 }
+
+/// G90 phase 1: two realms of one agent share its runtime: one job
+/// queue, one heap and one budget; each keeps its own global.
+mod agent_tests {
+    use super::*;
+
+    fn two(limits: Limits) -> (Box<dyn Realm<Recorder>>, Box<dyn Realm<Recorder>>) {
+        let agent = QuickJs.agent::<Recorder>(limits, None).expect("an agent");
+        let a = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window)
+            .expect("a realm");
+        let b = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window)
+            .expect("another");
+        (a, b)
+    }
+
+    fn number(realm: &mut Box<dyn Realm<Recorder>>, source: &str) -> Completion {
+        realm
+            .run(&script(source), &mut Recorder::default())
+            .expect("it runs")
+    }
+
+    #[test]
+    fn realms_of_an_agent_keep_their_own_globals() {
+        let (mut a, mut b) = two(Limits::default());
+        number(&mut a, "var mine = 'a'");
+        assert_eq!(
+            number(&mut b, "typeof mine"),
+            Completion::String("undefined".into())
+        );
+        assert_eq!(number(&mut a, "mine"), Completion::String("a".into()));
+    }
+
+    /// A promise of one realm's settles at the other's checkpoint: the
+    /// job queue is the agent's.
+    #[test]
+    fn realms_of_an_agent_share_its_job_queue() {
+        let (mut a, mut b) = two(Limits::default());
+        number(
+            &mut a,
+            "var done = 'no'; Promise.resolve().then(() => { done = 'yes' }); 0",
+        );
+        assert!(b.checkpoint(&mut Recorder::default()).is_empty());
+        assert_eq!(number(&mut a, "done"), Completion::String("yes".into()));
+    }
+
+    /// What one realm holds counts against the other's room: the heap
+    /// is the agent's.
+    #[test]
+    fn realms_of_an_agent_share_its_heap() {
+        let limits = Limits {
+            heap: 64 << 20,
+            ..Limits::default()
+        };
+        let (mut a, mut b) = two(limits);
+        let hold =
+            "var kept = []; for (var i = 0; i < 30; i++) kept.push('x'.repeat(1 << 20) + i); 1";
+        number(&mut a, hold);
+        let error = b
+            .run(&script(hold), &mut Recorder::default())
+            .expect_err("no room left");
+        assert_eq!(error.kind, ErrorKind::Heap, "{error:?}");
+        // An agent of its own has the room.
+        let mut alone = realm_with(limits);
+        assert!(alone.run(&script(hold), &mut Recorder::default()).is_ok());
+    }
+
+    /// The budget stops a run in either realm, and is the next run's
+    /// again whichever realm it is in.
+    #[test]
+    fn realms_of_an_agent_share_its_budget() {
+        let limits = Limits {
+            steps: 50,
+            ..Limits::default()
+        };
+        let (mut a, mut b) = two(limits);
+        let error = a
+            .run(&script("for (;;) {}"), &mut Recorder::default())
+            .expect_err("stopped");
+        assert_eq!(error.kind, ErrorKind::Budget, "{error:?}");
+        assert_eq!(
+            number(&mut b, "String(1 + 1)"),
+            Completion::String("2".into())
+        );
+        let error = b
+            .run(&script("for (;;) {}"), &mut Recorder::default())
+            .expect_err("stopped");
+        assert_eq!(error.kind, ErrorKind::Budget, "{error:?}");
+    }
+}

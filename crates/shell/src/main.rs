@@ -1533,6 +1533,10 @@ mod tests {
         // A WebAssembly memory's buffer read in place as a call enters
         // the store (twitch's player), reviewed: the js crate's fourth.
         const WASM: &str = "crates/js/src/quickjs/wasm.rs";
+        // A realm's context given QuickJS-ng's base64 intrinsic, which
+        // its runtime's second context lacked (G90), reviewed.
+        const CONTEXT: &str = "crates/js/src/quickjs/context.rs";
+        let mut context_blocks = 0;
         let mut stack_blocks = 0;
         let mut sampler_blocks = 0;
         let mut wasm_blocks = 0;
@@ -1563,7 +1567,8 @@ mod tests {
                         || name == AV1
                         || name == STACK
                         || name == SAMPLER
-                        || name == WASM,
+                        || name == WASM
+                        || name == CONTEXT,
                     "unsafe in {name} at line {}",
                     n + 1
                 );
@@ -1598,6 +1603,8 @@ mod tests {
                     sampler_blocks += 1;
                 } else if name == WASM {
                     wasm_blocks += 1;
+                } else if name == CONTEXT {
+                    context_blocks += 1;
                 } else {
                     blocks += 1;
                 }
@@ -1626,6 +1633,7 @@ mod tests {
         assert_eq!(stack_blocks, 3, "the stack module's reviewed blocks");
         assert_eq!(sampler_blocks, 2, "the sampler's reviewed blocks");
         assert_eq!(wasm_blocks, 1, "the WebAssembly memory's reviewed block");
+        assert_eq!(context_blocks, 1, "the realm's context's reviewed block");
         // The shell denies it but where the platform module allows it.
         let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
         assert!(shell.contains("\n#![deny(unsafe_code)]\n"));

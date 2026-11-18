@@ -444,7 +444,11 @@ as a call enters a WebAssembly store, a memory's `ArrayBuffer` is read
 in place (rquickjs's `as_bytes`), compared with the mirror kept of it
 and its runs that differ copied into the memory, with nothing that
 reaches QuickJS while the slice lives (no value made or freed, no call,
-no callback from `wasmi`). The shell's test
+no callback from `wasmi`). And `quickjs/context.rs`, one block: a
+realm's context, made with rquickjs's intrinsics, is given QuickJS-ng's
+base64 functions by the call `JS_NewContext` makes, on the fresh
+context before anything runs in it (G90: a runtime's later contexts
+had no `DOMException` from `JS_NewContext`). The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2). M40 adds the second exception, `media`'s

@@ -5,6 +5,7 @@
 
 mod bytecode;
 pub(crate) mod console;
+mod context;
 mod dom;
 mod intl;
 mod intl_dates;
@@ -60,8 +61,111 @@ impl ScriptEngine for QuickJs {
         limits: Limits,
         stop: Option<Arc<AtomicBool>>,
     ) -> Result<Box<dyn Realm<H>>, ScriptError> {
-        Ok(Box::new(QuickJsRealm::new(&kind, limits, stop)?))
+        let agent = Agent::new(limits, stop)?;
+        Ok(Box::new(QuickJsRealm::new(&kind, &agent)?))
     }
+}
+
+impl QuickJs {
+    /// A new agent (HTML section 8.1.2.1, G90): a runtime its realms
+    /// share, with one heap under `limits`, one job queue, one budget
+    /// and one interrupt check, which `stop` stops (as `realm_of`'s).
+    pub fn agent<H: ScriptingHost>(
+        &self,
+        limits: Limits,
+        stop: Option<Arc<AtomicBool>>,
+    ) -> Result<Agent<H>, ScriptError> {
+        Agent::new(limits, stop)
+    }
+
+    /// A new realm of `kind` in `agent`: a context of its runtime, its
+    /// own global, bindings and natives, sharing the agent's heap.
+    pub fn realm_in<H: ScriptingHost>(
+        &self,
+        agent: &Agent<H>,
+        kind: RealmKind,
+    ) -> Result<Box<dyn Realm<H>>, ScriptError> {
+        Ok(Box::new(QuickJsRealm::new(&kind, agent)?))
+    }
+}
+
+/// An agent (HTML section 8.1.2.1; `docs/design/same-origin-frames.md`,
+/// G90): the runtime that the realms of one agent cluster share, its
+/// heap limit, its budget, its interrupt check and its job queue. A
+/// realm made by [`ScriptEngine::realm_of`] is an agent's only one.
+pub struct Agent<H: ScriptingHost> {
+    core: Rc<AgentCore<H>>,
+}
+
+impl<H: ScriptingHost> Clone for Agent<H> {
+    fn clone(&self) -> Self {
+        Agent {
+            core: Rc::clone(&self.core),
+        }
+    }
+}
+
+/// An agent's state, which its realms hold: dropped, the runtime with
+/// it, when the last of them goes.
+struct AgentCore<H: ScriptingHost> {
+    limits: Limits,
+    /// Interrupt checks taken in the run under way, whether they ran
+    /// out, and the host's work not yet charged: one run at a time in
+    /// an agent, whichever realm it is in.
+    budget: dom::Budget,
+    /// The agent's death: its heap is all its realms'.
+    dead: Rc<Cell<Option<Death>>>,
+    /// What the runtime's hooks find of each realm, by its context.
+    realms: Realms<H>,
+    /// The scripts' sampler, when the tool is built and asked for.
+    #[cfg(feature = "js-sampler")]
+    sampler: Option<Rc<sampler::Sampler>>,
+    runtime: Runtime,
+}
+
+impl<H: ScriptingHost> Drop for AgentCore<H> {
+    fn drop(&mut self) {
+        self.runtime.set_host_promise_rejection_tracker(None);
+        self.runtime.set_promise_hook(None);
+    }
+}
+
+/// What the runtime's hooks (its rejection tracker, its promise hook,
+/// its module resolver and loader) find of a realm of the agent, by its
+/// context's address.
+pub(crate) struct Links<H: ScriptingHost> {
+    rejections: Rc<RefCell<Vec<Rejection>>>,
+    muted: Rc<Cell<bool>>,
+    modules: Rc<modules::State>,
+    host: Slot<H>,
+    entries: Entries,
+}
+
+impl<H: ScriptingHost> Clone for Links<H> {
+    fn clone(&self) -> Self {
+        Links {
+            rejections: Rc::clone(&self.rejections),
+            muted: Rc::clone(&self.muted),
+            modules: Rc::clone(&self.modules),
+            host: Rc::clone(&self.host),
+            entries: Rc::clone(&self.entries),
+        }
+    }
+}
+
+/// An agent's realms' links, by their contexts' addresses.
+type Realms<H> = Rc<RefCell<std::collections::HashMap<usize, Links<H>>>>;
+
+/// The address a context is known by in its agent.
+fn context_key(ctx: &Ctx<'_>) -> usize {
+    ctx.as_raw().as_ptr() as usize
+}
+
+/// The links of the realm whose context `ctx` is: cloned, so that the
+/// registry is not borrowed while they are used (a hook may run
+/// scripts, which may come back to a hook).
+fn links_of<H: ScriptingHost>(realms: &Realms<H>, ctx: &Ctx<'_>) -> Option<Links<H>> {
+    realms.borrow().get(&context_key(ctx)).cloned()
 }
 
 /// The share of the heap limit that a realm still holds, after a failed
@@ -100,7 +204,8 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// next one first puts the bootstrap's own state back.
     unwind: bool,
     host: Slot<H>,
-    /// Interrupt checks taken in this run, and whether they ran out.
+    /// The agent's interrupt checks taken in this run, and whether they
+    /// ran out.
     steps: Rc<Cell<u32>>,
     exhausted: Rc<Cell<bool>>,
     /// The host's work in this run not yet charged as a whole step.
@@ -112,52 +217,18 @@ struct QuickJsRealm<H: ScriptingHost> {
     modules: Rc<modules::State>,
     budget: dom::Budget,
     limits: Limits,
-    dead: Option<Death>,
-    /// The scripts' sampler, when the tool is built and asked for.
-    #[cfg(feature = "js-sampler")]
-    sampler: Option<Rc<sampler::Sampler>>,
+    /// The agent's death, which is its every realm's.
+    dead: Rc<Cell<Option<Death>>>,
+    /// Its context's address, by which the agent's hooks know it.
+    key: usize,
+    /// Before the agent, which holds the runtime: a context goes first.
     context: Context,
-    runtime: Runtime,
+    agent: Rc<AgentCore<H>>,
 }
 
-impl<H: ScriptingHost> QuickJsRealm<H> {
-    fn new(
-        kind: &RealmKind,
-        limits: Limits,
-        stop: Option<Arc<AtomicBool>>,
-    ) -> Result<QuickJsRealm<H>, ScriptError> {
-        let failed = |e: rquickjs::Error| ScriptError {
-            kind: ErrorKind::Heap,
-            message: format!("InternalError: {e}"),
-            url: String::new(),
-            line: 0,
-            column: 0,
-            stack: Vec::new(),
-        };
-        // No realm where a deep script would end the process: the thread
-        // must have the scripts' stack and the native work's under it,
-        // and say so (G253).
-        let needed = limits.stack.saturating_add(crate::NATIVE_STACK);
-        let left = crate::remaining_stack();
-        if left.is_none_or(|left| left < needed) {
-            let thread = std::thread::current();
-            return Err(ScriptError {
-                kind: ErrorKind::Stack,
-                message: format!(
-                    "No scripts run on the thread {:?}: it has {} bytes of stack left, and a realm needs {needed}",
-                    thread.name().unwrap_or("(unnamed)"),
-                    left.map_or_else(
-                        || "an unknown number of".to_owned(),
-                        |left| left.to_string()
-                    ),
-                ),
-                url: String::new(),
-                line: 0,
-                column: 0,
-                stack: Vec::new(),
-            });
-        }
-        let runtime = Runtime::new().map_err(failed)?;
+impl<H: ScriptingHost> Agent<H> {
+    fn new(limits: Limits, stop: Option<Arc<AtomicBool>>) -> Result<Agent<H>, ScriptError> {
+        let runtime = Runtime::new().map_err(made_none)?;
         runtime.set_memory_limit(limits.heap);
         runtime.set_max_stack_size(limits.stack);
         let steps = Rc::new(Cell::new(0u32));
@@ -184,62 +255,134 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             }
             out.get()
         })));
-        let rejections: Rc<RefCell<Vec<Rejection>>> = Rc::default();
-        let muted = Rc::new(Cell::new(false));
-        let (list, mute) = (rejections.clone(), muted.clone());
+        let realms: Realms<H> = Rc::default();
+        let tracked = realms.clone();
         runtime.set_host_promise_rejection_tracker(Some(Box::new(
             move |ctx: Ctx<'_>, promise: Value<'_>, reason: Value<'_>, handled: bool| {
+                let Some(links) = links_of(&tracked, &ctx) else {
+                    return;
+                };
                 if handled {
-                    list.borrow_mut().retain(|r| {
+                    links.rejections.borrow_mut().retain(|r| {
                         r.promise
                             .clone()
                             .restore(&ctx)
                             .map_or(true, |saved| saved != promise)
                     });
                 } else {
-                    let mut error = thrown(&ctx, reason, "", mute.get());
+                    let mut error = thrown(&ctx, reason, "", links.muted.get());
                     error.kind = ErrorKind::Rejection;
                     let promise = Persistent::save(&ctx, promise);
-                    list.borrow_mut().push(Rejection { promise, error });
+                    links
+                        .rejections
+                        .borrow_mut()
+                        .push(Rejection { promise, error });
                 }
             },
         )));
-        let context = Context::full(&runtime).map_err(failed)?;
-        let host: Slot<H> = Rc::default();
         let budget = dom::Budget {
-            steps: steps.clone(),
+            steps,
             work: Rc::default(),
-            exhausted: exhausted.clone(),
+            exhausted,
             limit: limits.steps,
         };
-        let work = budget.work.clone();
+        // The promises code a string compiled makes find their active
+        // script, each in its own realm's module state.
+        let hooked = realms.clone();
+        runtime.set_promise_hook(Some(Box::new(
+            move |ctx: Ctx<'_>, hook: PromiseHookType, _: Value<'_>, _: Value<'_>| {
+                if matches!(hook, PromiseHookType::Init)
+                    && let Some(links) = links_of(&hooked, &ctx)
+                {
+                    modules::promise_made(&ctx, &links.modules);
+                }
+            },
+        )));
+        // Module scripts (D61): the resolver and loader, each realm's
+        // state, host and entries found by its context.
+        runtime.set_loader(
+            modules::ModuleResolver {
+                realms: realms.clone(),
+                budget: budget.clone(),
+            },
+            modules::ModuleLoader {
+                realms: realms.clone(),
+                budget: budget.clone(),
+            },
+        );
+        Ok(Agent {
+            core: Rc::new(AgentCore {
+                limits,
+                budget,
+                dead: Rc::default(),
+                realms,
+                #[cfg(feature = "js-sampler")]
+                sampler,
+                runtime,
+            }),
+        })
+    }
+}
+
+/// The error of a runtime or context QuickJS could not make.
+fn made_none(e: rquickjs::Error) -> ScriptError {
+    ScriptError {
+        kind: ErrorKind::Heap,
+        message: format!("InternalError: {e}"),
+        url: String::new(),
+        line: 0,
+        column: 0,
+        stack: Vec::new(),
+    }
+}
+
+impl<H: ScriptingHost> QuickJsRealm<H> {
+    fn new(kind: &RealmKind, agent: &Agent<H>) -> Result<QuickJsRealm<H>, ScriptError> {
+        let core = Rc::clone(&agent.core);
+        let limits = core.limits;
+        // No realm where a deep script would end the process: the thread
+        // must have the scripts' stack and the native work's under it,
+        // and say so (G253).
+        let needed = limits.stack.saturating_add(crate::NATIVE_STACK);
+        let left = crate::remaining_stack();
+        if left.is_none_or(|left| left < needed) {
+            let thread = std::thread::current();
+            return Err(ScriptError {
+                kind: ErrorKind::Stack,
+                message: format!(
+                    "No scripts run on the thread {:?}: it has {} bytes of stack left, and a realm needs {needed}",
+                    thread.name().unwrap_or("(unnamed)"),
+                    left.map_or_else(
+                        || "an unknown number of".to_owned(),
+                        |left| left.to_string()
+                    ),
+                ),
+                url: String::new(),
+                line: 0,
+                column: 0,
+                stack: Vec::new(),
+            });
+        }
+        let context = context::new_context(&core.runtime).map_err(made_none)?;
+        let key = context.with(|ctx| context_key(&ctx));
+        let rejections: Rc<RefCell<Vec<Rejection>>> = Rc::default();
+        let muted = Rc::new(Cell::new(false));
+        let host: Slot<H> = Rc::default();
+        let budget = core.budget.clone();
         let entries: Entries = Rc::default();
         let guards: dom::Guards = Rc::default();
-        // Module scripts (D61): the realm's resolver and loader; CSS
-        // modules a window's only; and the promises code a string
-        // compiled makes, which find its active script.
+        // Module scripts (D61): CSS modules a window's only.
         let module_state: Rc<modules::State> = Rc::default();
         module_state
             .css
             .set(matches!(kind, RealmKind::Window | RealmKind::DevTools));
-        let made = module_state.clone();
-        runtime.set_promise_hook(Some(Box::new(
-            move |ctx: Ctx<'_>, hook: PromiseHookType, _: Value<'_>, _: Value<'_>| {
-                if matches!(hook, PromiseHookType::Init) {
-                    modules::promise_made(&ctx, &made);
-                }
-            },
-        )));
-        runtime.set_loader(
-            modules::ModuleResolver {
-                state: module_state.clone(),
+        core.realms.borrow_mut().insert(
+            key,
+            Links {
+                rejections: rejections.clone(),
+                muted: muted.clone(),
+                modules: module_state.clone(),
                 host: host.clone(),
-                budget: budget.clone(),
-            },
-            modules::ModuleLoader {
-                state: module_state.clone(),
-                host: host.clone(),
-                budget: budget.clone(),
                 entries: entries.clone(),
             },
         );
@@ -260,8 +403,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             })
             .map_err(|message| {
                 // A realm not made goes without its `Drop`: the natives a
-                // debug build guards go before its context, as there.
+                // debug build guards go before its context, as there, and
+                // the agent forgets it.
                 guards.borrow_mut().clear();
+                core.realms.borrow_mut().remove(&key);
                 ScriptError {
                     kind: ErrorKind::Exception,
                     message,
@@ -272,35 +417,35 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 }
             })?;
         *entries.borrow_mut() = Some(saved);
-        #[cfg(feature = "js-sampler")]
-        if let Some(sampler) = &sampler {
-            sampler.attach(&context);
-        }
         Ok(QuickJsRealm {
-            #[cfg(feature = "js-sampler")]
-            sampler,
             rejections,
             entries,
             guards,
             deferred: Vec::new(),
             unwind: false,
             host,
-            steps,
-            exhausted,
-            work,
+            steps: budget.steps.clone(),
+            exhausted: budget.exhausted.clone(),
+            work: budget.work.clone(),
             muted,
             modules: module_state,
             budget,
             limits,
-            dead: None,
+            dead: Rc::clone(&core.dead),
+            key,
             context,
-            runtime,
+            agent: core,
         })
     }
 
     /// Moves `host` in and renews the budget; after a run its budget
     /// stopped, the bootstrap's own state is put back first (M26).
     fn begin(&mut self, host: &mut H, muted: bool) {
+        // The sampler reads the stack through the context that runs.
+        #[cfg(feature = "js-sampler")]
+        if let Some(sampler) = &self.agent.sampler {
+            sampler.attach(&self.context);
+        }
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
         *self.host.borrow_mut() = Some(std::mem::take(host));
@@ -333,6 +478,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         if let Some(back) = self.host.borrow_mut().take() {
             *host = back;
         }
+        #[cfg(feature = "js-sampler")]
+        if let Some(sampler) = &self.agent.sampler {
+            sampler.detach();
+        }
         self.muted.set(false);
         if self.exhausted.get() {
             self.unwind = true;
@@ -343,8 +492,8 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     /// of those that threw.
     fn jobs(&mut self) -> Vec<ScriptError> {
         let mut errors = Vec::new();
-        while self.runtime.is_job_pending() && !self.exhausted.get() {
-            if let Err(job) = self.runtime.execute_pending_job() {
+        while self.agent.runtime.is_job_pending() && !self.exhausted.get() {
+            if let Err(job) = self.agent.runtime.execute_pending_job() {
                 let error = job.0.with(|ctx| {
                     let thrown = ctx.catch();
                     thrown_or_error(&ctx, thrown)
@@ -402,10 +551,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     /// Whether the heap, collected, is still nearly full: then the realm
     /// is dead.
     fn check_heap(&mut self) {
-        self.runtime.run_gc();
+        self.agent.runtime.run_gc();
         let (num, den) = DEAD_HEAP;
         if self.heap() > self.limits.heap / den * num {
-            self.dead = Some(Death::Heap);
+            self.dead.set(Some(Death::Heap));
         }
     }
 
@@ -418,7 +567,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             return error;
         }
         self.check_heap();
-        if self.dead.is_some() {
+        if self.dead.get().is_some() {
             error.kind = ErrorKind::Heap;
         }
         error
@@ -427,13 +576,9 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
 
 impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
-        // The sampler's pointer to the context goes before the context.
-        #[cfg(feature = "js-sampler")]
-        if let Some(sampler) = &self.sampler {
-            sampler.detach();
-        }
-        self.runtime.set_host_promise_rejection_tracker(None);
-        self.runtime.set_promise_hook(None);
+        // The agent forgets it; its hooks are the agent's, which goes
+        // with its last realm.
+        self.agent.realms.borrow_mut().remove(&self.key);
         self.rejections.borrow_mut().clear();
         self.modules.clear();
         *self.entries.borrow_mut() = None;
@@ -443,7 +588,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
 
 impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     fn run(&mut self, script: &Script<'_>, host: &mut H) -> Result<Completion, ScriptError> {
-        if let Some(death) = self.dead {
+        if let Some(death) = self.dead.get() {
             return Err(dead(death));
         }
         self.begin(host, script.muted);
@@ -496,7 +641,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         url: &str,
         source: &str,
     ) -> Result<Vec<ModuleRequest>, ScriptError> {
-        if let Some(death) = self.dead {
+        if let Some(death) = self.dead.get() {
             return Err(dead(death));
         }
         // A context of the realm's runtime with only the base objects and
@@ -506,7 +651,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         let scratch = Context::custom::<(
             rquickjs::context::intrinsic::Eval,
             rquickjs::context::intrinsic::RegExpCompiler,
-        )>(&self.runtime);
+        )>(&self.agent.runtime);
         let scratch = scratch.map_err(|e| ScriptError {
             kind: ErrorKind::Heap,
             message: format!("InternalError: {e}"),
@@ -515,6 +660,13 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             column: 0,
             stack: Vec::new(),
         })?;
+        // The scratch context is this realm's for the agent's resolver
+        // while it declares, which collects the scan's requests here.
+        let scratch_key = scratch.with(|ctx| context_key(&ctx));
+        let links = self.agent.realms.borrow().get(&self.key).cloned();
+        if let Some(links) = links {
+            self.agent.realms.borrow_mut().insert(scratch_key, links);
+        }
         self.modules.start_scan();
         let declared = scratch.with(|ctx| {
             Module::declare(ctx.clone(), url, source)
@@ -523,12 +675,13 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 .map_err(|caught| caught_error(&ctx, caught, url, false))
         });
         let found = self.modules.end_scan();
+        self.agent.realms.borrow_mut().remove(&scratch_key);
         drop(scratch);
         declared.map(|()| found)
     }
 
     fn run_module(&mut self, script: &ModuleScript<'_>, host: &mut H) -> Result<(), ScriptError> {
-        if let Some(death) = self.dead {
+        if let Some(death) = self.dead.get() {
             return Err(dead(death));
         }
         self.begin(host, false);
@@ -626,7 +779,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     }
 
     fn enter(&mut self, task: &Task, host: &mut H) -> Result<bool, ScriptError> {
-        if let Some(death) = self.dead {
+        if let Some(death) = self.dead.get() {
             return Err(dead(death));
         }
         let Some(entries) = self.entries.borrow().clone() else {
@@ -890,19 +1043,20 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
 
     #[cfg(feature = "js-sampler")]
     fn samples(&self) -> Vec<(String, u64)> {
-        self.sampler
+        self.agent
+            .sampler
             .as_ref()
             .map_or_else(Vec::new, |sampler| sampler.top())
     }
 
     fn checkpoint(&mut self, host: &mut H) -> Vec<ScriptError> {
-        if let Some(death) = self.dead {
+        if let Some(death) = self.dead.get() {
             return vec![dead(death)];
         }
         self.begin(host, false);
         let mut errors = std::mem::take(&mut self.deferred);
         errors.extend(self.jobs());
-        if !self.runtime.is_job_pending() {
+        if !self.agent.runtime.is_job_pending() {
             self.modules.jobs_ran();
         }
         self.end(host);
@@ -917,21 +1071,21 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     }
 
     fn heap(&self) -> usize {
-        usize::try_from(self.runtime.memory_usage().malloc_size).unwrap_or(usize::MAX)
+        usize::try_from(self.agent.runtime.memory_usage().malloc_size).unwrap_or(usize::MAX)
     }
 
     fn collect(&mut self) {
-        self.runtime.run_gc();
+        self.agent.runtime.run_gc();
     }
 
     fn sweep(&mut self, host: &mut H, collect: bool) {
-        let entries = match self.dead {
+        let entries = match self.dead.get() {
             None => self.entries.borrow().clone(),
             Some(_) => None,
         };
         let Some(entries) = entries else {
             if collect {
-                self.runtime.run_gc();
+                self.agent.runtime.run_gc();
             }
             return;
         };
@@ -951,7 +1105,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         if half(self, "sweepPrepare") || collect {
             // Out of the bootstrap's frames, what only the holds it let go
             // of kept is collected, and the trees nothing reaches.
-            self.runtime.run_gc();
+            self.agent.runtime.run_gc();
             half(self, "sweepFinish");
             // The finalization callbacks release what was collected.
             let errors = self.jobs();
@@ -961,7 +1115,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     }
 
     fn dead(&self) -> Option<Death> {
-        self.dead
+        self.dead.get()
     }
 }
 

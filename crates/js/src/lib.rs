@@ -46,7 +46,7 @@ pub use dom::{
     WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
-pub use quickjs::{QuickJs, set_windows_time_zone, warm_bindings};
+pub use quickjs::{Agent, QuickJs, set_windows_time_zone, warm_bindings};
 pub use stack::remaining_stack;
 
 /// The most heap a realm may hold, in bytes. An allocation past it

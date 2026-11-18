@@ -31,7 +31,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
 
 use rquickjs::function::Opt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
@@ -533,8 +532,8 @@ fn resolve<H: ScriptingHost>(
 
 /// The realm's resolver.
 pub(super) struct ModuleResolver<H: ScriptingHost> {
-    pub(super) state: Rc<State>,
-    pub(super) host: Slot<H>,
+    /// The agent's realms, each found by its context (G90).
+    pub(super) realms: super::Realms<H>,
     pub(super) budget: Budget,
 }
 
@@ -546,22 +545,25 @@ impl<H: ScriptingHost> Resolver for ModuleResolver<H> {
         name: &str,
         attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
+        let Some(links) = super::links_of(&self.realms, ctx) else {
+            return Err(Exception::throw_internal(ctx, "a module of no realm"));
+        };
         let kind = requested(attributes.as_ref())?;
-        if let Some(found) = self.state.scan.borrow_mut().as_mut() {
+        if let Some(found) = links.modules.scan.borrow_mut().as_mut() {
             found.push(ModuleRequest {
                 specifier: name.to_owned(),
                 kind: kind.ok(),
             });
             return Ok(SCAN_NAME.to_owned());
         }
-        if self.state.direct.borrow().as_deref() == Some(name) {
-            return Ok(self.state.direct.take().unwrap_or_default());
+        if links.modules.direct.borrow().as_deref() == Some(name) {
+            return Ok(links.modules.direct.take().unwrap_or_default());
         }
         // A JSON, CSS or text module the engine gave, imported by its
         // name (the realm's own `importWith`): no page's specifier holds
         // the mark, which a URL escapes.
         if name.contains(MARK)
-            && (self.state.store.borrow().contains_key(name) || self.state.declared(name))
+            && (links.modules.store.borrow().contains_key(name) || links.modules.declared(name))
         {
             return Ok(name.to_owned());
         }
@@ -569,20 +571,20 @@ impl<H: ScriptingHost> Resolver for ModuleResolver<H> {
         // an `import()`'s type error, found before its specifier; then a
         // type unknown, or CSS in a worker (HTML's "module type allowed").
         let kind = match kind {
-            Ok(kind) if kind != ModuleKind::Css || self.state.css.get() => kind,
+            Ok(kind) if kind != ModuleKind::Css || links.modules.css.get() => kind,
             Ok(kind) => return Err(not_a_type(ctx, kind.as_str())),
             Err(Refused::Type(kind)) => return Err(not_a_type(ctx, &kind)),
             Err(Refused::Key(key)) => {
                 let message = format!("Invalid attribute key \"{key}\".");
-                return Err(match self.state.fixed.get() {
+                return Err(match links.modules.fixed.get() {
                     true => Exception::throw_syntax(ctx, &message),
                     false => Exception::throw_type(ctx, &message),
                 });
             }
         };
-        let referrer = self.state.referrer(base);
-        self.state.asking.set(referrer.options);
-        let url = resolve(ctx, &self.host, &self.budget, &referrer.base, name)?;
+        let referrer = links.modules.referrer(base);
+        links.modules.asking.set(referrer.options);
+        let url = resolve(ctx, &links.host, &self.budget, &referrer.base, name)?;
         Ok(module_name(&url, kind))
     }
 }
@@ -594,10 +596,9 @@ fn not_a_type(ctx: &Ctx<'_>, kind: &str) -> rquickjs::Error {
 
 /// The realm's loader.
 pub(super) struct ModuleLoader<H: ScriptingHost> {
-    pub(super) state: Rc<State>,
-    pub(super) host: Slot<H>,
+    /// The agent's realms, each found by its context (G90).
+    pub(super) realms: super::Realms<H>,
     pub(super) budget: Budget,
-    pub(super) entries: Entries,
 }
 
 impl<H: ScriptingHost> Loader for ModuleLoader<H> {
@@ -607,15 +608,18 @@ impl<H: ScriptingHost> Loader for ModuleLoader<H> {
         name: &str,
         _: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
+        let Some(links) = super::links_of(&self.realms, ctx) else {
+            return Err(Exception::throw_internal(ctx, "a module of no realm"));
+        };
         if name == SCAN_NAME {
             return Module::declare(ctx.clone(), SCAN_NAME, "");
         }
-        let state = self.state.clone();
+        let state = links.modules.clone();
         if let Some((base, text)) = state.take(name) {
             let declared = declare_kept(
                 ctx,
                 &state,
-                (&self.host, &self.budget, &self.entries),
+                (&links.host, &self.budget, &links.entries),
                 name,
                 &base,
                 &text,
@@ -649,12 +653,12 @@ impl<H: ScriptingHost> Loader for ModuleLoader<H> {
             url: name.to_owned(),
             options,
         };
-        if let Err(error) = with_host(ctx, &self.host, |host| host.dom(call))? {
+        if let Err(error) = with_host(ctx, &links.host, |host| host.dom(call))? {
             return Err(throw(ctx, &error));
         }
         state.import_options.borrow_mut().insert(id, options);
         let stub = Module::declare(ctx.clone(), format!("{MARK}import:{id}"), STUB)?;
-        let entries = self.entries.clone();
+        let entries = links.entries.clone();
         let settle = Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, resolve: Function<'js>, reject: Function<'js>| {
