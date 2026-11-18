@@ -15,6 +15,8 @@ gpu = ["render/gpu", "dep:wgpu", "dep:pollster"]
 # site sweep (`styleFastPathMismatches`) and the first said on stderr.
 # Debug and fuzzing builds have it always, and panic. Off, compiled out.
 style-crosscheck = []
+# The scripts' sampler by URL (js's `js-sampler`): off, compiled out.
+js-sampler = ["js/js-sampler"]
 # The hooks' timing (G247, dom's `hook_timing`): off, compiled out;
 # the benchmarks print a table of them after each measurement.
 hook-timing = [

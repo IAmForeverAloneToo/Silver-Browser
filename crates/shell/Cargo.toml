@@ -18,6 +18,8 @@ single-process = []
 # The engine's check of a script's style flush against a whole cascade,
 # counted in the site sweep (G46); off, compiled out.
 style-crosscheck = ["engine/style-crosscheck"]
+# The scripts' sampler by URL, `SILVER_JS_SAMPLE=<period>`: a tool, off.
+js-sampler = ["engine/js-sampler"]
 
 [dependencies]
 engine.workspace = true

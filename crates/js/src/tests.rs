@@ -830,3 +830,66 @@ fn an_errors_stack_takes_any_value_as_the_reference_browsers_does() {
         Completion::String("undefined,true,object,undefined,5,true,null,mine,7".to_owned())
     );
 }
+
+/// The scripts' sampler (the `js-sampler` tool): on, a hot loop in `a.js`
+/// samples as `a.js`; a page that overrides what an error's stack reads
+/// sees nothing of it.
+#[cfg(feature = "js-sampler")]
+mod sampler_tests {
+    use super::*;
+    use crate::quickjs::sampler_for_tests as sampler;
+
+    fn sampled(source: &str) -> (Completion, Vec<(String, u64)>) {
+        sampler::force(Some(1));
+        let mut realm = realm();
+        sampler::force(None);
+        realm
+            .run(
+                &script(
+                    "function warm() { var x = 0; for (var i = 0; i < 1e5; i++) x += i; return x; }\
+                     warm();",
+                ),
+                &mut Recorder::default(),
+            )
+            .expect("the page's own runs");
+        let hot = Script {
+            url: "https://example.com/a.js",
+            ..script(source)
+        };
+        let done = realm.run(&hot, &mut Recorder::default()).expect("it runs");
+        (done, realm.samples())
+    }
+
+    const HOT_FN: &str = "function hot() { var x = 0; for (var i = 0; i < 3e6; i++) x = (x + i) % 1000003; return x; }";
+    const HOT: &str = "function hot() { var x = 0; for (var i = 0; i < 3e6; i++) x = (x + i) % 1000003; return x; }\
+                       String(hot());";
+
+    #[test]
+    fn a_hot_loop_samples_as_its_script() {
+        let (_, samples) = sampled(HOT);
+        let total: u64 = samples.iter().map(|(_, n)| n).sum();
+        let a: u64 = samples
+            .iter()
+            .filter(|(url, _)| url.ends_with("/a.js"))
+            .map(|(_, n)| n)
+            .sum();
+        assert!(total >= 10, "{samples:?}");
+        assert!(a * 10 >= total * 9, "{samples:?}");
+    }
+
+    #[test]
+    fn a_page_overriding_the_stack_sees_nothing_of_the_sampler() {
+        let watch = "var calls = 0;\
+                     Error.prepareStackTrace = function () { calls++; return ''; };\
+                     Error.stackTraceLimit = 50;\
+                     Object.defineProperty(Error.prototype, 'stack', { get: function () { calls++; }, configurable: true });\
+                     var RealError = Error; Error = function () { calls++; return new RealError(); };";
+        let (done, samples) = sampled(&format!("{watch}{HOT_FN} String(hot()) + ' ' + calls"));
+        assert!(!samples.is_empty());
+        let (plain, _) = sampled(HOT);
+        let Completion::String(plain) = plain else {
+            panic!("{plain:?}")
+        };
+        assert_eq!(done, Completion::String(format!("{plain} 0")));
+    }
+}

@@ -12,6 +12,16 @@ mod intl_names;
 mod intl_text;
 mod intl_zone;
 mod modules;
+#[cfg(feature = "js-sampler")]
+mod sampler;
+// The sampler is a tool, never in a release: a build with it has debug
+// assertions (a profiling run of an optimised build sets them, with
+// `--config profile.release.debug-assertions=true`).
+#[cfg(all(feature = "js-sampler", not(debug_assertions)))]
+compile_error!("js-sampler is a tool: build it with debug assertions");
+/// The sampler, to the crate's tests.
+#[cfg(all(test, feature = "js-sampler"))]
+pub(crate) use sampler::Sampler as sampler_for_tests;
 mod wasm;
 
 pub use bytecode::warm as warm_bindings;
@@ -100,6 +110,9 @@ struct QuickJsRealm<H: ScriptingHost> {
     budget: dom::Budget,
     limits: Limits,
     dead: Option<Death>,
+    /// The scripts' sampler, when the tool is built and asked for.
+    #[cfg(feature = "js-sampler")]
+    sampler: Option<Rc<sampler::Sampler>>,
     context: Context,
     runtime: Runtime,
 }
@@ -147,7 +160,16 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let steps = Rc::new(Cell::new(0u32));
         let exhausted = Rc::new(Cell::new(false));
         let (taken, out, budget) = (steps.clone(), exhausted.clone(), limits.steps);
+        #[cfg(feature = "js-sampler")]
+        let sampler = sampler::Sampler::from_env();
+        #[cfg(feature = "js-sampler")]
+        let sampling = sampler.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
+            // A sample, which says nothing of whether the run goes on.
+            #[cfg(feature = "js-sampler")]
+            if let Some(sampler) = &sampling {
+                sampler.tick();
+            }
             let n = taken.get().saturating_add(1);
             taken.set(n);
             if n > budget
@@ -241,7 +263,13 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 stack: Vec::new(),
             })?;
         *entries.borrow_mut() = Some(saved);
+        #[cfg(feature = "js-sampler")]
+        if let Some(sampler) = &sampler {
+            sampler.attach(&context);
+        }
         Ok(QuickJsRealm {
+            #[cfg(feature = "js-sampler")]
+            sampler,
             rejections,
             entries,
             deferred: Vec::new(),
@@ -387,6 +415,11 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
 
 impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
+        // The sampler's pointer to the context goes before the context.
+        #[cfg(feature = "js-sampler")]
+        if let Some(sampler) = &self.sampler {
+            sampler.detach();
+        }
         self.runtime.set_host_promise_rejection_tracker(None);
         self.runtime.set_promise_hook(None);
         self.rejections.borrow_mut().clear();
@@ -840,6 +873,13 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             other => other,
         };
         result.map_err(|error| self.failure(error))
+    }
+
+    #[cfg(feature = "js-sampler")]
+    fn samples(&self) -> Vec<(String, u64)> {
+        self.sampler
+            .as_ref()
+            .map_or_else(Vec::new, |sampler| sampler.top())
     }
 
     fn checkpoint(&mut self, host: &mut H) -> Vec<ScriptError> {

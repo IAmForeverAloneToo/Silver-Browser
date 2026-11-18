@@ -744,6 +744,12 @@ pub trait Realm<H: ScriptingHost> {
     /// Runs the promise jobs queued (HTML section 8.1.7.3), with a step
     /// budget of its own, and reports the rejections left unhandled.
     fn checkpoint(&mut self, host: &mut H) -> Vec<ScriptError>;
+    /// What the scripts' sampler found (the `js-sampler` tool), the
+    /// samples by the topmost script's URL, the most first; none when it
+    /// is not built or not asked for.
+    fn samples(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
     /// The heap in use, in bytes.
     fn heap(&self) -> usize;
     /// Collects the garbage now.
