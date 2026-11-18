@@ -2,7 +2,10 @@
 //! The acceptance module's Collatz steps for every number to 20,000,
 //! against the same function in a page's script; 10,000 calls across
 //! the bridge, then 100 with the module's memory seen by the script, its
-//! mirror copied at each; and a module of 1,000 functions compiled. Each
+//! mirror copied at each; 100 calls into a module of 32 MB of memory, a
+//! byte of it written before each, against none (what a call costs to
+//! bring a script's writes in: Twitch's player); and a module of 1,000
+//! functions compiled. Each
 //! a page, from `Engine::navigate` to its title, beside the same page
 //! doing nothing.
 //!
@@ -63,6 +66,27 @@ fn section(out: &mut Vec<u8>, id: u8, body: &[u8]) {
     out.extend_from_slice(body);
 }
 
+/// A module of `pages` pages of memory, exported as `memory`, and an
+/// `add` of two `i32`s.
+fn memory_module(pages: u32) -> Vec<u8> {
+    let mut out = b"\0asm\x01\0\0\0".to_vec();
+    section(&mut out, 1, &[1, 0x60, 2, 0x7f, 0x7f, 1, 0x7f]);
+    section(&mut out, 3, &[1, 0]);
+    let mut memory = vec![1, 0];
+    leb(&mut memory, pages);
+    section(&mut out, 5, &memory);
+    let mut exports = vec![2];
+    exports.push(6);
+    exports.extend_from_slice(b"memory");
+    exports.extend_from_slice(&[2, 0]);
+    exports.push(3);
+    exports.extend_from_slice(b"add");
+    exports.extend_from_slice(&[0, 0]);
+    section(&mut out, 7, &exports);
+    section(&mut out, 10, &[1, 7, 0, 0x20, 0, 0x20, 1, 0x6a, 0x0b]);
+    out
+}
+
 /// A module of `n` functions, each `(param i32) (result i32)` adding its
 /// index to its argument, each exported by its index.
 fn large_module(n: u32) -> Vec<u8> {
@@ -104,6 +128,13 @@ fn large_module(n: u32) -> Vec<u8> {
     out
 }
 
+/// The 32 MB module instantiated, then `work` with its exports `e`.
+fn big_memory(work: &str) -> String {
+    format!(
+        "fetch('/memory.wasm').then((r) => r.arrayBuffer()).then((b) =>          WebAssembly.instantiate(b)).then((made) => {{          const e = made.instance.exports; {work} document.title = 'done'; }});"
+    )
+}
+
 fn page(script: &str) -> String {
     format!("<!DOCTYPE html><title>WebAssembly</title><script>{script}</script>")
 }
@@ -141,6 +172,13 @@ fn server() -> TestServer {
                  for (let i = 0; i < 100; i++) s = e.add(s, seen[0] + 1);",
             ),
         ),
+        ("/big-memory.html", page(&big_memory(""))),
+        (
+            "/big-memory-calls.html",
+            page(&big_memory(
+                "const seen = new Uint8Array(e.memory.buffer); let s = 0;                  for (let i = 0; i < 100; i++) { seen[i * 4096] = i; s = e.add(s, 1); }",
+            )),
+        ),
         (
             "/compile.html",
             page(
@@ -158,6 +196,7 @@ fn server() -> TestServer {
         ),
     ];
     let large = large_module(FUNCTIONS);
+    let memory = memory_module(512);
     TestServer::plain(move |request| {
         let target = request.target.as_str();
         if let Some((_, body)) = pages.iter().find(|(path, _)| *path == target) {
@@ -166,6 +205,7 @@ fn server() -> TestServer {
         match target {
             "/numbers.wasm" => Reply::ok("application/wasm", NUMBERS),
             "/large.wasm" => Reply::ok("application/wasm", &large),
+            "/memory.wasm" => Reply::ok("application/wasm", &memory),
             _ => Reply::with_fields(404, &[], b""),
         }
     })
@@ -223,6 +263,11 @@ fn bench() {
         ("/collatz-script.html", "the same in the page's script"),
         ("/calls.html", "10,000 calls across the bridge"),
         ("/calls-memory.html", "100 calls with the memory seen"),
+        ("/big-memory.html", "a module of 32 MB of memory"),
+        (
+            "/big-memory-calls.html",
+            "the same, 100 calls, a byte written before each",
+        ),
         ("/fetch-only.html", "a module of 1,000 functions fetched"),
         ("/compile.html", "the same compiled"),
     ] {

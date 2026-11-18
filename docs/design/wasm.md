@@ -219,6 +219,14 @@ which `setFromBase64` writes in place. Measured: 1.9 ms a call with a
 decoding at 2.2 ms of a 3.3 ms call, now a decoder by table into the
 kept copy. A memory that grows, by the module or by `grow()`, even by
 nothing, has its buffer detached.
+*(2026-11-18)* Entering, the native reads each buffer in place, in one
+reviewed `unsafe` block (rquickjs's `as_bytes`, nothing reaching
+QuickJS while the slice lives), compares it with its copy in runs of
+4 KiB and writes only the runs that differ: no base64. Twitch's player
+worker, a 32 MB memory crossing a dozen times a second, went from a
+whole core to none; a call with a byte written in 32 MB, from 49.8 ms
+to 5.7 ms (the two compares, in and out). Sharing the bytes, G79,
+replaces it (the extensions design note).
 
 **Traps and limits (M29.3).** Nothing a module does ends the engine:
 

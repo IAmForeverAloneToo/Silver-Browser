@@ -1530,8 +1530,12 @@ mod tests {
         // the `js-sampler` feature alone (never shipped), reviewed: the js
         // crate's third module that allows `unsafe`.
         const SAMPLER: &str = "crates/js/src/quickjs/sampler.rs";
+        // A WebAssembly memory's buffer read in place as a call enters
+        // the store (twitch's player), reviewed: the js crate's fourth.
+        const WASM: &str = "crates/js/src/quickjs/wasm.rs";
         let mut stack_blocks = 0;
         let mut sampler_blocks = 0;
+        let mut wasm_blocks = 0;
         let mut blocks = 0;
         let mut bytecode_blocks = 0;
         let mut av1_blocks = 0;
@@ -1558,7 +1562,8 @@ mod tests {
                         || name == BYTECODE
                         || name == AV1
                         || name == STACK
-                        || name == SAMPLER,
+                        || name == SAMPLER
+                        || name == WASM,
                     "unsafe in {name} at line {}",
                     n + 1
                 );
@@ -1591,6 +1596,8 @@ mod tests {
                     stack_blocks += 1;
                 } else if name == SAMPLER {
                     sampler_blocks += 1;
+                } else if name == WASM {
+                    wasm_blocks += 1;
                 } else {
                     blocks += 1;
                 }
@@ -1618,6 +1625,7 @@ mod tests {
         assert_eq!(av1_blocks, AV1_BLOCKS, "the AV1 module's reviewed blocks");
         assert_eq!(stack_blocks, 3, "the stack module's reviewed blocks");
         assert_eq!(sampler_blocks, 2, "the sampler's reviewed blocks");
+        assert_eq!(wasm_blocks, 1, "the WebAssembly memory's reviewed block");
         // The shell denies it but where the platform module allows it.
         let shell = std::fs::read_to_string(root.join("crates/shell/src/main.rs")).unwrap();
         assert!(shell.contains("\n#![deny(unsafe_code)]\n"));

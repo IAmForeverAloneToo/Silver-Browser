@@ -716,23 +716,14 @@
   // buffer, a copy kept the same as the memory at the calls' edges.
   const mirrors = new $Map();
 
-  // The most bytes of a buffer that cross to the store or back at once,
-  // so that the realm holds a slice's base64 at a time rather than a
-  // memory's (the store's SYNC_SLICE).
-  const SYNC_SLICE = 1 << 16;
-
   // Before a call enters the store: what scripts wrote in the buffers,
-  // into the memories, a slice at a time.
+  // into the memories, the store reading each buffer where it is.
   function enter() {
     if (mirrors.size === 0) {
       return;
     }
     MapForEach(mirrors, (buffer, key) => {
-      const length = bufferLength(buffer);
-      for (let at = 0; at < length; at += SYNC_SLICE) {
-        const size = length - at < SYNC_SLICE ? length - at : SYNC_SLICE;
-        native.wasmSyncIn(key, at, ToBase64(new $Uint8Array(buffer, at, size)));
-      }
+      native.wasmSyncIn(key, buffer);
     });
   }
 

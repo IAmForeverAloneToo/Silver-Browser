@@ -18,9 +18,10 @@
 //! A memory's bytes are the store's, and a script's `buffer` of it a
 //! copy, its mirror: what scripts wrote in it goes into the memory when
 //! a call enters the store, and what modules wrote goes out into it,
-//! in runs of [`MIRROR_CHUNK`] bytes that differ, when a call leaves;
-//! either way at most [`SYNC_SLICE`] bytes cross at once, as base64 in
-//! the realm's heap.
+//! in runs of [`MIRROR_CHUNK`] bytes that differ, when a call leaves.
+//! Going in, the buffer's bytes are read in place, in the one `unsafe`
+//! block of this module ([`Wasm::sync_in`]); going out, at most
+//! [`SYNC_SLICE`] bytes cross at once, as base64 in the realm's heap.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -183,6 +184,9 @@ pub(super) struct Wasm {
     /// What the buffer a script has of a memory holds, by the memory's
     /// key: the memory as the last call into the store left it.
     mirrors: HashMap<u32, Vec<u8>>,
+    /// The runs of [`MIRROR_CHUNK`] bytes scripts' writes brought into
+    /// memories ([`Wasm::sync_in`]), for the tests.
+    synced_in: u64,
 }
 
 /// A call stopped at a script's function, and where its results go.
@@ -659,6 +663,7 @@ impl Wasm {
             tables: HashMap::new(),
             globals: HashMap::new(),
             mirrors: HashMap::new(),
+            synced_in: 0,
         }
     }
 
@@ -1091,24 +1096,56 @@ impl Wasm {
         ArrayBuffer::new(ctx.clone(), bytes)
     }
 
-    /// What a script wrote in a slice of a memory's buffer, into the
-    /// memory: the bytes at `at`, as base64 `text`, at most
-    /// [`SYNC_SLICE`] of them.
-    fn sync_in(&mut self, ctx: &Ctx<'_>, handle: f64, at: f64, text: &str) -> rquickjs::Result<()> {
+    /// What a script wrote in a memory's buffer, into the memory: each
+    /// run of [`MIRROR_CHUNK`] bytes of the buffer that differs from the
+    /// mirror, copied into it and the memory; the rest compared alone.
+    /// Nothing of a buffer detached, or of a memory grown since its buffer
+    /// was made: the next leaving's to report. Was every byte of the
+    /// buffer as base64 at each call into the store (Twitch's player's
+    /// worker: 32 MB, a dozen times a second).
+    #[allow(unsafe_code)]
+    fn sync_in(
+        &mut self,
+        ctx: &Ctx<'_>,
+        handle: f64,
+        buffer: &ArrayBuffer<'_>,
+    ) -> rquickjs::Result<()> {
         let memory = Wasm::kept(&self.memories, ctx, handle, "a memory")?;
+        let Some(mirror) = self.mirrors.get_mut(&(handle as u32)) else {
+            return Ok(());
+        };
         let data = memory.data_mut(&mut self.store);
-        let mut bytes = Vec::new();
-        // Into the memory and the copy kept of the buffer; a slice past a
-        // memory that grew is the next leaving's to report.
-        let at = at as usize;
-        if decode_into(text.as_bytes(), &mut bytes)
-            && let Some(mirror) = self.mirrors.get_mut(&(handle as u32))
-            && mirror.len() == data.len()
-            && let Some(end) = at.checked_add(bytes.len()).filter(|&end| end <= data.len())
-        {
-            data[at..end].copy_from_slice(&bytes);
-            mirror[at..end].copy_from_slice(&bytes);
+        if mirror.len() != data.len() {
+            return Ok(());
         }
+        let mut copied = 0;
+        {
+            // SAFETY: the slice is the buffer's bytes, which QuickJS-ng
+            // owns, valid while no JavaScript runs and nothing reaches
+            // QuickJS (a script could write the buffer, detach it or
+            // reallocate it; a collection could free it). Between taking
+            // it and its end with this block nothing does: no value is
+            // made or freed, no rquickjs function is called, and wasmi
+            // is only copied into (its memory's bytes, borrowed above; no
+            // limiter, no growth, nothing that calls back). The buffer is
+            // borrowed for the call, and kept alive by the caller's
+            // argument.
+            let bytes = unsafe { buffer.as_bytes() };
+            if let Some(bytes) = bytes.filter(|bytes| bytes.len() == mirror.len()) {
+                let runs = bytes
+                    .chunks(MIRROR_CHUNK)
+                    .zip(mirror.chunks_mut(MIRROR_CHUNK))
+                    .zip(data.chunks_mut(MIRROR_CHUNK));
+                for ((given, kept), into) in runs {
+                    if given != kept {
+                        kept.copy_from_slice(given);
+                        into.copy_from_slice(given);
+                        copied += 1;
+                    }
+                }
+            }
+        }
+        self.synced_in += copied;
         Ok(())
     }
 
@@ -1718,8 +1755,8 @@ fn install_objects<'js>(
         "wasmSyncIn",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, handle: f64, at: f64, text: String| -> rquickjs::Result<()> {
-                with(&shared, &ctx, |wasm| wasm.sync_in(&ctx, handle, at, &text))
+            move |ctx: Ctx<'js>, handle: f64, buffer: ArrayBuffer<'js>| -> rquickjs::Result<()> {
+                with(&shared, &ctx, |wasm| wasm.sync_in(&ctx, handle, &buffer))
             },
         )?,
     )?;
@@ -1925,6 +1962,46 @@ mod tests {
             assert!(matches!(*shared.state.borrow(), State::Dead));
             assert!(with(&shared, &ctx, |_| Ok(())).is_err());
         });
+    }
+
+    /// What scripts wrote in a memory's buffer goes in by the runs that
+    /// differ, not the whole memory: a run of calls each writing a byte
+    /// copies a run each, and one writing nothing copies none.
+    #[test]
+    fn a_buffer_goes_into_its_memory_by_the_runs_written() -> rquickjs::Result<()> {
+        let runtime = rquickjs::Runtime::new().expect("a runtime");
+        let context = rquickjs::Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let mut wasm = Wasm::new(budget());
+            // Four pages: 64 runs.
+            let made = wasm.memory_new(&ctx, 4.0, -1.0)?;
+            let handle: f64 = made.get(1)?;
+            let buffer = wasm.memory_buffer(&ctx, handle)?;
+            ctx.globals().set("buffer", buffer.clone())?;
+            let write = |ctx: &Ctx<'_>, at: u32, value: u8| -> rquickjs::Result<()> {
+                ctx.eval::<(), _>(format!("new Uint8Array(buffer)[{at}] = {value};"))
+            };
+            wasm.sync_in(&ctx, handle, &buffer)?;
+            assert_eq!(wasm.synced_in, 0, "nothing written");
+            write(&ctx, 5000, 7)?;
+            write(&ctx, 5001, 8)?;
+            write(&ctx, 200_000, 9)?;
+            wasm.sync_in(&ctx, handle, &buffer)?;
+            assert_eq!(wasm.synced_in, 2, "two runs written");
+            let memory = Wasm::kept(&wasm.memories, &ctx, handle, "a memory")?;
+            let data = memory.data(&wasm.store);
+            assert_eq!((data[5000], data[5001], data[200_000]), (7, 8, 9));
+            for call in 0..10u8 {
+                write(&ctx, 70_000, call + 1)?;
+                wasm.sync_in(&ctx, handle, &buffer)?;
+            }
+            assert_eq!(wasm.synced_in, 12, "a run a call");
+            wasm.sync_in(&ctx, handle, &buffer)?;
+            assert_eq!(wasm.synced_in, 12, "none for nothing written");
+            let memory = Wasm::kept(&wasm.memories, &ctx, handle, "a memory")?;
+            assert_eq!(memory.data(&wasm.store)[70_000], 10);
+            Ok(())
+        })
     }
 
     #[test]

@@ -439,7 +439,12 @@ is made. And `quickjs/sampler.rs`, two blocks, built with the
 debug assertions refuses it): within a runtime's interrupt check, on its
 own thread, `JS_GetScriptOrModuleName` reads the file name of each
 script frame on the stack, whose text is copied and freed; no error is
-made and nothing of the page's runs. The shell's test
+made and nothing of the page's runs. And `quickjs/wasm.rs`, one block:
+as a call enters a WebAssembly store, a memory's `ArrayBuffer` is read
+in place (rquickjs's `as_bytes`), compared with the mirror kept of it
+and its runs that differ copied into the memory, with nothing that
+reaches QuickJS while the slice lives (no value made or freed, no call,
+no callback from `wasmi`). The shell's test
 `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2). M40 adds the second exception, `media`'s
