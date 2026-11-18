@@ -154,10 +154,13 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
     // thousands (a wait that never waits).
     let most = field(field(&record, "loopTurns"), "most").as_f64();
     assert!(most.is_some_and(|most| most < 1000.0), "{record:?}");
-    // The share of a core its processes used left alone.
+    // The share of a core its processes used left alone: none on macOS,
+    // whose processes' CPU times the shell does not read.
     let cpu = field(&record, "idleCpu");
-    assert!(field(cpu, "renderers").as_f64().is_some(), "{record:?}");
-    assert!(field(cpu, "browser").as_f64().is_some(), "{record:?}");
+    if !(cfg!(target_os = "macos") && matches!(cpu, Json::Null)) {
+        assert!(field(cpu, "renderers").as_f64().is_some(), "{record:?}");
+        assert!(field(cpu, "browser").as_f64().is_some(), "{record:?}");
+    }
     // And the page's top once left alone, as the record lists.
     assert!(png(&out.join("silver-idle.png")));
     let shots = field(&record, "screenshots").write();
