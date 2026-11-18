@@ -381,6 +381,11 @@ pub struct FrameStats {
     pub total: Duration,
     /// Whether the frame took longer than its deadline allowed.
     pub overran: bool,
+    /// The scripts the frame ran before it was drawn (`frame_at`'s):
+    /// its animation frame callbacks, `matchMedia()` lists and events,
+    /// with the styles and layouts they flushed; apart from `total`.
+    /// Amazon's took 80% of its frames' time, which no stage named.
+    pub scripts: Duration,
 }
 /// The scrollbar track's width, in px, at the viewport's right edge.
 pub const SCROLLBAR_WIDTH: f32 = 12.0;
@@ -9241,7 +9246,9 @@ impl Engine {
         // The progress-based timelines, from the last frame's layout at
         // the scroll offsets now (Scroll-driven Animations 1 section 2.1).
         self.measure_timelines();
+        let scripts_began = Instant::now();
         self.update_the_rendering(width, height, time.now);
+        let scripts = scripts_began.elapsed();
         if self.animating() {
             let elapsed = self
                 .animation_clock
@@ -9259,6 +9266,7 @@ impl Engine {
         if self.first_relevance() {
             empty = self.draw(width, height, budget).is_empty();
         }
+        self.stats.scripts = scripts;
         // Laid out: the resize and intersection observers' turn (gap
         // batch A, D45), their callbacks' changes the next frame's; then
         // which `content-visibility: auto` elements are relevant to the
@@ -9452,6 +9460,7 @@ impl Engine {
                 raster: Duration::ZERO,
                 total,
                 overran: total > budget,
+                scripts: Duration::ZERO,
             };
             return self.backend.last_frame();
         }
@@ -9536,6 +9545,7 @@ impl Engine {
             raster,
             total,
             overran: total > budget,
+            scripts: Duration::ZERO,
         };
         self.backend.last_frame()
     }

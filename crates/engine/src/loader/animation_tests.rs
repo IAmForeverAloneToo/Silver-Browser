@@ -583,3 +583,25 @@ fn a_flush_after_a_transition_ended_sees_its_end_inherited() {
     }
     assert_eq!(lines(&mut tab), ["0px"]);
 }
+
+/// A frame's stats name the scripts it ran before it was drawn (its
+/// animation frame callbacks), apart from its stages: a frame whose
+/// callback works takes them, one with none does not.
+#[test]
+fn a_frames_stats_name_the_scripts_it_ran() {
+    let (mut tab, clock, _) = page(
+        "<p>a</p><script>\
+         requestAnimationFrame(function () {\
+           var s = 0; for (var i = 0; i < 2e6; i++) s += i % 7;\
+           console.log(s > 0);\
+         });\
+         </script>",
+    );
+    frame_at(&mut tab, &clock, 16);
+    assert_eq!(lines(&mut tab), ["true"]);
+    let busy = tab.engine.frame_stats();
+    assert!(busy.scripts >= Duration::from_millis(10), "{busy:?}");
+    frame_at(&mut tab, &clock, 32);
+    let idle = tab.engine.frame_stats();
+    assert!(idle.scripts * 4 < busy.scripts, "{idle:?} {busy:?}");
+}
