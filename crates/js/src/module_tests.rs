@@ -468,3 +468,20 @@ fn a_module_that_fails_to_parse_throws_one_error_object_each_time() {
     // The second asked the engine for nothing.
     assert_eq!(host.imports.len(), 1);
 }
+
+/// A script QuickJS-ng's parser leaves an error pending for, though it
+/// compiles (a regular expression after a `for`'s `)` in a parenthesized
+/// function, as in Google Maps' scripts): its `import()` is fetched, not
+/// failed with that error once its job runs.
+#[test]
+fn a_parse_that_leaves_an_error_pending_fails_no_import() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let source = "var r = (function (a) { for (let c = 0; c < a.length; c++) /^sy[0-9a-z]{0,4}$/.test(a[c]); \
+                  return 1; })(['sy1']); import('./later.js').catch((e) => console.log('failed ' + e)); r";
+    realm.run(&script(source), &mut host).expect("it runs");
+    assert!(realm.checkpoint(&mut host).is_empty());
+    assert_eq!(lines(&mut host), Vec::<String>::new());
+    assert_eq!(host.imports.len(), 1, "{:?}", host.imports);
+    assert!(host.imports[0].1.ends_with("/later.js"));
+}

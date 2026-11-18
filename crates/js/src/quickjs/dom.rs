@@ -1500,6 +1500,9 @@ fn guard_natives<'js>(
                 let Some(native) = native else {
                     return Err(Exception::throw_internal(&ctx, "the realm is gone"));
                 };
+                // One pending before the call is not this native's: the
+                // stale one QuickJS-ng's parser can leave ([`clear_stale`]).
+                super::clear_stale(&ctx);
                 let native = native.restore(&ctx)?;
                 let result = native.call::<_, Value<'js>>((This(this.0), Rest(args.0)));
                 if result.is_ok() && ctx.has_exception() {
