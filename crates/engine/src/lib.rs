@@ -9266,7 +9266,10 @@ impl Engine {
         if self.first_relevance() {
             empty = self.draw(width, height, budget).is_empty();
         }
-        self.stats.scripts = scripts;
+        // A frame that drew nothing (past the cap) took nothing.
+        if !empty {
+            self.stats.scripts = scripts;
+        }
         // Laid out: the resize and intersection observers' turn (gap
         // batch A, D45), their callbacks' changes the next frame's; then
         // which `content-visibility: auto` elements are relevant to the
