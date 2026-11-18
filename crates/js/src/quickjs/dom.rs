@@ -748,8 +748,11 @@ const NATIVES: &[(&str, Decode)] = &[
             referrer: a.string(10)?,
             referrer_policy: a.string(11)?,
             target_address_space: a.string(12)?,
-            integrity: a.string(13).unwrap_or_default(),
-            destination: a.string(14).unwrap_or_default(),
+            // Absent from an XHR's call and a script's fetch(): none.
+            // (A string's error, dropped, would leave its exception for
+            // whatever ran next to throw.)
+            integrity: a.maybe_string(13)?.unwrap_or_default(),
+            destination: a.maybe_string(14)?.unwrap_or_default(),
         })))
     }),
     ("fetchNow", |a| {
@@ -1738,5 +1741,77 @@ pub(super) fn throw(ctx: &Ctx<'_>, error: &DomError) -> rquickjs::Error {
         "TypeError" => Exception::throw_type(ctx, &error.message),
         "RangeError" => Exception::throw_range(ctx, &error.message),
         name => Exception::throw_dom(ctx, name, &error.message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rquickjs::{Array, Context, Runtime, Value};
+
+    use super::{Args, NATIVES};
+    use crate::Call;
+
+    /// `fetch`'s native given the arguments a script's `fetch()` gives
+    /// (no destination) and an XHR's `send()` gives (no integrity either):
+    /// decoded, and no exception left behind (one left pending surfaced
+    /// later in whatever ran next, as "not a string" on MDN and
+    /// Cloudflare's consent banner).
+    #[test]
+    fn a_fetch_without_its_last_arguments_leaves_no_exception() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let decode = NATIVES
+                .iter()
+                .find(|(name, _)| *name == "fetch")
+                .expect("the fetch native")
+                .1;
+            let text = |s: &str| {
+                rquickjs::String::from_str(ctx.clone(), s)
+                    .expect("a string")
+                    .into_value()
+            };
+            let mut values: Vec<Value<'_>> = vec![
+                Value::new_int(ctx.clone(), 7),
+                text("GET"),
+                text("https://example.com/"),
+                Array::new(ctx.clone()).expect("an array").into_value(),
+                Value::new_null(ctx.clone()),
+                text("cors"),
+                text("same-origin"),
+                text("follow"),
+                Value::new_bool(ctx.clone(), false),
+                text("default"),
+                text("about:client"),
+                text(""),
+                text(""),
+                text(""),
+            ];
+            for given in [14, 13] {
+                values.truncate(given);
+                let args = Args {
+                    ctx: &ctx,
+                    values: &values,
+                };
+                let Ok(Call::Fetch(call)) = decode(&args) else {
+                    panic!("{given} arguments: not decoded");
+                };
+                assert_eq!(
+                    (call.integrity.as_str(), call.destination.as_str()),
+                    ("", "")
+                );
+                assert!(!ctx.has_exception(), "{given} arguments: an exception left");
+            }
+            // A destination that is there but no string is refused, as ever.
+            values.push(text(""));
+            values.push(Value::new_int(ctx.clone(), 1));
+            let args = Args {
+                ctx: &ctx,
+                values: &values,
+            };
+            assert!(decode(&args).is_err());
+            assert!(ctx.has_exception());
+            let _ = ctx.catch();
+        });
     }
 }
