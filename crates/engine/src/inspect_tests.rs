@@ -909,7 +909,8 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
              <script>document.createElement('video').canPlayType('video/x-nothing');\
              onload = () => {\
                try { frames[0].document; } catch (e) {}\
-               document.querySelector('iframe').contentDocument;\
+               const child = document.querySelector('iframe').contentDocument;\
+               try { document.body.appendChild(child.querySelector('p')); } catch (e) {}\
                document.title = 'done';\
              };</script>",
         )),
@@ -948,8 +949,12 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
         "{answer:?}"
     );
     assert!(number("policyRefusals") >= Some(1), "{answer:?}");
-    assert_eq!(number("frameRefusedSameOrigin"), Some(1), "{answer:?}");
-    assert_eq!(number("frameDocumentSameOrigin"), Some(1), "{answer:?}");
+    // A frame of the page's origin is reached as itself (G90): nothing
+    // refused; its node given to the page's method is, until nodes move
+    // between documents.
+    assert_eq!(number("frameRefusedSameOrigin"), Some(0), "{answer:?}");
+    assert_eq!(number("frameDocumentSameOrigin"), Some(0), "{answer:?}");
+    assert_eq!(number("nodesAcrossDocuments"), Some(1), "{answer:?}");
     assert!(number("layouts") >= Some(1), "{answer:?}");
 }
 

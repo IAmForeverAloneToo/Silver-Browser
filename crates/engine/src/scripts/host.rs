@@ -311,6 +311,9 @@ pub(crate) struct DocumentHost {
     /// How many times the document was lent to a run: a rule list's
     /// `generation`, which a sheet arriving between runs changes.
     lends: u64,
+    /// How many calls of the bindings it answered, ever: whether a run of
+    /// another realm of its agent asked anything of it while lent (G90).
+    pub(crate) calls: u64,
     /// How many times a rule list read its sheet's rules: for the tests.
     pub(crate) rule_reads: u64,
     /// The time the check of those flushes against a whole cascade has
@@ -352,6 +355,9 @@ pub(crate) struct DocumentHost {
     /// The parser `document.open()` made (HTML section 8.4.2.1): what
     /// `write` gives it is parsed at once, `close` ends it.
     opened: Option<html::Parser>,
+    /// How many times `document.open()` opened the document, ever: once
+    /// closed, it loads again (its lifecycle's events anew).
+    pub(crate) reopened: u64,
     /// The document's readiness when `document.open()` made it loading.
     before_open: ReadyState,
     /// That parser is parsing, its scripts running; and what they wrote,
@@ -545,6 +551,7 @@ impl ScriptingHost for DocumentHost {
     fn dom(&mut self, call: Call) -> Result<Answer, DomError> {
         dom::hook!("engine::host::dom");
         self.work += 1;
+        self.calls += 1;
         // What changed before the call (the parser's) is a record a
         // change; the call's own changes are one operation, unless the
         // bindings began one of several calls.
@@ -2495,6 +2502,17 @@ impl DocumentHost {
                     }
                 }
                 Ok(Answer::Strings(out))
+            }
+            Call::NodeAcross(method) => {
+                self.sweep.nodes_across_documents += 1;
+                self.say(
+                    ConsoleLevel::Warn,
+                    format!(
+                        "{method}the node is of another frame's document, and nodes do not \
+                         move between the documents of frames yet."
+                    ),
+                );
+                Ok(Answer::Nothing)
             }
             Call::PlatformNewline => Ok(Answer::String(
                 if cfg!(windows) { "\r\n" } else { "\n" }.to_owned(),
@@ -4470,6 +4488,15 @@ impl DocumentHost {
     }
 
     /// Gives back what was lent, and what the run leaves the engine to do.
+    /// Whether what was lent changed, or the scripts asked anything of
+    /// it or said anything, since [`DocumentHost::lend`] and `calls`
+    /// then.
+    pub(crate) fn touched_since(&self, calls: u64) -> bool {
+        self.calls != calls
+            || self.document.version() != self.lent_version
+            || !self.outputs.console.is_empty()
+    }
+
     pub(crate) fn give_back(&mut self, lent: &mut Lent<'_>) -> Outputs {
         *lent.document = std::mem::take(&mut self.document);
         if let Some(page) = self.page.take() {
@@ -4635,6 +4662,7 @@ impl DocumentHost {
             self.taken_out(child);
         }
         self.opened = Some(html::Parser::new(true));
+        self.reopened += 1;
         self.before_open = self.ready;
         self.ready = ReadyState::Loading;
         erased

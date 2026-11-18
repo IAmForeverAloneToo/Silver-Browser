@@ -417,6 +417,10 @@ pub struct Engine {
     /// what a frame's element hears `load` for, though the document's own
     /// `load` listener navigate on at once.
     completed: Option<PageId>,
+    /// How many times a document `document.open()` opened was closed,
+    /// its load over again: each is told to a frame's element as a load
+    /// of `completed`'s document anew.
+    completions: u64,
     /// The waker the caller gave, kept to wake the caller while a parse
     /// has more to do (M24.8).
     waker: Option<loader::Waker>,
@@ -433,6 +437,9 @@ pub struct Engine {
     gpu: Option<Arc<gpu::GpuClient>>,
     /// What a document's realm may use, the defaults but in tests.
     script_limits: js::Limits,
+    /// The agents of the documents of this engine and its frames, by
+    /// origin (G90), which its child engines share.
+    agents: scripts::Agents,
     /// What the user should be told of a navigation that showed no page:
     /// a download not saved (M15).
     notice: Option<String>,
@@ -975,6 +982,7 @@ impl Shown {
     ) -> Option<bool> {
         let mut lent = scripts::Lent {
             document: &mut self.document,
+            frames: Some(&mut self.frames),
             images: None,
             animations: Some(self.animations.get_mut()),
             styled: Some(&mut self.styled),
@@ -999,6 +1007,7 @@ impl Shown {
     ) -> Option<bool> {
         let mut lent = scripts::Lent {
             document: &mut self.document,
+            frames: Some(&mut self.frames),
             images: None,
             animations: Some(self.animations.get_mut()),
             styled: Some(&mut self.styled),
@@ -1023,6 +1032,7 @@ impl Shown {
     ) {
         let mut lent = scripts::Lent {
             document: &mut self.document,
+            frames: Some(&mut self.frames),
             images: None,
             animations: Some(self.animations.get_mut()),
             styled: Some(&mut self.styled),
@@ -1047,6 +1057,7 @@ impl Shown {
     ) -> Option<String> {
         let mut lent = scripts::Lent {
             document: &mut self.document,
+            frames: Some(&mut self.frames),
             images: None,
             animations: Some(self.animations.get_mut()),
             styled: Some(&mut self.styled),
@@ -1759,12 +1770,14 @@ impl Engine {
             navigation: None,
             load_state: LoadState::Loaded,
             completed: None,
+            completions: 0,
             waker: None,
             compat_user_agent: true,
             scripting: false,
             preload_scanner: true,
             gpu: gpu::local_client(),
             script_limits: js::Limits::default(),
+            agents: scripts::Agents::default(),
             notice: None,
             next_page: 1,
             goal: None,
@@ -2215,7 +2228,7 @@ impl Engine {
             return;
         }
         let scheme = self.shown.page.url().map(Url::scheme);
-        match refusal(&url, scheme, self.shown.made) {
+        match refusal(&url, scheme, self.shown.made, self.frame.depth > 0) {
             Some(why) => self.notice = Some(why),
             None => {
                 let source = self.navigation_source(true);
@@ -2248,7 +2261,7 @@ impl Engine {
             return;
         }
         let scheme = self.shown.page.url().map(Url::scheme);
-        match refusal(&url, scheme, self.shown.made) {
+        match refusal(&url, scheme, self.shown.made, self.frame.depth > 0) {
             Some(why) => self.notice = Some(why),
             // A followed link navigates as a click on it does (M26), and
             // a submitted form, with its body (M26.9); a script's is no
@@ -2394,7 +2407,7 @@ impl Engine {
         // A link or form of the document on its way may name another
         // frame (M33.2), chosen as that document would.
         if navigation.link
-            && refusal(&url, Some(&source), false).is_none()
+            && refusal(&url, Some(&source), false, false).is_none()
             && let Some(Navigation {
                 incoming: Incoming::Parsing { page, .. },
                 ..
@@ -2425,7 +2438,7 @@ impl Engine {
                 }
             }
         }
-        match refusal(&url, Some(&source), false) {
+        match refusal(&url, Some(&source), false, false) {
             Some(why) => self.notice = Some(why),
             None => self.start_navigation_with(url, handling, navigation.post, Some(from)),
         }
@@ -2546,6 +2559,7 @@ impl Engine {
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
+            frames: Some(&mut shown.frames),
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
             styled: Some(&mut shown.styled),
@@ -2560,6 +2574,92 @@ impl Engine {
             .run(&mut lent, &script, scripts::How::default());
         self.scripts_ran();
         completion
+    }
+
+    /// Lends its document to its realm when that is of one of `agents`,
+    /// and its frames' at any depth whose realms are, but `except`'s and
+    /// those within it (G90): for a run of another realm of theirs to
+    /// reach. How many it lent.
+    pub(crate) fn lend_around(
+        &mut self,
+        except: Option<NodeId>,
+        agents: &[js::Agent<scripts::DocumentHost>],
+    ) -> usize {
+        if agents.is_empty() {
+            return 0;
+        }
+        let mut count: usize = self
+            .shown
+            .frames
+            .iter_mut()
+            .filter(|(node, frame)| Some(**node) != except && frame.remote.is_none())
+            .map(|(_, frame)| frame.engine.lend_around(None, agents))
+            .sum();
+        if self.of_agents(agents) {
+            let ready = self.ready_state();
+            let window = self.window_env();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                frames: None,
+                images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window,
+            };
+            count += usize::from(shown.scripts.lend_out(&mut lent));
+        }
+        count
+    }
+
+    /// Takes back what [`Engine::lend_around`] lent, and does what the
+    /// run did of its documents as their own runs' would be.
+    pub(crate) fn take_back_around(
+        &mut self,
+        except: Option<NodeId>,
+        agents: &[js::Agent<scripts::DocumentHost>],
+    ) {
+        if agents.is_empty() {
+            return;
+        }
+        // Its frames' first: what its own document's take-back does (a
+        // frame dropped, a script run) finds them its own again.
+        for (node, frame) in &mut self.shown.frames {
+            if Some(*node) != except && frame.remote.is_none() {
+                frame.engine.take_back_around(None, agents);
+            }
+        }
+        if self.of_agents(agents) && self.shown.scripts.is_lent() {
+            let ready = self.ready_state();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                frames: None,
+                images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window: scripts::WindowEnv::default(),
+            };
+            if shown.scripts.take_back(&mut lent) {
+                self.scripts_ran();
+            }
+        }
+    }
+
+    /// Whether its document's realm is of one of `agents`.
+    fn of_agents(&self, agents: &[js::Agent<scripts::DocumentHost>]) -> bool {
+        self.shown
+            .scripts
+            .agent()
+            .is_some_and(|own| agents.iter().any(|agent| agent.same(own)))
     }
 
     /// What the window reports to a run's scripts (M25.4).
@@ -2781,6 +2881,7 @@ impl Engine {
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
+            frames: Some(&mut shown.frames),
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
             styled: Some(&mut shown.styled),
@@ -2887,9 +2988,7 @@ impl Engine {
         // document hears the pointer.
         if let Some((node, fx, fy)) = self.pointer_frame(x, y) {
             self.pointer_at(x, y);
-            if let Some(child) = self.frame_engine(node) {
-                child.pointer_move(fx, fy);
-            }
+            self.with_frame(node, |child| child.pointer_move(fx, fy));
             return;
         }
         let target = self.pointer_at(x, y).or_else(|| self.held_outside(x, y));
@@ -2909,10 +3008,8 @@ impl Engine {
     /// The pointer left the page: nothing is hovered, and the elements it
     /// was over hear it leave.
     pub fn pointer_leave(&mut self) {
-        if let Some(node) = self.shown.pointer_frame.take()
-            && let Some(child) = self.frame_engine(node)
-        {
-            child.pointer_leave();
+        if let Some(node) = self.shown.pointer_frame.take() {
+            self.with_frame(node, Engine::pointer_leave);
         }
         let left = self.shown.hovered.clone();
         self.set_hovered(Vec::new());
@@ -2950,9 +3047,7 @@ impl Engine {
             if matches!(button, Button::Primary | Button::Secondary) {
                 self.focus_frame(node);
             }
-            if let Some(child) = self.frame_engine(node) {
-                child.pointer_down(fx, fy, button, count);
-            }
+            self.with_frame(node, |child| child.pointer_down(fx, fy, button, count));
             return;
         }
         let target = self.pointer_at(x, y);
@@ -3068,10 +3163,8 @@ impl Engine {
         }
         // A frame the focus leaves loses it (M33.2): its window hears
         // `blur`.
-        if let Some(old) = old
-            && let Some(child) = self.frame_engine(old)
-        {
-            child.set_window_focus(false);
+        if let Some(old) = old {
+            self.with_frame(old, |child| child.set_window_focus(false));
         }
         if let Some(old) = old {
             if self.popup_open() == Some(old) {
@@ -3117,10 +3210,8 @@ impl Engine {
         // A frame the focus enters gains it (M33.2): its window hears
         // `focus`, with the window's own.
         let focused = self.window_focused;
-        if self.shown.document.focused() == Some(area)
-            && let Some(child) = self.frame_engine(area)
-        {
-            child.set_window_focus(focused);
+        if self.shown.document.focused() == Some(area) {
+            self.with_frame(area, |child| child.set_window_focus(focused));
         }
         self.interest_changed();
     }
@@ -3169,8 +3260,8 @@ impl Engine {
         // here.
         if let Some(node) = self.focused_frame() {
             if self
-                .frame_engine(node)
-                .is_some_and(|child| child.focus_next(backward))
+                .with_frame(node, |child| child.focus_next(backward))
+                .unwrap_or(false)
             {
                 return true;
             }
@@ -3272,10 +3363,12 @@ impl Engine {
                 return false;
             };
             if self.shown.frames.contains_key(&next) {
-                let entered = self.frame_engine(next).is_some_and(|child| {
-                    child.focus(None, false, false);
-                    child.focus_next(backward)
-                });
+                let entered = self
+                    .with_frame(next, |child| {
+                        child.focus(None, false, false);
+                        child.focus_next(backward)
+                    })
+                    .unwrap_or(false);
                 if entered {
                     self.focus_frame(next);
                     return true;
@@ -3331,9 +3424,7 @@ impl Engine {
         self.close_popup();
         // With the focus in a frame (M33.2), its window hears it alone.
         if let Some(node) = self.focused_frame() {
-            if let Some(child) = self.frame_engine(node) {
-                child.set_window_focus(focused);
-            }
+            self.with_frame(node, |child| child.set_window_focus(focused));
             return;
         }
         let element = self.shown.document.focused();
@@ -3372,7 +3463,7 @@ impl Engine {
         // The frame focused takes it (M33.2); Tab past its last area goes
         // on here.
         if let Some(node) = self.focused_frame() {
-            let outcome = self.frame_engine(node).map(|child| child.key_down(key));
+            let outcome = self.with_frame(node, |child| child.key_down(key));
             match outcome {
                 Some(KeyOutcome::FocusLeft) => {
                     return if self.focus_after_frame(node, self.modifiers.shift) {
@@ -3752,9 +3843,8 @@ impl Engine {
     /// its press armed.
     pub fn key_up(&mut self, key: &Key) {
         if let Some(node) = self.focused_frame()
-            && let Some(child) = self.frame_engine(node)
+            && self.with_frame(node, |child| child.key_up(key)).is_some()
         {
-            child.key_up(key);
             return;
         }
         if let Some(target) = self.key_target() {
@@ -3844,9 +3934,7 @@ impl Engine {
             if self.buttons == 0 {
                 self.shown.pressed_frame = None;
             }
-            if let Some(child) = self.frame_engine(node) {
-                child.pointer_up(fx, fy, button, count);
-            }
+            self.with_frame(node, |child| child.pointer_up(fx, fy, button, count));
             return;
         }
         let target = self.pointer_at(x, y).or_else(|| self.held_outside(x, y));
@@ -4885,6 +4973,7 @@ impl Engine {
             let shown = &mut self.shown;
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
+                frames: Some(&mut shown.frames),
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
                 styled: Some(&mut shown.styled),
@@ -5183,6 +5272,7 @@ impl Engine {
             let shown = &mut self.shown;
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
+                frames: Some(&mut shown.frames),
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
                 styled: Some(&mut shown.styled),
@@ -5224,6 +5314,7 @@ impl Engine {
         } = &mut **parsing;
         let mut lent = scripts::Lent {
             document,
+            frames: None,
             images: None,
             animations: Some(animations),
             styled: None,
@@ -5506,6 +5597,7 @@ impl Engine {
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
+            frames: Some(&mut shown.frames),
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
             styled: Some(&mut shown.styled),
@@ -5548,6 +5640,7 @@ impl Engine {
         };
         let mut lent = scripts::Lent {
             document,
+            frames: None,
             images: None,
             animations: Some(animations),
             styled: None,
@@ -6878,6 +6971,7 @@ impl Engine {
                     } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
+                        frames: None,
                         images: None,
                         animations: Some(animations),
                         styled: None,
@@ -7030,6 +7124,9 @@ impl Engine {
         if page.is_panel() {
             scripts.make_panel();
         }
+        // Its realm, made as it parses, is its origin's agent's (G90).
+        let (agent, _) = self.agent_for(page.origin());
+        scripts.join_agent(agent, self.frame.id);
         scripts.use_router(frames::lock(&self.frame.tree).router());
         // Its id the one its navigation reserved (M39 step 6).
         if let Some(reserved) = self.network.take_reserved(id) {
@@ -7100,6 +7197,7 @@ impl Engine {
         } = &mut **parsing;
         let mut lent = scripts::Lent {
             document,
+            frames: None,
             images: None,
             animations: Some(animations),
             styled: None,
@@ -7193,6 +7291,7 @@ impl Engine {
                     } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
+                        frames: None,
                         images: None,
                         animations: Some(animations),
                         styled: None,
@@ -7216,6 +7315,7 @@ impl Engine {
                     } = &mut **parsing;
                     let mut lent = scripts::Lent {
                         document,
+                        frames: None,
                         images: None,
                         animations: Some(animations),
                         styled: None,
@@ -7246,6 +7346,7 @@ impl Engine {
                         } = &mut **parsing;
                         let mut lent = scripts::Lent {
                             document,
+                            frames: None,
                             images: None,
                             animations: Some(animations),
                             styled: None,
@@ -7294,6 +7395,7 @@ impl Engine {
         let scripting = self.scripting;
         let Shown {
             document,
+            frames,
             page,
             parsing: Some(parsing),
             scripts: queue,
@@ -7310,6 +7412,7 @@ impl Engine {
         preload_hints(&mut self.network, page, document, parsing, scripting);
         let mut lent = scripts::Lent {
             document,
+            frames: Some(frames),
             images: Some(images),
             animations: Some(animations.get_mut()),
             styled: Some(styled),
@@ -7373,6 +7476,7 @@ impl Engine {
                     && self.scripts_run()
                     && let Shown {
                         document,
+                        frames,
                         page,
                         parsing: Some(parsing),
                         scripts: queue,
@@ -7384,6 +7488,7 @@ impl Engine {
                 {
                     let mut lent = scripts::Lent {
                         document,
+                        frames: Some(frames),
                         images: Some(images),
                         animations: Some(animations.get_mut()),
                         styled: Some(styled),
@@ -7400,6 +7505,7 @@ impl Engine {
                 if matches!(stop, html::Stop::Construct | html::Stop::Reactions)
                     && let Shown {
                         document,
+                        frames,
                         page,
                         parsing: Some(parsing),
                         scripts: queue,
@@ -7411,6 +7517,7 @@ impl Engine {
                 {
                     let mut lent = scripts::Lent {
                         document,
+                        frames: Some(frames),
                         images: Some(images),
                         animations: Some(animations.get_mut()),
                         styled: Some(styled),
@@ -7453,6 +7560,7 @@ impl Engine {
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
+            frames: Some(&mut shown.frames),
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
             styled: Some(&mut shown.styled),
@@ -7474,6 +7582,13 @@ impl Engine {
     /// After the shown document's scripts ran: their changes are taken as
     /// any change is, and a realm that died says so.
     fn scripts_ran(&mut self) {
+        // A document `document.open()` opened and its `close()` ended
+        // loads again: its lifecycle's events anew, and a frame's element
+        // hears `load` (HTML's "the end").
+        if self.shown.scripts.take_reloaded() {
+            self.shown.lifecycle = Lifecycle::default();
+            self.completions += 1;
+        }
         // What the parser and the scripts inserted hides its nonces.
         self.shown.page.hide_nonces(&mut self.shown.document);
         // A `<style>` its policies refused hears `error` (M33.1), as a
@@ -7846,6 +7961,7 @@ impl Engine {
             let shown = &mut self.shown;
             let mut lent = scripts::Lent {
                 document: &mut shown.document,
+                frames: Some(&mut shown.frames),
                 images: Some(&mut shown.images),
                 animations: Some(shown.animations.get_mut()),
                 styled: Some(&mut shown.styled),
@@ -7865,7 +7981,51 @@ impl Engine {
     /// put in the current one's place, the document left kept or
     /// dropped; or in the entry reloaded or traversed to, at its saved
     /// scroll position.
-    fn commit(&mut self, shown: Shown, url: Option<Url>, handling: Handling) {
+    fn commit(&mut self, mut shown: Shown, url: Option<Url>, handling: Handling) {
+        // Its realm is made in its origin's agent (G90); a frame whose
+        // origin another document of the renderer has makes it now, which
+        // that document may reach at once.
+        if shown.scripts.agent().is_none() {
+            let (agent, _) = self.agent_for(shown.page.origin());
+            shown.scripts.join_agent(agent, self.frame.id);
+        }
+        // A frame whose agent has a realm already, another document's of
+        // its origin that may reach it, makes its own now, scripts of its
+        // own or none (a document always has its window).
+        let make_realm = self.frame.depth > 0
+            && self.scripting
+            && shown.scripts.agent().is_some_and(js::Agent::has_realms);
+        let secure = shown.page.is_secure_context();
+        // The document it replaces is no more its frame's; one back from
+        // the history is again (G90).
+        self.shown.scripts.leave_frame();
+        shown.scripts.return_to_frame();
+        self.commit_shown(shown, url, handling);
+        if make_realm {
+            self.shown.scripts.make_realm(secure);
+        }
+    }
+
+    /// The agent of `origin`'s documents in this renderer, made if there
+    /// is none, and whether there was one (G90).
+    fn agent_for(&mut self, origin: &net::Origin) -> (js::Agent<scripts::DocumentHost>, bool) {
+        let key = format!("{origin:?}");
+        let kept = self
+            .agents
+            .borrow()
+            .get(&key)
+            .and_then(js::WeakAgent::upgrade);
+        if let Some(agent) = kept {
+            return (agent, true);
+        }
+        let agent = js::QuickJs
+            .agent::<scripts::DocumentHost>(self.script_limits, None)
+            .expect("an agent's runtime");
+        self.agents.borrow_mut().insert(key, agent.downgrade());
+        (agent, false)
+    }
+
+    fn commit_shown(&mut self, shown: Shown, url: Option<Url>, handling: Handling) {
         // The inspector's nodes were the old document's (M36).
         self.selected = None;
         self.highlighted = None;
@@ -8247,6 +8407,7 @@ impl Engine {
                 let shown = &mut self.shown;
                 let mut lent = scripts::Lent {
                     document: &mut shown.document,
+                    frames: Some(&mut shown.frames),
                     images: Some(&mut shown.images),
                     animations: Some(shown.animations.get_mut()),
                     styled: Some(&mut shown.styled),
@@ -10191,9 +10352,7 @@ impl Engine {
         }
         self.close_popup();
         if let Some((node, fx, fy)) = self.frame_under(x, y) {
-            if let Some(child) = self.frame_engine(node) {
-                child.wheel_across_taken(fx, fy, dx, precise);
-            }
+            self.with_frame(node, |child| child.wheel_across_taken(fx, fy, dx, precise));
             return;
         }
         if let Some(target) = self.pointer_at(x, y) {
@@ -10430,8 +10589,8 @@ impl Engine {
         self.close_popup();
         if let Some((node, fx, fy)) = self.frame_under(x, y) {
             if self
-                .frame_engine(node)
-                .is_some_and(|child| child.wheel_taken(fx, fy, dy, precise))
+                .with_frame(node, |child| child.wheel_taken(fx, fy, dy, precise))
+                .unwrap_or(false)
             {
                 return true;
             }
@@ -10563,6 +10722,7 @@ impl Engine {
         let shown = &mut self.shown;
         let mut lent = scripts::Lent {
             document: &mut shown.document,
+            frames: Some(&mut shown.frames),
             images: Some(&mut shown.images),
             animations: Some(shown.animations.get_mut()),
             styled: Some(&mut shown.styled),
@@ -11243,9 +11403,12 @@ fn potential_indicated_element(document: &Document, fragment: &str) -> Option<No
 /// other `about:` pages from a page the browser `made`, `data:` from
 /// none, and no scheme another program would open; `None` when it may.
 /// `javascript:` is its caller's.
-fn refusal(url: &Url, source: Option<&str>, made: bool) -> Option<String> {
+fn refusal(url: &Url, source: Option<&str>, made: bool, framed: bool) -> Option<String> {
     match url.scheme() {
         "http" | "https" => None,
+        // A frame's document may be a data: one; the top's never, as the
+        // reference browser refuses a page's navigation of the top to one.
+        "data" if framed => None,
         "about" if url.path_str() == "blank" => None,
         "about" if made => None,
         "about" => Some("This page may not open the browser's own pages".to_owned()),

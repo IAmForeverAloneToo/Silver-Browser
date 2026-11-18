@@ -49,9 +49,10 @@ const FRAME_ATTACKS: [&str; 17] = [
     "x-frame-options",
 ];
 
-/// The frames' attacks that reach across frames: they fail with the
-/// defences gone too, every frame being of an origin of its own to
-/// every other until M34 (G90), and must succeed then once it closes.
+/// The frames' attacks that reach across frames: with the defences gone
+/// (the victim of the attacker's own origin, no sandbox) they succeed,
+/// frames of one origin reaching each other as HTML has them (G90);
+/// with them, the victim of another origin, they fail as the rest.
 const ACROSS_FRAMES: [&str; 9] = [
     "frame cookie",
     "frame document",
@@ -512,12 +513,21 @@ pub(crate) fn framing(make: Make) {
     let defended = attack(make, true, false, "a.localhost", "/frames.html", &[]);
     assert_eq!(defended.pwned, set(&[]), "{defended:?}");
     assert_eq!(defended.ran, set(&FRAME_ATTACKS), "{defended:?}");
-    let learned: Vec<&str> = FRAME_ATTACKS
-        .into_iter()
-        .filter(|attack| !ACROSS_FRAMES.contains(attack))
-        .collect();
-    let open = attack(make, false, false, "a.localhost", "/frames.html", &learned);
-    assert_eq!(open.pwned, set(&learned), "{open:?}");
+    let open = attack(
+        make,
+        false,
+        false,
+        "a.localhost",
+        "/frames.html",
+        &FRAME_ATTACKS,
+    );
+    assert_eq!(open.pwned, set(&FRAME_ATTACKS), "{open:?}");
+    assert!(
+        ACROSS_FRAMES
+            .iter()
+            .all(|attack| open.pwned.contains(*attack)),
+        "{open:?}"
+    );
     assert_eq!(open.ran, set(&FRAME_ATTACKS), "{open:?}");
     // A sandboxed frame's navigation of the top and its popup, each a
     // run of its own, since either leaves the page.

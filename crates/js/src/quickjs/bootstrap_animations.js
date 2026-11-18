@@ -16,7 +16,7 @@
     Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
     defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
     illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need, setStyleProperties,
-    str, wrap,
+    str, wrap, acrossDocuments,
   } = env;
 
   // ---- The store (D75) ------------------------------------------------------
@@ -1199,6 +1199,10 @@
   function targetHandle(value, method, iface) {
     if (value === null || value === undefined) return null;
     if (!isNode(value) || kindOf(value) !== 1) {
+      const across = acrossDocuments(value, where(method, iface));
+      if (across !== undefined) {
+        throw across;
+      }
       throw new $TypeError(where(method, iface) + "The provided value is not of type 'Element'.");
     }
     return handleOf(value);

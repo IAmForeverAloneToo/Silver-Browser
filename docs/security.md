@@ -91,10 +91,14 @@ operating system.
 - **Each frame is an engine of its own** (M33.2) with its own realm,
   heap (64 MiB, `MAX_FRAME_HEAP`), fetches and raster, drawn into its
   parent as a canvas is, reached only by messages through the tab's
-  frame tree. Every frame is cross-origin to every other, the same
-  origin included (G90, open after M34): no frame reads anything of
-  another that a frame of another origin could not. A frame of another
-  site is shown by its site's renderer (section 4.10).
+  frame tree. Frames of one origin in one renderer share an agent, one
+  QuickJS runtime with a realm each (G90, `docs/design/same-origin-
+  frames.md`), and reach each other as HTML has them; every frame of
+  another origin, another origin of the same site included, and every
+  sandboxed frame of an opaque origin, is reached only as a
+  cross-origin window. An agent never spans renderers, and a frame
+  gone to another renderer leaves its agent. A frame of another site
+  is shown by its site's renderer (section 4.10).
 - **Limits**: 100 frames in a tab (`MAX_FRAMES`), 16 deep
   (`MAX_FRAME_DEPTH`); a frame never loads a document an ancestor
   shows.
@@ -956,9 +960,12 @@ seconds (`PROMPT_TIMEOUT`).
 - **A console argument's preview may run a `Proxy`'s traps** (G160):
   the page's own code, under its own budget, never the browser's; no
   getter runs.
-- **Frames are cross-origin to each other** whatever their origins
-  (G90): the closed side, but same-origin pages that script their
-  frames do not work.
+- **Frames of one origin share a runtime** (G90): a heap limit and a
+  budget the agent's, its documents' hosts lent together for a run;
+  what one realm's script holds of another's (its functions, its
+  nodes) is that realm's. Nodes do not move between documents yet
+  (phase 5): a method given another document's node refuses it rather
+  than take its handle for one of its own.
 - **The HSTS preload list is a copy** of the reference browser's as of
   2026-10-13 (`crates/net/data/hsts_preload.txt`, made by
   `crates/net/examples/hsts_preload.rs` from its

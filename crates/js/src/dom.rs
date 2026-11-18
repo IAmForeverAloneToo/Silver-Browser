@@ -760,6 +760,10 @@ pub enum Call {
     },
     /// The platform's line ending, for a Blob's `native` endings.
     PlatformNewline,
+    /// A method, by its errors' prefix, was given a node of another
+    /// document of the agent, refused until nodes move between documents
+    /// (G90 phase 5): said on the console, and counted for the sweep.
+    NodeAcross(String),
     /// `document.cookie` (HTML 3.1.4, M27.4): the cookies a script may
     /// read for the document's URL, the empty string for a document
     /// whose URL is not `http:` or `https:`.

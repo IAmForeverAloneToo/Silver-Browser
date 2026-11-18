@@ -977,6 +977,7 @@ const NATIVES: &[(&str, Decode)] = &[
         })
     }),
     ("platformNewline", |_| Ok(Call::PlatformNewline)),
+    ("nodeAcross", |a| Ok(Call::NodeAcross(a.string(0)?))),
     ("cookie", |_| Ok(Call::Cookie)),
     ("setCookie", |a| Ok(Call::SetCookie(a.string(0)?))),
     ("documentDomain", |_| Ok(Call::DocumentDomain)),
@@ -1325,7 +1326,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     secure: bool,
     (host, budget): (&Slot<H>, &Budget),
     (entries, guards): (&Entries, &Guards),
-    (state, realms): (&Rc<modules::State>, &super::Realms<H>),
+    (state, realms, entry): (&Rc<modules::State>, &super::Realms<H>, &super::Entry),
     console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
@@ -1417,6 +1418,48 @@ pub(super) fn install<'js, H: ScriptingHost>(
                 }
                 Ok(super::frame_global(&agent, &ctx, frame as u32)?
                     .map_or_else(|| Value::new_null(ctx.clone()), Object::into_value))
+            },
+        )?,
+    )?;
+    // The frame of the realm whose run is under way, -1 for none named
+    // (G90): a window's `postMessage` called from another realm of the
+    // agent is that realm's post, HTML's incumbent's.
+    let entered = Rc::clone(entry);
+    natives.set(
+        "entryFrame",
+        Function::new(ctx.clone(), move || -> f64 {
+            entered.get().map_or(-1.0, f64::from)
+        })?,
+    )?;
+    // Whether a value is a node of another realm of the agent (G90).
+    let others = realms.clone();
+    natives.set(
+        "nodeOfAgent",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<bool> {
+                super::node_of_other_realm(&others, &ctx, &value)
+            },
+        )?,
+    )?;
+    // Posts `args`, a `postMessage` call's arguments, to frame `frame` as
+    // the realm whose run is under way posts to a frame: its window the
+    // source, its objects serialized and transferred by it.
+    let (entered, agent) = (Rc::clone(entry), realms.clone());
+    natives.set(
+        "postAsEntry",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, frame: f64, args: Value<'js>| -> rquickjs::Result<()> {
+                let Some(entry) = entered.get() else {
+                    return Ok(());
+                };
+                let Some(entries) = super::frame_entries(&agent, &ctx, entry)? else {
+                    return Ok(());
+                };
+                let post: Function<'js> = entries.get("postToFrame")?;
+                post.call::<_, Value<'js>>((frame, args))?;
+                Ok(())
             },
         )?,
     )?;

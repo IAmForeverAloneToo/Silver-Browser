@@ -263,7 +263,7 @@ impl crate::Engine {
             return;
         }
         let scheme = self.shown.page.url().map(Url::scheme);
-        match crate::refusal(&url, scheme, self.shown.made) {
+        match crate::refusal(&url, scheme, self.shown.made, self.frame.depth > 0) {
             Some(why) => self.notice = Some(why),
             // Its policies' `form-action` decides, before and at each
             // redirect (M33.1).

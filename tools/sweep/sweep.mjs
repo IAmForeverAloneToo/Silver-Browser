@@ -533,6 +533,7 @@ export function topCauses(rows) {
     hit("script stopped: too long", "counter", row.id, counts.budgetStops || 0);
     hit("G90: same-origin frame refused", "counter", row.id, counts.frameRefusedSameOrigin || 0);
     hit("G90: same-origin contentDocument null", "counter", row.id, counts.frameDocumentSameOrigin || 0);
+    hit("G90: a node of another frame's document refused (phase 5)", "counter", row.id, counts.nodesAcrossDocuments || 0);
     hit("policy: CSP refusal", "counter", row.id, counts.policyRefusals || 0);
     hit("style fast path: mismatch", "counter", row.id, counts.styleFastPathMismatches || 0);
     const net = s.network || {};

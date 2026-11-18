@@ -46,7 +46,7 @@ pub use dom::{
     WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
-pub use quickjs::{Agent, QuickJs, set_windows_time_zone, warm_bindings};
+pub use quickjs::{Agent, QuickJs, WeakAgent, set_windows_time_zone, warm_bindings};
 pub use stack::remaining_stack;
 
 /// The most heap a realm may hold, in bytes. An allocation past it
@@ -761,9 +761,14 @@ pub trait Realm<H: ScriptingHost> {
     fn reclaim(&mut self) -> Option<H> {
         None
     }
+    /// Whether a host is lent to it ([`Realm::lend`]).
+    fn is_lent(&self) -> bool {
+        false
+    }
     /// Names the frame the realm's document is of, by its number in the
-    /// tab, by which the other realms of its agent find it (G90 phase 2).
-    fn name_frame(&mut self, frame: u32) {
+    /// tab, by which the other realms of its agent find it (G90 phase 2);
+    /// `None` once it is not the frame's document.
+    fn name_frame(&mut self, frame: Option<u32>) {
         let _ = frame;
     }
     /// The heap in use, in bytes.

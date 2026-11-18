@@ -47,6 +47,7 @@
   const ReflectDeleteProperty = Reflect.deleteProperty;
   const ReflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
   const ReflectGetPrototypeOf = Reflect.getPrototypeOf;
+  const ReflectSetPrototypeOf = Reflect.setPrototypeOf;
   const ArraySplice = uncurry(Array.prototype.splice);
   const ArrayShift = uncurry(Array.prototype.shift);
   const StringIndexOf = uncurry(String.prototype.indexOf);
@@ -8334,9 +8335,27 @@
     return handleOf(node);
   }
 
+  // A node of another document of this window's agent given where this
+  // one's must be (G90): refused, said and counted, until nodes move
+  // between documents (phase 5); undefined for any other value.
+  function acrossDocuments(value, where) {
+    if (typeof value !== "object" || value === null || !native.nodeOfAgent(value)) {
+      return undefined;
+    }
+    native.nodeAcross(where);
+    return new $DOMException(
+      where + "The node is of another frame's document, which this one cannot take yet.",
+      "NotSupportedError",
+    );
+  }
+
   // An argument that must be a Node, as its handle.
   function nodeArgument(value, position, method, iface) {
     if (!isNode(value)) {
+      const across = acrossDocuments(value, prefix(method, iface));
+      if (across !== undefined) {
+        throw across;
+      }
       throw new $TypeError(
         prefix(method, iface) + "parameter " + position + " is not of type 'Node'.",
       );
@@ -21425,6 +21444,10 @@
     getComputedStyle(element, pseudoElement) {
       need(arguments.length, 1, "getComputedStyle", "Window");
       if (!isNode(element) || kindOf(element) !== 1) {
+        const across = acrossDocuments(element, prefix("getComputedStyle", "Window"));
+        if (across !== undefined) {
+          throw across;
+        }
         throw new $TypeError(
           prefix("getComputedStyle", "Window") + "parameter 1 is not of type 'Element'.",
         );
@@ -21471,16 +21494,20 @@
     if (id === selfFrame()) {
       return global;
     }
-    // A frame of this window's agent: its own window (G90 phase 2).
+    // The window handed out for the frame before, when it had none of
+    // this window's agent then: it reaches the frame's own window when
+    // that is of the agent, as HTML's WindowProxy does (G90 phase 2).
+    let window = MapGet(frameWindows, id);
+    if (window !== undefined) {
+      return window;
+    }
+    // A frame of this window's agent: its own window.
     const own = native.frameWindow(id);
     if (own !== null) {
       return own;
     }
-    let window = MapGet(frameWindows, id);
-    if (window === undefined) {
-      window = frameWindow(id);
-      MapSet(frameWindows, id, window);
-    }
+    window = frameWindow(id);
+    MapSet(frameWindows, id, window);
     return window;
   }
 
@@ -21654,11 +21681,21 @@
       }
       throw refused(id, "read", prop, "Window");
     };
+    // The frame's own window, when it is of this window's agent now.
+    const same = () => native.frameWindow(id);
     window = new $Proxy(ObjectCreate(null), {
       get(_, prop) {
+        const own = same();
+        if (own !== null) {
+          return ReflectGet(own, prop, own);
+        }
         return read(prop);
       },
       set(_, prop, value) {
+        const own = same();
+        if (own !== null) {
+          return ReflectSet(own, prop, value, own);
+        }
         if (prop === "location") {
           navigateFrame(id, value, false);
           return true;
@@ -21666,12 +21703,26 @@
         throw refused(id, "set", prop, "Window");
       },
       has(_, prop) {
+        const own = same();
+        if (own !== null) {
+          return ReflectHas(own, prop);
+        }
         if (typeof prop === "string" && includesString(FRAME_WINDOW_KEYS, prop)) {
           return true;
         }
         return read(prop) !== undefined;
       },
       getOwnPropertyDescriptor(_, prop) {
+        const own = same();
+        if (own !== null) {
+          // Configurable, as a WindowProxy reports each: the target is
+          // not the window's.
+          const descriptor = ReflectGetOwnPropertyDescriptor(own, prop);
+          if (descriptor !== undefined) {
+            descriptor.configurable = true;
+          }
+          return descriptor;
+        }
         if (prop === "location") {
           return {
             get: function () {
@@ -21687,6 +21738,10 @@
         return { value: read(prop), writable: false, enumerable: false, configurable: true };
       },
       ownKeys() {
+        const own = same();
+        if (own !== null) {
+          return ReflectOwnKeys(own);
+        }
         const keys = [];
         const length = native.frameLength(id);
         for (let i = 0; i < length; i++) {
@@ -21698,17 +21753,27 @@
         ArrayPush(keys, toStringTag, hasInstanceSymbol, concatSpreadableSymbol);
         return keys;
       },
-      defineProperty(_, prop) {
+      defineProperty(_, prop, descriptor) {
+        const own = same();
+        if (own !== null && descriptor.configurable !== false) {
+          return ReflectDefineProperty(own, prop, descriptor);
+        }
         throw refused(id, "set", prop, "Window");
       },
       deleteProperty(_, prop) {
+        const own = same();
+        if (own !== null) {
+          return ReflectDeleteProperty(own, prop);
+        }
         throw refused(id, "set", prop, "Window");
       },
       getPrototypeOf() {
-        return null;
+        const own = same();
+        return own !== null ? ReflectGetPrototypeOf(own) : null;
       },
       setPrototypeOf(_, prototype) {
-        return prototype === null;
+        const own = same();
+        return own !== null ? ReflectSetPrototypeOf(own, prototype) : prototype === null;
       },
       preventExtensions() {
         return false;
@@ -29788,6 +29853,15 @@
   // message dropped when it is not.
   defineProperty(Window.prototype, "postMessage", {
     value: function postMessage(message) {
+      // Called from another window of the agent (G90): that window's
+      // post to this one's frame, as from another frame, its objects
+      // serialized and transferred in its realm.
+      const entry = native.entryFrame();
+      const self = selfFrame();
+      if (entry >= 0 && self >= 0 && entry !== self) {
+        native.postAsEntry(self, ArraySlice(arguments, 0));
+        return;
+      }
       const posted = postArguments(arguments, "postMessage", "Window");
       native.postMessage(posted[0], posted[1]);
     },
@@ -33510,7 +33584,7 @@
       Register, StringIndexOf, StringSlice, StringTrim, ToLowerCase, ToUpperCase, defineHandlers,
       defineProperty, dispatching, documentElement, eventArgs, eventState, expose, handleOf,
       illegalConstructor, isNode, iteratorSymbol, kindOf, members, native, need,
-      setStyleProperties, str, wrap,
+      setStyleProperties, str, wrap, acrossDocuments,
     }),
     gpu: () => ({
       $ArrayBuffer, $DOMException, $DataView, $Map, $MapForEach, $Number, $NumberIsFinite, $Promise,
@@ -33636,6 +33710,12 @@
     },
     frames: runFrames,
     frameList,
+    // A `postMessage` of a window of another realm of the agent, called
+    // from this realm's run (G90): this window's post to its frame.
+    postToFrame(id, args) {
+      const posted = postArguments(args, "postMessage", "Window");
+      native.framePost(id, posted[0], posted[1]);
+    },
     guardCode,
     devtools: devtoolsMessage,
     idb: () => chunkInstall("idb").idbTask(),

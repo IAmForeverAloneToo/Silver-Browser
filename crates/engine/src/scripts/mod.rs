@@ -177,6 +177,7 @@ pub enum ScriptState {
     Stopped { errors: usize },
 }
 
+use host::Outputs;
 pub(crate) use host::{DocumentHost, ScriptScroll, fonts_key, notices_json};
 pub(crate) use layout_observers::{Measured, meet};
 pub(crate) use range_rects::{Slot, advance, drawn_chars, match_data, match_text, text_fragments};
@@ -357,6 +358,10 @@ impl ReadyState {
 /// fetch, where its loading stands, and what the window reports.
 pub(crate) struct Lent<'a> {
     pub(crate) document: &'a mut Document,
+    /// The document's frames (G90): those of its realm's agent are lent
+    /// to their realms while it runs, for its scripts to reach as
+    /// themselves. `None` while it has none it could reach.
+    pub(crate) frames: Option<&'a mut HashMap<NodeId, crate::frames::Frame>>,
     /// The shown document's images, for the layout scripts ask of (D65).
     pub(crate) images: Option<&'a mut crate::image_store::ImageStore>,
     /// The shown document's animations and transitions, which its
@@ -889,6 +894,18 @@ pub(crate) struct Wanted {
 /// the scripts on their way.
 pub(crate) struct Scripts {
     realm: Option<Box<dyn Realm<DocumentHost>>>,
+    /// The agent its realm is made in (G90): its origin's in the
+    /// renderer, shared with the frames of that origin; `None` for a
+    /// realm of an agent of its own.
+    agent: Option<js::Agent<DocumentHost>>,
+    /// The host's count of `document.open()`s last seen closed.
+    reopened_seen: u64,
+    /// Its host's count of calls answered when it was lent to its realm
+    /// for another realm's run ([`Scripts::lend_out`]).
+    lent_calls: u64,
+    /// The frame its document is of, by its number in the tab, by which
+    /// the realms of its agent find it.
+    frame: Option<u32>,
     /// The host the realm's scripts reach the document through, lent
     /// the document for each run.
     host: DocumentHost,
@@ -988,11 +1005,56 @@ impl Default for Scripts {
     }
 }
 
+/// The agent a run's realm is of, when another realm is made in it,
+/// with how many documents of the frames of the document lent it lent to
+/// their realms (G90): what the run reaches of theirs, their hosts
+/// answer.
+type Others = Option<(js::Agent<DocumentHost>, usize)>;
+
+/// Lends the documents of `lent`'s frames, at any depth, whose realms are
+/// of `agent` to them, for a run of `agent`'s.
+fn lend_others(agent: Option<&js::Agent<DocumentHost>>, lent: &mut Lent<'_>) -> Others {
+    let agent = agent.filter(|agent| agent.shared())?;
+    let frames = lent.frames.as_deref_mut()?;
+    let count = frames
+        .values_mut()
+        .map(|frame| frame.engine.lend_around(None, std::slice::from_ref(agent)))
+        .sum();
+    Some((agent.clone(), count))
+}
+
+/// Takes back what [`lend_others`] lent.
+fn take_others_back(others: Others, lent: &mut Lent<'_>) {
+    let Some((agent, count)) = others else {
+        return;
+    };
+    if count == 0 {
+        return;
+    }
+    if let Some(frames) = lent.frames.as_deref_mut() {
+        for frame in frames.values_mut() {
+            frame
+                .engine
+                .take_back_around(None, std::slice::from_ref(&agent));
+        }
+    }
+}
+
+/// The agents of a renderer's documents, by their origins (G90): each
+/// document's realm is made in its origin's, so that the frames of one
+/// origin reach each other. Not kept: an agent goes with its last realm.
+pub(crate) type Agents =
+    std::rc::Rc<std::cell::RefCell<HashMap<String, js::WeakAgent<DocumentHost>>>>;
+
 impl Scripts {
     /// A document's scripts, its realm to be made with `limits`.
     pub(crate) fn with_limits(limits: Limits) -> Scripts {
         Scripts {
             realm: None,
+            agent: None,
+            lent_calls: 0,
+            reopened_seen: 0,
+            frame: None,
             host: DocumentHost::default(),
             limits,
             console: VecDeque::new(),
@@ -1756,6 +1818,17 @@ impl Scripts {
         self.host.is_open()
     }
 
+    /// Whether a document `document.open()` opened was closed since this
+    /// was last asked: its load is over again, and its lifecycle's events
+    /// come anew, as HTML's "the end" has them.
+    pub(crate) fn take_reloaded(&mut self) -> bool {
+        if self.host.reopened == self.reopened_seen || self.host.is_open() {
+            return false;
+        }
+        self.reopened_seen = self.host.reopened;
+        true
+    }
+
     /// Says what the document's policies refused, or would have (M24.6,
     /// M33.1): each violation on the console, as a
     /// `securitypolicyviolation` event (a task) at `element` when it is
@@ -1924,8 +1997,15 @@ impl Scripts {
                 secure,
                 ..self.limits
             };
-            match QuickJs.realm_of::<DocumentHost>(kind, limits, None) {
-                Ok(realm) => {
+            let made = match &self.agent {
+                Some(agent) => QuickJs.realm_in(agent, kind, secure),
+                None => QuickJs.realm_of::<DocumentHost>(kind, limits, None),
+            };
+            match made {
+                Ok(mut realm) => {
+                    if let Some(frame) = self.frame {
+                        realm.name_frame(Some(frame));
+                    }
                     self.realm = Some(realm);
                     self.code_guarded = false;
                 }
@@ -2200,6 +2280,7 @@ impl Scripts {
                 .map(html::Parser::push_insertion_point)
                 .is_some();
         host.in_flight = self.fetching.len();
+        let others = lend_others(self.agent.as_ref(), lent);
         host.lend(lent, how, self.blocking.is_some());
         let result = run(realm.as_mut(), host);
         let errors = realm.checkpoint(host);
@@ -2210,28 +2291,14 @@ impl Scripts {
         let collect = host.collection_due();
         realm.sweep(host, collect);
         host.sweep();
-        let outputs = host.give_back(lent);
+        let mut outputs = host.give_back(lent);
+        take_others_back(others, lent);
         if insertion_point
             && let Some(parser) = lent.parser.as_deref_mut().and_then(html::Load::parser)
         {
             parser.pop_insertion_point();
         }
-        for entry in outputs.console {
-            self.push(entry);
-        }
-        // What its policies refused while it ran, in order (M33.1).
-        // The host said them on the console as they came.
-        for (violation, element, (line, column)) in outputs.violations {
-            self.announce(
-                lent.page,
-                lent.document,
-                &violation,
-                (element, line, column),
-            );
-        }
-        let violations = lent.page.take_violations();
-        self.report_violations(lent.page, lent.document, violations, (None, 0));
-        self.errors += outputs.errors;
+        self.outputs_before(lent, &mut outputs);
         let completion = match result {
             Ok(completion) => completion,
             Err(error) => {
@@ -2242,6 +2309,37 @@ impl Scripts {
         for error in &errors {
             self.report(error);
         }
+        self.outputs_after(lent, outputs);
+        if dead {
+            self.stop();
+        }
+        completion
+    }
+
+    /// What a run gave back, its first part (the console, the policies'
+    /// refusals, the errors counted), said before the run's own result.
+    fn outputs_before(&mut self, lent: &mut Lent<'_>, outputs: &mut Outputs) {
+        for entry in std::mem::take(&mut outputs.console) {
+            self.push(entry);
+        }
+        // What its policies refused while it ran, in order (M33.1).
+        // The host said them on the console as they came.
+        for (violation, element, (line, column)) in std::mem::take(&mut outputs.violations) {
+            self.announce(
+                lent.page,
+                lent.document,
+                &violation,
+                (element, line, column),
+            );
+        }
+        let violations = lent.page.take_violations();
+        self.report_violations(lent.page, lent.document, violations, (None, 0));
+        self.errors += outputs.errors;
+    }
+
+    /// The rest of what a run gave back: what it started, wanted and
+    /// changed of the document's state.
+    fn outputs_after(&mut self, lent: &mut Lent<'_>, outputs: Outputs) {
         self.start_wanted(lent, outputs.wanted, outputs.modules, &outputs.order);
         self.after_modules(lent, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
@@ -2273,10 +2371,45 @@ impl Scripts {
         if self.history_base.is_none() {
             self.history_base = outputs.url_before_history;
         }
-        if dead {
-            self.stop();
+    }
+
+    /// Lends the document's host to its realm while a run of another
+    /// realm of its agent is under way (G90): what that run asks of this
+    /// document, through its objects, the host answers. Whether it was.
+    pub(crate) fn lend_out(&mut self, lent: &mut Lent<'_>) -> bool {
+        // Lent already (a lending within another's take-back): its host
+        // is the realm's, and stays.
+        let Some(realm) = self.realm.as_mut().filter(|realm| !realm.is_lent()) else {
+            return false;
+        };
+        self.host.in_flight = self.fetching.len();
+        self.host
+            .lend(lent, How::default(), self.blocking.is_some());
+        self.lent_calls = self.host.calls;
+        realm.lend(std::mem::take(&mut self.host));
+        true
+    }
+
+    /// Whether its document is lent to its realm ([`Scripts::lend_out`]).
+    pub(crate) fn is_lent(&self) -> bool {
+        self.realm.as_ref().is_some_and(|realm| realm.is_lent())
+    }
+
+    /// Takes back what [`Scripts::lend_out`] lent, and does what the
+    /// other realm's run did of this document as its own runs' would be:
+    /// whether it did anything of it.
+    pub(crate) fn take_back(&mut self, lent: &mut Lent<'_>) -> bool {
+        let Some(host) = self.realm.as_mut().and_then(|realm| realm.reclaim()) else {
+            return false;
+        };
+        self.host = host;
+        let touched = self.host.touched_since(self.lent_calls);
+        let mut outputs = self.host.give_back(lent);
+        if touched {
+            self.outputs_before(lent, &mut outputs);
+            self.outputs_after(lent, outputs);
         }
-        completion
+        touched
     }
 
     /// Starts the scripts a run wanted, classic `wanted` and `modules`,
@@ -2365,6 +2498,7 @@ impl Scripts {
             ..How::default()
         };
         host.in_flight = self.fetching.len();
+        let others = lend_others(self.agent.as_ref(), lent);
         host.lend(lent, how, self.blocking.is_some());
         let result = realm.enter(task, host);
         let errors = realm.checkpoint(host);
@@ -2372,23 +2506,9 @@ impl Scripts {
         let collect = host.collection_due();
         realm.sweep(host, collect);
         host.sweep();
-        let outputs = host.give_back(lent);
-        for entry in outputs.console {
-            self.push(entry);
-        }
-        // What its policies refused while it ran, in order (M33.1).
-        // The host said them on the console as they came.
-        for (violation, element, (line, column)) in outputs.violations {
-            self.announce(
-                lent.page,
-                lent.document,
-                &violation,
-                (element, line, column),
-            );
-        }
-        let violations = lent.page.take_violations();
-        self.report_violations(lent.page, lent.document, violations, (None, 0));
-        self.errors += outputs.errors;
+        let mut outputs = host.give_back(lent);
+        take_others_back(others, lent);
+        self.outputs_before(lent, &mut outputs);
         let canceled = match result {
             Ok(canceled) => canceled,
             Err(error) => {
@@ -2399,37 +2519,7 @@ impl Scripts {
         for error in &errors {
             self.report(error);
         }
-        self.start_wanted(lent, outputs.wanted, outputs.modules, &outputs.order);
-        self.after_modules(lent, outputs.thrown);
-        self.start_fetches(lent, outputs.fetches, outputs.aborted);
-        self.start_media(lent);
-        self.font_changes.extend(outputs.fonts);
-        self.posted.extend(outputs.messages);
-        self.drop_tasks_of(&outputs.terminated);
-        self.events.extend(outputs.events);
-        self.focused |= outputs.focused;
-        self.scrolls.extend(outputs.scrolls);
-        if let Some(highlights) = outputs.highlights {
-            self.highlights = highlights;
-        }
-        if let Some(selection) = outputs.selection {
-            self.selection = selection;
-        }
-        self.snapped.extend(outputs.snapped);
-        if outputs.notice.is_some() {
-            self.notice = outputs.notice;
-        }
-        if outputs.picker.is_some() {
-            self.picker = outputs.picker;
-        }
-        self.opened_document(lent, outputs.parser_aborted, outputs.stop_navigation);
-        if outputs.navigation.is_some() {
-            self.navigation = outputs.navigation;
-        }
-        self.history.extend(outputs.history);
-        if self.history_base.is_none() {
-            self.history_base = outputs.url_before_history;
-        }
+        self.outputs_after(lent, outputs);
         if dead {
             self.stop();
         }
@@ -2898,8 +2988,45 @@ impl Scripts {
     pub(crate) fn restart(&mut self) {
         *self = Scripts {
             console: std::mem::take(&mut self.console),
+            agent: self.agent.take(),
+            frame: self.frame,
             ..Scripts::with_limits(self.limits)
         };
+    }
+
+    /// Makes its realm, when it does, in `agent`, named frame `frame`
+    /// (G90): before its realm is made.
+    pub(crate) fn join_agent(&mut self, agent: js::Agent<DocumentHost>, frame: u32) {
+        self.agent = Some(agent);
+        self.frame = Some(frame);
+    }
+
+    /// Its document is not its frame's any more (another took its place):
+    /// the realms of its agent no longer find it by the frame (G90).
+    pub(crate) fn leave_frame(&mut self) {
+        if let Some(realm) = &mut self.realm {
+            realm.name_frame(None);
+        }
+    }
+
+    /// Its document is its frame's again (back from the history).
+    pub(crate) fn return_to_frame(&mut self) {
+        if let (Some(realm), Some(frame)) = (&mut self.realm, self.frame) {
+            realm.name_frame(Some(frame));
+        }
+    }
+
+    /// The agent its realm is of, if it is made in a shared one.
+    pub(crate) fn agent(&self) -> Option<&js::Agent<DocumentHost>> {
+        self.agent.as_ref()
+    }
+
+    /// Makes its realm now, as a frame of an agent another document of
+    /// shares does (G90): a script of that document may reach it before
+    /// the frame runs a script of its own (an `about:blank` its creator
+    /// made and reads at once). Whether it has one.
+    pub(crate) fn make_realm(&mut self, secure: bool) -> bool {
+        self.ensure_realm(secure)
     }
 
     fn stop(&mut self) {
@@ -3713,6 +3840,7 @@ mod tests {
         let mut network = Network::new();
         let mut lent = Lent {
             document,
+            frames: None,
             images: None,
             animations: None,
             styled: None,

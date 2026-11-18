@@ -1,6 +1,14 @@
 # Design note: frames of one origin share an agent (G90)
 
-Status: proposed, 2026-11-18, for the lead's approval before any code.
+Status: approved 2026-11-18; phases 1 and 2 built (2026-11-19), 3 to
+6 to come. Phase 2 as built, beyond section 1: a window handed out for
+a frame before its realm existed forwards to the frame's window once
+it does; a window's `postMessage` called from another realm of the
+agent is that realm's post (its `source`, its serializing); a frame's
+realm is made at its commit when its agent has a realm, scripts of its
+own or none; and a node of another document given to a node argument,
+`getComputedStyle` or an animation's target throws NotSupportedError,
+said and counted (`nodesAcrossDocuments`), until phase 5.
 G90 is a beta requirement (the lead's ruling, 2026-11-18): Gmail, Docs
 and Drive are on the user's daily list, and sign-ins behind anti-bot
 checks (Kasada on Twitch) read their own frames.

@@ -222,26 +222,30 @@ fn a_frame_navigates_what_it_may_and_is_refused_the_rest() {
 }
 
 #[test]
-fn no_frame_reads_another_frames_document_whatever_their_origins() {
-    // Every frame is cross-origin to every other here, its own origin's
-    // too (D24): HTML lets frames of one origin read each other's
-    // documents, which waits for G90, and the rest never. A top of `a`
-    // reads its own origin's frame; a reader of `b` its sibling of `b`,
-    // its parent and top of `a` and its child of `b`; that child its
-    // parent of `b` and its top. Each read throws, none answers (G255).
+fn a_frame_reads_another_frames_document_only_of_its_own_origin() {
+    // HTML lets frames of one origin read each other's documents (G90),
+    // and no others. A top of `a` reads its own origin's frame, not one
+    // of `sub.a` (its site's, another origin) nor a sandboxed one of its
+    // URL's origin (opaque, no `allow-same-origin`); a reader of `b` its
+    // sibling and its child of `b`, not its parent and top of `a`; that
+    // child its parent of `b`, not its top. As the reference browser.
     static PAGES: &[(&str, &str)] = &[
         (
             "/page.html",
             "<iframe name=same src=x.html></iframe>\
              <iframe src='http://b.localhost:PORT/reader.html'></iframe>\
-             <iframe name=b src='http://b.localhost:PORT/x.html'></iframe><script>\
+             <iframe name=b src='http://b.localhost:PORT/x.html'></iframe>\
+             <iframe name=sub src='http://sub.a.localhost:PORT/x.html'></iframe>\
+             <iframe name=boxed sandbox=allow-scripts src=x.html></iframe><script>\
              for (const f of document.querySelectorAll('iframe')) {\
                f.src = f.src.replace('PORT', location.port);\
              }\
              const read = w => { try { return w.document ? 'read' : 'none' } \
                catch (e) { return e.name } };\
-             onload = () => console.log('top: same', read(frames.same), \
-               document.querySelector('iframe').contentDocument);</script>",
+             const doc = name => document.querySelector(`iframe[name=${name}]`).contentDocument;\
+             onload = () => console.log('top: same', read(frames.same), doc('same'), \
+               'sub', read(frames.sub), doc('sub'), 'boxed', read(frames.boxed), doc('boxed'));\
+             </script>",
         ),
         (
             "/reader.html",
@@ -288,11 +292,12 @@ fn no_frame_reads_another_frames_document_whatever_their_origins() {
     assert_eq!(
         lines,
         [
-            "[frame http://b.localhost:PORT/grandchild.html] grandchild: parent SecurityError \
-             top SecurityError",
-            "[frame http://b.localhost:PORT/reader.html] reader: sibling SecurityError parent \
-             SecurityError top SecurityError child SecurityError",
-            "top: same SecurityError null",
+            "[frame http://b.localhost:PORT/grandchild.html] grandchild: parent read top \
+             SecurityError",
+            "[frame http://b.localhost:PORT/reader.html] reader: sibling read parent \
+             SecurityError top SecurityError child read",
+            "top: same read [object HTMLDocument] sub SecurityError null boxed SecurityError \
+             null",
         ]
     );
 }
@@ -343,12 +348,12 @@ fn an_inserted_iframe_has_its_window_at_once() {
              document.documentElement.appendChild(f);\
              const w = f.contentWindow;\
              console.log(w !== null, length, w.parent === window);\
-             setTimeout(() => console.log(frames[0] === w, f.contentWindow === w), 50);\
+             setTimeout(() => console.log(frames[0] === w, f.contentWindow === w, typeof w.document), 50);\
              </script>",
     )];
     let server = sites(PAGES);
     let lines = run(&server, server.url("/page.html"), 2);
-    assert_eq!(lines, ["true 1 true", "true true"]);
+    assert_eq!(lines, ["true 1 true", "true true object"]);
 }
 
 #[test]
@@ -464,4 +469,82 @@ fn frames_answer_in_tree_order_every_time() {
             ["0 1 2 3 4 5"]
         );
     }
+}
+
+/// G90 phase 2: a frame of its creator's origin is reached as itself,
+/// its own built-ins (the anti-bot "fresh frame" trick, Kasada's on
+/// Twitch): at the top, and in a frame of another origin, which makes
+/// its own; as the reference browser does.
+#[test]
+fn a_frame_of_its_creators_origin_is_reached_as_itself() {
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src='http://b.localhost:PORT/child.html'></iframe>\
+             <script>\
+             const f = document.querySelector('iframe');\
+             f.src = f.src.replace('PORT', location.port);\
+             const blank = document.createElement('iframe');\
+             document.body.appendChild(blank);\
+             onload = () => {\
+               const w = blank.contentWindow;\
+               console.log('top', typeof w.TextEncoder, w.TextEncoder === TextEncoder,\
+                 Function.prototype.toString.call(w.TextEncoder).includes('[native code]'),\
+                 w.Array !== Array, w.parent === window);\
+             };\
+             </script>",
+        ),
+        (
+            "/child.html",
+            "<script>\
+             const blank = document.createElement('iframe');\
+             document.documentElement.appendChild(blank);\
+             onload = () => {\
+               try {\
+                 const w = blank.contentWindow;\
+                 console.log('child', typeof w.TextEncoder, w.TextEncoder === TextEncoder);\
+               } catch (e) { console.log('child threw', e.name); }\
+             };\
+             </script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let mut lines = run(&server, at(&server, "a.localhost", "/page.html"), 2);
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame http://b.localhost:PORT/child.html] child function false",
+            "top function false true true true",
+        ]
+    );
+}
+
+#[test]
+fn a_frame_navigates_its_parent_of_its_own_origin_by_its_location() {
+    // A grandchild sets its parent's `location.href` (G90: the parent's
+    // own `Location`, its frame of the grandchild's origin): the parent
+    // navigates, and the document it shows tells the top. As the
+    // reference browser (WPT iframe_sandbox_navigate_ancestor-2).
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<script>onmessage = e => console.log('top heard', e.data)</script>\
+             <iframe src=child.html></iframe>",
+        ),
+        (
+            "/child.html",
+            "<p>child</p><iframe src=grandchild.html></iframe>",
+        ),
+        (
+            "/grandchild.html",
+            "<script>onload = () => {\
+               try { parent.location.href = 'data:text/html,<script>parent.postMessage(1, \"*\")</scr' + 'ipt>'; }\
+               catch (e) { console.log('threw', e.name); }\
+             };</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 1);
+    assert_eq!(lines, ["top heard 1"]);
 }

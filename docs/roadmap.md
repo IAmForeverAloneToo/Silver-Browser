@@ -3205,7 +3205,13 @@ Deferred from the milestones above, each with what it waits on:
        of other origins, with navigation's familiar-with rule
        (`frames.rs`, `frame_script_tests.rs`). Gmail, Docs and editors
        in iframe mode read their own origin's frames: the site sweep
-       counts it.
+       counts it. Phases 1 and 2 of
+       `docs/design/same-origin-frames.md` built (2026-11-19): frames
+       of one origin in a renderer share an agent and reach each other
+       as themselves, cross-origin, other-origin same-site and opaque
+       sandboxed frames closed as before; phases 3 to 6 to come
+       (the synchronous initial `about:blank`, the agent's event loop,
+       nodes moving between documents, counters and WPT).
 - [ ] G91 A frame's layers composited on the GPU: its pixels are drawn
        in software and uploaded. With M34's out-of-process frames.
        Found at M33. With G110's rest: the renderers' pages drawn on the
@@ -3982,11 +3988,18 @@ site sweep or the dogfood sessions show a site breaking on it.
   level; the matcher keeps no memo of a list's answer for an element.
   To be fixed with style invalidation and matching, whose acceptance
   gains a fuzz case of matching depth.)
-- Fresh about:blank/srcdoc frames are cross-origin to their creator
-  (G90); anti-bot scripts such as Kasada may flag the user at sign-in.
-  (Twitch's Kasada frame reads `TextEncoder` from an about:blank child
-  it made and gets a SecurityError; Chrome gives it the child's
-  `TextEncoder`. G90 is a beta requirement, its design note next.)
+- A fresh about:blank frame is made after the script that inserted it
+  runs (G90 phase 3 to come): its window, read in that script, reaches
+  the frame once the frame is made, but not before; anti-bot scripts
+  such as Kasada that read it in the same task may still flag the user.
+  Read later (Twitch's Kasada frame reads `TextEncoder` from an
+  about:blank child it made), it is the child's own, as in Chrome.
+- A node of a frame's document given to another document's method is
+  refused with NotSupportedError, said on the console and counted by
+  the sweep, until nodes move between documents (G90 phase 5); a
+  frame's `requestAnimationFrame` callbacks run without their parent's
+  document lent (phase 4), and one calling into its same-origin parent
+  throws.
 - QuickJS-ng js_parse_skip_parens_token leaves a pending SyntaxError;
   mitigated by clear_stale; not reported upstream, by the user's
   choice. (Its look past a parenthesized expression reads a regular

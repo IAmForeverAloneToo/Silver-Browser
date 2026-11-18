@@ -177,8 +177,8 @@ impl Engine {
         // The frame focused takes it (M33.2).
         if let Some(node) = self.focused_frame() {
             return self
-                .frame_engine(node)
-                .is_some_and(|child| child.insert_text(text));
+                .with_frame(node, |child| child.insert_text(text))
+                .unwrap_or(false);
         }
         match self.text_control() {
             Some(control) => {
@@ -220,7 +220,7 @@ impl Engine {
     /// [`Engine::copy`], the selection then cut out (`deleteByCut`).
     pub fn cut(&mut self) -> Option<String> {
         if let Some(node) = self.focused_frame() {
-            return self.frame_engine(node)?.cut();
+            return self.with_frame(node, Engine::cut)?;
         }
         let control = self.text_control()?;
         let text = self.copy()?;
@@ -237,8 +237,8 @@ impl Engine {
     pub fn paste(&mut self, text: &str) -> bool {
         if let Some(node) = self.focused_frame() {
             return self
-                .frame_engine(node)
-                .is_some_and(|child| child.paste(text));
+                .with_frame(node, |child| child.paste(text))
+                .unwrap_or(false);
         }
         match self.text_control() {
             Some(control) => {

@@ -62,7 +62,7 @@ impl ScriptEngine for QuickJs {
         stop: Option<Arc<AtomicBool>>,
     ) -> Result<Box<dyn Realm<H>>, ScriptError> {
         let agent = Agent::new(limits, stop)?;
-        Ok(Box::new(QuickJsRealm::new(&kind, &agent)?))
+        Ok(Box::new(QuickJsRealm::new(&kind, &agent, None)?))
     }
 }
 
@@ -84,8 +84,9 @@ impl QuickJs {
         &self,
         agent: &Agent<H>,
         kind: RealmKind,
+        secure: bool,
     ) -> Result<Box<dyn Realm<H>>, ScriptError> {
-        Ok(Box::new(QuickJsRealm::new(&kind, agent)?))
+        Ok(Box::new(QuickJsRealm::new(&kind, agent, Some(secure))?))
     }
 }
 
@@ -105,6 +106,40 @@ impl<H: ScriptingHost> Clone for Agent<H> {
     }
 }
 
+impl<H: ScriptingHost> Agent<H> {
+    /// A handle that does not keep the agent: a table of the agents by
+    /// origin holds them so, each going with its last realm.
+    pub fn downgrade(&self) -> WeakAgent<H> {
+        WeakAgent(Rc::downgrade(&self.core))
+    }
+
+    /// Whether `other` is this very agent.
+    pub fn same(&self, other: &Agent<H>) -> bool {
+        Rc::ptr_eq(&self.core, &other.core)
+    }
+
+    /// Whether any realm is made in it.
+    pub fn has_realms(&self) -> bool {
+        !self.core.realms.borrow().is_empty()
+    }
+
+    /// Whether more than one realm is made in it: only then may a run of
+    /// one reach another's document.
+    pub fn shared(&self) -> bool {
+        self.core.realms.borrow().len() > 1
+    }
+}
+
+/// An agent not kept ([`Agent::downgrade`]).
+pub struct WeakAgent<H: ScriptingHost>(std::rc::Weak<AgentCore<H>>);
+
+impl<H: ScriptingHost> WeakAgent<H> {
+    /// The agent, while a realm of it lives.
+    pub fn upgrade(&self) -> Option<Agent<H>> {
+        self.0.upgrade().map(|core| Agent { core })
+    }
+}
+
 /// An agent's state, which its realms hold: dropped, the runtime with
 /// it, when the last of them goes.
 struct AgentCore<H: ScriptingHost> {
@@ -117,6 +152,10 @@ struct AgentCore<H: ScriptingHost> {
     dead: Rc<Cell<Option<Death>>>,
     /// What the runtime's hooks find of each realm, by its context.
     realms: Realms<H>,
+    /// The frame of the realm whose run is under way (G90): HTML's entry
+    /// settings object, which a window's `postMessage` called from
+    /// another realm of the agent posts as.
+    entry: Entry,
     /// The scripts' sampler, when the tool is built and asked for.
     #[cfg(feature = "js-sampler")]
     sampler: Option<Rc<sampler::Sampler>>,
@@ -144,6 +183,9 @@ pub(crate) struct Links<H: ScriptingHost> {
     /// The frame its document is of, once the engine names it.
     frame: Rc<Cell<Option<u32>>>,
 }
+
+/// The frame of the realm of an agent whose run is under way.
+pub(crate) type Entry = Rc<Cell<Option<u32>>>;
 
 /// A realm's global object, kept for the other realms of its agent;
 /// emptied as the realm goes, before its context.
@@ -177,6 +219,61 @@ pub(crate) fn frame_global<'js, H: ScriptingHost>(
         .find(|links| links.frame.get() == Some(frame))
         .and_then(|links| links.global.borrow().clone());
     found.map(|global| global.restore(ctx)).transpose()
+}
+
+/// The bootstrap's entry points of the realm of `frame` in the agent of
+/// `ctx`'s realm, if it has one there (G90).
+pub(crate) fn frame_entries<'js, H: ScriptingHost>(
+    realms: &Realms<H>,
+    ctx: &Ctx<'js>,
+    frame: u32,
+) -> rquickjs::Result<Option<Object<'js>>> {
+    let found = realms
+        .borrow()
+        .values()
+        .find(|links| links.frame.get() == Some(frame))
+        .and_then(|links| links.entries.borrow().clone());
+    found.map(|entries| entries.restore(ctx)).transpose()
+}
+
+/// Whether `value` is a node of another realm of the agent of `ctx`'s
+/// realm (G90): one this realm's methods refuse until nodes move between
+/// documents (phase 5), rather than take as no node.
+pub(crate) fn node_of_other_realm<'js, H: ScriptingHost>(
+    realms: &Realms<H>,
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+) -> rquickjs::Result<bool> {
+    let Some(object) = value.as_object() else {
+        return Ok(false);
+    };
+    let own = context_key(ctx);
+    let globals: Vec<_> = realms
+        .borrow()
+        .iter()
+        .filter(|(key, _)| **key != own)
+        .filter_map(|(_, links)| links.global.borrow().clone())
+        .collect();
+    for global in globals {
+        let global = global.restore(ctx)?;
+        let Ok(node) = global.get::<_, Object<'js>>("Node") else {
+            continue;
+        };
+        let Ok(prototype) = node.get::<_, Object<'js>>("prototype") else {
+            continue;
+        };
+        let mut at = object.get_prototype();
+        for _ in 0..64 {
+            let Some(above) = at else {
+                break;
+            };
+            if above == prototype {
+                return Ok(true);
+            }
+            at = above.get_prototype();
+        }
+    }
+    Ok(false)
 }
 
 /// An agent's realms' links, by their contexts' addresses.
@@ -347,6 +444,7 @@ impl<H: ScriptingHost> Agent<H> {
                 budget,
                 dead: Rc::default(),
                 realms,
+                entry: Entry::default(),
                 #[cfg(feature = "js-sampler")]
                 sampler,
                 runtime,
@@ -368,9 +466,16 @@ fn made_none(e: rquickjs::Error) -> ScriptError {
 }
 
 impl<H: ScriptingHost> QuickJsRealm<H> {
-    fn new(kind: &RealmKind, agent: &Agent<H>) -> Result<QuickJsRealm<H>, ScriptError> {
+    fn new(
+        kind: &RealmKind,
+        agent: &Agent<H>,
+        secure: Option<bool>,
+    ) -> Result<QuickJsRealm<H>, ScriptError> {
         let core = Rc::clone(&agent.core);
-        let limits = core.limits;
+        let limits = Limits {
+            secure: secure.unwrap_or(core.limits.secure),
+            ..core.limits
+        };
         // No realm where a deep script would end the process: the thread
         // must have the scripts' stack and the native work's under it,
         // and say so (G253).
@@ -430,7 +535,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                     &host,
                     &budget,
                     (&entries, &guards),
-                    (&module_state, &core.realms),
+                    (&module_state, &core.realms, &core.entry),
                 )
                 .map(|entries| Persistent::save(&ctx, entries))
                 .catch(&ctx)
@@ -487,6 +592,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
         *self.host.borrow_mut() = Some(std::mem::take(host));
+        self.agent.entry.set(self.frame.get());
         self.steps.set(0);
         self.work.set(0);
         self.exhausted.set(false);
@@ -516,6 +622,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         if let Some(back) = self.host.borrow_mut().take() {
             *host = back;
         }
+        self.agent.entry.set(None);
         #[cfg(feature = "js-sampler")]
         if let Some(sampler) = &self.agent.sampler {
             sampler.detach();
@@ -1165,8 +1272,22 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         self.host.borrow_mut().take()
     }
 
-    fn name_frame(&mut self, frame: u32) {
-        self.frame.set(Some(frame));
+    fn is_lent(&self) -> bool {
+        self.host.borrow().is_some()
+    }
+
+    fn name_frame(&mut self, frame: Option<u32>) {
+        // One realm of the agent is a frame's at a time: the realm of the
+        // document it showed before (its initial `about:blank`, while the
+        // next one parses) is no longer reached as the frame's window.
+        if let Some(frame) = frame {
+            for links in self.agent.realms.borrow().values() {
+                if links.frame.get() == Some(frame) {
+                    links.frame.set(None);
+                }
+            }
+        }
+        self.frame.set(frame);
     }
 }
 
@@ -1566,7 +1687,7 @@ fn install<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &dom::Budget,
     (entries, guards): (&Entries, &dom::Guards),
-    (modules, realms): (&Rc<modules::State>, &Realms<H>),
+    (modules, realms, entry): (&Rc<modules::State>, &Realms<H>, &Entry),
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
@@ -1656,7 +1777,7 @@ fn install<'js, H: ScriptingHost>(
         secure,
         (host, budget),
         (entries, guards),
-        (modules, realms),
+        (modules, realms, entry),
         console,
     )
 }

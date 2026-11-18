@@ -33,6 +33,9 @@ pub(crate) struct SweepCounts {
     /// `contentDocument` read as null of a frame of the reader's origin
     /// (G90).
     pub(crate) frame_document_same_origin: u32,
+    /// A node of another frame's document of the same origin given to a
+    /// method, refused until nodes move between documents (G90 phase 5).
+    pub(crate) nodes_across_documents: u32,
     /// What the document's policies refused (Content Security Policy).
     pub(crate) policy_refusals: u32,
     /// Media types a script asked whether this engine plays, answered
@@ -132,6 +135,7 @@ impl SweepCounts {
         self.budget_stops += other.budget_stops;
         self.frame_refused_same_origin += other.frame_refused_same_origin;
         self.frame_document_same_origin += other.frame_document_same_origin;
+        self.nodes_across_documents += other.nodes_across_documents;
         self.policy_refusals += other.policy_refusals;
         self.dropped += other.dropped;
         self.style_mismatches += other.style_mismatches;
@@ -175,6 +179,10 @@ impl SweepCounts {
             (
                 "frameDocumentSameOrigin",
                 Json::from(f64::from(self.frame_document_same_origin)),
+            ),
+            (
+                "nodesAcrossDocuments",
+                Json::from(f64::from(self.nodes_across_documents)),
             ),
             (
                 "policyRefusals",

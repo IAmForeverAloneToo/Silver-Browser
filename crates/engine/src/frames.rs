@@ -869,6 +869,9 @@ pub(crate) struct Frame {
     /// `load` fired for it. Each new document is told again, whatever
     /// navigated the frame (M33.8).
     pub(crate) told: Option<PageId>,
+    /// The frame's engine's count of completed loads when the element was
+    /// last told: a document written anew is told again.
+    pub(crate) told_completions: u64,
     /// The frame's last drawing.
     pub(crate) drawn: Option<Drawn>,
     /// Whether the page's last frame showed any of it: its `iframe`
@@ -884,7 +887,10 @@ impl Frame {
     pub(crate) fn told_of_its_document(&self) -> bool {
         match &self.remote {
             Some(remote) => remote.told > 0 && remote.told == remote.loads,
-            None => self.told == Some(self.engine.shown.page.id()),
+            None => {
+                self.told == Some(self.engine.shown.page.id())
+                    && self.told_completions == self.engine.completions
+            }
         }
     }
 
@@ -893,7 +899,11 @@ impl Frame {
     fn to_tell(&self) -> bool {
         match &self.remote {
             Some(remote) => remote.loads > remote.told,
-            None => self.engine.completed.is_some() && self.engine.completed != self.told,
+            None => {
+                self.engine.completed.is_some()
+                    && (self.engine.completed != self.told
+                        || self.engine.completions != self.told_completions)
+            }
         }
     }
 
@@ -1019,6 +1029,8 @@ impl Engine {
             heap: self.script_limits.heap.min(MAX_FRAME_HEAP),
             ..self.script_limits
         };
+        // The agents by origin are the renderer's (G90).
+        child.agents = self.agents.clone();
         child.compat_user_agent = self.compat_user_agent;
         child.languages = self.languages.clone();
         child.preferences = self.preferences;
@@ -1248,6 +1260,7 @@ impl Engine {
             remote: None,
             source: Source::Blank,
             told: None,
+            told_completions: 0,
             drawn: None,
             in_view: true,
             tree: self.frame.tree.clone(),
@@ -1295,6 +1308,7 @@ impl Engine {
         // document here, and it is still told.
         if !matches!(&source, Source::Url(url) if url.scheme() == "javascript") {
             frame.told = frame.engine.completed;
+            frame.told_completions = frame.engine.completions;
         }
         frame.drawn = None;
         if let Some(remote) = frame.remote
@@ -1304,25 +1318,22 @@ impl Engine {
             lock(&self.frame.tree).set_local(frame.id);
             self.dropped_remote.push(remote.key);
         }
-        let Some(frame) = self.shown.frames.get_mut(&node) else {
-            return;
-        };
-        match source {
-            Source::Blank => frame.engine.show_blank(&creator, false),
-            Source::Srcdoc(text) => frame.engine.show_srcdoc(text, creator),
-            Source::Url(url) => {
-                // No frame shows a document an ancestor shows (HTML 7.4.2,
-                // "navigate", the recursion check).
-                let key = url.without_fragment();
-                if current.as_deref() == Some(key) || ancestors.iter().any(|a| a == key) {
-                    frame.engine.show_blank(&creator, false);
-                    return;
-                }
-                frame
-                    .engine
-                    .navigate_as_frame(url, creator, initiator, policy);
+        // No frame shows a document an ancestor shows (HTML 7.4.2,
+        // "navigate", the recursion check).
+        let source = match source {
+            Source::Url(url)
+                if current.as_deref() == Some(url.without_fragment())
+                    || ancestors.iter().any(|a| a == url.without_fragment()) =>
+            {
+                Source::Blank
             }
-        }
+            source => source,
+        };
+        self.with_frame(node, |engine| match source {
+            Source::Blank => engine.show_blank(&creator, false),
+            Source::Srcdoc(text) => engine.show_srcdoc(text, creator),
+            Source::Url(url) => engine.navigate_as_frame(url, creator, initiator, policy),
+        });
     }
 
     /// Drops the frame of the `iframe` `node`, its document unloaded:
@@ -1334,8 +1345,16 @@ impl Engine {
         if let Some(remote) = frame.remote {
             self.dropped_remote.push(remote.key);
         }
+        // Its `pagehide` and `unload` listeners reach this document and its
+        // other frames of their agent as their own runs would (G90).
+        let mut agents: Vec<_> = self.shown.scripts.agent().into_iter().cloned().collect();
+        frame.engine.shared_agents(&mut agents);
+        let lent = self.lend_around(None, &agents);
         frame.engine.unload_shown(false);
         frame.engine.stop();
+        if lent > 0 {
+            self.take_back_around(None, &agents);
+        }
         let lines = frame.engine.take_console();
         self.departed.extend(lines);
     }
@@ -1705,7 +1724,10 @@ impl Engine {
             .map(|(&node, frame)| {
                 match &mut frame.remote {
                     Some(remote) => remote.told = remote.loads,
-                    None => frame.told = frame.engine.completed,
+                    None => {
+                        frame.told = frame.engine.completed;
+                        frame.told_completions = frame.engine.completions;
+                    }
                 }
                 node
             })
@@ -1743,9 +1765,7 @@ impl Engine {
     pub(crate) fn poll_frames(&mut self) -> bool {
         let mut wants = false;
         for node in self.frames_in_run_order() {
-            if let Some(frame) = self.shown.frames.get_mut(&node) {
-                wants |= frame.engine.poll_network();
-            }
+            wants |= self.with_frame(node, Engine::poll_network).unwrap_or(false);
         }
         // Before the loads are told, which may fire this document's own
         // `load`.
@@ -1780,9 +1800,7 @@ impl Engine {
     pub(crate) fn run_frame_tasks(&mut self) -> bool {
         let mut wants = false;
         for node in self.frames_in_run_order() {
-            if let Some(frame) = self.shown.frames.get_mut(&node) {
-                wants |= frame.engine.run_tasks();
-            }
+            wants |= self.with_frame(node, Engine::run_tasks).unwrap_or(false);
         }
         // Before the loads are told, which may fire this document's own
         // `load`.
@@ -2001,6 +2019,10 @@ impl Engine {
                     told: 0,
                 });
                 frame.drawn = None;
+                // Its document here, the initial `about:blank`, is no
+                // longer the frame's: no realm of its agent reaches it as
+                // the frame's window (G90).
+                frame.engine.shown.scripts.leave_frame();
                 lock(&tree).set_remote(frame.id, key);
                 self.changed = true;
                 return true;
@@ -2098,6 +2120,54 @@ impl Engine {
         dropped
     }
 
+    /// The agents of the realms of this engine's tree that have realms
+    /// outside it too, perhaps (G90): those a run in it may reach another
+    /// document of.
+    pub(crate) fn shared_agents(&self, agents: &mut Vec<js::Agent<crate::scripts::DocumentHost>>) {
+        if let Some(agent) = self.shown.scripts.agent()
+            && agent.shared()
+            && !agents.iter().any(|known| known.same(agent))
+        {
+            agents.push(agent.clone());
+        }
+        for frame in self.shown.frames.values() {
+            if frame.remote.is_none() {
+                frame.engine.shared_agents(agents);
+            }
+        }
+    }
+
+    /// Drives the engine of the frame of the `iframe` `node` with `drive`
+    /// (G90): the documents of this engine's tree outside it whose realms
+    /// are of an agent with a realm within it are lent to their realms
+    /// meanwhile, for what its scripts reach of them. The ancestors'
+    /// documents the engines that drove this one lent.
+    pub(crate) fn with_frame<R>(
+        &mut self,
+        node: NodeId,
+        drive: impl FnOnce(&mut Engine) -> R,
+    ) -> Option<R> {
+        // This document's agent too, which a document the frame is about
+        // to show may join (an `about:srcdoc`'s scripts run as it is
+        // shown, before the agent has its realm).
+        let mut agents: Vec<_> = self.shown.scripts.agent().into_iter().cloned().collect();
+        self.shown
+            .frames
+            .get(&node)?
+            .engine
+            .shared_agents(&mut agents);
+        let lent = self.lend_around(Some(node), &agents);
+        let result = self
+            .shown
+            .frames
+            .get_mut(&node)
+            .map(|frame| drive(&mut frame.engine));
+        if lent > 0 {
+            self.take_back_around(Some(node), &agents);
+        }
+        result
+    }
+
     /// The engine of the frame of the `iframe` `node`, if it has one.
     pub(crate) fn frame_engine(&mut self, node: NodeId) -> Option<&mut Engine> {
         self.shown
@@ -2130,10 +2200,8 @@ impl Engine {
         };
         let now = at.map(|(node, _, _)| node);
         if self.shown.pointer_frame != now {
-            if let Some(old) = self.shown.pointer_frame
-                && let Some(child) = self.frame_engine(old)
-            {
-                child.pointer_leave();
+            if let Some(old) = self.shown.pointer_frame {
+                self.with_frame(old, Engine::pointer_leave);
             }
             self.shown.pointer_frame = now;
         }

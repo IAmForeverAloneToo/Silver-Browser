@@ -931,10 +931,10 @@ mod agent_tests {
     fn two(limits: Limits) -> (Box<dyn Realm<Recorder>>, Box<dyn Realm<Recorder>>) {
         let agent = QuickJs.agent::<Recorder>(limits, None).expect("an agent");
         let a = QuickJs
-            .realm_in(&agent, crate::RealmKind::Window)
+            .realm_in(&agent, crate::RealmKind::Window, true)
             .expect("a realm");
         let b = QuickJs
-            .realm_in(&agent, crate::RealmKind::Window)
+            .realm_in(&agent, crate::RealmKind::Window, true)
             .expect("another");
         (a, b)
     }
@@ -1025,13 +1025,13 @@ mod frame_tests {
             .agent::<Recorder>(Limits::default(), None)
             .expect("an agent");
         let mut top = QuickJs
-            .realm_in(&agent, crate::RealmKind::Window)
+            .realm_in(&agent, crate::RealmKind::Window, true)
             .expect("a realm");
         let mut child = QuickJs
-            .realm_in(&agent, crate::RealmKind::Window)
+            .realm_in(&agent, crate::RealmKind::Window, true)
             .expect("another");
-        top.name_frame(0);
-        child.name_frame(5);
+        top.name_frame(Some(0));
+        child.name_frame(Some(5));
         let mut child_host = Recorder {
             frames: Some((5, Vec::new())),
             title: "bee".into(),

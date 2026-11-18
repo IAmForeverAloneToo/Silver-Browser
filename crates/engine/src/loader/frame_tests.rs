@@ -1064,3 +1064,89 @@ fn the_frames_are_ordered_by_a_walk_only_when_the_document_changed() {
     tab.engine.run_tasks();
     assert_eq!(walks(&tab), before + 1, "a change, one walk");
 }
+
+/// The tab of a served `page`, its frames settled and drawn, its console
+/// taken.
+fn served(server: &TestServer) -> Tab {
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    settle_frames(&mut tab);
+    tab.engine
+        .frame_at(800, 600, crate::FrameTime::at(Duration::ZERO));
+    tab.engine.take_console();
+    tab
+}
+
+#[test]
+fn a_click_in_a_frame_of_its_parents_origin_reaches_its_parent_as_itself() {
+    // A listener of the frame's calls a function of its parent's, which
+    // reads the parent's document (G90); a sandboxed frame's, of an
+    // opaque origin, is refused it. As the reference browser.
+    let server = two_pages(
+        "<title>T</title><body style='margin:0'><script>         function told(what) { console.log('parent told', what, document.title); }         </script>         <iframe style='border:0; display:block; height:60px' srcdoc=\"<body style='margin:0'>         <button style='display:block; width:100px; height:50px'          onclick='parent.told(this.tagName)'>b</button>\"></iframe>         <iframe sandbox=allow-scripts style='border:0; display:block; height:60px'          srcdoc=\"<body style='margin:0'>         <button style='display:block; width:100px; height:50px'          onclick='try { parent.told(1) } catch (e) { console.log(e.name) }'>b</button>\">         </iframe>",
+        "",
+    );
+    let mut tab = served(&server);
+    click(&mut tab, 30.0, 25.0);
+    assert_eq!(console(&mut tab), ["parent told BUTTON T"]);
+    click(&mut tab, 30.0, 85.0);
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] SecurityError"]);
+}
+
+#[test]
+fn a_parent_writes_its_blank_frames_document_and_hears_its_load() {
+    // The way of the html5lib runner, of ads and of mail clients: a
+    // parent opens its `about:blank` frame's document, writes and closes
+    // it, and the frame's element hears `load` (G90).
+    let server = two_pages(
+        "<iframe></iframe><script>         const f = document.querySelector('iframe');         onload = () => {           f.onload = () => console.log('loaded', f.contentDocument.body.innerHTML);           const d = f.contentDocument;           d.open(); d.write('<p>hi</p>'); d.close();           console.log('written', d.body.innerHTML);         };</script>",
+        "",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while lines.len() < 2 && std::time::Instant::now() < deadline {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(console(&mut tab));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(lines, ["written <p>hi</p>", "loaded <p>hi</p>"]);
+}
+
+#[test]
+fn a_node_of_a_frames_document_given_to_the_parents_method_is_refused_and_said() {
+    // Nodes do not move between the documents of frames yet (G90 phase
+    // 5): a method given one throws NotSupportedError, as the console
+    // says, rather than take it for no node or another. The reference
+    // browser takes it; the sweep counts each.
+    let server = two_pages(
+        "<iframe src=child.html></iframe><script>\
+         onload = () => {\
+           const p = frames[0].document.querySelector('p');\
+           for (const f of [() => document.body.appendChild(p), () => getComputedStyle(p)]) {\
+             try { f(); console.log('took it'); } catch (e) { console.log(e.name); }\
+           }\
+         };</script>",
+        "<p>child</p>",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    settle_frames(&mut tab);
+    let lines = console(&mut tab);
+    assert_eq!(
+        lines,
+        [
+            "Failed to execute 'appendChild' on 'Node': the node is of another frame's \
+             document, and nodes do not move between the documents of frames yet.",
+            "NotSupportedError",
+            "Failed to execute 'getComputedStyle' on 'Window': the node is of another frame's \
+             document, and nodes do not move between the documents of frames yet.",
+            "NotSupportedError",
+        ]
+    );
+}
