@@ -26,6 +26,8 @@ const HEIGHT = 800;
 const CAP_MS = 30_000;
 const SETTLE_MS = 2_000;
 const SCROLL_SCREENS = 3;
+// How long a page is left alone, as the shell's sweep leaves it.
+const IDLE_MS = 10_000;
 
 // The sites: the lead's list, kept beside the repository (an id and a
 // URL a line, tab-separated, `#` for a comment), or `--sites <file>`.
@@ -365,6 +367,12 @@ async function captureChrome(chrome, url, dir) {
     }
     await sleep(500);
     await shot("chrome-scrolled.png");
+    // Then left alone, as Silver's page is: the CPU its processes used.
+    const before = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    const began = Date.now();
+    await sleep(IDLE_MS);
+    const after = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    result.idleCpu = chromeIdleShares(before?.processInfo, after?.processInfo, (Date.now() - began) / 1000);
     return result;
   } catch (error) {
     result.outcome = result.outcome === "ok" ? "harness error" : result.outcome;
@@ -543,6 +551,21 @@ export function topCauses(rows) {
     .sort((a, b) => b.sites - a.sites || b.total - a.total || a.key.localeCompare(b.key));
 }
 
+// The share of a core Chrome's processes used between two lists of
+// SystemInfo.getProcessInfo, `seconds` apart: the renderers together, a
+// process that came meanwhile counted from nothing; the browser's and
+// the GPU's apart. Null where either list is missing.
+export function chromeIdleShares(before, after, seconds) {
+  if (!Array.isArray(before) || !Array.isArray(after) || !(seconds > 0)) return null;
+  const was = new Map(before.map((p) => [p.id, p.cpuTime]));
+  const used = (type) =>
+    after
+      .filter((p) => p.type === type)
+      .reduce((sum, p) => sum + Math.max(0, p.cpuTime - (was.get(p.id) ?? 0)), 0);
+  const share = (t) => Math.round((t / seconds) * 1000) / 1000;
+  return { renderers: share(used("renderer")), browser: share(used("browser")), gpu: share(used("GPU")) };
+}
+
 // What a page left alone did in the sweep's idle time: its record's
 // counts after it less those at its end of load and scroll.
 export function idleSummary(silver) {
@@ -579,7 +602,9 @@ renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.mem
 <b>Chrome</b> ${esc(c.outcome)}${c.error ? ` (${esc(c.error)})` : ""}; paint ${ms(c.timings?.firstPaint)}, load ${ms(c.timings?.load)}, settled ${ms(c.timings?.settled)}.
 <b>Likeness</b> top ${r.similarity.top ?? "-"}, scrolled ${r.similarity.scrolled ?? "-"}${r.hostsDiffer ? " <b>(served different hosts: discount it)</b>" : ""}.<br>
 Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.<br>
-<b>Left alone</b> (Silver): ${esc(idleSummary(s))}.</p>
+<b>Left alone</b> (Silver): ${esc(idleSummary(s))}.
+CPU left alone, share of a core: Silver renderers ${s.idleCpu?.renderers ?? "-"}, browser ${s.idleCpu?.browser ?? "-"};
+Chrome renderers ${c.idleCpu?.renderers ?? "-"}, browser ${c.idleCpu?.browser ?? "-"}, GPU ${c.idleCpu?.gpu ?? "-"}.</p>
 <p>Missing: ${missing || "none"}; stack ${counts.stackOverflows || 0}; G90 ${(counts.frameRefusedSameOrigin || 0) + (counts.frameDocumentSameOrigin || 0)}; CSP ${counts.policyRefusals || 0}; console errors ${(s.console || []).filter((e) => e.level === "error").length} (Chrome ${(c.console || []).length}).</p>
 <div class=pair>${pic("silver", "top")}${pic("chrome", "top")}</div>
 <div class=pair>${pic("silver", "scrolled")}${pic("chrome", "scrolled")}</div>

@@ -137,6 +137,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut settled = None;
     let mut counters = Json::Null;
     let mut idle = Json::Null;
+    let mut idle_cpu = Json::Null;
     // The layouts the renderer last said it had run, and since when.
     let mut layouts: Option<(f64, Instant)> = None;
     // When a renderer last answered, or was first seen to run.
@@ -231,12 +232,16 @@ fn capture(asked: &Asked) -> Result<(), String> {
         }
         next_id += 1;
         // Then the page left alone, no input: what it still does, and
-        // what wants its frames, the counts again after it.
-        let until = Instant::now() + IDLE;
+        // what wants its frames, the counts again after it, and the CPU
+        // its processes used meanwhile.
+        let cpu_before = cpu_times(&tab);
+        let idle_began = Instant::now();
+        let until = idle_began + IDLE;
         while Instant::now() < until {
             let _ = woken.recv_timeout(Duration::from_millis(50));
             step(&mut tab, began, &mut console);
         }
+        idle_cpu = idle_shares(&cpu_before, &cpu_times(&tab), idle_began.elapsed());
         idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
@@ -284,6 +289,9 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // what a page left alone does in that time.
         ("idleCounters", idle),
         ("idleSeconds", Json::from(IDLE.as_secs_f64())),
+        // The share of a core the renderers, together, and the browser's
+        // process used while the page was left alone.
+        ("idleCpu", idle_cpu),
         ("network", network),
         ("memory", peaks.json()),
         (
@@ -398,6 +406,51 @@ fn shot(tab: &mut RemoteTab, began: Instant, path: &Path) -> Result<(), String> 
     std::fs::write(path, png).map_err(|e| format!("not written: {e}"))
 }
 
+/// The CPU time each of the tab's renderers and the browser's own
+/// process has used, by process id, the browser's as 0.
+fn cpu_times(tab: &RemoteTab) -> Vec<(u32, Duration)> {
+    let mut times: Vec<(u32, Duration)> = tab
+        .renderer_processes()
+        .into_iter()
+        .filter_map(|pid| Some((pid, platform::process_cpu_time(pid)?)))
+        .collect();
+    if let Some(own) = platform::process_cpu_time(std::process::id()) {
+        times.push((0, own));
+    }
+    times
+}
+
+/// The shares of a core used between `before` and `after`, `over` apart:
+/// the renderers' together, a renderer that came meanwhile counted from
+/// nothing, and the browser's; null where none could be read.
+fn idle_shares(before: &[(u32, Duration)], after: &[(u32, Duration)], over: Duration) -> Json {
+    if after.is_empty() || over.is_zero() {
+        return Json::Null;
+    }
+    let used = |pid: u32, at: Duration| {
+        let was = before
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .map_or(Duration::ZERO, |(_, t)| *t);
+        at.saturating_sub(was)
+    };
+    let renderers: Duration = after
+        .iter()
+        .filter(|(pid, _)| *pid != 0)
+        .map(|(pid, at)| used(*pid, *at))
+        .sum();
+    let browser = after
+        .iter()
+        .find(|(pid, _)| *pid == 0)
+        .map(|(_, at)| used(0, *at));
+    let share =
+        |d: Duration| Json::from((d.as_secs_f64() / over.as_secs_f64() * 1000.0).round() / 1000.0);
+    Json::object([
+        ("renderers", share(renderers)),
+        ("browser", browser.map_or(Json::Null, share)),
+    ])
+}
+
 /// The peaks of the browser's process and the tab's renderers' (the
 /// largest of each), their working sets and commit, as the system says.
 #[derive(Default)]
@@ -436,5 +489,41 @@ impl Peaks {
             ("browserPeakWorkingSet", bytes(self.browser_working_set)),
             ("browserPeakCommit", bytes(self.browser_commit)),
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_share_of_a_core_left_alone_is_the_time_used_over_the_time() {
+        let s = Duration::from_secs;
+        let ms = Duration::from_millis;
+        let before = [(7, s(1)), (8, s(2)), (0, s(3))];
+        // Renderer 7 used 500 ms, 9 came and used 250 ms, 8 is gone, and
+        // the browser used 100 ms, in ten seconds.
+        let after = [(7, s(1) + ms(500)), (9, ms(250)), (0, s(3) + ms(100))];
+        let shares = idle_shares(&before, &after, s(10));
+        assert_eq!(shares.get("renderers").and_then(Json::as_f64), Some(0.075));
+        assert_eq!(shares.get("browser").and_then(Json::as_f64), Some(0.01));
+        assert_eq!(idle_shares(&before, &[], s(10)), Json::Null);
+    }
+
+    #[test]
+    fn a_process_cpu_time_is_read_and_grows_with_work() {
+        let own = std::process::id();
+        let first = platform::process_cpu_time(own);
+        if !cfg!(any(windows, target_os = "linux")) {
+            return;
+        }
+        let first = first.expect("read");
+        let began = Instant::now();
+        let mut n = 0u64;
+        while began.elapsed() < Duration::from_millis(200) {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+        let second = platform::process_cpu_time(own).expect("read again");
+        assert!(second > first, "{first:?} then {second:?}");
     }
 }

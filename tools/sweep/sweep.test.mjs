@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 
-import { idleSummary, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
+import { chromeIdleShares, idleSummary, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
 
 // A PNG of `width` by `height`, RGB, each pixel `colour(x, y)`.
 function png(width, height, colour) {
@@ -78,4 +78,20 @@ test("what a page did left alone is its counts after the idle less those before"
   };
   assert.equal(idleSummary(silver), "frames 48, tasks 70, layouts 44 (changed 20, animation 27) in 10 s");
   assert.equal(idleSummary({ counters: {} }), "-");
+});
+
+test("Chrome's share of a core left alone is its processes' CPU time over the time", () => {
+  const before = [
+    { id: 1, type: "browser", cpuTime: 2 },
+    { id: 2, type: "renderer", cpuTime: 5 },
+    { id: 3, type: "GPU", cpuTime: 1 },
+  ];
+  const after = [
+    { id: 1, type: "browser", cpuTime: 2.1 },
+    { id: 2, type: "renderer", cpuTime: 5.5 },
+    { id: 4, type: "renderer", cpuTime: 0.25 },
+    { id: 3, type: "GPU", cpuTime: 1.2 },
+  ];
+  assert.deepEqual(chromeIdleShares(before, after, 10), { renderers: 0.075, browser: 0.01, gpu: 0.02 });
+  assert.equal(chromeIdleShares(null, after, 10), null);
 });

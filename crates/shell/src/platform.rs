@@ -323,6 +323,33 @@ pub(crate) fn process_age() -> Option<std::time::Duration> {
     }
 }
 
+/// How much CPU time process `id` has used, in user and kernel mode
+/// together, for the site sweep's measure of a page left alone: on
+/// Windows from `GetProcessTimes`, on Linux from `/proc`. `None` where
+/// it cannot be read.
+pub(crate) fn process_cpu_time(id: u32) -> Option<std::time::Duration> {
+    #[cfg(windows)]
+    {
+        windows::process_cpu_time(id)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Fields 14 and 15, after the command's closing parenthesis,
+        // in clock ticks of 100 a second, as Linux has them.
+        let stat = std::fs::read_to_string(format!("/proc/{id}/stat")).ok()?;
+        let rest = &stat[stat.rfind(')')? + 1..];
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let ticks = |i: usize| fields.get(i)?.parse::<u64>().ok();
+        let total = ticks(11)? + ticks(12)?;
+        Some(std::time::Duration::from_millis(total * 10))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = id;
+        None
+    }
+}
+
 /// What process `id` holds, for the measures of a page class's memory
 /// (M35.1): on Windows from `GetProcessMemoryInfo`, its private bytes
 /// and working set; on Linux from `/proc`, its anonymous resident pages
@@ -1617,6 +1644,34 @@ mod windows {
             peak_working_set: counters.PeakWorkingSetSize as u64,
             peak_private: Some(counters.PeakPagefileUsage as u64),
         })
+    }
+
+    /// The CPU time process `id` has used, user and kernel, read with no
+    /// more than the right to query it.
+    pub(super) fn process_cpu_time(id: u32) -> Option<std::time::Duration> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::GetProcessTimes;
+        // SAFETY: any number may be asked for; the result is a handle of
+        // ours, closed below on every path, or null.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id) };
+        if process.is_null() {
+            return None;
+        }
+        let mut times = [FILETIME::default(); 4];
+        let [made, exited, kernel, user] = &mut times;
+        // SAFETY: the handle is open with the right to query; the four
+        // times are ours to write.
+        let read = unsafe { GetProcessTimes(process, made, exited, kernel, user) };
+        // SAFETY: the handle is ours, open, and closed once.
+        unsafe { CloseHandle(process) };
+        if read == 0 {
+            return None;
+        }
+        // Hundreds of nanoseconds each.
+        let ticks = |t: &FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        Some(std::time::Duration::from_nanos(
+            (ticks(&times[2]) + ticks(&times[3])).saturating_mul(100),
+        ))
     }
 
     /// How long ago this process was made, from its creation time.
