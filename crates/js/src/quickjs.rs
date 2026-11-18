@@ -302,7 +302,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     /// stopped, the bootstrap's own state is put back first (M26).
     fn begin(&mut self, host: &mut H, muted: bool) {
         // What compiled code of an earlier run left pending ([`clear_stale`]).
-        self.context.with(|ctx| clear_stale(&ctx));
+        self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
         *self.host.borrow_mut() = Some(std::mem::take(host));
         self.steps.set(0);
         self.work.set(0);
@@ -985,7 +985,7 @@ fn evaluate<'js>(
     let result = ctx
         .eval_with_options::<Value<'_>, _>(text, options)
         .catch(ctx);
-    clear_stale(ctx);
+    clear_stale(ctx, Stale::Compiled);
     result
 }
 
@@ -999,10 +999,47 @@ fn evaluate<'js>(
 /// next module a graph links: Google Maps' scripts, 2026-11-18. None is
 /// pending where this is called (after code compiled, as an operation
 /// begins) but such a one.
-pub(crate) fn clear_stale(ctx: &Ctx<'_>) {
-    if ctx.has_exception() {
-        let _ = ctx.catch();
+///
+/// A debug build says each it clears, and where, and panics for one that
+/// is not a SyntaxError: what else is pending there is a bug of ours (the
+/// lead's condition, 2026-11-18). A SyntaxError is let go wherever it is
+/// found, as code compiled within a script (its own text, `eval`, `new
+/// Function`) leaves one with no place after it to clear it but these.
+pub(crate) fn clear_stale(ctx: &Ctx<'_>, site: Stale) {
+    if !ctx.has_exception() {
+        return;
     }
+    let pending = ctx.catch();
+    #[cfg(debug_assertions)]
+    {
+        let syntax = pending
+            .as_object()
+            .and_then(|error| error.get::<_, String>("name").ok())
+            .is_some_and(|name| name == "SyntaxError");
+        let message = pending
+            .as_object()
+            .and_then(|error| error.get::<_, String>("message").ok())
+            .unwrap_or_default();
+        eprintln!("clear_stale ({site:?}): {message}");
+        assert!(
+            syntax,
+            "an exception not QuickJS-ng's parser's was pending ({site:?}): {pending:?}"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (pending, site);
+}
+
+/// Where [`clear_stale`] found what it cleared.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Stale {
+    /// After code compiled: a classic script, a module.
+    Compiled,
+    /// As a run of the realm began.
+    Begun,
+    /// Before a native's call (a debug build's guard).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    Native,
 }
 
 /// The error a dead realm reports for what it was asked to run.
@@ -1425,5 +1462,39 @@ fn with_host<H: ScriptingHost, R>(
     match slot.as_mut() {
         Some(host) => Ok(f(host)),
         None => Err(Exception::throw_internal(ctx, "no script is running")),
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use rquickjs::{Context, Exception, Runtime};
+
+    use super::{Stale, clear_stale};
+
+    /// A SyntaxError pending, QuickJS-ng's parser's, is cleared, said and
+    /// let go.
+    #[test]
+    fn a_pending_syntax_error_is_cleared() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let _ = Exception::throw_syntax(&ctx, "invalid number literal");
+            clear_stale(&ctx, Stale::Begun);
+            assert!(!ctx.has_exception());
+        });
+    }
+
+    /// Anything else pending as a run begins is a bug of ours: a debug
+    /// build panics.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "an exception not QuickJS-ng's parser's was pending (Begun)")]
+    fn another_pending_error_panics_in_a_debug_build() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let _ = Exception::throw_type(&ctx, "not a string");
+            clear_stale(&ctx, Stale::Begun);
+        });
     }
 }

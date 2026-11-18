@@ -3976,6 +3976,13 @@ site sweep or the dogfood sessions show a site breaking on it.
   to the lead if CI's runs start failing on it.
 - The 2D context's backing-store and `ImageData` size caps are the
   engine's own, not checked against Chrome's (backlog).
+- QuickJS-ng js_parse_skip_parens_token leaves a pending SyntaxError;
+  mitigated by clear_stale; not reported upstream, by the user's
+  choice. (Its look past a parenthesized expression reads a regular
+  expression after `)` as a division and gives up on what follows
+  without clearing the error; left, a later `import()` failed with it,
+  on Google Maps. A debug build panics for anything else pending where
+  it clears.)
 
 ---
 

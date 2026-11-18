@@ -359,7 +359,7 @@ pub(super) fn declare<'js, H: ScriptingHost>(
     }
     let module = Module::declare(ctx.clone(), name, text)?;
     // Linking it would fail on what its parse may leave pending.
-    super::clear_stale(ctx);
+    super::clear_stale(ctx, super::Stale::Compiled);
     let meta = module.meta()?;
     meta.set("url", base)?;
     let (host, budget, base) = (host.clone(), budget.clone(), base.to_owned());
