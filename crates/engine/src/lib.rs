@@ -2613,7 +2613,98 @@ impl Engine {
             };
             count += usize::from(shown.scripts.lend_out(&mut lent));
         }
-        count
+        count + usize::from(self.lend_incoming(agents))
+    }
+
+    /// Lends the document on its way, parsing before it is shown, to its
+    /// realm when that is of one of `agents` (G90): its scripts run as
+    /// the frame's document's, and its frame's window is its realm's.
+    fn lend_incoming(&mut self, agents: &[js::Agent<scripts::DocumentHost>]) -> bool {
+        let lendable = matches!(
+            &self.navigation,
+            Some(Navigation {
+                incoming: Incoming::Parsing { parsing, .. },
+                ..
+            }) if parsing.scripts.may_lend()
+                && parsing
+                    .scripts
+                    .agent()
+                    .is_some_and(|own| agents.iter().any(|agent| agent.same(own)))
+        );
+        if !lendable {
+            return false;
+        }
+        let window = self.incoming_window_env();
+        let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page,
+                    document,
+                    parsing,
+                },
+            ..
+        }) = &mut self.navigation
+        else {
+            return false;
+        };
+        let loader::Parsing {
+            load,
+            scripts,
+            animations,
+            ..
+        } = &mut **parsing;
+        let mut lent = scripts::Lent {
+            document,
+            frames: None,
+            images: None,
+            animations: Some(animations),
+            styled: None,
+            page,
+            parser: Some(load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+            window,
+        };
+        scripts.lend_out(&mut lent)
+    }
+
+    /// Takes back what [`Engine::lend_incoming`] lent: what the run did of
+    /// it is done as its own next run's would be.
+    fn take_back_incoming(&mut self) {
+        let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page,
+                    document,
+                    parsing,
+                },
+            ..
+        }) = &mut self.navigation
+        else {
+            return;
+        };
+        let loader::Parsing {
+            load,
+            scripts,
+            animations,
+            ..
+        } = &mut **parsing;
+        if !scripts.is_lent() {
+            return;
+        }
+        let mut lent = scripts::Lent {
+            document,
+            frames: None,
+            images: None,
+            animations: Some(animations),
+            styled: None,
+            page,
+            parser: Some(load),
+            network: &mut self.network,
+            ready: scripts::ReadyState::Loading,
+            window: scripts::WindowEnv::default(),
+        };
+        scripts.take_back(&mut lent);
     }
 
     /// Takes back what [`Engine::lend_around`] lent, and does what the
@@ -2633,6 +2724,7 @@ impl Engine {
                 frame.engine.take_back_around(None, agents);
             }
         }
+        self.take_back_incoming();
         if self.of_agents(agents) && self.shown.scripts.is_lent() {
             let ready = self.ready_state();
             let shown = &mut self.shown;

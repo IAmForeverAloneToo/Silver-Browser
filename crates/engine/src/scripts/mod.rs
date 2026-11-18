@@ -2004,6 +2004,7 @@ impl Scripts {
             match made {
                 Ok(mut realm) => {
                     if let Some(frame) = self.frame {
+                        realm.set_frame(frame);
                         realm.name_frame(Some(frame));
                     }
                     self.realm = Some(realm);
@@ -2388,6 +2389,13 @@ impl Scripts {
         self.lent_calls = self.host.calls;
         realm.lend(std::mem::take(&mut self.host));
         true
+    }
+
+    /// Whether it has a realm its document may be lent to, not lent now
+    /// ([`Scripts::lend_out`]): what a lending asks before it gathers
+    /// what it lends.
+    pub(crate) fn may_lend(&self) -> bool {
+        self.realm.as_ref().is_some_and(|realm| !realm.is_lent())
     }
 
     /// Whether its document is lent to its realm ([`Scripts::lend_out`]).

@@ -765,9 +765,16 @@ pub trait Realm<H: ScriptingHost> {
     fn is_lent(&self) -> bool {
         false
     }
+    /// The frame the realm's document is of, by its number in the tab,
+    /// whether or not the document is shown: what its runs are entered
+    /// as (G90).
+    fn set_frame(&mut self, frame: u32) {
+        let _ = frame;
+    }
     /// Names the frame the realm's document is of, by its number in the
-    /// tab, by which the other realms of its agent find it (G90 phase 2);
-    /// `None` once it is not the frame's document.
+    /// tab, by which the other realms of its agent find it (G90 phase 2),
+    /// while its document is the frame's shown one; `None` once it is
+    /// not.
     fn name_frame(&mut self, frame: Option<u32>) {
         let _ = frame;
     }

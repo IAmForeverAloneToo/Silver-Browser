@@ -21474,8 +21474,9 @@
       try {
         selfFrameId = native.frameSelf();
       } catch {
-        // A host that has no frames: the top.
-        selfFrameId = 0;
+        // No host to ask now (a realm of the agent reached while its
+        // document is not lent, G90): the top this once, not kept.
+        return 0;
       }
     }
     return selfFrameId;

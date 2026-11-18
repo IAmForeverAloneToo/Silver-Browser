@@ -348,6 +348,9 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// find them.
     global: Global,
     frame: Rc<Cell<Option<u32>>>,
+    /// The frame its document is of, shown or not: what its runs are
+    /// entered as.
+    own_frame: Option<u32>,
     /// Before the agent, which holds the runtime: a context goes first.
     context: Context,
     agent: Rc<AgentCore<H>>,
@@ -576,6 +579,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             key,
             global,
             frame,
+            own_frame: None,
             context,
             agent: core,
         })
@@ -592,7 +596,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
         *self.host.borrow_mut() = Some(std::mem::take(host));
-        self.agent.entry.set(self.frame.get());
+        self.agent.entry.set(self.own_frame.or(self.frame.get()));
         self.steps.set(0);
         self.work.set(0);
         self.exhausted.set(false);
@@ -1274,6 +1278,10 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
 
     fn is_lent(&self) -> bool {
         self.host.borrow().is_some()
+    }
+
+    fn set_frame(&mut self, frame: u32) {
+        self.own_frame = Some(frame);
     }
 
     fn name_frame(&mut self, frame: Option<u32>) {

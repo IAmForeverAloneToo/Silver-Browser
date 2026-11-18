@@ -548,3 +548,46 @@ fn a_frame_navigates_its_parent_of_its_own_origin_by_its_location() {
     let lines = run(&server, server.url("/page.html"), 1);
     assert_eq!(lines, ["top heard 1"]);
 }
+
+#[test]
+fn a_frames_document_on_its_way_is_reached_as_itself() {
+    // A frame of the page's origin parses its head, a stylesheet holding
+    // it back from being shown, and tells its parent; the parent reads
+    // the frame's document in a task of its own meanwhile (G90: the
+    // document on its way is the frame's, and lent as the shown one is).
+    // As the reference browser.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<iframe src=child.html></iframe><script>\
+             onmessage = () => console.log('parent reads', frames[0].document.title, \
+               frames[0].document.readyState);</script>",
+        )),
+        "/child.html" => Some(html(
+            "<title>child</title><script>parent.postMessage('on its way', '*')</script>\
+             <link rel=stylesheet href=slow.css><body>body</body>",
+        )),
+        "/slow.css" => {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Some(css("p { color: green }"))
+        }
+        _ => None,
+    });
+    let port = server.url("/").port().expect("a port").to_string();
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines: Vec<String> = tab
+        .run_until(|lines| !lines.is_empty())
+        .into_iter()
+        .map(|line| line.replace(&port, "PORT"))
+        .collect();
+    assert_eq!(lines, ["parent reads child loading"]);
+    // The frame was still on its way when its parent read it.
+    assert!(
+        tab.engine
+            .shown
+            .frames
+            .values()
+            .all(|frame| frame.engine.navigation.is_some())
+    );
+}
