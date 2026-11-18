@@ -234,14 +234,27 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // Then the page left alone, no input: what it still does, and
         // what wants its frames, the counts again after it, and the CPU
         // its processes used meanwhile.
-        let cpu_before = cpu_times(&tab);
+        // A renderer is counted from when it is first seen: one a frame
+        // brought meanwhile, or one the tab lists only now, would bring
+        // the time of its whole life (the first baseline's weather, at
+        // sixteen cores).
+        let mut cpu_first = cpu_times(&tab);
         let idle_began = Instant::now();
         let until = idle_began + IDLE;
+        let mut sampled = Instant::now();
         while Instant::now() < until {
             let _ = woken.recv_timeout(Duration::from_millis(50));
             step(&mut tab, began, &mut console);
+            if sampled.elapsed() >= Duration::from_millis(500) {
+                sampled = Instant::now();
+                for (pid, at) in cpu_times(&tab) {
+                    if !cpu_first.iter().any(|(p, _)| *p == pid) {
+                        cpu_first.push((pid, at));
+                    }
+                }
+            }
         }
-        idle_cpu = idle_shares(&cpu_before, &cpu_times(&tab), idle_began.elapsed());
+        idle_cpu = idle_shares(&cpu_first, &cpu_times(&tab), idle_began.elapsed());
         idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
