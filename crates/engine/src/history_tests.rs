@@ -179,8 +179,10 @@ fn a_fragment_navigation_by_script_is_done_at_once() {
 
 #[test]
 fn push_state_while_the_document_loads_comes_after_its_own_entry() {
+    // It pushes while the entry has no state: not again when reloaded.
     let server = server_with(
-        "console.log(history.length); history.pushState('loading', '', '/page?pushed');
+        "console.log(history.length); if (history.state === null) {
+           history.pushState('loading', '', '/page?pushed'); }
          console.log(history.length, location.search);",
     );
     let mut tab = scripted();
@@ -203,9 +205,11 @@ fn push_state_while_the_document_loads_comes_after_its_own_entry() {
             server.url("/page?pushed").to_string()
         ]
     );
-    // The state is the entry's: a document fetched again for it reads it.
+    // The state is the entry's: a document fetched again for it reads it,
+    // its script run (which, but for the state, would push again: CI's
+    // ubuntu read 4 once, the script having run before the reading).
     tab.engine.reload();
-    tab.settle();
+    tab.wait_until(|engine| engine.load_state() == &LoadState::Loaded);
     let said = run(
         &mut tab.engine,
         "console.log(history.state, history.length);",
