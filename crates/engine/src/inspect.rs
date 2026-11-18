@@ -220,6 +220,11 @@ impl Engine {
             // (`crate::sweep`), and the layouts run, which the sweep reads
             // to see a page settle.
             "page.sweep" => Ok(self.sweep_counts()),
+            // The renderer process's loop turns ([`crate::renderer`]).
+            "page.loop" => Ok(Json::object([(
+                "turns",
+                Json::from(crate::renderer::loop_turns() as f64),
+            )])),
             // An expression run in the page (M36.1).
             "console.evaluate" => {
                 let expression = request

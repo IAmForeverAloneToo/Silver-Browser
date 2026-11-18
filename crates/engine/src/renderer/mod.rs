@@ -9,6 +9,18 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, mpsc};
 
+/// How many times this renderer process's loop has turned: what the
+/// site sweep asks of each renderer (`page.loop`), so that a wait that
+/// never waits shows in its report, not in a CPU graph (a frame of no
+/// size turned one 160,000 times a second, 2026-11-18). Each turn takes
+/// a message or a due task or frame; one left alone turns rarely.
+static LOOP_TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`LOOP_TURNS`]: none in a process that runs no renderer's loop.
+pub(crate) fn loop_turns() -> u64 {
+    LOOP_TURNS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 use crate::ipc::{self, IPC_VERSION, Sender, ToBrowser, ToRenderer};
 
 mod host;
@@ -147,6 +159,7 @@ fn run_in(
     });
     let mut host = Host::new(link, fonts, wake);
     loop {
+        LOOP_TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let first = match host.wait() {
             Some(wait) => match inputs.recv_timeout(wait) {
                 Ok(input) => Some(input),

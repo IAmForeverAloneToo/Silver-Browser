@@ -263,6 +263,9 @@ pub struct RemoteTab {
     panel: bool,
     devtools: Vec<String>,
     inspected: Vec<String>,
+    /// The inspector's answers of every view, by its renderer's number:
+    /// what [`RemoteTab::inspect_every_renderer`] asked.
+    inspected_by: Vec<(u32, String)>,
     /// The tab's network log (M36.3), which its client tells.
     log: Arc<crate::network_log::NetworkLog>,
     /// The tabs its pages asked for (M37), whether its page asked to close
@@ -459,6 +462,7 @@ impl RemoteTab {
             panel: false,
             devtools: Vec::new(),
             inspected: Vec::new(),
+            inspected_by: Vec::new(),
             log,
             opened: Vec::new(),
             close_asked: false,
@@ -1418,10 +1422,13 @@ impl RemoteTab {
             {
                 self.devtools.push(message);
             }
-            ToBrowser::Inspected { message, .. }
-                if shown && self.inspected.len() < crate::MAX_INSPECTED_MESSAGES =>
-            {
-                self.inspected.push(message);
+            ToBrowser::Inspected { message, .. } => {
+                if self.inspected_by.len() < crate::MAX_INSPECTED_MESSAGES {
+                    self.inspected_by.push((number, message.clone()));
+                }
+                if shown && self.inspected.len() < crate::MAX_INSPECTED_MESSAGES {
+                    self.inspected.push(message);
+                }
             }
             // A tab the page shown asked for (M37): a page of the web's or a
             // blank one, at most MAX_OPENING waiting; the renderer's word
@@ -1890,6 +1897,34 @@ impl RemoteTab {
         if let Some(slot) = self.renderers.get(&number) {
             slot.renderer.kill();
         }
+    }
+
+    /// Asks one view of each of the tab's renderers, its pages' and its
+    /// frames', the inspector's `message`: the answers come by the
+    /// renderer's number ([`RemoteTab::take_inspected_by`]).
+    pub fn inspect_every_renderer(&mut self, message: &str) {
+        let mut views: Vec<ViewId> = self
+            .segments
+            .iter()
+            .filter_map(|segment| segment.renderer.map(|renderer| (renderer, segment.view)))
+            .chain(self.frame_views.keys().copied())
+            .collect();
+        views.sort_unstable();
+        views.dedup_by_key(|(renderer, _)| *renderer);
+        for (renderer, view) in views {
+            if let Some(slot) = self.renderers.get(&renderer) {
+                let _ = slot.renderer.send(&ToRenderer::Inspect {
+                    view,
+                    message: message.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// The inspector's answers of every view since last taken, by the
+    /// number of its renderer.
+    pub fn take_inspected_by(&mut self) -> Vec<(u32, String)> {
+        std::mem::take(&mut self.inspected_by)
     }
 
     /// The processes of the tab's renderers alive: for the checks.

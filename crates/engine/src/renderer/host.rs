@@ -839,6 +839,56 @@ mod tests {
     }
 
     #[test]
+    fn a_renderer_left_alone_with_nothing_due_hardly_turns() {
+        // Its loop, as `renderer::run` drives it, for a second with no
+        // message: a page drawn once, its frame not yet taken, and a
+        // frame of no size. It waits; it does not turn.
+        use super::{Host, Link};
+        use crate::ipc::{Sender, Settings, ToRenderer};
+        use std::sync::Arc;
+        let fonts = text::FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
+            .expect("the bundled font parses");
+        let link = Link::new(Sender::new(std::io::sink()));
+        let mut host = Host::new(link, Some(fonts), Arc::new(|| {}));
+        for (view, size) in [(1, 40), (2, 0)] {
+            host.handle(ToRenderer::CreateView {
+                view,
+                frame: view,
+                settings: Settings::default(),
+            })
+            .expect("made");
+            host.handle(ToRenderer::Resize {
+                view,
+                width: size,
+                height: size,
+                raster_width: size,
+                raster_height: size,
+            })
+            .expect("sized");
+        }
+        host.views
+            .get_mut(&1)
+            .expect("the page")
+            .engine
+            .load_document("<p>nothing runs here</p>");
+        host.turn();
+        let began = Instant::now();
+        let mut turns = 0;
+        while began.elapsed() < Duration::from_secs(1) {
+            match host.wait() {
+                // No message comes: the loop would wait for one.
+                None => break,
+                Some(wait) => {
+                    turns += 1;
+                    std::thread::sleep(wait.min(Duration::from_secs(1)));
+                    host.turn();
+                }
+            }
+        }
+        assert!(turns < 10, "{turns} turns in a second left alone");
+    }
+
+    #[test]
     fn a_view_of_no_size_wakes_its_renderer_for_no_frame() {
         // A frame of 0 by 0 wanted a frame it could never draw, and its
         // renderer's loop never waited. Given a size, it draws.

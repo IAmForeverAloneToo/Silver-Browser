@@ -139,6 +139,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut idle = Json::Null;
     let mut idle_cpu = Json::Null;
     let mut memory_idle = Json::Null;
+    let mut loop_turns = Json::Null;
     // The layouts the renderer last said it had run, and since when.
     let mut layouts: Option<(f64, Instant)> = None;
     // When a renderer last answered, or was first seen to run.
@@ -242,6 +243,7 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // brought meanwhile, or one the tab lists only now, would bring
         // the time of its whole life (the first baseline's weather, at
         // sixteen cores).
+        let turns_before = ask_loop_turns(&mut tab, &woken, began, &mut console, 1);
         let mut cpu_first = cpu_times(&tab);
         let idle_began = Instant::now();
         let until = idle_began + IDLE;
@@ -260,6 +262,8 @@ fn capture(asked: &Asked) -> Result<(), String> {
         }
         idle_cpu = idle_shares(&cpu_first, &cpu_times(&tab), idle_began.elapsed());
         memory_idle = memory_total(&tab);
+        let turns_after = ask_loop_turns(&mut tab, &woken, began, &mut console, 2);
+        loop_turns = turn_rates(&turns_before, &turns_after, idle_began.elapsed());
         idle = ask_counts(&mut tab, &woken, began, &mut console, next_id).unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
@@ -317,6 +321,10 @@ fn capture(asked: &Asked) -> Result<(), String> {
             "memoryTotal",
             Json::object([("load", memory_load), ("idle", memory_idle)]),
         ),
+        // Each renderer's loop turns a second while left alone, by its
+        // number, and the most of them: a wait that never waits turns
+        // thousands of times a second.
+        ("loopTurns", loop_turns),
         ("network", network),
         ("memory", peaks.json()),
         (
@@ -453,6 +461,81 @@ fn memory_total(tab: &RemoteTab) -> Json {
     ])
 }
 
+/// Ids of the sweep's own asks of every renderer, apart from its counts'.
+const LOOP_ASK: u64 = 1 << 40;
+
+/// Each of the tab's renderers' loop turns so far, by its number, as
+/// they answer within a second.
+fn ask_loop_turns(
+    tab: &mut RemoteTab,
+    woken: &mpsc::Receiver<()>,
+    began: Instant,
+    console: &mut Vec<Json>,
+    ask: u64,
+) -> Vec<(u32, f64)> {
+    let id = LOOP_ASK + ask;
+    let _ = tab.take_inspected_by();
+    tab.inspect_every_renderer(&format!("{{\"id\":{id},\"method\":\"page.loop\"}}"));
+    let mut turns: Vec<(u32, f64)> = Vec::new();
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        let _ = woken.recv_timeout(Duration::from_millis(50));
+        step(tab, began, console);
+        for (renderer, message) in tab.take_inspected_by() {
+            let Ok(answer) = Json::parse(&message) else {
+                continue;
+            };
+            if answer.get("id").and_then(Json::as_f64) != Some(id as f64) {
+                continue;
+            }
+            let count = answer
+                .get("result")
+                .and_then(|r| r.get("turns"))
+                .and_then(Json::as_f64);
+            if let Some(count) = count
+                && !turns.iter().any(|(r, _)| *r == renderer)
+            {
+                turns.push((renderer, count));
+            }
+        }
+    }
+    turns
+}
+
+/// The loop turns a second of each renderer that answered both times,
+/// `over` apart, by its number, and the most of them; null where none.
+fn turn_rates(before: &[(u32, f64)], after: &[(u32, f64)], over: Duration) -> Json {
+    if over.is_zero() {
+        return Json::Null;
+    }
+    let rates: Vec<(u32, f64)> = after
+        .iter()
+        .filter_map(|(renderer, at)| {
+            let (_, was) = before.iter().find(|(r, _)| r == renderer)?;
+            Some((
+                *renderer,
+                ((at - was).max(0.0) / over.as_secs_f64()).round(),
+            ))
+        })
+        .collect();
+    if rates.is_empty() {
+        return Json::Null;
+    }
+    let most = rates.iter().map(|(_, r)| *r).fold(0.0, f64::max);
+    Json::object([
+        (
+            "perSecond",
+            Json::Object(
+                rates
+                    .iter()
+                    .map(|(renderer, rate)| (renderer.to_string(), Json::from(*rate)))
+                    .collect(),
+            ),
+        ),
+        ("most", Json::from(most)),
+    ])
+}
+
 /// The CPU time each of the tab's renderers and the browser's own
 /// process has used, by process id, the browser's as 0.
 fn cpu_times(tab: &RemoteTab) -> Vec<(u32, Duration)> {
@@ -555,6 +638,23 @@ mod tests {
         assert_eq!(shares.get("renderers").and_then(Json::as_f64), Some(0.075));
         assert_eq!(shares.get("browser").and_then(Json::as_f64), Some(0.01));
         assert_eq!(idle_shares(&before, &[], s(10)), Json::Null);
+    }
+
+    #[test]
+    fn a_renderers_loop_turns_a_second_are_its_turns_over_the_time() {
+        let before = [(1, 100.0), (2, 50.0)];
+        // Renderer 1 turned 20 times in ten seconds, 2 spun, 3 came.
+        let after = [(1, 120.0), (2, 1_600_050.0), (3, 9.0)];
+        let rates = turn_rates(&before, &after, Duration::from_secs(10));
+        let per = rates.get("perSecond").expect("rates");
+        assert_eq!(per.get("1").and_then(Json::as_f64), Some(2.0));
+        assert_eq!(per.get("2").and_then(Json::as_f64), Some(160_000.0));
+        assert_eq!(per.get("3"), None, "not seen before");
+        assert_eq!(rates.get("most").and_then(Json::as_f64), Some(160_000.0));
+        assert_eq!(
+            turn_rates(&before, &[], Duration::from_secs(10)),
+            Json::Null
+        );
     }
 
     #[test]

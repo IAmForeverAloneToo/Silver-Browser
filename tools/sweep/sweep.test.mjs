@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 
-import { chromeIdleShares, idleSummary, memorySum, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
+import { chromeIdleShares, idleSummary, memorySum, spinning, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
 
 // A PNG of `width` by `height`, RGB, each pixel `colour(x, y)`.
 function png(width, height, colour) {
@@ -100,4 +100,10 @@ test("the processes' memory is the sum of their private bytes and working sets",
   assert.deepEqual(memorySum("100 40\r\n 200 60 \n"), { private: 300, workingSet: 100, processes: 2 });
   assert.equal(memorySum(""), null);
   assert.equal(memorySum("not numbers"), null);
+});
+
+test("a renderer that turns more than a thousand times a second left alone is flagged", () => {
+  assert.equal(spinning({ loopTurns: { most: 160000 } }), 160000);
+  assert.equal(spinning({ loopTurns: { most: 12 } }), null);
+  assert.equal(spinning({}), null);
 });

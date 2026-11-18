@@ -599,6 +599,13 @@ export function chromeIdleShares(before, after, seconds) {
   return { renderers: share(used("renderer")), browser: share(used("browser")), gpu: share(used("GPU")) };
 }
 
+// Whether a renderer's loop spun while the page was left alone: more
+// than a thousand turns a second (a wait that never waits), and how many.
+export function spinning(silver) {
+  const most = silver?.loopTurns?.most;
+  return typeof most === "number" && most > 1000 ? most : null;
+}
+
 // What a page left alone did in the sweep's idle time: its record's
 // counts after it less those at its end of load and scroll.
 export function idleSummary(silver) {
@@ -635,7 +642,7 @@ renderers peak ${mib(s.memory?.rendererPeakWorkingSet)} MiB / commit ${mib(s.mem
 <b>Chrome</b> ${esc(c.outcome)}${c.error ? ` (${esc(c.error)})` : ""}; paint ${ms(c.timings?.firstPaint)}, load ${ms(c.timings?.load)}, settled ${ms(c.timings?.settled)}.
 <b>Likeness</b> top ${r.similarity.top ?? "-"}, scrolled ${r.similarity.scrolled ?? "-"}${r.hostsDiffer ? " <b>(served different hosts: discount it)</b>" : ""}.<br>
 Served: Silver ${esc(r.served?.silver ?? "-")}; Chrome ${esc(r.served?.chrome ?? "-")}.<br>
-<b>Left alone</b> (Silver): ${esc(idleSummary(s))}.
+<b>Left alone</b> (Silver): ${esc(idleSummary(s))}${spinning(s) ? ` <b>A RENDERER'S LOOP SPUN: ${spinning(s)} turns a second</b>` : ""}; loop turns a second at most ${s.loopTurns?.most ?? "-"}.
 CPU left alone, share of a core: Silver renderers ${s.idleCpu?.renderers ?? "-"}, browser ${s.idleCpu?.browser ?? "-"};
 Chrome renderers ${c.idleCpu?.renderers ?? "-"}, browser ${c.idleCpu?.browser ?? "-"}, GPU ${c.idleCpu?.gpu ?? "-"}.<br>
 Memory of all processes, private MiB at load / left alone: Silver ${mib(s.memoryTotal?.load?.private)} / ${mib(s.memoryTotal?.idle?.private)}; Chrome ${mib(c.memoryTotal?.load?.private)} / ${mib(c.memoryTotal?.idle?.private)}.</p>
