@@ -452,10 +452,14 @@ fn memory_total(tab: &RemoteTab) -> Json {
     if read.is_empty() {
         return Json::Null;
     }
-    let private: u64 = read.iter().filter_map(|m| m.private).sum();
+    // Unknown where any process's is (macOS's): null, not a part's sum.
+    let private: Option<u64> = read.iter().map(|m| m.private).sum();
     let working: u64 = read.iter().map(|m| m.working_set).sum();
     Json::object([
-        ("private", Json::from(private as f64)),
+        (
+            "private",
+            private.map_or(Json::Null, |p| Json::from(p as f64)),
+        ),
         ("workingSet", Json::from(working as f64)),
         ("processes", Json::from(read.len() as f64)),
     ])

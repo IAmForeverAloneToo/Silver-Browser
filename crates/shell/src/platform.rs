@@ -326,7 +326,8 @@ pub(crate) fn process_age() -> Option<std::time::Duration> {
 /// How much CPU time process `id` has used, in user and kernel mode
 /// together, for the site sweep's measure of a page left alone: on
 /// Windows from `GetProcessTimes`, on Linux from `/proc`. `None` where
-/// it cannot be read.
+/// it cannot be read. The one-process build has no sweep to ask it.
+#[cfg_attr(feature = "single-process", allow(dead_code))]
 pub(crate) fn process_cpu_time(id: u32) -> Option<std::time::Duration> {
     #[cfg(windows)]
     {
@@ -1648,6 +1649,7 @@ mod windows {
 
     /// The CPU time process `id` has used, user and kernel, read with no
     /// more than the right to query it.
+    #[cfg_attr(feature = "single-process", allow(dead_code))]
     pub(super) fn process_cpu_time(id: u32) -> Option<std::time::Duration> {
         use windows_sys::Win32::Foundation::FILETIME;
         use windows_sys::Win32::System::Threading::GetProcessTimes;

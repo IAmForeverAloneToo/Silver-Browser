@@ -141,7 +141,12 @@ fn a_page_that_loads_is_captured_with_its_timings_counts_and_screenshots() {
     // The memory of all its processes, at the load and left alone.
     for when in ["load", "idle"] {
         let at = field(field(&record, "memoryTotal"), when);
-        assert!(field(at, "private").as_f64() > Some(0.0), "{record:?}");
+        // The private bytes are unknown on macOS, as its `ps` says none.
+        let private = field(at, "private").as_f64();
+        assert!(
+            private.map_or(cfg!(target_os = "macos"), |p| p > 0.0),
+            "{record:?}"
+        );
         assert!(field(at, "workingSet").as_f64() > Some(0.0), "{record:?}");
         assert!(field(at, "processes").as_f64() >= Some(2.0), "{record:?}");
     }
