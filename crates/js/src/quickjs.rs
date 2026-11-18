@@ -258,13 +258,18 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 .catch(&ctx)
                 .map_err(|e| e.to_string())
             })
-            .map_err(|message| ScriptError {
-                kind: ErrorKind::Exception,
-                message,
-                url: String::new(),
-                line: 0,
-                column: 0,
-                stack: Vec::new(),
+            .map_err(|message| {
+                // A realm not made goes without its `Drop`: the natives a
+                // debug build guards go before its context, as there.
+                guards.borrow_mut().clear();
+                ScriptError {
+                    kind: ErrorKind::Exception,
+                    message,
+                    url: String::new(),
+                    line: 0,
+                    column: 0,
+                    stack: Vec::new(),
+                }
             })?;
         *entries.borrow_mut() = Some(saved);
         #[cfg(feature = "js-sampler")]

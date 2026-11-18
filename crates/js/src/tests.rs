@@ -893,3 +893,17 @@ mod sampler_tests {
         assert_eq!(done, Completion::String(format!("{plain} 0")));
     }
 }
+
+/// A realm whose bootstrap its heap refuses is not made, and goes
+/// cleanly: a debug build's guarded natives go before its context, or
+/// QuickJS finds the realm's objects still held as its runtime goes.
+#[test]
+fn a_realm_its_heap_refuses_goes_cleanly() {
+    for heap in [64 << 10, 1 << 20] {
+        let made = QuickJs.realm::<Recorder>(Limits {
+            heap,
+            ..Limits::default()
+        });
+        assert!(made.is_err(), "a heap of {heap} bytes");
+    }
+}
