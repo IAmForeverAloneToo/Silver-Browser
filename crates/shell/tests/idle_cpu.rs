@@ -1,8 +1,11 @@
 //! The browser left alone uses next to no CPU (the beta's daily use): a
 //! window showing a page with nothing running, or a page whose only
 //! work is a clock's text changed once a second, settled, then measured
-//! for ten seconds. Every process of the browser's (the browser's, its
-//! renderers', its GPU process's) is to use less than 2% of a core.
+//! over three windows of ten seconds each. Every process of the
+//! browser's (the browser's, its renderers', its GPU process's) is to
+//! use less than 2% of a core in its quietest window: a process that
+//! burns does so in all three, where one window alone was found at
+//! 0.0203 by the machine's other work (2026-11-18).
 //!
 //! A real window, which the maintainer's gate shows and a CI runner may
 //! not: it runs when `SILVER_WINDOWED_TESTS` is set, and says it was
@@ -23,8 +26,9 @@ const BROWSER: &str = env!("CARGO_BIN_EXE_silver-browser");
 /// How long a page is given to load and settle before it is measured.
 const SETTLE: Duration = Duration::from_secs(6);
 
-/// How long it is measured.
+/// How long each window it is measured over lasts, and how many.
 const MEASURED: Duration = Duration::from_secs(10);
+const WINDOWS: usize = 3;
 
 /// The most of a core a process may use meanwhile.
 const MOST: f64 = 0.02;
@@ -73,7 +77,8 @@ fn end(child: &mut Child) {
 }
 
 /// The share of a core each process of the browser showing `url` used
-/// over [`MEASURED`], once settled, by its role.
+/// in the quietest of [`WINDOWS`] windows of [`MEASURED`], once
+/// settled, by its role.
 fn idle_shares(url: &str) -> Vec<(String, f64)> {
     let mut child = Command::new(BROWSER)
         .args(["--temporary-profile", "--enable-scripts", "--software", url])
@@ -84,18 +89,26 @@ fn idle_shares(url: &str) -> Vec<(String, f64)> {
         child.try_wait().ok().flatten().is_none(),
         "the browser ended before it was measured"
     );
-    let before = cpu_times(child.id());
-    thread::sleep(MEASURED);
-    let after = cpu_times(child.id());
+    let mut samples = vec![cpu_times(child.id())];
+    for _ in 0..WINDOWS {
+        thread::sleep(MEASURED);
+        samples.push(cpu_times(child.id()));
+    }
     end(&mut child);
-    after
-        .iter()
-        .map(|(pid, role, ms)| {
-            let was = before
-                .iter()
-                .find(|(p, ..)| p == pid)
-                .map_or(0.0, |(.., ms)| *ms);
-            (role.clone(), (ms - was) / MEASURED.as_millis() as f64)
+    let last = samples.last().expect("sampled").clone();
+    last.iter()
+        .map(|(pid, role, _)| {
+            let at = |sample: &[(u32, String, f64)]| {
+                sample
+                    .iter()
+                    .find(|(p, ..)| p == pid)
+                    .map_or(0.0, |(.., ms)| *ms)
+            };
+            let quietest = samples
+                .windows(2)
+                .map(|w| (at(&w[1]) - at(&w[0])) / MEASURED.as_millis() as f64)
+                .fold(f64::INFINITY, f64::min);
+            (role.clone(), quietest)
         })
         .collect()
 }

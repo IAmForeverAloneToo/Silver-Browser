@@ -3964,6 +3964,18 @@ site sweep or the dogfood sessions show a site breaking on it.
   the native side finds a sheet by its owner, not its serial. The
   reference browser keeps the old sheet's rules. Found by the rule
   list's kept rules (bbc).
+- A new tab can report its first, blank document loaded after its
+  navigation began (`service::tab`): the browser shows it loaded for a
+  moment before the page's own load. A state could carry the number of
+  the navigation it is of. Found by CI's Linux run of a tab test
+  (e6e406cf0, which waits for the page's title instead).
+- The WebGPU CTS subset fails now and then on cases that differ from
+  run to run (`error_scope:simple`, `labels`, buffer mapping), a flake
+  older than the idle work: run alternately, HEAD and the change were
+  each clean five and four times (2026-11-18). Cause unknown; it goes
+  to the lead if CI's runs start failing on it.
+- The 2D context's backing-store and `ImageData` size caps are the
+  engine's own, not checked against Chrome's (backlog).
 
 ---
 

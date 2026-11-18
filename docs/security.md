@@ -935,6 +935,10 @@ seconds (`PROMPT_TIMEOUT`).
 - **`navigator.storage` outside secure contexts** (G158): a page over
   plain HTTP reads its storage key's usage, where the Storage Standard
   gives the API to secure contexts alone.
+- **The profile's table keys are in the clear**: the values are sealed
+  (AES-256-GCM under a data key DPAPI wraps), but the keys they are
+  stored by, origins and item keys, are readable in `profile.redb`.
+  Keyed hashing of them is to be considered after the beta.
 - **A console argument's preview may run a `Proxy`'s traps** (G160):
   the page's own code, under its own budget, never the browser's; no
   getter runs.
