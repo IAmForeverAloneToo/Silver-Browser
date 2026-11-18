@@ -304,10 +304,7 @@ impl State {
 /// compiled, an `import()`'s among them, keeps the active script that
 /// code runs for, which such an `import()` resolves against.
 pub(super) fn promise_made(ctx: &Ctx<'_>, state: &State) {
-    let Some(name) = ctx.script_or_module_name(0) else {
-        return;
-    };
-    if Atom::from_str(ctx.clone(), INPUT).is_ok_and(|input| input == name) {
+    if made_by_input(ctx) {
         let found = active(ctx, 1);
         let mut input = state.input.borrow_mut();
         if input.len() == MAX_INPUT {
@@ -315,6 +312,14 @@ pub(super) fn promise_made(ctx: &Ctx<'_>, state: &State) {
         }
         input.push_back(found);
     }
+}
+
+/// Whether the promise being made is made by code a string compiled:
+/// the only one [`promise_made`] keeps anything of, asked first, so that
+/// the agent finds the realm (G90) only for such a one.
+pub(super) fn made_by_input(ctx: &Ctx<'_>) -> bool {
+    ctx.script_or_module_name(0)
+        .is_some_and(|name| Atom::from_str(ctx.clone(), INPUT).is_ok_and(|input| input == name))
 }
 
 /// The active script from `from` frames up the stack (HTML's

@@ -292,6 +292,7 @@ impl<H: ScriptingHost> Agent<H> {
         runtime.set_promise_hook(Some(Box::new(
             move |ctx: Ctx<'_>, hook: PromiseHookType, _: Value<'_>, _: Value<'_>| {
                 if matches!(hook, PromiseHookType::Init)
+                    && modules::made_by_input(&ctx)
                     && let Some(links) = links_of(&hooked, &ctx)
                 {
                     modules::promise_made(&ctx, &links.modules);
