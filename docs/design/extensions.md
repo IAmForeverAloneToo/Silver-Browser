@@ -1,6 +1,7 @@
 # Design note: extensions (1Password and uBlock Origin first)
 
-Status: proposed, 2026-11-18, for the lead's approval before any code.
+Status: approved by the lead, 2026-11-19, with the conditions of
+section 6; the inventory of phase 0 is section 5.
 Written against `docs/design/same-origin-frames.md` (G90): its agents,
 realms and landing rules are what content scripts run in.
 
@@ -162,7 +163,7 @@ are uBO's own code in its content script, needing the DOM and
 - **Extension pages' CSP**: Manifest V3's: no remote code, no `eval`,
   `wasm-unsafe-eval` allowed (both extensions run WebAssembly).
 
-### Native messaging (optional)
+### Native messaging (post-beta)
 
 1Password's desktop integration uses `runtime.connectNative` to a
 native host registered in the Windows registry
@@ -170,8 +171,8 @@ native host registered in the Windows registry
 1Password's installer writes for Chrome-family browsers). The browser
 process would start the host (its manifest's path, checked to allow
 the extension's ID) and pipe length-prefixed JSON. It starts a native
-process, so it is a phase of its own, for the lead's ruling after the
-rest works; the extension signs in on its own meanwhile.
+process; the user does not use the link, so it is out of the beta,
+and the extension signs in on its own.
 
 ### Security
 
@@ -283,8 +284,9 @@ core to the module's own work.
    daily-list sign-in page, by the user in a dogfood session.
 7. **WebAssembly zero-copy** (section 2; 3 to 4 days with its fuzz
    target), when the lead orders it among the builds.
-8. Later: native messaging (lead's ruling), context menus,
-   notifications, the Web Store's updates.
+8. Later: context menus, notifications, the Web Store's updates.
+   Post-beta: native messaging (the user does not use 1Password's
+   desktop link).
 
 About three to four weeks for phases 0 to 6, after G90's phases 1 to
 3, which phase 2 needs.
@@ -297,3 +299,67 @@ About three to four weeks for phases 0 to 6, after G90's phases 1 to
 - Sync of extension storage across machines (no sync; Windows only).
 - DevTools for extensions' pages beyond what the inspector gives any
   page.
+
+## 5. The inventory (phase 0, 2026-11-19)
+
+Read from the packages AMO serves (uBlock Origin 1.76.4, 6.3 MB, and
+1Password 8.12.44.33, 18.9 MB), each downloaded over HTTPS and checked
+against the SHA-256 AMO's API gives, read and never run: the manifests,
+and a scan of their scripts for the extension APIs' members and the
+web platform's interfaces. **Both are Manifest V2**: a background page,
+`browserAction`, `tabs.executeScript`/`insertCSS`, blocking
+`webRequest`. So V2 is the beta's model, and V3 the door kept.
+
+| | uBlock Origin | 1Password |
+|---|---|---|
+| background | page | page |
+| content scripts | 3 in every frame, `match_about_blank`, at `document_start`; 2 on its own sites | 3 in every frame at `document_start`, one in the page's world (`MAIN`); 3 on its own and partners' sites |
+| blocking | `webRequest` blocking (`onBeforeRequest`, headers), `filterResponseData` (Firefox's, HTML filtering) | `declarativeNetRequest` static ruleset (`WithHostAccess`); `webRequest` `onHeadersReceived`, `onAuthRequired` (HTTP authentication filling) |
+| other extension APIs | `storage` (local, sync, session, managed), `tabs`, `windows`, `webNavigation`, `browserAction` badge, `alarms`, `menus`, `commands`, `dns` (CNAME uncloaking, Firefox's), `privacy`, `i18n` | `runtime` messaging and ports, `tabs`, `scripting`, `windows`, `storage`, `alarms`, `notifications`, `idle`, `contextMenus`, `privacy.services` (the browser's own password saving off), `management`, `downloads`, `webNavigation`, `clipboardWrite`, `nativeMessaging` (deferred), `commands` |
+| WebAssembly | 4 modules (hostname and URL tries, LZ4, the public suffix list) | 7 modules (its core, HPKE, trust log, ...) |
+| web APIs used | IndexedDB, Cache API, workers, `BroadcastChannel`, `structuredClone`, `requestIdleCallback`, `crypto.subtle.digest`, `randomUUID`, `MutationObserver`, selection, `execCommand` | `crypto.subtle` (`importKey`, `exportKey`, `generateKey`, `sign`, `decrypt`, `digest`; AES-GCM, RSA-OAEP, ECDSA, Ed25519, X25519, HKDF, HMAC, PBKDF2, SHA-1/256/384/512), `getRandomValues`, IndexedDB, `WebSocket` (its notifier), `navigator.locks` (its session manager, unguarded), `SharedWorker`, `BroadcastChannel`, `navigator.clipboard`, `PublicKeyCredential` / `navigator.credentials` (passkeys), popovers, shadow roots, the observers, `OffscreenCanvas`, `FinalizationRegistry`, `userAgentData` |
+
+**What Silver lacks**, and where it goes (the lead places it):
+
+| missing | needed by | weight | placement proposed |
+|---|---|---|---|
+| Web Crypto (`crypto.subtle`), no G item | 1Password, its unlock and vault; uBO's one digest | large: every algorithm above, on `aws-lc` (already a dependency, through TLS) | before 1Password (build step 5) |
+| Web Locks (`navigator.locks`), no G item | 1Password's session manager, unguarded | small: one realm's locks, then a worker's | before 1Password |
+| WebSockets (G74) | 1Password's notifier (it degrades without it) | medium | before 1Password |
+| async Clipboard (`navigator.clipboard`), no G item | 1Password's copy of a password | small (write only, with the permission) | before 1Password |
+| `SharedWorker` (G82) | 1Password, where available | medium | after, unless phase 6 shows it is required |
+| WebAuthn (`PublicKeyCredential`), no G item | 1Password's passkeys | large | post-beta, unless the user uses passkeys (the lead asks) |
+| `webRequest.filterResponseData` | uBO's HTML filtering (Firefox's API) | medium (the response body as a stream to the extension) | after uBO runs, measured on what it changes |
+| `dns.resolve` | uBO's CNAME uncloaking (Firefox's API) | small (the resolver exists) | with uBO |
+| `privacy` | both (settings only) | small | with each |
+| Streams (G67), `userAgentData` | a use each, guarded | small | as already queued |
+
+## 6. The lead's conditions (2026-11-19)
+
+**The Firefox path first, by AMO, with an allowlist.** The two are
+installed from AMO by their fixed IDs (`uBlock0@raymondhill.net`,
+`{d634138d-c276-4fc8-924b-40a0ea21d284}`), the XPI fetched over HTTPS
+from the address AMO's API gives. Its integrity, for the beta: the
+SHA-256 AMO's API gives over HTTPS, checked against the file before
+anything of it is read (phase 1; the inventory used exactly this).
+Mozilla's signature itself (`META-INF/cose.sig` over
+`cose.manifest`, and the PKCS#7 `mozilla.rsa`, chained to Mozilla's
+root) is a phase after the beta's: COSE and X.509 chain parsing, on
+`aws-lc`. Updates: AMO's API asked daily for each, a new version
+fetched, checked the same way and applied at once (the extension
+reloaded), so that a security fix reaches the user without their
+doing anything. For the beta only those two IDs may be installed;
+any other is refused with a message naming the beta's rule. The CRX
+path of section 1 stays for after the beta.
+
+**Blocking fails open.** A blocking `webRequest` listener's answer
+past its deadline (one second) lets the request go, counted and
+logged. At startup, the requests of the restored session wait for the
+blocking extensions to be loaded, as Firefox waits for uBO, at most a
+few seconds (three), then go, counted and logged. Both are tested: a
+test extension that never answers, and one slow to load.
+
+**Native messaging is out of the beta**: the user does not use
+1Password's link to its desktop app (the lead, 2026-11-19), so
+1Password runs on its own, and native messaging is a post-beta line
+among the later items.

@@ -3976,6 +3976,12 @@ site sweep or the dogfood sessions show a site breaking on it.
   to the lead if CI's runs start failing on it.
 - The 2D context's backing-store and `ImageData` size caps are the
   engine's own, not checked against Chrome's (backlog).
+- Nested `:is()`/`&` matching is exponential in depth; a hostile page
+  can hang its own renderer. (A rule nested twenty deep in lists of
+  four, on a document nested as deep: 1.7 s at depth 20, doubling a
+  level; the matcher keeps no memo of a list's answer for an element.
+  To be fixed with style invalidation and matching, whose acceptance
+  gains a fuzz case of matching depth.)
 - Fresh about:blank/srcdoc frames are cross-origin to their creator
   (G90); anti-bot scripts such as Kasada may flag the user at sign-in.
   (Twitch's Kasada frame reads `TextEncoder` from an about:blank child
