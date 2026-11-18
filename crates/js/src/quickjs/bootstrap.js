@@ -21471,6 +21471,11 @@
     if (id === selfFrame()) {
       return global;
     }
+    // A frame of this window's agent: its own window (G90 phase 2).
+    const own = native.frameWindow(id);
+    if (own !== null) {
+      return own;
+    }
     let window = MapGet(frameWindows, id);
     if (window === undefined) {
       window = frameWindow(id);
@@ -21867,9 +21872,15 @@
       },
       get contentDocument() {
         const frame = native.frameOf(self(this));
-        if (frame >= 0) {
-          native.frameSweep(frame, 1);
+        if (frame < 0) {
+          return null;
         }
+        // A frame of this window's agent: its document (G90 phase 2).
+        const own = native.frameWindow(frame);
+        if (own !== null) {
+          return own.document;
+        }
+        native.frameSweep(frame, 1);
         return null;
       },
       get sandbox() {

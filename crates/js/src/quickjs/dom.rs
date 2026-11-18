@@ -1325,7 +1325,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     secure: bool,
     (host, budget): (&Slot<H>, &Budget),
     (entries, guards): (&Entries, &Guards),
-    state: &Rc<modules::State>,
+    (state, realms): (&Rc<modules::State>, &super::Realms<H>),
     console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
@@ -1403,6 +1403,23 @@ pub(super) fn install<'js, H: ScriptingHost>(
         .with_name(name)?;
         natives.set(name, native)?;
     }
+    // A frame of this realm's agent, its global object; `null` for one of
+    // another agent (G90 phase 2), which only the cross-origin window
+    // reaches.
+    let agent = realms.clone();
+    natives.set(
+        "frameWindow",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, frame: f64| -> rquickjs::Result<Value<'js>> {
+                if !(frame >= 0.0 && frame <= f64::from(u32::MAX)) {
+                    return Ok(Value::new_null(ctx));
+                }
+                Ok(super::frame_global(&agent, &ctx, frame as u32)?
+                    .map_or_else(|| Value::new_null(ctx.clone()), Object::into_value))
+            },
+        )?,
+    )?;
     // `document.title` keeps M24's two methods of the host.
     let read = host.clone();
     natives.set(

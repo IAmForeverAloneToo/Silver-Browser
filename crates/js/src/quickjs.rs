@@ -139,7 +139,15 @@ pub(crate) struct Links<H: ScriptingHost> {
     modules: Rc<modules::State>,
     host: Slot<H>,
     entries: Entries,
+    /// Its global object, for the agent's other realms (G90 phase 2).
+    global: Global,
+    /// The frame its document is of, once the engine names it.
+    frame: Rc<Cell<Option<u32>>>,
 }
+
+/// A realm's global object, kept for the other realms of its agent;
+/// emptied as the realm goes, before its context.
+type Global = Rc<RefCell<Option<Persistent<Object<'static>>>>>;
 
 impl<H: ScriptingHost> Clone for Links<H> {
     fn clone(&self) -> Self {
@@ -149,8 +157,26 @@ impl<H: ScriptingHost> Clone for Links<H> {
             modules: Rc::clone(&self.modules),
             host: Rc::clone(&self.host),
             entries: Rc::clone(&self.entries),
+            global: Rc::clone(&self.global),
+            frame: Rc::clone(&self.frame),
         }
     }
+}
+
+/// The global object of the realm of `frame` in the agent of `ctx`'s
+/// realm, if it has one there (G90 phase 2): a script reaches a frame of
+/// its own agent's origin as itself.
+pub(crate) fn frame_global<'js, H: ScriptingHost>(
+    realms: &Realms<H>,
+    ctx: &Ctx<'js>,
+    frame: u32,
+) -> rquickjs::Result<Option<Object<'js>>> {
+    let found = realms
+        .borrow()
+        .values()
+        .find(|links| links.frame.get() == Some(frame))
+        .and_then(|links| links.global.borrow().clone());
+    found.map(|global| global.restore(ctx)).transpose()
 }
 
 /// An agent's realms' links, by their contexts' addresses.
@@ -221,6 +247,10 @@ struct QuickJsRealm<H: ScriptingHost> {
     dead: Rc<Cell<Option<Death>>>,
     /// Its context's address, by which the agent's hooks know it.
     key: usize,
+    /// Its global object and its frame, as the agent's other realms
+    /// find them.
+    global: Global,
+    frame: Rc<Cell<Option<u32>>>,
     /// Before the agent, which holds the runtime: a context goes first.
     context: Context,
     agent: Rc<AgentCore<H>>,
@@ -377,6 +407,8 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         module_state
             .css
             .set(matches!(kind, RealmKind::Window | RealmKind::DevTools));
+        let global: Global = Rc::default();
+        let frame: Rc<Cell<Option<u32>>> = Rc::default();
         core.realms.borrow_mut().insert(
             key,
             Links {
@@ -385,6 +417,8 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 modules: module_state.clone(),
                 host: host.clone(),
                 entries: entries.clone(),
+                global: global.clone(),
+                frame: frame.clone(),
             },
         );
         let saved = context
@@ -396,7 +430,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                     &host,
                     &budget,
                     (&entries, &guards),
-                    &module_state,
+                    (&module_state, &core.realms),
                 )
                 .map(|entries| Persistent::save(&ctx, entries))
                 .catch(&ctx)
@@ -418,6 +452,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 }
             })?;
         *entries.borrow_mut() = Some(saved);
+        context.with(|ctx| *global.borrow_mut() = Some(Persistent::save(&ctx, ctx.globals())));
         Ok(QuickJsRealm {
             rejections,
             entries,
@@ -434,6 +469,8 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             limits,
             dead: Rc::clone(&core.dead),
             key,
+            global,
+            frame,
             context,
             agent: core,
         })
@@ -580,6 +617,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         // The agent forgets it; its hooks are the agent's, which goes
         // with its last realm.
         self.agent.realms.borrow_mut().remove(&self.key);
+        *self.global.borrow_mut() = None;
         self.rejections.borrow_mut().clear();
         self.modules.clear();
         *self.entries.borrow_mut() = None;
@@ -1118,6 +1156,18 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
     fn dead(&self) -> Option<Death> {
         self.dead.get()
     }
+
+    fn lend(&mut self, host: H) {
+        *self.host.borrow_mut() = Some(host);
+    }
+
+    fn reclaim(&mut self) -> Option<H> {
+        self.host.borrow_mut().take()
+    }
+
+    fn name_frame(&mut self, frame: u32) {
+        self.frame.set(Some(frame));
+    }
 }
 
 /// Runs `source` as a classic script: global, not strict, its errors
@@ -1516,7 +1566,7 @@ fn install<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &dom::Budget,
     (entries, guards): (&Entries, &dom::Guards),
-    modules: &Rc<modules::State>,
+    (modules, realms): (&Rc<modules::State>, &Realms<H>),
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
@@ -1606,7 +1656,7 @@ fn install<'js, H: ScriptingHost>(
         secure,
         (host, budget),
         (entries, guards),
-        modules,
+        (modules, realms),
         console,
     )
 }

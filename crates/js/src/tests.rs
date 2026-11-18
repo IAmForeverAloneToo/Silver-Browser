@@ -35,6 +35,9 @@ pub(crate) struct Recorder {
     /// the fetch options each asked with.
     pub(crate) imports: Vec<(u32, String)>,
     pub(crate) import_options: Vec<u32>,
+    /// The frame its document is of and the frames under it, by their
+    /// numbers, when it answers for frames (G90's tests).
+    pub(crate) frames: Option<(u32, Vec<u32>)>,
 }
 
 impl ScriptingHost for Recorder {
@@ -125,6 +128,18 @@ impl ScriptingHost for Recorder {
                 self.import_options.push(options);
                 Ok(Answer::Nothing)
             }
+            Call::FrameSelf if self.frames.is_some() => Ok(Answer::Number(f64::from(
+                self.frames.as_ref().map_or(0, |(me, _)| *me),
+            ))),
+            Call::FrameLength(_) if self.frames.is_some() => Ok(Answer::Number(
+                self.frames.as_ref().map_or(0, |(_, under)| under.len()) as f64,
+            )),
+            Call::FrameChild(_, at) if self.frames.is_some() => Ok(Answer::Number(
+                self.frames
+                    .as_ref()
+                    .and_then(|(_, under)| under.get(at as usize))
+                    .map_or(-1.0, |&frame| f64::from(frame)),
+            )),
             call => self.tree.dom(call),
         }
     }
@@ -996,5 +1011,56 @@ mod agent_tests {
             .run(&script("for (;;) {}"), &mut Recorder::default())
             .expect_err("stopped");
         assert_eq!(error.kind, ErrorKind::Budget, "{error:?}");
+    }
+}
+
+/// G90 phase 2: a realm reaches a frame of its agent as itself, its
+/// document through the host the frame's realm is lent.
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_of_the_agent_is_reached_as_itself() {
+        let agent = QuickJs
+            .agent::<Recorder>(Limits::default(), None)
+            .expect("an agent");
+        let mut top = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window)
+            .expect("a realm");
+        let mut child = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window)
+            .expect("another");
+        top.name_frame(0);
+        child.name_frame(5);
+        let mut child_host = Recorder {
+            frames: Some((5, Vec::new())),
+            title: "bee".into(),
+            ..Recorder::default()
+        };
+        child
+            .run(&script("var made = 'in the frame'"), &mut child_host)
+            .expect("it runs");
+        child.lend(child_host);
+        let mut host = Recorder {
+            frames: Some((0, vec![5])),
+            ..Recorder::default()
+        };
+        top.enter(&Task::FrameList(vec![String::new()]), &mut host)
+            .expect("the window's frames");
+        let done = top
+            .run(
+                &script(
+                    "var w = frames[0]; \
+                     [typeof w.TextEncoder, w.TextEncoder === TextEncoder, w.made, \
+                      w.document.title, w.Array === Array].join()",
+                ),
+                &mut host,
+            )
+            .expect("it runs");
+        assert_eq!(
+            done,
+            Completion::String("function,false,in the frame,bee,false".into())
+        );
+        assert!(child.reclaim().is_some());
     }
 }

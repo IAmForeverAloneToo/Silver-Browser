@@ -750,6 +750,22 @@ pub trait Realm<H: ScriptingHost> {
     fn samples(&self) -> Vec<(String, u64)> {
         Vec::new()
     }
+    /// Lends the realm `host` while a run of another realm of its agent
+    /// is under way (G90 phase 2), for what that run asks of this
+    /// realm's document through its objects; [`Realm::reclaim`] takes it
+    /// back. A realm of an agent of its own is never asked.
+    fn lend(&mut self, host: H) {
+        let _ = host;
+    }
+    /// The host lent, back.
+    fn reclaim(&mut self) -> Option<H> {
+        None
+    }
+    /// Names the frame the realm's document is of, by its number in the
+    /// tab, by which the other realms of its agent find it (G90 phase 2).
+    fn name_frame(&mut self, frame: u32) {
+        let _ = frame;
+    }
     /// The heap in use, in bytes.
     fn heap(&self) -> usize;
     /// Collects the garbage now.
