@@ -8870,16 +8870,55 @@
   // The namespace of an element's first attribute named `qualified`, as
   // the host keeps it (D67): the one it was given or its name implies;
   // null for none.
-  function attributeNamespace(element, qualified) {
+  // An element's attribute names and namespaces as last read, with the
+  // page's version they were read at: a script's `attributes[i]` for
+  // each `i` read them all at each, and each Attr made read them all
+  // again for its namespace. Read again each time while another document
+  // is about, whose changes are not the page's version.
+  const attributesRead = new $WeakMap();
+  function attributesReadOf(element) {
     const handle = handleOf(element);
-    const names = native.attributeNames(handle);
-    for (let i = 0; i < names.length; i++) {
-      if (names[i] === qualified) {
-        const ns = native.attributeNamespaces(handle)[i];
-        return ns === "" ? null : ns;
+    if (otherDocuments) {
+      return { names: native.attributeNames(handle), namespaces: undefined, places: undefined, handle };
+    }
+    const version = native.version();
+    let kept = WeakMapGet(attributesRead, element);
+    if (kept === undefined || kept.version !== version) {
+      kept = {
+        version,
+        names: native.attributeNames(handle),
+        namespaces: undefined,
+        places: undefined,
+        handle,
+      };
+      WeakMapSet(attributesRead, element, kept);
+    }
+    return kept;
+  }
+
+  function attributeNamesOf(element) {
+    return attributesReadOf(element).names;
+  }
+
+  function attributeNamespace(element, qualified) {
+    const read = attributesReadOf(element);
+    // Each name's place, found at once (the first of a name): a scan of
+    // the names for each Attr made made n of them n^2 compares.
+    if (read.places === undefined) {
+      read.places = new $Map();
+      for (let i = read.names.length - 1; i >= 0; i--) {
+        MapSet(read.places, read.names[i], i);
       }
     }
-    return null;
+    const i = MapGet(read.places, qualified);
+    if (i === undefined) {
+      return null;
+    }
+    if (read.namespaces === undefined) {
+      read.namespaces = native.attributeNamespaces(read.handle);
+    }
+    const ns = read.namespaces[i];
+    return ns === "" ? null : ns;
   }
 
   // The qualified name of an element's attribute of namespace `ns` and
@@ -10852,13 +10891,13 @@
     }
 
     get length() {
-      return native.attributeNames(handleOf(mapOwner(this))).length;
+      return attributeNamesOf(mapOwner(this)).length;
     }
 
     item(index) {
       const element = mapOwner(this);
       need(arguments.length, 1, "item", "NamedNodeMap");
-      const names = native.attributeNames(handleOf(element));
+      const names = attributeNamesOf(element);
       const i = unsigned(index);
       return i < names.length ? attrFor(element, names[i]) : null;
     }
@@ -10936,7 +10975,7 @@
       const element = WeakMapGet(attrMapOwners, target);
       const i = arrayIndex(key);
       if (i >= 0) {
-        const names = native.attributeNames(handleOf(element));
+        const names = attributeNamesOf(element);
         return i < names.length ? attrFor(element, names[i]) : undefined;
       }
       if (typeof key === "string" && !ReflectHas(target, key) &&
@@ -10949,14 +10988,14 @@
       const element = WeakMapGet(attrMapOwners, target);
       const i = arrayIndex(key);
       if (i >= 0) {
-        return i < native.attributeNames(handleOf(element)).length;
+        return i < attributeNamesOf(element).length;
       }
       return ReflectHas(target, key) ||
         (typeof key === "string" && native.attribute(handleOf(element), key) !== null);
     },
     ownKeys(target) {
       const element = WeakMapGet(attrMapOwners, target);
-      const names = native.attributeNames(handleOf(element));
+      const names = attributeNamesOf(element);
       const keys = [];
       for (let i = 0; i < names.length; i++) {
         ArrayPush(keys, $String(i));
@@ -10973,7 +11012,7 @@
     getOwnPropertyDescriptor(target, key) {
       const element = WeakMapGet(attrMapOwners, target);
       const i = arrayIndex(key);
-      const names = native.attributeNames(handleOf(element));
+      const names = attributeNamesOf(element);
       if (i >= 0) {
         return i < names.length
           ? { value: attrFor(element, names[i]), writable: false, enumerable: true, configurable: true }
@@ -13237,11 +13276,15 @@
   // white space, each once, in order.
   function orderedSet(text) {
     const tokens = [];
+    // Those seen, each looked up at once: a scan of the tokens for each
+    // made a class of n tokens n^2 compares.
+    const seen = new $Map();
     let token = "";
     for (let i = 0; i <= text.length; i++) {
       const c = i < text.length ? CharCodeAt(text, i) : 32;
       if (isSpace(c)) {
-        if (token !== "" && !includesString(tokens, token)) {
+        if (token !== "" && !MapHas(seen, token)) {
+          MapSet(seen, token, true);
           ArrayPush(tokens, token);
         }
         token = "";
@@ -13283,9 +13326,22 @@
     return state;
   }
 
+  // The tokens of the attribute's value, parsed once a value: the same
+  // array while it stands, which the callers that change the tokens copy.
   function tokensIn(state) {
+    // The page unchanged since: the attribute is too (another document's
+    // changes are not the page's version).
+    const version = otherDocuments ? -1 : native.version();
+    if (state.parsed !== undefined && version !== -1 && state.version === version) {
+      return state.parsed;
+    }
     const value = native.attribute(state.handle, state.attribute);
-    return value === null ? [] : orderedSet(value);
+    if (state.parsed === undefined || state.text !== value) {
+      state.text = value;
+      state.parsed = value === null ? [] : orderedSet(value);
+    }
+    state.version = version;
+    return state.parsed;
   }
 
   // The DOM's update steps: the attribute set to the tokens, unless it
@@ -13353,7 +13409,7 @@
       for (let i = 0; i < tokens.length; i++) {
         ArrayPush(checked, checkToken(tokens[i], "add"));
       }
-      const set = tokensIn(state);
+      const set = ArraySlice(tokensIn(state));
       for (let i = 0; i < checked.length; i++) {
         if (!includesString(set, checked[i])) {
           ArrayPush(set, checked[i]);
@@ -13368,7 +13424,7 @@
       for (let i = 0; i < tokens.length; i++) {
         ArrayPush(checked, checkToken(tokens[i], "remove"));
       }
-      const set = tokensIn(state);
+      const set = ArraySlice(tokensIn(state));
       const kept = [];
       for (let i = 0; i < set.length; i++) {
         if (!includesString(checked, set[i])) {
@@ -13382,7 +13438,7 @@
       const state = tokenState(this);
       need(arguments.length, 1, "toggle", "DOMTokenList");
       const name = checkToken(token, "toggle");
-      const set = tokensIn(state);
+      const set = ArraySlice(tokensIn(state));
       if (includesString(set, name)) {
         if (force === undefined || !force) {
           const kept = [];
@@ -13409,7 +13465,7 @@
       need(arguments.length, 2, "replace", "DOMTokenList");
       const old = checkToken(token, "replace");
       const made = checkToken(newToken, "replace");
-      const set = tokensIn(state);
+      const set = ArraySlice(tokensIn(state));
       if (!includesString(set, old)) {
         return false;
       }
@@ -13549,19 +13605,35 @@
   }
 
   // The block's declarations: name, value, priority, three in a row.
+  // The declarations, parsed once a text of them: the same array while
+  // it stands (a script's `style[i]` for each `i` parsed them all at
+  // each), which the callers that change them copy.
   function declarationsOf(state) {
+    let kind = "";
+    let text;
     if (state.rule !== undefined) {
       const data = ruleData(state.rule);
-      // An `@font-face` rule's are descriptors, not properties.
-      if (data[0] === "page") {
-        return native.parsePageDescriptors(data[3]);
-      }
-      return data[0] === "font-face" ? native.fonts("parse " + data[3], null) : native.parseDeclarations(data[3]);
+      kind = data[0];
+      text = data[3];
+    } else {
+      text = native.attribute(state.handle, "style");
+      // One the policies refuse is no declarations (M33.1).
+      if (text === null || !native.styleAllowed(state.handle)) return [];
     }
-    const text = native.attribute(state.handle, "style");
-    // One the policies refuse is no declarations (M33.1).
-    if (text === null || !native.styleAllowed(state.handle)) return [];
-    return native.parseDeclarations(text);
+    if (state.parsed !== undefined && state.parsedKind === kind && state.parsedText === text) {
+      return state.parsed;
+    }
+    // An `@font-face` rule's are descriptors, not properties.
+    const parsed =
+      kind === "page"
+        ? native.parsePageDescriptors(text)
+        : kind === "font-face"
+          ? native.fonts("parse " + text, null)
+          : native.parseDeclarations(text);
+    state.parsed = parsed;
+    state.parsedKind = kind;
+    state.parsedText = text;
+    return parsed;
   }
 
   // The longhands a block keeps a shorthand as (G50), asked once a name;
@@ -13808,6 +13880,12 @@
   // same kind at the same place kept, another made.
   function listObjects(state) {
     const data = listData(state);
+    // The rules read the same as when the objects were last brought up
+    // to them: nothing to walk (a script's `cssRules[i]` for each `i`
+    // walked every rule at each, doubleclick's on weather.com).
+    if (state.synced === data) {
+      return state.objects;
+    }
     const count = data.length / 4;
     if (state.objects.length > count) {
       state.objects.length = count;
@@ -13819,6 +13897,7 @@
         state.objects[i] = makeRule(kind, state);
       }
     }
+    state.synced = data;
     return state.objects;
   }
 
@@ -13943,6 +14022,7 @@
       return true;
     });
     ArraySplice(state.objects, at, 0, undefined);
+    state.synced = undefined;
     listObjects(state);
     return at;
   }
@@ -13967,6 +14047,7 @@
     });
     const gone = state.objects[index];
     ArraySplice(state.objects, index, 1);
+    state.synced = undefined;
     if (gone !== undefined) {
       WeakMapGet(ruleStates, gone).list = null;
     }
@@ -14814,8 +14895,15 @@
     return native.cssom("media", null, [], text, 0);
   }
 
+  // The queries, parsed once a text of them: the same array while it
+  // stands, which `appendMedium` copies.
   function mediaItems(state) {
-    return mediaQueries(state.get());
+    const text = state.get();
+    if (state.parsed === undefined || state.parsedText !== text) {
+      state.parsed = mediaQueries(text);
+      state.parsedText = text;
+    }
+    return state.parsed;
   }
 
   function joinMedia(items) {
@@ -14861,7 +14949,7 @@
       if (query.length !== 1) {
         return;
       }
-      const items = mediaItems(state);
+      const items = ArraySlice(mediaItems(state));
       if (ArrayIndexOf(items, query[0]) >= 0) {
         return;
       }
@@ -15191,17 +15279,33 @@
     return document;
   }
 
+  // A document's or shadow root's sheets as last read, with the
+  // generation of the sheets they were read at: a script's
+  // `styleSheets[i]` for each `i` read every sheet at each.
+  const sheetsRead = new $WeakMap();
   function documentSheets(document) {
     // A shadow root's are its tree's (D69).
     const shadow = native.kind(document) === 11;
     if (!shadow && !isPage(document)) {
       return otherDocumentSheets(document);
     }
+    const generation = native.cssom("generation", null, [], "", 0);
+    // Kept by the document's object, as long as it lives.
+    const owner = wrap(document);
+    const kept = WeakMapGet(sheetsRead, owner);
+    if (
+      kept !== undefined &&
+      kept.generation[0] === generation[0] &&
+      kept.generation[1] === generation[1]
+    ) {
+      return kept.sheets;
+    }
     const flat = native.cssom("sheets", shadow ? document : null, [], "", 0);
     const out = [];
     for (let i = 0; i < flat.length; i += 2) {
       ArrayPush(out, sheetFor(wrap(flat[i]), flat[i + 1], [], null, null));
     }
+    WeakMapSet(sheetsRead, owner, { generation, sheets: out });
     return out;
   }
 
@@ -15500,7 +15604,7 @@
       : !native.cssValid(name, value)) {
       return;
     }
-    const flat = declarationsOf(state);
+    const flat = ArraySlice(declarationsOf(state));
     const trimmed = trimSpace(value);
     // A shorthand the block keeps as its longhands sets each in place, or
     // last when the block has none of it (CSSOM's "set a CSS declaration"
@@ -15541,7 +15645,7 @@
   }
 
   function removeProperty(state, name) {
-    const flat = declarationsOf(state);
+    const flat = ArraySlice(declarationsOf(state));
     const at = findDeclaration(flat, name);
     if (at < 0) {
       // A shorthand kept as its longhands: they go.

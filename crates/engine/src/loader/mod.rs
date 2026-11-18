@@ -51,6 +51,8 @@ mod html5lib_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
+mod live_list_tests;
+#[cfg(test)]
 mod lna_tests;
 pub(crate) mod media;
 #[cfg(test)]

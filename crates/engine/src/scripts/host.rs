@@ -1119,6 +1119,8 @@ impl DocumentHost {
             }
             Call::AttributeNames(node) => {
                 let attrs = self.document.attrs(self.node(node)?).unwrap_or_default();
+                // Its work the names it lists, as a node's children's.
+                self.work += attrs.len() as u64;
                 Ok(Answer::Strings(
                     attrs.iter().map(|(name, _)| name.clone()).collect(),
                 ))
