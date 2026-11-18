@@ -1012,10 +1012,17 @@ pub(crate) fn clear_stale(ctx: &Ctx<'_>, site: Stale) {
     let pending = ctx.catch();
     #[cfg(debug_assertions)]
     {
+        // A true SyntaxError, of the realm's own class, which the page
+        // cannot replace: one the realm makes now has its prototype. A
+        // DOMException named so (an invalid selector's) is not one.
+        let intrinsic = {
+            let _ = Exception::throw_syntax(ctx, "");
+            ctx.catch().as_object().and_then(Object::get_prototype)
+        };
         let syntax = pending
             .as_object()
-            .and_then(|error| error.get::<_, String>("name").ok())
-            .is_some_and(|name| name == "SyntaxError");
+            .and_then(Object::get_prototype)
+            .is_some_and(|prototype| Some(prototype) == intrinsic);
         let message = pending
             .as_object()
             .and_then(|error| error.get::<_, String>("message").ok())
@@ -1481,6 +1488,41 @@ mod stale_tests {
             let _ = Exception::throw_syntax(&ctx, "invalid number literal");
             clear_stale(&ctx, Stale::Begun);
             assert!(!ctx.has_exception());
+        });
+    }
+
+    /// Not a SyntaxError though named one: a DOMException's (an invalid
+    /// selector's), one of ours left pending, panics in a debug build.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "an exception not QuickJS-ng's parser's was pending (Native)")]
+    fn a_dom_exception_named_syntax_error_panics_in_a_debug_build() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let named = rquickjs::Object::new(ctx.clone()).expect("an object");
+            named.set("name", "SyntaxError").expect("its name");
+            named
+                .set("message", "'##' is not a valid selector")
+                .expect("its message");
+            let _ = ctx.throw(named.into_value());
+            clear_stale(&ctx, Stale::Native);
+        });
+    }
+
+    /// Nor one of a class the page made SyntaxError's name.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "an exception not QuickJS-ng's parser's was pending (Compiled)")]
+    fn a_page_class_named_syntax_error_panics_in_a_debug_build() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let made: rquickjs::Value<'_> = ctx
+                .eval("globalThis.SyntaxError = class SyntaxError extends Error {}; new SyntaxError('x')")
+                .expect("it runs");
+            let _ = ctx.throw(made);
+            clear_stale(&ctx, Stale::Compiled);
         });
     }
 
