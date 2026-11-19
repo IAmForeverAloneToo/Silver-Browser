@@ -5714,6 +5714,10 @@
   const idleCallbacks = new $Map();
   let lastIdle = 0;
   let idleQueued = false;
+  // The deadline of the last idle period, before which the next does not
+  // begin: a callback a callback requests runs in a later period, whose
+  // deadline is no earlier (requestIdleCallback's "start an idle period").
+  let idleEnd = 0;
 
   class IdleDeadline {
     #end;
@@ -5742,13 +5746,14 @@
   function queueIdle() {
     if (!idleQueued) {
       idleQueued = true;
-      queueTask(runIdle, 0);
+      queueTask(runIdle, MathMax(0, idleEnd - native.now()));
     }
   }
 
   function runIdle() {
     idleQueued = false;
     const end = native.idleDeadline();
+    idleEnd = end;
     const ids = [];
     MapForEach(idleCallbacks, (_, id) => ArrayPush(ids, id));
     for (let i = 0; i < ids.length; i++) {

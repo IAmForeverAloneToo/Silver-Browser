@@ -479,3 +479,41 @@ fn a_css_animations_event_flushes_no_styles() {
     assert_eq!(lines(&mut tab), ["running"]);
     assert_eq!(tab.engine.shown.scripts.style_flushes(), before + 1);
 }
+
+#[test]
+fn an_idle_callback_requested_in_an_idle_period_waits_for_its_end() {
+    // WPT requestidlecallback/callback-idle-periods (flaky on CI): an idle
+    // callback that requests another runs that one in a later idle
+    // period, whose deadline is no earlier than its own, though a frame
+    // wanted since would end a period begun now sooner. As the
+    // reference browser.
+    let server = serve(|path| match path {
+        "/page.html" => Some(html(
+            "<script>\
+             onload = () => requestIdleCallback(first => {\
+               const end = performance.now() + first.timeRemaining();\
+               requestAnimationFrame(() => {});\
+               requestIdleCallback(second => {\
+                 const next = performance.now() + second.timeRemaining();\
+                 console.log('later period', next >= end);\
+               });\
+             });\
+             </script>",
+        )),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    let clock = tab.hand_clock();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        tab.engine.run_tasks();
+        seen.extend(lines(&mut tab));
+        if !seen.is_empty() {
+            break;
+        }
+        clock.advance(5);
+    }
+    assert_eq!(seen, ["later period true"]);
+}
