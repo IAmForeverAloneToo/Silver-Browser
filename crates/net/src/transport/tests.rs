@@ -876,3 +876,35 @@ fn a_body_larger_than_the_send_buffer_is_sent_without_stalling() {
         began.elapsed()
     );
 }
+
+/// A test run kept off the web (`SILVER_TEST_OFFLINE`, 2026-11-19): a
+/// host neither this machine nor one of the test's own is refused at
+/// once, before any lookup or connection, and the refusal names it;
+/// this machine and the test's hosts are reached as ever.
+#[test]
+fn an_offline_test_run_refuses_the_web_and_names_the_host() {
+    let server = TestServer::plain(|_| hello());
+    let here = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let mut config = Config::default().resolve("a.test", here);
+    config.offline = true;
+    let transport = Transport::new(config);
+    for (url, host) in [
+        ("http://example.com/", "example.com"),
+        ("https://example.com/x", "example.com"),
+        ("http://93.184.215.14/", "93.184.215.14"),
+    ] {
+        let started = Instant::now();
+        let refused = get(&transport, &Url::parse(url).unwrap()).expect_err(url);
+        assert!(started.elapsed() < Duration::from_secs(1), "{url}");
+        match refused {
+            NetworkError::Resolve(why) => {
+                assert!(why.starts_with(OFFLINE_REFUSAL), "{why}");
+                assert!(why.contains(host), "{why}");
+            }
+            other => panic!("{url}: {other:?}"),
+        }
+    }
+    get(&transport, &server.url("/")).expect("this machine");
+    let named = format!("http://a.test:{}/", server.url("/").port().unwrap());
+    get(&transport, &Url::parse(&named).unwrap()).expect("the test's host");
+}

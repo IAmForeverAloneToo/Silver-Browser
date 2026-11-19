@@ -28,6 +28,11 @@ pub(crate) fn resolve(host: &Host, port: u16) -> Result<Vec<SocketAddr>, Network
             SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
         ],
+        // A test run off the web asks no resolver: what calls this
+        // directly as well as the transport (2026-11-19).
+        Host::Domain(name) if super::offline_from_env() => {
+            return Err(NetworkError::Resolve(super::offline_refusal(name)));
+        }
         Host::Domain(name) => (name.as_str(), port)
             .to_socket_addrs()
             .map_err(|e| NetworkError::Resolve(e.to_string()))?
@@ -111,6 +116,14 @@ pub(crate) fn connect(
     timeout: Duration,
     abort: &AbortHandle,
 ) -> Result<(TcpStream, SocketAddr), NetworkError> {
+    // A test run off the web connects to this machine alone.
+    if super::offline_from_env()
+        && let Some(away) = addresses.iter().find(|address| !address.ip().is_loopback())
+    {
+        return Err(NetworkError::Connect(super::offline_refusal(
+            &away.to_string(),
+        )));
+    }
     let attempt: Attempt =
         Arc::new(|address, timeout| TcpStream::connect_timeout(&address, timeout));
     connect_with(addresses, allowed, timeout, abort, attempt)

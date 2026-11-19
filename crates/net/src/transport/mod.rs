@@ -41,6 +41,30 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How many connections may be open to one origin (M14.3).
 pub const MAX_CONNECTIONS_PER_ORIGIN: usize = 6;
 
+/// The variable that makes a test run's transports offline: `1`, set
+/// by the gate's test steps and CI's test jobs, never by the site sweep
+/// or a WPT run by hand, which want the web.
+pub const OFFLINE_VARIABLE: &str = "SILVER_TEST_OFFLINE";
+
+/// How a lookup an offline test run refused begins its error: a host
+/// no rule of the test's put on this machine (2026-11-19: two shell
+/// tests had fetched the real web unseen, and timed out on CI).
+pub const OFFLINE_REFUSAL: &str = "SILVER_TEST_OFFLINE: no test's host";
+
+/// Whether this process is a test run kept off the web
+/// ([`OFFLINE_VARIABLE`] is `1`).
+pub(crate) fn offline_from_env() -> bool {
+    std::env::var_os(OFFLINE_VARIABLE).is_some_and(|value| value == "1")
+}
+
+/// An offline test run's refusal of `what`, a host or an address, said
+/// on stderr as it is made.
+pub(crate) fn offline_refusal(what: &str) -> String {
+    let refusal = format!("{OFFLINE_REFUSAL}: {what}");
+    eprintln!("{refusal}");
+    refusal
+}
+
 /// How often the steps no abort can interrupt (resolving a name,
 /// connecting, waiting for a free connection) look at the abort flag.
 pub(crate) const ABORT_POLL: Duration = Duration::from_millis(250);
@@ -62,6 +86,10 @@ pub struct Config {
     /// Address spaces given to addresses in place of their own: only
     /// tests give one.
     pub(crate) spaces: Vec<(SocketAddr, AddressSpace)>,
+    /// Off the web: a host neither this machine nor one of `hosts` is
+    /// refused at once, unresolved and unconnected, and said on stderr.
+    /// A test run's ([`OFFLINE_VARIABLE`]).
+    pub(crate) offline: bool,
 }
 
 impl Default for Config {
@@ -75,6 +103,7 @@ impl Default for Config {
             extra_roots: Vec::new(),
             hosts: Vec::new(),
             spaces: Vec::new(),
+            offline: offline_from_env(),
         }
     }
 }
@@ -187,6 +216,17 @@ pub struct Exchange<'a> {
 pub struct Ask<'a> {
     pub gate: &'a dyn LocalNetworkGate,
     pub access: &'a LocalNetworkAccess,
+}
+
+/// Whether `host` is this machine without a resolver: `localhost`, a
+/// name under `.localhost`, or a loopback address.
+fn on_this_machine(host: &Host) -> bool {
+    match host {
+        Host::Domain(name) => name == "localhost" || name.ends_with(".localhost"),
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => address.is_loopback(),
+        Host::Opaque(_) | Host::Empty => false,
+    }
 }
 
 /// Whether a request from a page in `initiator`'s space may reach an
@@ -787,6 +827,13 @@ impl Transport {
         };
         match given {
             Some(addresses) => Ok(addresses),
+            None if self.config.offline && !on_this_machine(host) => {
+                // A test that reaches for the web, which a test run must
+                // not: said, and refused before any lookup or connection.
+                Err(NetworkError::Resolve(offline_refusal(&format!(
+                    "{host} ({url})"
+                ))))
+            }
             None => connect::resolve_abortable(host, port, exchange.abort),
         }
     }

@@ -136,6 +136,12 @@ jobs:
     # for them, so no runner needs a system font and every runner
     # measures the same.
     name: test (${{ matrix.os }})
+    # Off the web (2026-11-19): a test that reaches a host no rule of its
+    # puts on this machine is refused at once, and the refusal names it
+    # (net's transport, SILVER_TEST_OFFLINE). Two shell tests had fetched
+    # the real web unseen, and timed out on the runners.
+    env:
+      SILVER_TEST_OFFLINE: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +180,7 @@ jobs:
     runs-on: windows-latest
     env:
       SILVER_WINDOWED_TESTS: "1"
+      SILVER_TEST_OFFLINE: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/rust
