@@ -1055,6 +1055,60 @@ mod agent_tests {
         drop(many);
     }
 
+    /// A realm's objects collected in another realm's run (G90): their
+    /// finalizers run in the agent's one job queue, while the document
+    /// of the realm they are of may not be lent. The nodes they let go
+    /// of are released to it when it is next, nothing thrown and no call
+    /// without its host counted (Google Images, 2026-11-19: "no script
+    /// is running" from the bootstrap's `released`, twice a load).
+    #[test]
+    fn a_realms_objects_collected_in_anothers_run_are_released_to_it_later() {
+        let (mut a, mut b) = two(Limits::default());
+        let mut a_host = Recorder::default();
+        let mut b_host = Recorder::default();
+        let _ = crate::take_unlent_calls();
+        b.run(
+            &script("for (let i = 0; i < 10; i++) document.createElement('p'); 0"),
+            &mut b_host,
+        )
+        .expect("it runs");
+        let made: Vec<u64> = b_host
+            .tree
+            .exposed
+            .iter()
+            .copied()
+            .filter(|&h| h != 0)
+            .collect();
+        assert_eq!(made.len(), 10, "{:?}", b_host.tree.exposed);
+        assert!(
+            b_host.tree.released.is_empty(),
+            "{:?}",
+            b_host.tree.released
+        );
+        // The other realm's sweep collects them, and runs their finalizers.
+        a.sweep(&mut a_host, true);
+        assert!(a_host.reported.is_empty(), "{:?}", a_host.reported);
+        assert_eq!(crate::take_unlent_calls(), 0);
+        assert!(b_host.tree.released.is_empty());
+        // The realm's next run hands them over first.
+        b.run(&script("0"), &mut b_host).expect("it runs");
+        let mut released = b_host.tree.released.clone();
+        released.sort_unstable();
+        let mut made = made;
+        made.sort_unstable();
+        assert_eq!(released, made);
+        assert!(b_host.reported.is_empty(), "{:?}", b_host.reported);
+        // And when its document is next lent for another realm's run.
+        b.run(&script("document.createElement('i'); 0"), &mut b_host)
+            .expect("it runs");
+        let before = b_host.tree.released.len();
+        a.sweep(&mut a_host, true);
+        assert_eq!(crate::take_unlent_calls(), 0);
+        b.lend(std::mem::take(&mut b_host));
+        let b_host = b.reclaim().expect("lent");
+        assert_eq!(b_host.tree.released.len(), before + 1);
+    }
+
     /// The budget stops a run in either realm, and is the next run's
     /// again whichever realm it is in.
     #[test]

@@ -1346,8 +1346,11 @@ pub(super) fn install<'js, H: ScriptingHost>(
             natives.set("workerName", name.as_str())?;
         }
     }
+    // The nodes let go of while the realm's document is not lent (G90).
+    let released = super::links_of(realms, ctx).map(|links| links.released);
     for &(name, decode) in NATIVES {
         let (host, budget, entries) = (host.clone(), budget.clone(), entries.clone());
+        let released = released.clone();
         let state = state.clone();
         let runs_scripts = RUN_SCRIPTS.contains(&name);
         let native = Function::new(
@@ -1360,6 +1363,17 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     ctx: &ctx,
                     values: &args.0,
                 })?;
+                // An object of this realm's collected in a run of another
+                // realm of its agent, whose finalizer runs there while
+                // this document is not lent (G90): its node is released
+                // to the host when it next is, as HTML runs a registry's
+                // cleanup as a task of its own realm.
+                if let (Call::Released(handle), Some(released)) = (&call, &released)
+                    && host.try_borrow().is_ok_and(|slot| slot.is_none())
+                {
+                    released.borrow_mut().push(*handle);
+                    return Ok(Value::new_undefined(ctx));
+                }
                 let (answer, work, mutated, reacted) = with_host(&ctx, &host, |host| {
                     let answer = host.dom(call);
                     let work = host.take_work();

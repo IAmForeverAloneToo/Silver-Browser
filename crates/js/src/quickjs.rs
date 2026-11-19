@@ -220,7 +220,14 @@ pub(crate) struct Links<H: ScriptingHost> {
     global: Global,
     /// The frame its document is of, once the engine names it.
     frame: Rc<Cell<Option<u32>>>,
+    /// Its nodes whose objects were collected while its document was not
+    /// lent (G90): released to its host when it next is.
+    released: Released,
 }
+
+/// A realm's nodes let go of while no host of its was there, released
+/// to the next ([`Links::released`]).
+pub(crate) type Released = Rc<RefCell<Vec<crate::dom::Handle>>>;
 
 /// The frame of the realm of an agent whose run is under way.
 pub(crate) type Entry = Rc<Cell<Option<u32>>>;
@@ -239,6 +246,7 @@ impl<H: ScriptingHost> Clone for Links<H> {
             entries: Rc::clone(&self.entries),
             global: Rc::clone(&self.global),
             frame: Rc::clone(&self.frame),
+            released: Rc::clone(&self.released),
         }
     }
 }
@@ -388,6 +396,8 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// The frame its document is of, shown or not: what its runs are
     /// entered as.
     own_frame: Option<u32>,
+    /// Its nodes let go of while its document was not lent.
+    released: Released,
     /// Before the agent, which holds the runtime: a context goes first.
     context: Context,
     agent: Rc<AgentCore<H>>,
@@ -555,6 +565,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             .set(matches!(kind, RealmKind::Window | RealmKind::DevTools));
         let global: Global = Rc::default();
         let frame: Rc<Cell<Option<u32>>> = Rc::default();
+        let released: Released = Rc::default();
         core.realms.borrow_mut().insert(
             key,
             Links {
@@ -565,6 +576,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 entries: entries.clone(),
                 global: global.clone(),
                 frame: frame.clone(),
+                released: released.clone(),
             },
         );
         core.fit_heap(false);
@@ -618,6 +630,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             global,
             frame,
             own_frame: None,
+            released,
             context,
             agent: core,
         })
@@ -633,6 +646,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         }
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
+        release_to(&self.released, host);
         *self.host.borrow_mut() = Some(std::mem::take(host));
         self.agent.entry.set(self.own_frame.or(self.frame.get()));
         self.steps.set(0);
@@ -1309,7 +1323,8 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
         self.dead.get()
     }
 
-    fn lend(&mut self, host: H) {
+    fn lend(&mut self, mut host: H) {
+        release_to(&self.released, &mut host);
         *self.host.borrow_mut() = Some(host);
     }
 
@@ -1843,6 +1858,16 @@ thread_local! {
 /// this thread ([`UNLENT`]).
 pub fn take_unlent_calls() -> u32 {
     UNLENT.with(|count| count.replace(0))
+}
+
+/// Releases to `host` the nodes `released` holds, whose objects were
+/// collected while no host of their realm's was there (G90).
+fn release_to<H: ScriptingHost>(released: &Released, host: &mut H) {
+    let handles = std::mem::take(&mut *released.borrow_mut());
+    for handle in handles {
+        // Releasing answers nothing, and refuses nothing a caller sees.
+        let _ = host.dom(crate::dom::Call::Released(handle));
+    }
 }
 
 /// Calls `f` with the host, which is there only while a run the engine
