@@ -1161,3 +1161,76 @@ fn a_node_of_a_frames_document_given_to_the_parents_method_is_refused_and_said()
         ]
     );
 }
+
+/// Eighty scripted frames of the page's origin, each holding 3 MB, share
+/// their agent's heap, which grows with them (G90): the page loads, and
+/// no realm dies, where a heap that stayed the page's 256 MiB would not
+/// hold them all.
+#[test]
+fn eighty_frames_of_one_origin_hold_their_heap_together() {
+    let frame = "<iframe srcdoc=\"<script>window.kept = 'x'.repeat(3 << 20) + 1; \
+                 parent.postMessage(1, '*')</script>\"></iframe>";
+    let page: &'static str = Box::leak(
+        format!(
+            "{}<script>let told = 0; onmessage = () => {{ if (++told === 80) \
+             console.log('all 80'); }};</script>",
+            frame.repeat(80)
+        )
+        .into_boxed_str(),
+    );
+    let server = two_pages(page, "");
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !lines.iter().any(|line: &String| line == "all 80")
+        && std::time::Instant::now() < deadline
+    {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(console(&mut tab));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(lines.iter().any(|line| line == "all 80"), "{lines:?}");
+    assert!(
+        !lines.iter().any(|line| line.contains("out of memory")),
+        "{lines:?}"
+    );
+}
+
+/// An agent that dies of its heap says so in each of its documents,
+/// with how many documents of which origin shared it (G90): its death is
+/// not one page's leak alone.
+#[test]
+fn an_agent_out_of_memory_names_its_origin_and_documents() {
+    let server = two_pages(
+        "<script>window.mine = 1;</script>         <iframe srcdoc=\"<script>window.kept = [];          for (;;) kept.push('x'.repeat(1 << 20) + kept.length);</script>\"></iframe>",
+        "",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.script_limits.heap = 24 << 20;
+    load_all(&mut tab, server.url("/page.html"));
+    let origin = server.url("/").origin().serialization();
+    let wanted = format!(
+        "Scripts stopped on this page: out of memory, in the heap the 2 documents of {origin} \
+         in this tab share"
+    );
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !lines
+        .iter()
+        .any(|line: &String| line.contains("out of memory"))
+        && std::time::Instant::now() < deadline
+    {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(console(&mut tab));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        lines.iter().any(|line| line.ends_with(&wanted)),
+        "{lines:?}"
+    );
+}

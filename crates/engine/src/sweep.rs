@@ -36,6 +36,9 @@ pub(crate) struct SweepCounts {
     /// A node of another frame's document of the same origin given to a
     /// method, refused until nodes move between documents (G90 phase 5).
     pub(crate) nodes_across_documents: u32,
+    /// The most realms one agent held at once (G90): the documents of one
+    /// origin in a tab that share a heap and a budget.
+    pub(crate) most_realms_in_agent: u32,
     /// What the document's policies refused (Content Security Policy).
     pub(crate) policy_refusals: u32,
     /// Media types a script asked whether this engine plays, answered
@@ -136,6 +139,7 @@ impl SweepCounts {
         self.frame_refused_same_origin += other.frame_refused_same_origin;
         self.frame_document_same_origin += other.frame_document_same_origin;
         self.nodes_across_documents += other.nodes_across_documents;
+        self.most_realms_in_agent = self.most_realms_in_agent.max(other.most_realms_in_agent);
         self.policy_refusals += other.policy_refusals;
         self.dropped += other.dropped;
         self.style_mismatches += other.style_mismatches;
@@ -183,6 +187,10 @@ impl SweepCounts {
             (
                 "nodesAcrossDocuments",
                 Json::from(f64::from(self.nodes_across_documents)),
+            ),
+            (
+                "mostRealmsInAgent",
+                Json::from(f64::from(self.most_realms_in_agent)),
             ),
             (
                 "policyRefusals",

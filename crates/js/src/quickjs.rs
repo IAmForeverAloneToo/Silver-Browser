@@ -123,6 +123,16 @@ impl<H: ScriptingHost> Agent<H> {
         !self.core.realms.borrow().is_empty()
     }
 
+    /// How many realms are made in it.
+    pub fn realm_count(&self) -> usize {
+        self.core.realms.borrow().len()
+    }
+
+    /// The heap its runtime may hold now ([`AgentCore::fit_heap`]).
+    pub fn heap_limit(&self) -> usize {
+        self.core.heap_limit.get()
+    }
+
     /// Whether more than one realm is made in it: only then may a run of
     /// one reach another's document.
     pub fn shared(&self) -> bool {
@@ -152,6 +162,8 @@ struct AgentCore<H: ScriptingHost> {
     dead: Rc<Cell<Option<Death>>>,
     /// What the runtime's hooks find of each realm, by its context.
     realms: Realms<H>,
+    /// The heap its runtime may hold now ([`AgentCore::fit_heap`]).
+    heap_limit: Cell<usize>,
     /// The frame of the realm whose run is under way (G90): HTML's entry
     /// settings object, which a window's `postMessage` called from
     /// another realm of the agent posts as.
@@ -160,6 +172,32 @@ struct AgentCore<H: ScriptingHost> {
     #[cfg(feature = "js-sampler")]
     sampler: Option<Rc<sampler::Sampler>>,
     runtime: Runtime,
+}
+
+impl<H: ScriptingHost> AgentCore<H> {
+    /// Sets the heap its realms may hold together as they are made and go
+    /// (G90): its first realm's limit, and [`crate::REALM_HEAP`] more for
+    /// each after it, up to [`crate::MAX_AGENT_HEAP`] (or the first's, if
+    /// more). As one goes (`gone`), never under what the runtime holds
+    /// now, with room for its next collection: a realm gone frees its
+    /// objects only then.
+    fn fit_heap(&self, gone: bool) {
+        let realms = self.realms.borrow().len();
+        let cap = crate::MAX_AGENT_HEAP.max(self.limits.heap);
+        let wanted = self
+            .limits
+            .heap
+            .saturating_add(crate::REALM_HEAP.saturating_mul(realms.saturating_sub(1)))
+            .min(cap);
+        let limit = if gone {
+            let held = usize::try_from(self.runtime.memory_usage().malloc_size).unwrap_or(0);
+            wanted.max(held.saturating_add(crate::REALM_HEAP / 4).min(cap))
+        } else {
+            wanted
+        };
+        self.heap_limit.set(limit);
+        self.runtime.set_memory_limit(limit);
+    }
 }
 
 impl<H: ScriptingHost> Drop for AgentCore<H> {
@@ -339,7 +377,6 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// loader's calls of the host charge.
     modules: Rc<modules::State>,
     budget: dom::Budget,
-    limits: Limits,
     /// The agent's death, which is its every realm's.
     dead: Rc<Cell<Option<Death>>>,
     /// Its context's address, by which the agent's hooks know it.
@@ -447,6 +484,7 @@ impl<H: ScriptingHost> Agent<H> {
                 budget,
                 dead: Rc::default(),
                 realms,
+                heap_limit: Cell::new(limits.heap),
                 entry: Entry::default(),
                 #[cfg(feature = "js-sampler")]
                 sampler,
@@ -529,6 +567,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 frame: frame.clone(),
             },
         );
+        core.fit_heap(false);
         let saved = context
             .with(|ctx| {
                 install(
@@ -574,7 +613,6 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             muted,
             modules: module_state,
             budget,
-            limits,
             dead: Rc::clone(&core.dead),
             key,
             global,
@@ -698,11 +736,13 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     }
 
     /// Whether the heap, collected, is still nearly full: then the realm
-    /// is dead.
+    /// is dead. Full of the agent's limit now, which grows with its realms
+    /// (G90): of the first realm's, a page of many frames of one origin
+    /// would die of any error thrown.
     fn check_heap(&mut self) {
         self.agent.runtime.run_gc();
         let (num, den) = DEAD_HEAP;
-        if self.heap() > self.limits.heap / den * num {
+        if self.heap() > self.agent.heap_limit.get() / den * num {
             self.dead.set(Some(Death::Heap));
         }
     }
@@ -728,6 +768,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         // The agent forgets it; its hooks are the agent's, which goes
         // with its last realm.
         self.agent.realms.borrow_mut().remove(&self.key);
+        self.agent.fit_heap(true);
         *self.global.borrow_mut() = None;
         self.rejections.borrow_mut().clear();
         self.modules.clear();

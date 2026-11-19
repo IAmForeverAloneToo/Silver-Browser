@@ -7218,7 +7218,7 @@ impl Engine {
         }
         // Its realm, made as it parses, is its origin's agent's (G90).
         let (agent, _) = self.agent_for(page.origin());
-        scripts.join_agent(agent, self.frame.id);
+        scripts.join_agent(agent, self.frame.id, page.origin().serialization());
         scripts.use_router(frames::lock(&self.frame.tree).router());
         // Its id the one its navigation reserved (M39 step 6).
         if let Some(reserved) = self.network.take_reserved(id) {
@@ -8081,7 +8081,8 @@ impl Engine {
         // a page of many frames paid a realm's making for each.
         if shown.scripts.agent().is_none() {
             let (agent, _) = self.agent_for(shown.page.origin());
-            shown.scripts.join_agent(agent, self.frame.id);
+            let origin = shown.page.origin().serialization();
+            shown.scripts.join_agent(agent, self.frame.id, origin);
         }
         // The document it replaces is no more its frame's; one back from
         // the history is again (G90).

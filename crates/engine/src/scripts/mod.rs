@@ -900,6 +900,9 @@ pub(crate) struct Scripts {
     agent: Option<js::Agent<DocumentHost>>,
     /// The host's count of `document.open()`s last seen closed.
     reopened_seen: u64,
+    /// The origin of the documents of its agent, for what it says of the
+    /// agent's death.
+    agent_origin: String,
     /// Its host's count of calls answered when it was lent to its realm
     /// for another realm's run ([`Scripts::lend_out`]).
     lent_calls: u64,
@@ -1053,6 +1056,7 @@ impl Scripts {
             realm: None,
             agent: None,
             lent_calls: 0,
+            agent_origin: String::new(),
             reopened_seen: 0,
             frame: None,
             host: DocumentHost::default(),
@@ -2009,6 +2013,12 @@ impl Scripts {
                     }
                     self.realm = Some(realm);
                     self.code_guarded = false;
+                    // The most realms one agent held, for the site sweep.
+                    if let Some(agent) = &self.agent {
+                        let count = u32::try_from(agent.realm_count()).unwrap_or(u32::MAX);
+                        let most = &mut self.host.sweep.most_realms_in_agent;
+                        *most = (*most).max(count);
+                    }
                 }
                 Err(error) => {
                     self.report(&error);
@@ -2998,15 +3008,22 @@ impl Scripts {
             console: std::mem::take(&mut self.console),
             agent: self.agent.take(),
             frame: self.frame,
+            agent_origin: std::mem::take(&mut self.agent_origin),
             ..Scripts::with_limits(self.limits)
         };
     }
 
     /// Makes its realm, when it does, in `agent`, named frame `frame`
     /// (G90): before its realm is made.
-    pub(crate) fn join_agent(&mut self, agent: js::Agent<DocumentHost>, frame: u32) {
+    pub(crate) fn join_agent(
+        &mut self,
+        agent: js::Agent<DocumentHost>,
+        frame: u32,
+        origin: String,
+    ) {
         self.agent = Some(agent);
         self.frame = Some(frame);
+        self.agent_origin = origin;
     }
 
     /// Its document is not its frame's any more (another took its place):
@@ -3030,11 +3047,23 @@ impl Scripts {
     }
 
     fn stop(&mut self) {
+        // A heap its origin's documents share (G90) says so, and how many
+        // share it: their death is the agent's, not one page's leak alone.
+        let shared = self.agent.as_ref().map_or(0, js::Agent::realm_count);
         self.halt();
+        let text = if shared > 1 {
+            format!(
+                "Scripts stopped on this page: out of memory, in the heap the {shared} \
+                 documents of {} in this tab share",
+                self.agent_origin
+            )
+        } else {
+            "Scripts stopped on this page: out of memory".to_owned()
+        };
         self.push(ConsoleEntry::of(
             ConsoleSource::Engine,
             ConsoleLevel::Error,
-            "Scripts stopped on this page: out of memory".to_owned(),
+            text,
         ));
     }
 

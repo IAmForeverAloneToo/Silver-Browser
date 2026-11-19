@@ -53,6 +53,14 @@ pub use stack::remaining_stack;
 /// throws; one that escapes a run with the heap still full leaves the
 /// realm dead ([`Death::Heap`]).
 pub const MAX_SCRIPT_HEAP: usize = 256 << 20;
+
+/// The heap an agent's realms share grows by this for each realm after
+/// its first (G90): sharing a runtime never leaves a page's frames of one
+/// origin less than each had of its own (a frame's own was 64 MiB).
+pub const REALM_HEAP: usize = 64 << 20;
+
+/// The most heap an agent's realms share together, however many.
+pub const MAX_AGENT_HEAP: usize = 1 << 30;
 /// The interrupt checks a run may take, each about 10,000 of
 /// QuickJS-ng's operations: 2 to 5 seconds of running code. Past them
 /// the script is stopped ([`ErrorKind::Budget`]).

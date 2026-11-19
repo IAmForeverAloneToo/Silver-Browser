@@ -970,7 +970,8 @@ mod agent_tests {
     }
 
     /// What one realm holds counts against the other's room: the heap
-    /// is the agent's.
+    /// is the agent's, and grows by [`crate::REALM_HEAP`] for its second
+    /// realm, so that one of two holds what a realm of its own could not.
     #[test]
     fn realms_of_an_agent_share_its_heap() {
         let limits = Limits {
@@ -979,15 +980,79 @@ mod agent_tests {
         };
         let (mut a, mut b) = two(limits);
         let hold =
-            "var kept = []; for (var i = 0; i < 30; i++) kept.push('x'.repeat(1 << 20) + i); 1";
+            "var kept = []; for (var i = 0; i < 70; i++) kept.push('x'.repeat(1 << 20) + i); 1";
         number(&mut a, hold);
         let error = b
             .run(&script(hold), &mut Recorder::default())
             .expect_err("no room left");
         assert_eq!(error.kind, ErrorKind::Heap, "{error:?}");
-        // An agent of its own has the room.
+        // A realm of its own has 64 MiB, not the 70 held above.
         let mut alone = realm_with(limits);
-        assert!(alone.run(&script(hold), &mut Recorder::default()).is_ok());
+        let error = alone
+            .run(&script(hold), &mut Recorder::default())
+            .expect_err("no room");
+        assert_eq!(error.kind, ErrorKind::Heap, "{error:?}");
+    }
+
+    /// An error thrown in a realm of an agent of two, holding more than a
+    /// realm of its own may, is an error, not the agent's death: its heap
+    /// is nearly full of the agent's limit only, which grew with it.
+    #[test]
+    fn an_error_in_a_grown_agent_is_not_its_death() {
+        let limits = Limits {
+            heap: 64 << 20,
+            ..Limits::default()
+        };
+        let (mut a, mut b) = two(limits);
+        number(
+            &mut a,
+            "var kept = []; for (var i = 0; i < 60; i++) kept.push('x'.repeat(1 << 20) + i); 1",
+        );
+        let error = a
+            .run(
+                &script("throw new Error('only this')"),
+                &mut Recorder::default(),
+            )
+            .expect_err("thrown");
+        assert_ne!(error.kind, ErrorKind::Heap, "{error:?}");
+        assert!(a.dead().is_none());
+        assert_eq!(
+            number(&mut b, "String(1 + 1)"),
+            Completion::String("2".into())
+        );
+    }
+
+    /// The heap an agent's realms share follows how many there are: the
+    /// first's limit, 64 MiB more for each after it, up to 1 GiB; as they
+    /// go, back down, but never under what the runtime holds.
+    #[test]
+    fn an_agents_heap_grows_and_shrinks_with_its_realms() {
+        let limits = Limits {
+            heap: 64 << 20,
+            ..Limits::default()
+        };
+        let agent = QuickJs.agent::<Recorder>(limits, None).expect("an agent");
+        let made = |count: usize| -> Vec<Box<dyn Realm<Recorder>>> {
+            (0..count)
+                .map(|_| {
+                    QuickJs
+                        .realm_in(&agent, crate::RealmKind::Window, true)
+                        .expect("a realm")
+                })
+                .collect()
+        };
+        let three = made(3);
+        assert_eq!(agent.realm_count(), 3);
+        assert_eq!(agent.heap_limit(), (64 << 20) + 2 * crate::REALM_HEAP);
+        drop(three);
+        assert_eq!(agent.realm_count(), 0);
+        let one = made(1);
+        assert_eq!(agent.heap_limit(), 64 << 20);
+        drop(one);
+        // Many: capped.
+        let many = made(20);
+        assert_eq!(agent.heap_limit(), crate::MAX_AGENT_HEAP);
+        drop(many);
     }
 
     /// The budget stops a run in either realm, and is the next run's

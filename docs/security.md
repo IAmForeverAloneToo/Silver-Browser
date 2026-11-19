@@ -961,7 +961,11 @@ seconds (`PROMPT_TIMEOUT`).
   the page's own code, under its own budget, never the browser's; no
   getter runs.
 - **Frames of one origin share a runtime** (G90): a heap limit and a
-  budget the agent's, its documents' hosts lent together for a run;
+  budget the agent's, its documents' hosts lent together for a run; the
+  limit its first document's, and 64 MiB more for each document after
+  it, up to 1 GiB, so that sharing never leaves a page's frames less
+  than each had alone; the agent dies of it whole, and says how many
+  documents of which origin shared it;
   what one realm's script holds of another's (its functions, its
   nodes) is that realm's. Nodes do not move between documents yet
   (phase 5): a method given another document's node refuses it rather
