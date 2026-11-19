@@ -2330,6 +2330,9 @@ impl Scripts {
     /// What a run gave back, its first part (the console, the policies'
     /// refusals, the errors counted), said before the run's own result.
     fn outputs_before(&mut self, lent: &mut Lent<'_>, outputs: &mut Outputs) {
+        // What the run reached of documents not lent to it (G90 phase 4),
+        // for the site sweep.
+        self.host.sweep.documents_not_lent += js::take_unlent_calls();
         for entry in std::mem::take(&mut outputs.console) {
             self.push(entry);
         }
@@ -3044,6 +3047,12 @@ impl Scripts {
     /// The agent its realm is of, if it is made in a shared one.
     pub(crate) fn agent(&self) -> Option<&js::Agent<DocumentHost>> {
         self.agent.as_ref()
+    }
+
+    /// Whether its realm is made.
+    #[cfg(test)]
+    pub(crate) fn has_realm(&self) -> bool {
+        self.realm.is_some()
     }
 
     fn stop(&mut self) {

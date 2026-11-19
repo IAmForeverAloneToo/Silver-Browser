@@ -789,6 +789,9 @@ pub enum Call {
     FrameClosed(u32),
     /// The frame of this document's `iframe` `element`, or -1.
     FrameOf(Handle),
+    /// The element of this document that shows its child frame `n`, if
+    /// it is one: a `frameElement` of a frame of the agent (G90).
+    FrameElement(u32),
     /// Frame `n` refused a script of this document (0) or had its
     /// `contentDocument` read as null (1): counted for the site sweep
     /// when it is of this document's origin.

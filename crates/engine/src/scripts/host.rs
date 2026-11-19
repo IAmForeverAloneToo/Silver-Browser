@@ -2542,6 +2542,7 @@ impl DocumentHost {
             | Call::FrameNamed(..)
             | Call::FrameClosed(_)
             | Call::FrameOf(_)
+            | Call::FrameElement(_)
             | Call::FrameSweep(..)
             | Call::FramePost { .. }
             | Call::FrameNavigate { .. }
@@ -2560,19 +2561,24 @@ impl DocumentHost {
                      for sandboxed iframes.",
                 ))
             }
-            Call::SetDocumentDomain(value) => match self.page.as_ref().map(Page::origin) {
-                Some(net::Origin::Tuple { host, .. }) if host.has_registrable_suffix(&value) => {
-                    Ok(Answer::Nothing)
+            Call::SetDocumentDomain(value) => {
+                self.sweep.document_domain_sets += 1;
+                match self.page.as_ref().map(Page::origin) {
+                    Some(net::Origin::Tuple { host, .. })
+                        if host.has_registrable_suffix(&value) =>
+                    {
+                        Ok(Answer::Nothing)
+                    }
+                    Some(net::Origin::Tuple { host, .. }) => Err(DomError::new(
+                        "SecurityError",
+                        format!("'{value}' is not a suffix of '{host}'."),
+                    )),
+                    _ => Err(DomError::new(
+                        "SecurityError",
+                        "The document's origin is opaque.",
+                    )),
                 }
-                Some(net::Origin::Tuple { host, .. }) => Err(DomError::new(
-                    "SecurityError",
-                    format!("'{value}' is not a suffix of '{host}'."),
-                )),
-                _ => Err(DomError::new(
-                    "SecurityError",
-                    "The document's origin is opaque.",
-                )),
-            },
+            }
             Call::StorageOpen(_) => Ok(Answer::String(self.storage_refused())),
             Call::StorageLength(local) => {
                 self.with_areas(|areas, area| Answer::Number(areas.length(local, area) as f64))
@@ -4264,6 +4270,7 @@ impl DocumentHost {
                 | Call::FrameNavigate { .. }
                 | Call::SetWindowName(_)
                 | Call::FrameSweep(..) => Answer::Nothing,
+                Call::FrameElement(_) => Answer::Node(None),
                 _ => Answer::Number(-1.0),
             });
         };
@@ -4293,6 +4300,10 @@ impl DocumentHost {
                     }
                 }
                 Ok(Answer::Nothing)
+            }
+            Call::FrameElement(child) => {
+                let element = crate::frames::lock(&env.tree).element_of(me, child);
+                Ok(self.give(element.filter(|&node| self.document.contains(node))))
             }
             Call::FrameOf(element) => {
                 // An iframe in the document has its frame now, made later

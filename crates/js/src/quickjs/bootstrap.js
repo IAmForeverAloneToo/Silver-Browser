@@ -21398,9 +21398,18 @@
       return null;
     }
 
-    // No realm here holds another frame's element (D24).
+    // The element that shows this frame in its parent's document, when
+    // the parent is of this window's agent (G90); null across agents.
     get frameElement() {
-      return null;
+      const id = selfFrame();
+      if (id < 0) {
+        return null;
+      }
+      const parent = native.frameParent(id);
+      if (parent < 0) {
+        return null;
+      }
+      return native.parentFrameElement(parent, id);
     }
 
     // The navigable's name: its iframe's `name`, until a script sets it.
@@ -33711,6 +33720,12 @@
     },
     frames: runFrames,
     frameList,
+    // The element of this document that shows its child frame `id`, for
+    // a realm of the agent asking its `frameElement` (G90).
+    frameElement(id) {
+      const handle = native.frameElement(id);
+      return typeof handle === "number" && handle >= 0 ? wrap(handle) : null;
+    },
     // A `postMessage` of a window of another realm of the agent, called
     // from this realm's run (G90): this window's post to its frame.
     postToFrame(id, args) {

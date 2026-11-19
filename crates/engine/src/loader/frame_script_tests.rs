@@ -90,19 +90,32 @@ fn another_frames_window_answers_what_another_origin_may_ask() {
 
 #[test]
 fn a_frame_finds_its_parent_and_top_and_its_name() {
+    // Of its parent's origin (G90), its element and its parent's document
+    // are its own to reach; sandboxed, of an opaque origin, neither. As
+    // the reference browser. The parent runs a script of its own: one
+    // that runs none has no realm to be reached by until phase 3.
     static PAGES: &[(&str, &str)] = &[(
         "/page.html",
-        "<iframe name=first srcdoc=\"<script>console.log(parent !== window, \
-             top === parent, window.name, length, frameElement); \
-             try { parent.document } catch (e) { console.log(e.name) }</script>\"></iframe>",
+        "<script>0</script>\
+         <iframe name=first srcdoc=\"<script>console.log(parent !== window, \
+             top === parent, window.name, length, String(frameElement)); \
+             try { console.log(parent.document ? 'read' : 'none') } \
+             catch (e) { console.log(e.name) }</script>\"></iframe>\
+         <iframe name=boxed sandbox=allow-scripts srcdoc=\"<script>console.log(parent !== window, \
+             top === parent, window.name, length, String(frameElement)); \
+             try { console.log(parent.document ? 'read' : 'none') } \
+             catch (e) { console.log(e.name) }</script>\"></iframe>",
     )];
     let server = sites(PAGES);
-    let lines = run(&server, server.url("/page.html"), 2);
+    let mut lines = run(&server, server.url("/page.html"), 4);
+    lines.sort();
     assert_eq!(
         lines,
         [
-            "[frame about:srcdoc] true true first 0 null",
             "[frame about:srcdoc] SecurityError",
+            "[frame about:srcdoc] read",
+            "[frame about:srcdoc] true true boxed 0 null",
+            "[frame about:srcdoc] true true first 0 [object HTMLIFrameElement]",
         ]
     );
 }
@@ -558,6 +571,84 @@ fn a_frame_navigates_its_parent_of_its_own_origin_by_its_location() {
     let server = sites(PAGES);
     let lines = run(&server, server.url("/page.html"), 1);
     assert_eq!(lines, ["top heard 1"]);
+}
+
+#[test]
+fn a_frame_does_not_reach_its_scriptless_parent_until_phase_3() {
+    // A known gap (G90 phase 3): a parent that runs no script has no
+    // realm, so its frame of its origin reaches it as another origin's
+    // window, as a sandboxed one does. The reference browser's frame of
+    // its origin reads its document ("same T"); phase 3 makes the
+    // parent's realm as it is first reached.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<title>T</title>\
+         <iframe srcdoc=\"<script>\
+           try { console.log('same', parent.document.title); } \
+           catch (e) { console.log('same', e.name); }</script>\"></iframe>\
+         <iframe sandbox=allow-scripts srcdoc=\"<script>\
+           try { parent.document; } catch (e) { console.log('boxed', e.name); }</script>\">\
+         </iframe>",
+    )];
+    let server = sites(PAGES);
+    let mut lines = run(&server, server.url("/page.html"), 2);
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame about:srcdoc] boxed SecurityError",
+            "[frame about:srcdoc] same SecurityError",
+        ]
+    );
+}
+
+#[test]
+fn a_frame_of_another_origin_makes_its_scriptless_parent_no_realm() {
+    // The twin of the one above: frames of `b` and of `sub.a` (the
+    // parent's site, another origin) under a parent of `a` that runs no
+    // script reach neither its document nor their own element, and make
+    // it no realm (G90). As the reference browser.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<title>T</title>\
+             <iframe src='http://b.localhost:PORT/child.html'></iframe>\
+             <iframe src='http://sub.a.localhost:PORT/child.html'></iframe>",
+        ),
+        (
+            "/child.html",
+            "<script>\
+             let read; try { read = parent.document.title; } catch (e) { read = e.name; }\
+             console.log(location.hostname, read, String(frameElement));</script>",
+        ),
+    ];
+    // The page runs no script, so its frames' URLs carry the children's
+    // server's port as served, not written in by a script.
+    let server = sites(PAGES);
+    let port = server.url("/").port().expect("a port");
+    let page = PAGES[0].1.replace("PORT", &port.to_string());
+    let server_page = serve(move |path| (path == "/page.html").then(|| html(&page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server_page, "a.localhost", "/page.html"));
+    let mut lines = tab
+        .run_until(|lines| lines.len() >= 2)
+        .into_iter()
+        .map(|line| line.replace(&port.to_string(), "PORT"))
+        .collect::<Vec<_>>();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame http://b.localhost:PORT/child.html] b.localhost SecurityError null",
+            "[frame http://sub.a.localhost:PORT/child.html] sub.a.localhost SecurityError null",
+        ]
+    );
+    assert!(
+        !tab.engine.shown.scripts.has_realm(),
+        "the parent made no realm"
+    );
 }
 
 #[test]

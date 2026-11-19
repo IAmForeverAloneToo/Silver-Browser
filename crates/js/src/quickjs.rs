@@ -1831,6 +1831,20 @@ fn install<'js, H: ScriptingHost>(
     )
 }
 
+thread_local! {
+    /// Calls of a realm's natives with no host lent (G90): a document of
+    /// the agent its engine did not lend for the run that reached it (a
+    /// frame's animation frame callbacks calling into their parent, phase
+    /// 4). Taken by the engine for the site sweep.
+    static UNLENT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// The calls of natives with no host lent since this was last asked, on
+/// this thread ([`UNLENT`]).
+pub fn take_unlent_calls() -> u32 {
+    UNLENT.with(|count| count.replace(0))
+}
+
 /// Calls `f` with the host, which is there only while a run the engine
 /// started is under way; otherwise throws.
 fn with_host<H: ScriptingHost, R>(
@@ -1843,7 +1857,10 @@ fn with_host<H: ScriptingHost, R>(
     };
     match slot.as_mut() {
         Some(host) => Ok(f(host)),
-        None => Err(Exception::throw_internal(ctx, "no script is running")),
+        None => {
+            UNLENT.with(|count| count.set(count.get().saturating_add(1)));
+            Err(Exception::throw_internal(ctx, "no script is running"))
+        }
     }
 }
 

@@ -541,6 +541,16 @@ impl FrameTree {
             .find(|child| self.nodes.get(child).is_some_and(|node| node.name == name))
     }
 
+    /// The element of frame `id`'s document that shows its child frame
+    /// `child`, if `child` is one of its children.
+    pub(crate) fn element_of(&self, id: FrameId, child: FrameId) -> Option<NodeId> {
+        let node = self.nodes.get(&child)?;
+        if node.parent != Some(id) {
+            return None;
+        }
+        node.element
+    }
+
     /// The child frame of frame `id` its document's `element` shows.
     pub(crate) fn of_element(&self, id: FrameId, element: NodeId) -> Option<FrameId> {
         self.children(id).iter().copied().find(|child| {
@@ -1347,7 +1357,7 @@ impl Engine {
         }
         // Its `pagehide` and `unload` listeners reach this document and its
         // other frames of their agent as their own runs would (G90).
-        let mut agents: Vec<_> = self.shown.scripts.agent().into_iter().cloned().collect();
+        let mut agents = self.own_agent_for(&frame.engine);
         frame.engine.shared_agents(&mut agents);
         let lent = self.lend_around(None, &agents);
         frame.engine.unload_shown(false);
@@ -2120,6 +2130,26 @@ impl Engine {
         dropped
     }
 
+    /// This document's agent, as one to lend around a drive of `child`
+    /// (G90): when it has a realm, or `child` shows a document of it
+    /// other than its initial `about:blank`, or has one on its way, whose
+    /// scripts may reach this one once it has its realm.
+    fn own_agent_for(&self, child: &Engine) -> Vec<js::Agent<crate::scripts::DocumentHost>> {
+        let Some(own) = self.shown.scripts.agent() else {
+            return Vec::new();
+        };
+        let of_it = |scripts: &crate::scripts::Scripts| {
+            scripts.agent().is_some_and(|agent| agent.same(own))
+        };
+        let shows_of_it = !child.shown.initial && of_it(&child.shown.scripts);
+        let incoming_of_it = child.incoming_scripts().is_some_and(of_it);
+        if own.has_realms() || shows_of_it || incoming_of_it {
+            vec![own.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// The agents of the realms of this engine's tree that have realms
     /// outside it too, perhaps (G90): those a run in it may reach another
     /// document of.
@@ -2150,12 +2180,9 @@ impl Engine {
         // This document's agent too, which a document the frame is about
         // to show may join (an `about:srcdoc`'s scripts run as it is
         // shown, before the agent has its realm).
-        let mut agents: Vec<_> = self.shown.scripts.agent().into_iter().cloned().collect();
-        self.shown
-            .frames
-            .get(&node)?
-            .engine
-            .shared_agents(&mut agents);
+        let child = &self.shown.frames.get(&node)?.engine;
+        let mut agents = self.own_agent_for(child);
+        child.shared_agents(&mut agents);
         let lent = self.lend_around(Some(node), &agents);
         let result = self
             .shown

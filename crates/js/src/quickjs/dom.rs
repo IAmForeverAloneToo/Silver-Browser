@@ -914,6 +914,9 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(Call::FrameClosed(a.integer(0) as u32))
     }),
     ("frameOf", |a| Ok(Call::FrameOf(a.handle(0)?))),
+    ("frameElement", |a| {
+        Ok(Call::FrameElement(a.integer(0) as u32))
+    }),
     ("frameSweep", |a| {
         Ok(Call::FrameSweep(a.integer(0) as u32, a.integer(1) as u32))
     }),
@@ -1439,6 +1442,26 @@ pub(super) fn install<'js, H: ScriptingHost>(
             ctx.clone(),
             move |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<bool> {
                 super::node_of_other_realm(&others, &ctx, &value)
+            },
+        )?,
+    )?;
+    // The element of frame `parent`'s document that shows frame `child`,
+    // as `parent`'s realm wraps it, when `parent` is of this realm's
+    // agent (G90): `frameElement`; null otherwise.
+    let parents = realms.clone();
+    natives.set(
+        "parentFrameElement",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, parent: f64, child: f64| -> rquickjs::Result<Value<'js>> {
+                if !(parent >= 0.0 && parent <= f64::from(u32::MAX)) {
+                    return Ok(Value::new_null(ctx));
+                }
+                let Some(entries) = super::frame_entries(&parents, &ctx, parent as u32)? else {
+                    return Ok(Value::new_null(ctx));
+                };
+                let element: Function<'js> = entries.get("frameElement")?;
+                element.call((child,))
             },
         )?,
     )?;

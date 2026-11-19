@@ -2595,7 +2595,7 @@ impl Engine {
             .filter(|(node, frame)| Some(**node) != except && frame.remote.is_none())
             .map(|(_, frame)| frame.engine.lend_around(None, agents))
             .sum();
-        if self.of_agents(agents) {
+        if self.of_agents(agents) && self.shown.scripts.may_lend() {
             let ready = self.ready_state();
             let window = self.window_env();
             let shown = &mut self.shown;

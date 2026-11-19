@@ -39,6 +39,13 @@ pub(crate) struct SweepCounts {
     /// The most realms one agent held at once (G90): the documents of one
     /// origin in a tab that share a heap and a budget.
     pub(crate) most_realms_in_agent: u32,
+    /// A script reaching a document of its agent its engine did not lend
+    /// for the run (G90 phase 4: a frame's animation frame callbacks, a
+    /// service worker's task, calling into their parent): it throws.
+    pub(crate) documents_not_lent: u32,
+    /// `document.domain` set, which widens nothing here (each origin its
+    /// own agent; the reference browser's default too).
+    pub(crate) document_domain_sets: u32,
     /// What the document's policies refused (Content Security Policy).
     pub(crate) policy_refusals: u32,
     /// Media types a script asked whether this engine plays, answered
@@ -140,6 +147,8 @@ impl SweepCounts {
         self.frame_document_same_origin += other.frame_document_same_origin;
         self.nodes_across_documents += other.nodes_across_documents;
         self.most_realms_in_agent = self.most_realms_in_agent.max(other.most_realms_in_agent);
+        self.documents_not_lent += other.documents_not_lent;
+        self.document_domain_sets += other.document_domain_sets;
         self.policy_refusals += other.policy_refusals;
         self.dropped += other.dropped;
         self.style_mismatches += other.style_mismatches;
@@ -191,6 +200,14 @@ impl SweepCounts {
             (
                 "mostRealmsInAgent",
                 Json::from(f64::from(self.most_realms_in_agent)),
+            ),
+            (
+                "documentsNotLent",
+                Json::from(f64::from(self.documents_not_lent)),
+            ),
+            (
+                "documentDomainSets",
+                Json::from(f64::from(self.document_domain_sets)),
             ),
             (
                 "policyRefusals",

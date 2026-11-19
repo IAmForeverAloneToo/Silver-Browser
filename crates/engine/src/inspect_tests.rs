@@ -900,7 +900,9 @@ fetched.notThere();",
         )),
         "/page.html" => Some(html(
             "<meta http-equiv=Content-Security-Policy content=\"img-src 'none'\">\
-             <img src=/a.png><iframe srcdoc='<p>child</p><script>0</script>'></iframe>\
+             <img src=/a.png><iframe srcdoc='<p>child</p><script>\
+               requestAnimationFrame(() => { try { parent.document.title; } catch (e) {} });\
+             </script>'></iframe>\
              <script>notInThisEngine();</script>\
              <script>document.body.animateX();</script>\
              <script>var holder = { notAThing: 1 };\nholder.notAThing();</script>\
@@ -911,6 +913,7 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
                try { frames[0].document; } catch (e) {}\
                const child = document.querySelector('iframe').contentDocument;\
                try { document.body.appendChild(child.querySelector('p')); } catch (e) {}\
+               document.domain = document.domain;\
                document.title = 'done';\
              };</script>",
         )),
@@ -921,7 +924,15 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
     tab.engine.set_scripting(true);
     tab.load(server.url("/page.html"));
     tab.wait_until(|engine| engine.title() == "done");
-    tab.engine.frame(200, 100);
+    // Two frames drawn at their times: the second runs the frame's
+    // animation frame callback.
+    for ms in [16, 32] {
+        tab.engine.frame_at(
+            200,
+            100,
+            crate::FrameTime::at(std::time::Duration::from_millis(ms)),
+        );
+    }
     tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
     let answers = tab.engine.take_inspected();
     let answer = Json::parse(&answers[0]).expect("JSON");
@@ -955,6 +966,10 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
     assert_eq!(number("frameRefusedSameOrigin"), Some(0), "{answer:?}");
     assert_eq!(number("frameDocumentSameOrigin"), Some(0), "{answer:?}");
     assert_eq!(number("nodesAcrossDocuments"), Some(1), "{answer:?}");
+    // Its frame's animation frame callback reaches the page, not lent to
+    // a frame's rendering yet (phase 4): it throws, and is counted.
+    assert!(number("documentsNotLent") >= Some(1), "{answer:?}");
+    assert_eq!(number("documentDomainSets"), Some(1), "{answer:?}");
     assert!(number("layouts") >= Some(1), "{answer:?}");
 }
 
