@@ -19,23 +19,27 @@
 -->
 <title>Frames</title>
 <script>
-  const SECRET = "{{secret}}";
+  // This origin's own bait, for its sandboxed frames: never the victim's
+  // secret, which this page does not hold (it frames the victim through
+  // a redirect): what it reads of the victim it says, and the test finds
+  // the victim's secret in what it said, by value.
+  const BAIT = "{{bait}}";
   const DEFENDED = {{defended}};
   const pwned = [];
   const ran = [];
-  function look(what, value) {
-    if (String(value).indexOf(SECRET) >= 0) pwned.push(what);
-  }
   function attempt(what, read) {
     ran.push(what);
     try {
-      look(what, read());
+      console.log("SEEN " + what + "|" + String(read()));
     } catch (e) {}
   }
   // What a sandboxed frame must not reach: this origin's cookie and
-  // storage.
-  document.cookie = "parent=" + SECRET;
-  localStorage.setItem("secret", SECRET);
+  // storage. Under a key of its own, not the victim's: this origin's
+  // initial about:blank in the victim's frame, reached before the
+  // victim's document commits in another renderer (G90 phase 3 (b)),
+  // is this origin's to read, and must not read as the victim's.
+  document.cookie = "parent=" + BAIT;
+  localStorage.setItem("parent-secret", BAIT);
   // What frames say: an attack made, or one that worked.
   addEventListener("message", (e) => {
     if (e.data && e.data.ran) ran.push(e.data.ran);
@@ -51,7 +55,7 @@
 <img src=/missing.png onerror=&quot;parent.postMessage({ pwned: 'sandboxed handler' }, '*')&quot;>"></iframe>
 <iframe {{sandbox-scripts}} srcdoc="<form action=/pwned?sandboxed-form method=post></form>
 <script>document.forms[0].submit()</script>"></iframe>
-<iframe id=victim src="{{victim}}/victim.html?{{secret}}"></iframe>
+<iframe id=victim src="{{victim}}/victim-go"></iframe>
 <script>
   onload = () => {
     const frame = document.getElementById("victim");

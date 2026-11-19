@@ -128,15 +128,83 @@ impl<H: ScriptingHost> Agent<H> {
         self.core.realms.borrow().len()
     }
 
+    /// Lends the document of frame `frame`, which has no realm, to the
+    /// agent for a run of another of its realms (G90 phase 3 (b)): a
+    /// realm is made for it, and the document lent to it, if the run
+    /// reaches it ([`Agent::take_made`]); else it is taken back as lent
+    /// ([`Agent::take_unborn`]).
+    pub fn lend_unborn(&self, frame: u32, host: H) {
+        self.core.reach.unborn.borrow_mut().insert(frame, host);
+    }
+
+    /// The document [`Agent::lend_unborn`] lent for frame `frame`, if no
+    /// realm was made for it.
+    pub fn take_unborn(&self, frame: u32) -> Option<H> {
+        self.core.reach.unborn.borrow_mut().remove(&frame)
+    }
+
+    /// The realm made for frame `frame`'s document as a run reached it
+    /// (G90 phase 3 (b)), its document lent to it: the frame's engine's
+    /// from now on.
+    pub fn take_made(&self, frame: u32) -> Option<Box<dyn Realm<H>>> {
+        let made = self.core.reach.made.borrow_mut().remove(&frame)?;
+        if self.core.heap_unfit.replace(false) {
+            self.core.fit_heap(false);
+        }
+        Some(Box::new(made))
+    }
+
+    /// Whether a realm made by a reach waits for frame `frame`'s engine.
+    pub fn has_made(&self, frame: u32) -> bool {
+        self.core.reach.made.borrow().contains_key(&frame)
+    }
+
+    /// Drops the realms made by a reach that no engine took (their frames
+    /// went in the run), and gives back the documents still lent as
+    /// unborn, which their engines did not take: none should be. A made
+    /// realm holds its agent, so one left would keep it.
+    pub fn drop_unclaimed(&self) -> (usize, Vec<(u32, H)>) {
+        let made = std::mem::take(&mut *self.core.reach.made.borrow_mut());
+        let unborn = std::mem::take(&mut *self.core.reach.unborn.borrow_mut());
+        (made.len(), unborn.into_iter().collect())
+    }
+
     /// The heap its runtime may hold now ([`AgentCore::fit_heap`]).
     pub fn heap_limit(&self) -> usize {
         self.core.heap_limit.get()
     }
 
-    /// Whether more than one realm is made in it: only then may a run of
+    /// The limit its runtime holds to, as QuickJS has it: what
+    /// [`Agent::heap_limit`] says it set, for the tests.
+    #[cfg(test)]
+    pub(crate) fn runtime_limit(&self) -> i64 {
+        self.core.runtime.memory_usage().malloc_limit
+    }
+
+    /// Whether more than one document is of it, realm made or not (G90
+    /// phase 3 (b)), or more than one realm made: only then may a run of
     /// one reach another's document.
     pub fn shared(&self) -> bool {
-        self.core.realms.borrow().len() > 1
+        self.core.members.get() > 1 || self.core.realms.borrow().len() > 1
+    }
+
+    /// A document's place in the agent, for as long as it is kept: what
+    /// [`Agent::shared`] counts, its realm made or not.
+    pub fn join(&self) -> Member {
+        self.core
+            .members
+            .set(self.core.members.get().saturating_add(1));
+        Member(Rc::clone(&self.core.members))
+    }
+}
+
+/// A document's place in its agent ([`Agent::join`]): it leaves as this
+/// goes.
+pub struct Member(Rc<Cell<usize>>);
+
+impl Drop for Member {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
     }
 }
 
@@ -164,6 +232,11 @@ struct AgentCore<H: ScriptingHost> {
     realms: Realms<H>,
     /// The heap its runtime may hold now ([`AgentCore::fit_heap`]).
     heap_limit: Cell<usize>,
+    /// A realm that could not be made under a run's held lock (G90 phase
+    /// 3 (b)) grew the limit for itself: fitted again before the next run.
+    heap_unfit: Cell<bool>,
+    /// The documents of the agent, realm made or not ([`Agent::join`]).
+    members: Rc<Cell<usize>>,
     /// The frame of the realm whose run is under way (G90): HTML's entry
     /// settings object, which a window's `postMessage` called from
     /// another realm of the agent posts as.
@@ -171,7 +244,109 @@ struct AgentCore<H: ScriptingHost> {
     /// The scripts' sampler, when the tool is built and asked for.
     #[cfg(feature = "js-sampler")]
     sampler: Option<Rc<sampler::Sampler>>,
+    /// The realms made as a run reaches their documents, and the documents
+    /// lent for it (G90 phase 3 (b)).
+    reach: Rc<Reach<H>>,
     runtime: Runtime,
+}
+
+/// What a realm made as a run of its agent first reaches its document
+/// needs (G90 phase 3 (b), `docs/design/same-origin-frames.md`): the
+/// documents of the agent with no realm, lent by their frames; the
+/// realms so made, until their engines take them; the frame whose realm
+/// is being made; and the agent, to make it in.
+pub(crate) struct Reach<H: ScriptingHost> {
+    unborn: RefCell<std::collections::HashMap<u32, H>>,
+    made: RefCell<std::collections::HashMap<u32, QuickJsRealm<H>>>,
+    making: Cell<Option<u32>>,
+    core: std::rc::Weak<AgentCore<H>>,
+}
+
+thread_local! {
+    /// The reaches of a frame whose realm was being made (G90 phase 3
+    /// (b)): each answered as another agent's window. Taken by the
+    /// engine for the site sweep.
+    static REENTERED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// The reaches of a frame whose realm was being made since this was last
+/// asked, on this thread ([`REENTERED`]).
+pub fn take_reentered_reaches() -> u32 {
+    REENTERED.with(|count| count.replace(0))
+}
+
+/// The global of frame `frame`'s realm, made now as the run of `ctx`'s
+/// realm first reaches the frame's document (G90 phase 3 (b)): the
+/// document lent to the agent with no realm, or the blank the run's
+/// host makes for an `iframe` it inserted. `None` when there is neither
+/// (another agent's frame: the cross-origin window answers), or the
+/// frame's realm is being made (a reentry, counted). A realm that could
+/// not be made leaves nothing: its document goes back, and the reach
+/// throws the error.
+pub(crate) fn reach_frame<'js, H: ScriptingHost>(
+    reach: &Reach<H>,
+    ctx: &Ctx<'js>,
+    frame: u32,
+) -> rquickjs::Result<Option<Object<'js>>> {
+    let Some(core) = reach.core.upgrade() else {
+        return Ok(None);
+    };
+    if reach.making.get().is_some() {
+        REENTERED.with(|count| count.set(count.get().saturating_add(1)));
+        return Ok(None);
+    }
+    let Some(links) = links_of(&core.realms, ctx) else {
+        return Ok(None);
+    };
+    let unborn = reach.unborn.borrow_mut().remove(&frame);
+    let from_unborn = unborn.is_some();
+    let mut host = match unborn {
+        Some(host) => host,
+        None => match with_host(ctx, &links.host, |host| host.blank_frame(frame))? {
+            Some(host) => host,
+            None => return Ok(None),
+        },
+    };
+    let (secure, guarded) = host.reached_as();
+    reach.making.set(Some(frame));
+    // Its document lent to it before its bootstrap installs.
+    let slot: Slot<H> = Rc::new(RefCell::new(Some(host)));
+    let made = QuickJsRealm::make(
+        &RealmKind::Window,
+        Rc::clone(&core),
+        Some(secure),
+        Some((ctx, &links.context)),
+        Rc::clone(&slot),
+    );
+    let mut realm = match made {
+        Ok(realm) => realm,
+        Err(error) => {
+            reach.making.set(None);
+            let host = slot.borrow_mut().take();
+            if from_unborn && let Some(host) = host {
+                reach.unborn.borrow_mut().insert(frame, host);
+            }
+            return Err(Exception::throw_internal(ctx, &error.message));
+        }
+    };
+    realm.set_frame(frame);
+    realm.name_frame(Some(frame));
+    // Code from strings asks the document's policies from the first call
+    // (M33.1), as an eager realm's does once its document is lent.
+    let entries = realm.entries.borrow().clone();
+    if guarded && let Some(entries) = entries {
+        let _ = context::with_locked(ctx, &realm.context, |new| {
+            let guard = entries.restore(&new).and_then(|entries| {
+                entries
+                    .get::<_, Function<'_>>("guardCode")?
+                    .call::<_, Value<'_>>(())
+            });
+            drop(guard.catch(&new));
+        });
+    }
+    reach.making.set(None);
+    reach.made.borrow_mut().insert(frame, realm);
+    frame_global(&core.realms, ctx, frame)
 }
 
 impl<H: ScriptingHost> AgentCore<H> {
@@ -182,13 +357,8 @@ impl<H: ScriptingHost> AgentCore<H> {
     /// now, with room for its next collection: a realm gone frees its
     /// objects only then.
     fn fit_heap(&self, gone: bool) {
-        let realms = self.realms.borrow().len();
         let cap = crate::MAX_AGENT_HEAP.max(self.limits.heap);
-        let wanted = self
-            .limits
-            .heap
-            .saturating_add(crate::REALM_HEAP.saturating_mul(realms.saturating_sub(1)))
-            .min(cap);
+        let wanted = self.wanted_heap(0);
         let limit = if gone {
             let held = usize::try_from(self.runtime.memory_usage().malloc_size).unwrap_or(0);
             wanted.max(held.saturating_add(crate::REALM_HEAP / 4).min(cap))
@@ -197,6 +367,18 @@ impl<H: ScriptingHost> AgentCore<H> {
         };
         self.heap_limit.set(limit);
         self.runtime.set_memory_limit(limit);
+    }
+
+    /// The heap its realms may hold together, `more` realms to come: its
+    /// first realm's limit, and [`crate::REALM_HEAP`] for each after it,
+    /// up to [`crate::MAX_AGENT_HEAP`] (or the first's, if more).
+    fn wanted_heap(&self, more: usize) -> usize {
+        let realms = self.realms.borrow().len().saturating_add(more);
+        let cap = crate::MAX_AGENT_HEAP.max(self.limits.heap);
+        self.limits
+            .heap
+            .saturating_add(crate::REALM_HEAP.saturating_mul(realms.saturating_sub(1)))
+            .min(cap)
     }
 }
 
@@ -223,6 +405,9 @@ pub(crate) struct Links<H: ScriptingHost> {
     /// Its nodes whose objects were collected while its document was not
     /// lent (G90): released to its host when it next is.
     released: Released,
+    /// Its context: an anchor of the agent's runtime for a realm made as
+    /// its run reaches a document (G90 phase 3 (b)).
+    context: Context,
 }
 
 /// A realm's nodes let go of while no host of its was there, released
@@ -247,6 +432,7 @@ impl<H: ScriptingHost> Clone for Links<H> {
             global: Rc::clone(&self.global),
             frame: Rc::clone(&self.frame),
             released: Rc::clone(&self.released),
+            context: self.context.clone(),
         }
     }
 }
@@ -489,15 +675,23 @@ impl<H: ScriptingHost> Agent<H> {
             },
         );
         Ok(Agent {
-            core: Rc::new(AgentCore {
+            core: Rc::new_cyclic(|core| AgentCore {
                 limits,
                 budget,
                 dead: Rc::default(),
                 realms,
                 heap_limit: Cell::new(limits.heap),
+                heap_unfit: Cell::new(false),
+                members: Rc::default(),
                 entry: Entry::default(),
                 #[cfg(feature = "js-sampler")]
                 sampler,
+                reach: Rc::new(Reach {
+                    unborn: RefCell::default(),
+                    made: RefCell::default(),
+                    making: Cell::new(None),
+                    core: core.clone(),
+                }),
                 runtime,
             }),
         })
@@ -522,7 +716,23 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         agent: &Agent<H>,
         secure: Option<bool>,
     ) -> Result<QuickJsRealm<H>, ScriptError> {
-        let core = Rc::clone(&agent.core);
+        QuickJsRealm::make(kind, Rc::clone(&agent.core), secure, None, Rc::default())
+    }
+
+    /// A realm of `kind` in the agent `core`: made eagerly, or, given
+    /// `held` (a context of the agent whose run is under way, and holds
+    /// the runtime's lock) and an anchor context of the agent, made as
+    /// that run first reaches its document (G90 phase 3 (b)), its
+    /// document lent in `host` before its bootstrap installs, as an eager
+    /// realm's is before its first run: what the bootstrap asks of it as
+    /// it installs, the document answers.
+    fn make(
+        kind: &RealmKind,
+        core: Rc<AgentCore<H>>,
+        secure: Option<bool>,
+        held: Option<(&Ctx<'_>, &Context)>,
+        host: Slot<H>,
+    ) -> Result<QuickJsRealm<H>, ScriptError> {
         let limits = Limits {
             secure: secure.unwrap_or(core.limits.secure),
             ..core.limits
@@ -550,11 +760,25 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 stack: Vec::new(),
             });
         }
-        let context = context::new_context(&core.runtime).map_err(made_none)?;
-        let key = context.with(|ctx| context_key(&ctx));
+        let context = match held {
+            None => context::new_context(&core.runtime),
+            Some((held, anchor)) => {
+                // The heap grows with the realm at once, under the lock the
+                // reaching run holds: it may reach a hundred more.
+                let limit = core.wanted_heap(1);
+                let made = context::new_context_locked(held, anchor, limit)
+                    .unwrap_or(Err(rquickjs::Error::Unknown));
+                if made.is_ok() {
+                    core.heap_limit.set(limit);
+                }
+                made
+            }
+        }
+        .map_err(made_none)?;
+        let held = held.map(|(held, _)| held);
+        let key = enter(held, &context, |ctx| context_key(&ctx));
         let rejections: Rc<RefCell<Vec<Rejection>>> = Rc::default();
         let muted = Rc::new(Cell::new(false));
-        let host: Slot<H> = Rc::default();
         let budget = core.budget.clone();
         let entries: Entries = Rc::default();
         let guards: dom::Guards = Rc::default();
@@ -577,41 +801,52 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 global: global.clone(),
                 frame: frame.clone(),
                 released: released.clone(),
+                context: context.clone(),
             },
         );
-        core.fit_heap(false);
-        let saved = context
-            .with(|ctx| {
-                install(
-                    &ctx,
-                    kind,
-                    limits.secure,
-                    &host,
-                    &budget,
-                    (&entries, &guards),
-                    (&module_state, &core.realms, &core.entry),
-                )
-                .map(|entries| Persistent::save(&ctx, entries))
-                .catch(&ctx)
-                .map_err(|e| e.to_string())
-            })
-            .map_err(|message| {
-                // A realm not made goes without its `Drop`: the natives a
-                // debug build guards go before its context, as there, and
-                // the agent forgets it.
-                guards.borrow_mut().clear();
-                core.realms.borrow_mut().remove(&key);
-                ScriptError {
-                    kind: ErrorKind::Exception,
-                    message,
-                    url: String::new(),
-                    line: 0,
-                    column: 0,
-                    stack: Vec::new(),
-                }
-            })?;
+        // Under a run's held lock the limit was fitted as the context was
+        // made.
+        if held.is_none() {
+            core.fit_heap(false);
+        }
+        let saved = enter(held, &context, |ctx| {
+            install(
+                &ctx,
+                kind,
+                limits.secure,
+                &host,
+                &budget,
+                (&entries, &guards),
+                (&module_state, &core.realms, &core.entry, &core.reach),
+            )
+            .map(|entries| Persistent::save(&ctx, entries))
+            .catch(&ctx)
+            .map_err(|e| e.to_string())
+        })
+        .map_err(|message| {
+            // A realm not made goes without its `Drop`: the natives a
+            // debug build guards go before its context, as there, and
+            // the agent forgets it.
+            guards.borrow_mut().clear();
+            core.realms.borrow_mut().remove(&key);
+            // Grown for it under a run's lock: fitted again before the
+            // next run, the lock not held then.
+            if held.is_some() {
+                core.heap_unfit.set(true);
+            }
+            ScriptError {
+                kind: ErrorKind::Exception,
+                message,
+                url: String::new(),
+                line: 0,
+                column: 0,
+                stack: Vec::new(),
+            }
+        })?;
         *entries.borrow_mut() = Some(saved);
-        context.with(|ctx| *global.borrow_mut() = Some(Persistent::save(&ctx, ctx.globals())));
+        enter(held, &context, |ctx| {
+            *global.borrow_mut() = Some(Persistent::save(&ctx, ctx.globals()));
+        });
         Ok(QuickJsRealm {
             rejections,
             entries,
@@ -643,6 +878,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         #[cfg(feature = "js-sampler")]
         if let Some(sampler) = &self.agent.sampler {
             sampler.attach(&self.context);
+        }
+        // A realm the last run's reach could not make shrinks it again.
+        if self.agent.heap_unfit.replace(false) {
+            self.agent.fit_heap(false);
         }
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
@@ -1751,7 +1990,7 @@ fn install<'js, H: ScriptingHost>(
     host: &Slot<H>,
     budget: &dom::Budget,
     (entries, guards): (&Entries, &dom::Guards),
-    (modules, realms, entry): (&Rc<modules::State>, &Realms<H>, &Entry),
+    (modules, realms, entry, reach): (&Rc<modules::State>, &Realms<H>, &Entry, &Rc<Reach<H>>),
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
     global.remove("performance")?;
@@ -1841,7 +2080,7 @@ fn install<'js, H: ScriptingHost>(
         secure,
         (host, budget),
         (entries, guards),
-        (modules, realms, entry),
+        (modules, realms, entry, reach),
         console,
     )
 }
@@ -1858,6 +2097,22 @@ thread_local! {
 /// this thread ([`UNLENT`]).
 pub fn take_unlent_calls() -> u32 {
     UNLENT.with(|count| count.replace(0))
+}
+
+/// Runs `f` in `context`: through `Context::with`, or, given `held`, a
+/// context of the same runtime whose run holds its lock, under that
+/// lock (G90 phase 3 (b)), where `Context::with` would take it again.
+fn enter<R>(
+    held: Option<&Ctx<'_>>,
+    context: &Context,
+    f: impl for<'js> FnOnce(Ctx<'js>) -> R,
+) -> R {
+    match held {
+        None => context.with(f),
+        Some(held) => {
+            context::with_locked(held, context, f).expect("a context of the held runtime")
+        }
+    }
 }
 
 /// Releases to `host` the nodes `released` holds, whose objects were

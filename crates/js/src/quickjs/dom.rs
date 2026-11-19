@@ -1329,7 +1329,12 @@ pub(super) fn install<'js, H: ScriptingHost>(
     secure: bool,
     (host, budget): (&Slot<H>, &Budget),
     (entries, guards): (&Entries, &Guards),
-    (state, realms, entry): (&Rc<modules::State>, &super::Realms<H>, &super::Entry),
+    (state, realms, entry, reach): (
+        &Rc<modules::State>,
+        &super::Realms<H>,
+        &super::Entry,
+        &Rc<super::Reach<H>>,
+    ),
     console: Function<'js>,
 ) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
@@ -1409,6 +1414,16 @@ pub(super) fn install<'js, H: ScriptingHost>(
                         return Err(throw(&ctx, &error));
                     }
                 };
+                // A `write()` that opened the document implicitly erases the
+                // window's and the opened nodes' listeners now, before the
+                // scripts it wrote run: theirs are the new document's.
+                let answer = match (name, answer) {
+                    ("write", Answer::Nodes(erased)) if !erased.is_empty() => {
+                        erase_opened(&ctx, &entries, &erased)?;
+                        Answer::Nodes(Vec::new())
+                    }
+                    (_, answer) => answer,
+                };
                 if runs_scripts {
                     run_nested(&ctx, &host, &budget, &entries, &state)?;
                 }
@@ -1423,8 +1438,10 @@ pub(super) fn install<'js, H: ScriptingHost>(
     }
     // A frame of this realm's agent, its global object; `null` for one of
     // another agent (G90 phase 2), which only the cross-origin window
-    // reaches.
+    // reaches. A document of the agent with no realm yet has one made
+    // now, as this run first reaches it (G90 phase 3 (b)).
     let agent = realms.clone();
+    let reaching = Rc::clone(reach);
     natives.set(
         "frameWindow",
         Function::new(
@@ -1433,8 +1450,12 @@ pub(super) fn install<'js, H: ScriptingHost>(
                 if !(frame >= 0.0 && frame <= f64::from(u32::MAX)) {
                     return Ok(Value::new_null(ctx));
                 }
-                Ok(super::frame_global(&agent, &ctx, frame as u32)?
-                    .map_or_else(|| Value::new_null(ctx.clone()), Object::into_value))
+                let frame = frame as u32;
+                let found = match super::frame_global(&agent, &ctx, frame)? {
+                    Some(global) => Some(global),
+                    None => super::reach_frame(&reaching, &ctx, frame)?,
+                };
+                Ok(found.map_or_else(|| Value::new_null(ctx.clone()), Object::into_value))
             },
         )?,
     )?;
@@ -1763,6 +1784,23 @@ fn reactions<'js>(ctx: &Ctx<'js>, entries: &Entries, start: bool) -> rquickjs::R
             .call::<_, ()>((start,))?;
     }
     Ok(())
+}
+
+/// The bootstrap's erasing of what `document.write()`'s implicit open
+/// opened (HTML 8.4.2.1): the window's listeners and those of `erased`,
+/// as `document.open()` erases them, before the written scripts run.
+fn erase_opened(ctx: &Ctx<'_>, entries: &Entries, erased: &[Handle]) -> rquickjs::Result<()> {
+    let Some(entries) = entries.borrow().clone() else {
+        return Ok(());
+    };
+    let handles = Array::new(ctx.clone())?;
+    for (at, handle) in erased.iter().enumerate() {
+        handles.set(at, handle.0 as f64)?;
+    }
+    entries
+        .restore(ctx)?
+        .get::<_, Function<'_>>("eraseOpened")?
+        .call::<_, ()>((handles,))
 }
 
 fn run_nested<'js, H: ScriptingHost>(

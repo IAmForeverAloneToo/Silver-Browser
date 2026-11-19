@@ -535,6 +535,17 @@ impl ScriptingHost for DocumentHost {
         self.say(level, message);
     }
 
+    fn reached_as(&mut self) -> (bool, bool) {
+        // Its realm made as a run of its agent reaches it (G90 phase 3
+        // (b)): a secure context as its page is, and its code from strings
+        // guarded as `Scripts::guard_code` would guard it.
+        let Some(page) = self.page.as_mut() else {
+            return (false, false);
+        };
+        let guarded = !page.csp(&self.document).eval_violations("").is_empty();
+        (page.is_secure_context(), guarded)
+    }
+
     fn console_record(&mut self, record: js::ConsoleRecord) {
         let entry = ConsoleEntry::recorded(super::ConsoleSource::Console, record);
         self.outputs.console.push(entry);

@@ -33756,6 +33756,9 @@
     popState: popStateTask,
     broadcast: broadcastTask,
     namedSync,
+    // `document.write()`'s implicit open erased what it opened: before
+    // the scripts it wrote run, which add listeners anew (HTML 8.4.2.1).
+    eraseOpened,
     mutationsQueued: queueMutationObserverMicrotask,
     // Custom elements (D70): the parser's element to construct, as a
     // task or nested in a script's `document.write`; the reactions its

@@ -133,8 +133,12 @@ fn site(defended: bool, secret: String, printer: u16) -> TestServer {
         let origin = |name: &str| format!("http://{name}:{port}");
         let attacker = origin("a.localhost");
         let victim = origin("b.localhost");
+        // The attacker's own bait, which holds none of the secret: what
+        // its pages may read of their own origin's.
+        let bait: String = std::iter::once('b').chain(s.chars().rev()).collect();
         let fill = |page: &str| {
             page.replace("{{secret}}", s)
+                .replace("{{bait}}", &bait)
                 .replace("{{attacker}}", &attacker)
                 .replace("{{defended}}", if defended { "true" } else { "false" })
         };
@@ -181,6 +185,11 @@ fn site(defended: bool, secret: String, printer: u16) -> TestServer {
             ),
             "/sandboxed.html" => html(&[], fill(SANDBOXED)),
             "/victim.html" => html(&[], fill(VICTIM)),
+            // The victim framed through a redirect: its URL, which holds the
+            // secret, is the victim's alone, not in the attacker's page.
+            "/victim-go" => {
+                Reply::with_fields(302, &[("Location", &format!("/victim.html?{s}"))], b"")
+            }
             "/spy.html" => html(&[], fill(SPY)),
             // The injected markup, under the victim's policy or none.
             "/csp.html" => {
@@ -257,13 +266,13 @@ const SANDBOXED: &str = "<script>\
      function tell(what, read) {\
        parent.postMessage({ ran: what }, '*');\
        try {\
-         if (String(read()).indexOf('{{secret}}') >= 0) parent.postMessage({ pwned: what }, '*');\
+         if (String(read()).indexOf('{{bait}}') >= 0) parent.postMessage({ pwned: what }, '*');\
        } catch (e) {}\
      }\
      tell('sandboxed parent cookie', () => parent.document.cookie);\
-     tell('sandboxed parent storage', () => parent.localStorage.getItem('secret'));\
+     tell('sandboxed parent storage', () => parent.localStorage.getItem('parent-secret'));\
      tell('sandboxed cookie', () => document.cookie);\
-     tell('sandboxed storage', () => localStorage.getItem('secret'));\
+     tell('sandboxed storage', () => localStorage.getItem('parent-secret'));\
      </script>";
 
 /// The victim's page in a frame: the secret in its text, its name, its
@@ -471,6 +480,13 @@ fn attack(
             .flat_map(|server| records(&server.requests(), &secret));
         if let Some((mut outcome, least)) = line.as_deref().map(outcome_of).zip(least) {
             outcome.pwned.extend(recorded);
+            // What the page said it read, with the secret in it: by value,
+            // whatever key or name it read it by.
+            outcome.pwned.extend(said.iter().filter_map(|line| {
+                let seen = line.split_once("SEEN ")?.1;
+                let (what, value) = seen.split_once('|')?;
+                value.contains(secret.as_str()).then(|| what.to_owned())
+            }));
             if Instant::now() >= least
                 && awaited.iter().all(|attack| outcome.pwned.contains(*attack))
             {

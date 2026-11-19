@@ -290,6 +290,185 @@ About three weeks in all. Phases 1 and 2 are the beta's need (the
 Kasada case, Gmail, Docs); 3 and 4 make it right; 5 can follow if no
 site on the list needs it first.
 
+### Phase 3 (b): a realm made as it is first reached
+
+Approved by the lead 2026-11-19, with the amendments folded in below
+(policy container, sandboxed and cross-origin inserts, identical
+globals, reference counts, the sweep's medians first).
+
+What it fixes: a document of the agent that ran no script has no realm
+(fix (a), phase 2), so a script of the agent that reaches it (a
+frame's `contentWindow`, `frames[n]`, `parent`, `top`, a name) gets
+the cross-origin proxy and `SecurityError`; and an `iframe` a script
+inserts has no document at all until the frames pass after the run,
+where Chrome gives the initial `about:blank` at once (the Kasada case:
+`document.body.appendChild(f); f.contentWindow.TextEncoder`). The
+2026-11-19 sweep found phase 2 left the daily sites' refused counts
+where they were (bbc 147 to 178, weather 104 to 122, Gmail, Docs and
+Drive 5): each frame reached had no realm then. This is what moves
+them.
+
+**When.** In the native that answers the reach (`frameWindow`,
+`parentWindow`, the frame by name or index), when the agent has no
+realm of that frame and the frame's document is of the agent. Never
+eagerly: fix (a)'s numbers (25 ms and 3 MB a scriptless frame, the
+fuzz target 30 times slower) stand.
+
+**Whose document.** Two cases, both answered from the agent, without
+reaching into the engine during the run:
+
+- a document that exists (a scriptless page, a scriptless parent, a
+  frame's initial `about:blank` its engine showed): when its engine
+  lends around (`lend_around`, `with_frame`), a document of the agent
+  with no realm is lent too, into the agent's table of unborn
+  documents by frame (`AgentCore::unborn`, a host by frame number),
+  and taken back with the rest. A host lent so is the same moves as
+  any lending (`DocumentHost::lend`). Its cost is measured on bbc and
+  weather, the sites with the most such frames (signed-in Gmail cannot
+  be swept): over a few percent of load, the lead hears before it is
+  kept;
+- an `iframe` inserted during the run, whose engine is made only
+  after it (`make_frame`): the reach asks the reaching realm's host,
+  lent now, for a new host of an `about:blank` of its origin
+  (`ScriptingHost::blank_frame(frame)`, new); `make_frame` takes that
+  document and its realm from the agent (`Agent::take_made(frame)`)
+  instead of making its own, so the document the script touched is
+  the one the frame shows until its first navigation.
+
+The realm so made is the frame's: its engine's `Scripts` takes it at
+the take-back (`Agent::take_made(frame)` where it has none), and its
+host back from it, as from any lent realm.
+
+**A blank's policies are its creator's.** The blank `blank_frame`
+makes, like the unborn initial `about:blank` (`show_blank`, which
+`Page::inheriting(creator)` already gives them), carries its
+creator's policy container: its CSP, its sandbox flags (the element's
+and the creator's) and its referrer policy, as Chrome's does. The new
+realm is guarded as its document's policies say before the reach
+returns (the `Task::GuardCode` step, run in its install while its host
+is lent), so that a page under a strict `script-src` cannot insert a
+blank, reach it, and run `eval` or an inline script through it.
+Chrome, probed 2026-11-19 (a parent under `script-src 'self'`, its
+blank inserted and reached in the same task): `w.eval('1')` and
+`new w.Function(...)` throw `EvalError`; a script element with text
+appended to the blank's body does not run.
+
+**What an insert reached in the same task shows.** Chrome, probed
+2026-11-19:
+
+- `src` of another origin: the initial `about:blank`, of the
+  creator's origin and readable (`<html><head></head><body></body>`);
+  once the navigation commits, the same `WindowProxy` answers as
+  another origin's (`SecurityError`, and a property set on it before
+  reads `SecurityError`), while a `Document` object kept from before
+  still reads as the blank. So the blank's realm keeps no path to the
+  new document: the frame's realm by frame number is the new
+  document's (or none, it being in another renderer), and the proxy
+  forwards by frame, not by realm;
+- `srcdoc`: the initial `about:blank` in the same task, the
+  `about:srcdoc` document after, through the same `WindowProxy`;
+- `src` of its origin: the blank, then the page;
+- `sandbox` without `allow-same-origin`: an opaque origin, so
+  `blank_frame` refuses it and the reach gives the cross-origin proxy
+  (`SecurityError`; `contentDocument` null), as Chrome.
+
+**The calls, in `quickjs/context.rs` (the module that allows
+`unsafe` already; its reviewed blocks go from one to three).** A native
+runs inside the reaching realm's `Context::with`, which holds the
+runtime's lock (`runtime.inner.lock()`, a `RefCell` borrow on this
+thread) for the whole closure, so rquickjs's `Context::custom`, which
+takes that lock, would panic. So, with the lock held by the caller:
+
+1. `qjs::JS_GetRuntime(caller_ctx)`, checked to be the runtime of an
+   anchor `Context` of the agent (rquickjs's `get_runtime_ptr`), whose
+   `Runtime` owns the new context: the agent's runtime;
+2. `qjs::JS_NewContextRaw(rt)`, null being out of memory;
+3. `qjs::JS_AddIntrinsicBaseObjects`, then the intrinsics rquickjs's
+   `intrinsic::All` adds, in its order (`Date`, `Eval`,
+   `RegExpCompiler`, `RegExp`, `JSON`, `Proxy`, `MapSet`,
+   `TypedArrays`, `Promise`, `JS_AddPerformance`, `WeakRef`,
+   `DOMException`), then `JS_AddIntrinsicAToB`, as `new_context` does
+   now, each nonzero return an allocation failed;
+4. `Ctx::from_raw(ctx)` for the bootstrap's install, valid inside the
+   held lock and not kept past the native's return;
+5. `Context::from_raw(ctx, anchor.runtime().clone())` for the realm to keep:
+   its `with` is used only by the realm's own runs, never nested in
+   another realm's (as now: no realm enters another's `with`).
+
+One `unsafe` block holds 1 to 3 and 5 (`new_context_locked`);
+`Ctx::from_raw` is the second (`with_locked`, it is `unsafe` in
+rquickjs), with the module's first, the base64 call, three in all
+(built: the note first said two, counting only the new ones). Each
+refuses a context of another runtime. The safety argument: the caller's
+`Context::with` holds this runtime's lock on this thread; the context
+is fresh and nothing has run in it; the `Ctx` does not outlive the
+native call; the owning `Context` takes the one reference
+`JS_NewContextRaw` gave.
+
+The intrinsics copied by hand go stale if rquickjs changes `All`: a
+test makes one realm eagerly and one by reach and compares their
+global's own property names in order, those of `Object.prototype`,
+`Function.prototype` and `Array.prototype`, and `typeof` of each.
+
+**Under which lock and lending.** The runtime's lock is the
+caller's; the caller's host is lent to the caller's realm (it is the
+reaching run); the new realm's host is lent to it before its
+bootstrap runs: the unborn host from `AgentCore::unborn`, or the
+blank one from `blank_frame`. The bootstrap's install runs in the new
+context, nested in the caller's call: QuickJS-ng keeps one stack of
+frames per runtime, which the nested `JS_Eval` pushes on, and the
+budget and interrupt check are the agent's, so the install counts
+against the reaching run's budget (a few ms). The stack check
+`QuickJsRealm::new` makes is made here too.
+
+**If the bootstrap throws, or the run re-enters.**
+
+- Out of memory or out of budget in the install: the realm is not
+  made (its links leave the agent, its guards cleared, its `Context`
+  dropped, which frees it at once: rquickjs frees a context whose
+  runtime is locked on this thread directly); the unborn host goes
+  back to the table (the blank one is dropped); the reach throws the
+  error to the reaching script (`InternalError: out of memory`, or
+  the budget's stop, uncatchable as now). No half-made realm stays.
+- Re-entry: the install runs only the bootstrap, which reaches no
+  frame; a reach of the frame being made (the agent's `making`,
+  set for the install) answers as now, the cross-origin proxy, and is
+  counted (a test makes it happen through a getter and sees it).
+- A second reach of the frame in the same run finds the realm made
+  (it is in the agent's realms by frame), so it is made once.
+
+**Reference counts.** A test makes several realms by reach, drops some
+(their frames removed), then the agent, with QuickJS's assertion
+that a freed runtime holds no object on (debug builds); the frames
+fuzz target runs it under ASan in CI, its input generator extended to
+reach scriptless frames and inserted ones, in the insert's own task
+too.
+
+**Allowlist.** No new file: CI's grep allows
+`crates/js/src/quickjs/context.rs` already; the shell's test
+`unsafe_is_written_in_the_platform_module_alone_each_block_argued`
+goes from `assert_eq!(context_blocks, 1, ...)` to 2, and
+`docs/security.md`'s `quickjs/context.rs` paragraph from "one block"
+to "two blocks", with the argument above.
+
+**Tests.** The phase 3 gap tests flip to Chrome's lines: the Kasada
+case (a frame's script inserts an `iframe` and reads
+`contentWindow.TextEncoder`, a function, native by
+`Function.prototype.toString`), a scriptless frame read by its
+parent, a scriptless parent read by its frame, `blank write`
+(`document.write` into the reached blank). New, each against Chrome's
+answer: the reached blank is the document the frame shows after the
+run; a parent whose CSP forbids `eval`: its reached blank's
+`eval('1')` throws `EvalError`, and an inline script put in it does
+not run; a sandboxed insert reached gives the cross-origin proxy; a
+cross-origin insert reached in its task gives the blank, and after
+its navigation a kept reference answers `SecurityError` (with its
+`sub.a` twin); a `srcdoc` insert gives the blank, then the srcdoc
+document; the globals of the two ways of making a realm match; the
+reference-count test; a bootstrap out of heap leaves no realm and the
+frame reachable later; re-entry as above; the frames fuzz target's
+rate within its floor.
+
 ## 4. Not in this note
 
 - `Origin-Agent-Cluster: ?0` and `document.domain` widening an agent

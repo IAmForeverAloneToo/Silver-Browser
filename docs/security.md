@@ -448,12 +448,19 @@ as a call enters a WebAssembly store, a memory's `ArrayBuffer` is read
 in place (rquickjs's `as_bytes`), compared with the mirror kept of it
 and its runs that differ copied into the memory, with nothing that
 reaches QuickJS while the slice lives (no value made or freed, no call,
-no callback from `wasmi`). And `quickjs/context.rs`, one block: a
+no callback from `wasmi`). And `quickjs/context.rs`, three blocks: a
 realm's context, made with rquickjs's intrinsics, is given QuickJS-ng's
 base64 functions by the call `JS_NewContext` makes, on the fresh
 context before anything runs in it (G90: a runtime's later contexts
-had no `DOMException` from `JS_NewContext`). The shell's test
-`unsafe_is_written_in_the_platform_module_alone_each_block_argued`
+had no `DOMException` from `JS_NewContext`); and a realm made as a run
+of its agent first reaches its document (G90 phase 3 (b)), its context
+made with QuickJS's own calls under the lock that run holds (rquickjs's
+`Context::custom` would take it again), the same intrinsics in the same
+order, each call's failure an error, and entered without taking the
+lock (`Ctx::from_raw`), the `Ctx` living in one closure alone; both
+refuse a context of another runtime than the one held, and a test
+holds the context's globals to an eager one's, name for name. The
+shell's test `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
 and CI greps the same (T3.2). M40 adds the second exception, `media`'s
 `av1` module, with 12 blocks over `rav1d`'s C interface (its settings,

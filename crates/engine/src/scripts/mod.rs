@@ -903,6 +903,11 @@ pub(crate) struct Scripts {
     /// The origin of the documents of its agent, for what it says of the
     /// agent's death.
     agent_origin: String,
+    /// Its document is lent to its agent with no realm made (G90 phase 3
+    /// (b)), for a run of another realm that may reach it.
+    unborn_lent: bool,
+    /// Its document's place in its agent, realm made or not.
+    member: Option<js::Member>,
     /// Its host's count of calls answered when it was lent to its realm
     /// for another realm's run ([`Scripts::lend_out`]).
     lent_calls: u64,
@@ -1056,6 +1061,8 @@ impl Scripts {
             realm: None,
             agent: None,
             lent_calls: 0,
+            unborn_lent: false,
+            member: None,
             agent_origin: String::new(),
             reopened_seen: 0,
             frame: None,
@@ -2404,6 +2411,73 @@ impl Scripts {
         true
     }
 
+    /// Lends the document, whose realm is not made, to its agent for a run
+    /// of another of the agent's realms (G90 phase 3 (b)): if the run
+    /// reaches it, its realm is made then, and the document lent to it.
+    /// Whether it was.
+    pub(crate) fn lend_unborn(&mut self, lent: &mut Lent<'_>) -> bool {
+        if !self.may_lend_unborn() {
+            return false;
+        }
+        let (Some(agent), Some(frame)) = (self.agent.clone(), self.frame) else {
+            return false;
+        };
+        self.host.in_flight = self.fetching.len();
+        self.host
+            .lend(lent, How::default(), self.blocking.is_some());
+        self.lent_calls = self.host.calls;
+        agent.lend_unborn(frame, std::mem::take(&mut self.host));
+        self.unborn_lent = true;
+        true
+    }
+
+    /// Whether its document, with no realm, may be lent to its agent
+    /// ([`Scripts::lend_unborn`]).
+    pub(crate) fn may_lend_unborn(&self) -> bool {
+        self.realm.is_none()
+            && !self.unborn_lent
+            && !self.stopped
+            && self.agent.is_some()
+            && self.frame.is_some()
+    }
+
+    /// Whether its document is lent to its agent with no realm.
+    pub(crate) fn is_lent_unborn(&self) -> bool {
+        self.unborn_lent
+    }
+
+    /// Takes back what [`Scripts::lend_unborn`] lent: from the realm the
+    /// run made for it as it reached it, which is its own from now on,
+    /// or as lent. Whether the run did anything of it.
+    pub(crate) fn take_back_unborn(&mut self, lent: &mut Lent<'_>) -> bool {
+        if !std::mem::take(&mut self.unborn_lent) {
+            return false;
+        }
+        let (Some(agent), Some(frame)) = (self.agent.clone(), self.frame) else {
+            return false;
+        };
+        if let Some(realm) = agent.take_made(frame) {
+            self.realm = Some(realm);
+            // Guarded as it was made, if its policies say so.
+            self.code_guarded = !lent.page.csp(lent.document).eval_violations("").is_empty();
+            let count = u32::try_from(agent.realm_count()).unwrap_or(u32::MAX);
+            let most = &mut self.host.sweep.most_realms_in_agent;
+            *most = (*most).max(count);
+            return self.take_back(lent);
+        }
+        let Some(host) = agent.take_unborn(frame) else {
+            return false;
+        };
+        self.host = host;
+        let touched = self.host.touched_since(self.lent_calls);
+        let mut outputs = self.host.give_back(lent);
+        if touched {
+            self.outputs_before(lent, &mut outputs);
+            self.outputs_after(lent, outputs);
+        }
+        touched
+    }
+
     /// Whether it has a realm its document may be lent to, not lent now
     /// ([`Scripts::lend_out`]): what a lending asks before it gathers
     /// what it lends.
@@ -3012,6 +3086,7 @@ impl Scripts {
             agent: self.agent.take(),
             frame: self.frame,
             agent_origin: std::mem::take(&mut self.agent_origin),
+            member: self.member.take(),
             ..Scripts::with_limits(self.limits)
         };
     }
@@ -3024,6 +3099,7 @@ impl Scripts {
         frame: u32,
         origin: String,
     ) {
+        self.member = Some(agent.join());
         self.agent = Some(agent);
         self.frame = Some(frame);
         self.agent_origin = origin;

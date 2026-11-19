@@ -1114,16 +1114,10 @@ fn a_parent_writes_its_blank_frames_document_and_hears_its_load() {
         lines.extend(console(&mut tab));
         std::thread::sleep(Duration::from_millis(2));
     }
-    // A known gap until G90 phase 3's (b): the frame's `about:blank` runs
-    // no script, so it has no realm, and its `contentDocument` is null.
-    // The reference browser: "written <p>hi</p>", "loaded <p>hi</p>",
-    // as this engine gives once its realm is made (the document.open
-    // and load parts are tested by WPT's html5lib write runs then).
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert!(
-        lines[0].contains("cannot read property 'open' of null"),
-        "{lines:?}"
-    );
+    // The frame's `about:blank` runs no script: its realm is made as the
+    // parent first reaches it (G90 phase 3 (b)). As the reference
+    // browser.
+    assert_eq!(lines, ["written <p>hi</p>", "loaded <p>hi</p>"]);
 }
 
 #[test]
@@ -1232,5 +1226,53 @@ fn an_agent_out_of_memory_names_its_origin_and_documents() {
     assert!(
         lines.iter().any(|line| line.ends_with(&wanted)),
         "{lines:?}"
+    );
+}
+
+/// A frame removed with an interval, an idle callback and an animation
+/// frame pending, its realm made by a script of its own (`e`) or as its
+/// parent reached it (`r`, G90 phase 3 (b)): the two behave alike.
+#[test]
+fn a_removed_frame_behaves_alike_whichever_way_its_realm_was_made() {
+    let server = two_pages(
+        "<iframe id=e srcdoc=\"<script>0</script>\"></iframe>\
+         <iframe id=r srcdoc=\"<p>quiet\"></iframe><script>\
+         const arm = (id) => `setInterval(() => top.console.log('${id} interval'), 5);\
+           requestIdleCallback(() => top.console.log('${id} idle'));\
+           requestAnimationFrame(() => top.console.log('${id} raf'));`;\
+         onload = () => {\
+           for (const id of ['e', 'r']) {\
+             const f = document.getElementById(id);\
+             f.contentWindow.eval(arm(id));\
+             f.remove();\
+           }\
+           setTimeout(() => console.log('done'), 200);\
+         };</script>",
+        "",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|line| line == "done"));
+    // A known gap, of frames' lifecycle and not of how a realm is made: a
+    // removed frame's document is not unloaded, its timers and idle
+    // callbacks run on and its realm stays (an eager frame's as a reached
+    // one's; found 2026-11-19, G90 phase 3 (b)'s check). The reference
+    // browser: no line but "done", and the agent's one realm left. What
+    // holds now: the two ways of making a realm behave alike.
+    let kinds = |id: &str| -> std::collections::BTreeSet<String> {
+        lines
+            .iter()
+            .filter_map(|line| line.strip_prefix(id))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(kinds("e "), kinds("r "), "{lines:?}");
+    assert!(lines.iter().any(|line| line == "done"));
+    let agent = tab.engine.shown.scripts.agent().expect("the page's agent");
+    assert_eq!(
+        agent.realm_count(),
+        3,
+        "the known gap: both removed frames' realms stay"
     );
 }

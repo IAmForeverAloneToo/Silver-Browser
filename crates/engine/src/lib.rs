@@ -2612,6 +2612,25 @@ impl Engine {
                 window,
             };
             count += usize::from(shown.scripts.lend_out(&mut lent));
+        } else if self.of_agents(agents) && self.shown.scripts.may_lend_unborn() {
+            // No realm: lent to the agent, which makes one if the run
+            // reaches it (G90 phase 3 (b)).
+            let ready = self.ready_state();
+            let window = self.window_env();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                frames: None,
+                images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window,
+            };
+            count += usize::from(shown.scripts.lend_unborn(&mut lent));
         }
         count + usize::from(self.lend_incoming(agents))
     }
@@ -2741,6 +2760,24 @@ impl Engine {
                 window: scripts::WindowEnv::default(),
             };
             if shown.scripts.take_back(&mut lent) {
+                self.scripts_ran();
+            }
+        } else if self.of_agents(agents) && self.shown.scripts.is_lent_unborn() {
+            let ready = self.ready_state();
+            let shown = &mut self.shown;
+            let mut lent = scripts::Lent {
+                document: &mut shown.document,
+                frames: None,
+                images: Some(&mut shown.images),
+                animations: Some(shown.animations.get_mut()),
+                styled: Some(&mut shown.styled),
+                page: &mut shown.page,
+                parser: shown.parsing.as_mut().map(|parsing| &mut parsing.load),
+                network: &mut self.network,
+                ready,
+                window: scripts::WindowEnv::default(),
+            };
+            if shown.scripts.take_back_unborn(&mut lent) {
                 self.scripts_ran();
             }
         }

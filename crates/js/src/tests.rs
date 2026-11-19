@@ -1182,4 +1182,132 @@ mod frame_tests {
         );
         assert!(child.reclaim().is_some());
     }
+
+    /// G90 phase 3 (b): a document of the agent with no realm, lent to
+    /// the agent, has its realm made as a run first reaches it, the
+    /// document lent to it; the frame's engine takes the realm after, and
+    /// the next reach is the same window.
+    #[test]
+    fn a_frame_with_no_realm_has_one_made_as_it_is_reached() {
+        let agent = QuickJs
+            .agent::<Recorder>(Limits::default(), None)
+            .expect("an agent");
+        let mut top = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window, true)
+            .expect("a realm");
+        top.name_frame(Some(0));
+        let child_host = Recorder {
+            frames: Some((5, Vec::new())),
+            title: "bee".into(),
+            ..Recorder::default()
+        };
+        agent.lend_unborn(5, child_host);
+        let mut host = Recorder {
+            frames: Some((0, vec![5])),
+            ..Recorder::default()
+        };
+        top.enter(&Task::FrameList(vec![String::new()]), &mut host)
+            .expect("the window's frames");
+        assert_eq!(agent.realm_count(), 1);
+        let done = top
+            .run(
+                &script(
+                    "var w = frames[0]; \
+                     [typeof w.TextEncoder, w.TextEncoder === TextEncoder, \
+                      String(w.TextEncoder).includes('[native code]'), \
+                      w.document.title, w.Array === Array, frames[0] === w].join()",
+                ),
+                &mut host,
+            )
+            .expect("it runs");
+        assert_eq!(
+            done,
+            Completion::String("function,false,true,bee,false,true".into())
+        );
+        assert_eq!(agent.realm_count(), 2);
+        // The heap grew with it in the reaching run, under its lock.
+        let grown = Limits::default().heap + crate::REALM_HEAP;
+        assert_eq!(agent.heap_limit(), grown);
+        assert_eq!(agent.runtime_limit(), i64::try_from(grown).unwrap());
+        assert!(agent.take_unborn(5).is_none(), "lent to its realm");
+        let mut child = agent.take_made(5).expect("made");
+        let child_host = child.reclaim().expect("its document, lent to it");
+        assert_eq!(child_host.title, "bee");
+        // The frame's engine runs it as its own from now on.
+        let mut child_host = child_host;
+        assert_eq!(
+            child
+                .run(&script("String(typeof TextEncoder)"), &mut child_host)
+                .expect("it runs"),
+            Completion::String("function".into())
+        );
+        // A frame of no document lent is another agent's: no realm made.
+        let mut host = Recorder {
+            frames: Some((0, vec![9])),
+            ..Recorder::default()
+        };
+        top.enter(&Task::FrameList(vec![String::new()]), &mut host)
+            .expect("the window's frames");
+        let done = top
+            .run(
+                &script("try { frames[0].document; 'read' } catch (e) { e.name }"),
+                &mut host,
+            )
+            .expect("it runs");
+        // (This host answers none of the cross-origin window's questions.)
+        assert_ne!(done, Completion::String("read".into()));
+        assert_eq!(agent.realm_count(), 2);
+        assert!(!agent.has_made(9));
+    }
+
+    /// Realms made by reach and dropped, their frames gone, then the agent:
+    /// the runtime goes with nothing of theirs held (QuickJS asserts as it
+    /// frees a runtime that still holds an object, in a debug build).
+    #[test]
+    fn realms_made_by_reach_go_with_their_frames_and_their_agent() {
+        let agent = QuickJs
+            .agent::<Recorder>(Limits::default(), None)
+            .expect("an agent");
+        let mut top = QuickJs
+            .realm_in(&agent, crate::RealmKind::Window, true)
+            .expect("a realm");
+        top.name_frame(Some(0));
+        let frames: Vec<u32> = (1..=4).collect();
+        for &frame in &frames {
+            agent.lend_unborn(
+                frame,
+                Recorder {
+                    frames: Some((frame, Vec::new())),
+                    ..Recorder::default()
+                },
+            );
+        }
+        let mut host = Recorder {
+            frames: Some((0, frames.clone())),
+            ..Recorder::default()
+        };
+        top.enter(&Task::FrameList(vec![String::new(); 4]), &mut host)
+            .expect("the window's frames");
+        top.run(
+            &script(
+                "var kept = [0, 1, 2, 3].map(i => frames[i]); \
+                 kept.forEach((w, i) => { w.mine = { i, back: window }; }); 0",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+        assert_eq!(agent.realm_count(), 5);
+        // Two frames' engines take theirs, then drop them (removed); the
+        // others' realms go unclaimed.
+        for frame in [1, 2] {
+            let mut realm = agent.take_made(frame).expect("made");
+            assert!(realm.reclaim().is_some());
+            drop(realm);
+        }
+        let (dropped, unborn) = agent.drop_unclaimed();
+        assert_eq!((dropped, unborn.len()), (2, 0));
+        assert_eq!(agent.realm_count(), 1);
+        drop(top);
+        drop(agent);
+    }
 }

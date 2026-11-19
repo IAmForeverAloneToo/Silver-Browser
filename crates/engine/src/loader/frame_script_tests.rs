@@ -367,10 +367,9 @@ fn an_inserted_iframe_has_its_window_at_once() {
     )];
     let server = sites(PAGES);
     let lines = run(&server, server.url("/page.html"), 2);
-    // Its document is not reached yet (G90 phase 3): an `about:blank`
-    // that runs no script has no realm until phase 3's (b) makes it as it
-    // is first reached. The reference browser: "true true object".
-    assert_eq!(lines, ["true 1 true", "true true SecurityError"]);
+    // Its `about:blank`, which runs no script, has its realm made as it
+    // is first reached (G90 phase 3 (b)). As the reference browser.
+    assert_eq!(lines, ["true 1 true", "true true object"]);
 }
 
 #[test]
@@ -528,18 +527,14 @@ fn a_frame_of_its_creators_origin_is_reached_as_itself() {
     let server = sites(PAGES);
     let mut lines = run(&server, at(&server, "a.localhost", "/page.html"), 2);
     lines.sort();
-    // A known gap until G90 phase 3's (b): the `about:blank` runs no
-    // script, so it has no realm, and is reached as another origin's
-    // window. The reference browser's lines: "[frame
-    // http://b.localhost:PORT/child.html] child function false" and
-    // "top function false true true true".
+    // The `about:blank` runs no script: its realm is made as the run
+    // first reaches it (G90 phase 3 (b)), and its `TextEncoder` is its
+    // own, native. As the reference browser.
     assert_eq!(
         lines,
         [
-            "Uncaught SecurityError: Failed to read a named property 'TextEncoder' from \
-             'Window': Blocked a frame with origin \"http://a.localhost:PORT\" from accessing \
-             a cross-origin frame.",
-            "[frame http://b.localhost:PORT/child.html] child threw SecurityError",
+            "[frame http://b.localhost:PORT/child.html] child function false",
+            "top function false true true true",
         ]
     );
 }
@@ -574,12 +569,10 @@ fn a_frame_navigates_its_parent_of_its_own_origin_by_its_location() {
 }
 
 #[test]
-fn a_frame_does_not_reach_its_scriptless_parent_until_phase_3() {
-    // A known gap (G90 phase 3): a parent that runs no script has no
-    // realm, so its frame of its origin reaches it as another origin's
-    // window, as a sandboxed one does. The reference browser's frame of
-    // its origin reads its document ("same T"); phase 3 makes the
-    // parent's realm as it is first reached.
+fn a_frame_reaches_its_scriptless_parent() {
+    // A parent that runs no script has its realm made as its frame of
+    // its origin first reaches it (G90 phase 3 (b)), which reads its
+    // document; a sandboxed frame is refused. As the reference browser.
     static PAGES: &[(&str, &str)] = &[(
         "/page.html",
         "<title>T</title>\
@@ -597,7 +590,7 @@ fn a_frame_does_not_reach_its_scriptless_parent_until_phase_3() {
         lines,
         [
             "[frame about:srcdoc] boxed SecurityError",
-            "[frame about:srcdoc] same SecurityError",
+            "[frame about:srcdoc] same T",
         ]
     );
 }
@@ -695,12 +688,10 @@ fn a_frames_document_on_its_way_is_reached_as_itself() {
 }
 
 #[test]
-fn a_frame_of_its_parents_origin_that_runs_no_script_is_not_reached_until_phase_3() {
-    // A known gap (G90 phase 3): a document that runs no script has no
-    // realm, `about:blank` among them, and its parent of its origin
-    // reaches it as another origin's window; the reference browser
-    // reaches its document ("quiet read blank read"). Phase 3's (b)
-    // makes the realm as it is first reached.
+fn a_frame_of_its_parents_origin_that_runs_no_script_is_reached() {
+    // A document that runs no script, `about:blank` among them, has its
+    // realm made as its parent of its origin first reaches it (G90 phase
+    // 3 (b)). As the reference browser.
     static PAGES: &[(&str, &str)] = &[
         (
             "/page.html",
@@ -714,5 +705,197 @@ fn a_frame_of_its_parents_origin_that_runs_no_script_is_not_reached_until_phase_
     ];
     let server = sites(PAGES);
     let lines = run(&server, server.url("/page.html"), 1);
-    assert_eq!(lines, ["quiet SecurityError blank SecurityError"]);
+    assert_eq!(lines, ["quiet read blank read"]);
+}
+
+#[test]
+fn a_reached_blank_keeps_its_creators_policy_and_tells_its_violations() {
+    // G90 phase 3 (b): a parent under a `script-src` without
+    // 'unsafe-eval' writes a script into its `about:blank` frame, whose
+    // realm is made as it is reached: the blank's policy is its creator's,
+    // so `eval` throws `EvalError`, and the violation's event reaches the
+    // listeners the written script added (written without `open()`, its
+    // implicit open erases before the written scripts run). As the
+    // reference browser (WPT eval-blocked-in-about-blank-iframe).
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<meta http-equiv=Content-Security-Policy content=\"script-src 'self' 'unsafe-inline'\">\
+         <iframe src=about:blank></iframe><script>\
+         addEventListener('message', e => console.log('parent heard', JSON.stringify(e.data)));\
+         onload = () => { const d = frames[0].document;\
+           d.write('<script>addEventListener(`securitypolicyviolation`, e => \
+             parent.postMessage({ directive: e.violatedDirective }, `*`));\
+             try { eval(`1`); parent.postMessage(`FAIL`, `*`); }\
+             catch (e) { parent.postMessage(e instanceof EvalError ? `PASS` : e.name, `*`); }</scr' + 'ipt>');\
+           d.close(); };\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut lines = run(&server, server.url("/page.html"), 3);
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "[frame about:blank] Content-Security-Policy refused a string as code: \
+             script-src 'self' 'unsafe-inline'",
+            "parent heard \"PASS\"",
+            "parent heard {\"directive\":\"script-src\"}",
+        ]
+    );
+}
+
+#[test]
+fn a_documents_implicit_open_erases_before_the_scripts_it_writes_run() {
+    // `document.write()` after the load opens the document again, which
+    // erases the window's listeners (HTML 8.4.2.1): before the scripts it
+    // writes run, so that theirs stay. As the reference browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>addEventListener('x', () => console.log('old'));\
+         onload = () => setTimeout(() => { document.write('<script>\
+           addEventListener(`x`, () => console.log(`new`));\
+           dispatchEvent(new Event(`x`));</scr' + 'ipt>'); document.close(); }, 0);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 1);
+    assert_eq!(lines, ["new"]);
+}
+
+#[test]
+fn a_realm_made_as_it_is_reached_gives_every_output_of_that_run() {
+    // G90 phase 3 (b): two scriptless frames of the parent's origin have
+    // their realms made as the parent's run reaches them, and in that same
+    // run they log, set a timer, fetch, post to the parent, write storage
+    // (which the parent hears), refuse code by their policy (their
+    // listener told), and navigate: each output arrives, as it does from
+    // a realm made by a script of its own.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=quiet.html></iframe><iframe src=quiet2.html></iframe><script>\
+             addEventListener('message', e => console.log('parent heard', e.data, e.source === window));\
+             addEventListener('storage', e => console.log('parent storage', e.key, e.newValue));\
+             onload = () => {\
+               const w = frames[0];\
+               w.console.log('console');\
+               w.setTimeout(() => w.console.log('timer'), 0);\
+               w.fetch('/data.txt').then(r => r.text()).then(t => w.console.log('fetched', t));\
+               w.addEventListener('securitypolicyviolation', () => w.console.log('violation'));\
+               try { w.eval('1'); } catch (e) { w.console.log('refused', e.name); }\
+               w.parent.postMessage('posted', '*');\
+               w.localStorage.setItem('k', 'v');\
+               frames[1].location.href = '/next.html';\
+             };\
+             </script>",
+        ),
+        (
+            "/quiet.html",
+            "<meta http-equiv=Content-Security-Policy content=\"script-src 'self' 'unsafe-inline'\"><p>quiet",
+        ),
+        ("/quiet2.html", "<p>quiet too"),
+        ("/next.html", "<script>console.log('arrived')</script>"),
+        ("/data.txt", "hello"),
+    ];
+    let server = sites(PAGES);
+    let mut lines = run(&server, server.url("/page.html"), 9);
+    lines.sort();
+    // The post is the parent's own (its source the caller's window).
+    assert_eq!(
+        lines,
+        [
+            "[frame http://127.0.0.1:PORT/next.html] arrived",
+            "[frame http://127.0.0.1:PORT/quiet.html] Content-Security-Policy refused a string as code: script-src 'self' 'unsafe-inline'",
+            "[frame http://127.0.0.1:PORT/quiet.html] console",
+            "[frame http://127.0.0.1:PORT/quiet.html] fetched hello",
+            "[frame http://127.0.0.1:PORT/quiet.html] refused EvalError",
+            "[frame http://127.0.0.1:PORT/quiet.html] timer",
+            "[frame http://127.0.0.1:PORT/quiet.html] violation",
+            "parent heard posted true",
+            "parent storage k v",
+        ]
+    );
+}
+
+/// One battery of what a realm does, run in a frame's realm made by a
+/// script of its own and in one made as its parent reaches it (G90 phase
+/// 3 (b)): engine events at the window, the document and an element, a
+/// listener and a synthetic event, a mutation observer, a promise job, a
+/// custom element's upgrade, a node's document and root.
+const BATTERY: &str = "(() => { const log = (...a) => console.log(a.join(' ')); \
+    addEventListener('hashchange', () => log('window hashchange')); \
+    document.addEventListener('selectionchange', () => log('document selectionchange'), { once: true }); \
+    const img = document.createElement('img'); \
+    img.addEventListener('error', () => log('element error')); \
+    img.src = '/missing.png'; document.body.append(img); \
+    const p = document.createElement('p'); \
+    p.addEventListener('ping', e => log('synthetic', e.type, e.isTrusted)); \
+    p.dispatchEvent(new Event('ping')); \
+    new MutationObserver(r => log('mutations', r.length, r[0].type)).observe(document.body, { childList: true }); \
+    document.body.append(p); \
+    Promise.resolve().then(() => log('promise job')); \
+    const later = document.createElement('x-later'); document.body.append(later); \
+    customElements.define('x-later', class extends HTMLElement { connectedCallback() { log('upgraded', this.isConnected); } }); \
+    log('owner', p.ownerDocument === document, p.getRootNode() === document); \
+    getSelection().selectAllChildren(document.body); \
+    location.hash = '#moved'; \
+    log('ran'); })()";
+
+/// The lines a frame's realm gave, its frame's name taken off.
+fn frame_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .filter_map(|line| {
+            line.strip_prefix("[frame ")
+                .and_then(|rest| rest.split_once("] "))
+                .map(|(_, text)| text.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_realm_made_as_it_is_reached_behaves_as_one_made_by_its_own_script() {
+    let eager = format!(
+        "<iframe srcdoc=\"<body><script>{}</script>\"></iframe>",
+        BATTERY.replace('"', "&quot;")
+    );
+    let reached = format!(
+        "<iframe src=quiet.html></iframe><script>onload = () => frames[0].eval({});</script>",
+        serde_json_string(BATTERY)
+    );
+    let pages: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
+        ("/eager.html", &*Box::leak(eager.into_boxed_str())),
+        ("/reached.html", &*Box::leak(reached.into_boxed_str())),
+        ("/quiet.html", "<body>"),
+    ]));
+    let server = sites(pages);
+    let count = 9;
+    let eager = frame_lines(run(&server, server.url("/eager.html"), count));
+    let reached = frame_lines(run(&server, server.url("/reached.html"), count));
+    for (n, (a, b)) in eager.iter().zip(&reached).enumerate() {
+        assert_eq!(
+            a, b,
+            "line {n} differs: eager {eager:?}, reached {reached:?}"
+        );
+    }
+    assert_eq!(
+        eager.len(),
+        reached.len(),
+        "eager {eager:?}, reached {reached:?}"
+    );
+}
+
+/// `text` as a JavaScript string literal.
+fn serde_json_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

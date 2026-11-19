@@ -3988,26 +3988,34 @@ site sweep or the dogfood sessions show a site breaking on it.
   level; the matcher keeps no memo of a list's answer for an element.
   To be fixed with style invalidation and matching, whose acceptance
   gains a fuzz case of matching depth.)
-- A fresh about:blank frame runs no script, so it has no realm, and its
-  creator reaches it as another origin's window, at once or later (G90
-  phase 3 to come, which makes the realm as it is first reached):
-  anti-bot scripts such as Kasada (Twitch's reads `TextEncoder` from an
-  about:blank child it made) get a SecurityError where Chrome gives the
-  child's own, and may flag the user at sign-in.
+- An iframe a script inserts and reaches in the same task, before the
+  engine makes its frame, is reached as another origin's window until
+  G90 phase 3 (b)'s `blank_frame` gives it its initial about:blank at
+  once (reached in a later task, as `onload`, it is its own since phase
+  3 (b)): anti-bot scripts such as Kasada (Twitch's reads `TextEncoder`
+  from an about:blank child it made) may still get a SecurityError where
+  Chrome gives the child's own.
+- A removed frame's document is not unloaded: its timers and idle
+  callbacks run on and its realm stays in its agent (an eager frame's
+  as a reached one's; found by G90 phase 3 (b)'s removal check,
+  2026-11-19). Chrome stops them and frees the realm.
+- `selectionchange` is not fired at the document when a script changes
+  the selection (`getSelection().selectAllChildren(...)`), in a frame's
+  realm made by its own script or as it is reached alike (found by the
+  G90 phase 3 (b) behaviour battery, 2026-11-19).
+- In a tab of renderers, a parent's `load` may fire before a frame of
+  another site has committed its document in its own renderer (Chrome's
+  waits for its frames): a script of the parent's at `load` then reaches
+  the frame's initial about:blank, of its own origin, as Chrome would
+  before the commit. A compatibility gap, not a security one: the blank
+  is the parent's origin's (found by the adversarial framing test,
+  2026-11-19).
 - A node of a frame's document given to another document's method is
   refused with NotSupportedError, said on the console and counted by
   the sweep, until nodes move between documents (G90 phase 5); a
   frame's `requestAnimationFrame` callbacks run without their parent's
   document lent (phase 4), and one calling into its same-origin parent
   throws.
-- A scriptless same-origin document isn't reachable from its frames or
-  parent until phase 3 (Chrome reaches it): a document has its realm
-  when it runs a script. Made for every frame at once, a page of many
-  scriptless frames paid a realm's making (some 25 ms, some 3 MB of
-  heap) for each, and the frames fuzz target ran 30 times slower; phase
-  3 makes the realm as it is first reached. Among them the
-  `about:blank` a parent writes (`contentDocument.open()`, `write`,
-  `close`), which WPT's html5lib write runs and mail clients use.
 - QuickJS-ng js_parse_skip_parens_token leaves a pending SyntaxError;
   mitigated by clear_stale; not reported upstream, by the user's
   choice. (Its look past a parenthesized expression reads a regular

@@ -47,7 +47,8 @@ pub use dom::{
 };
 pub use pattern::pattern_matches;
 pub use quickjs::{
-    Agent, QuickJs, WeakAgent, set_windows_time_zone, take_unlent_calls, warm_bindings,
+    Agent, Member, QuickJs, WeakAgent, set_windows_time_zone, take_reentered_reaches,
+    take_unlent_calls, warm_bindings,
 };
 pub use stack::remaining_stack;
 
@@ -426,6 +427,25 @@ pub trait ScriptingHost: Default + 'static {
             Call::CodeAllowed { .. } => Ok(Answer::String(String::new())),
             _ => Err(DomError::not_supported()),
         }
+    }
+    /// A realm is made for the document as a run of another realm of its
+    /// agent first reaches it (G90 phase 3 (b)): whether the document is a
+    /// secure context, and whether its policies refuse or report code
+    /// from strings ([`Task::GuardCode`], before the reach returns).
+    fn reached_as(&mut self) -> (bool, bool) {
+        (false, false)
+    }
+    /// A host of a new initial `about:blank` for frame `frame`, whose
+    /// `iframe` this document's run inserted and now reaches before the
+    /// engine made the frame (G90 phase 3 (b)): of this document's origin
+    /// and policies, as HTML's creator's. `None` refuses: a sandboxed
+    /// frame's opaque document, a frame that is not this run's insert,
+    /// or a host that makes none.
+    fn blank_frame(&mut self, _frame: u32) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
     }
     /// The units of work done since this was last asked, which the
     /// realm charges to the run's budget ([`WORK_PER_STEP`]).
