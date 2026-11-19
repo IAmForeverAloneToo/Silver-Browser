@@ -1,0 +1,52 @@
+# The fuzz targets' throughput floors (the lead's ruling, 2026-11-19):
+# a target whose rate over a push run (libFuzzer's last line, "Done N
+# runs in T second(s)": N / T) falls under its floor fails its job.
+# Each floor is a tenth of the target's slowest rate over three green
+# push runs (44330253582, 44339746135, 44356950760). A target, its floor in
+# runs a second, then the three rates. The CI fuzz job reads it.
+animations 2.299 22.99 23.63 23.90
+audio_graph 11.699 116.99 127.21 195.57
+av1_decode 1.394 13.94 15.42 27.26
+cache_api 79.757 797.57 831.79 866.72
+canvas 5.310 53.10 53.19 53.39
+clone 0.805 8.05 8.54 10.43
+content_disposition 1660.202 16602.02 22483.03 25831.07
+cookies 8.691 86.91 108.88 109.50
+csp 419.325 4193.25 5387.95 6829.69
+css_stylesheet 312.200 3122.00 3177.70 4585.92
+devtools_json 3889.936 38899.36 58378.18 60498.51
+dom_api 0.441 4.41 4.63 5.60
+encoding_decode 201.210 2012.10 2025.87 2728.15
+frames 0.262 2.62 3.09 4.63
+glsl_parse 46.158 461.58 537.11 663.84
+gpu_wire 6292.392 62923.92 63139.72 77900.79
+h2_client 59.297 592.97 692.49 802.38
+hpack 639.056 6390.56 7989.34 8071.89
+hsts 943.415 9434.15 10448.62 12808.54
+html_parse 74.844 748.44 748.44 752.86
+http_cache 14.871 148.71 156.79 165.80
+http_response 1250.038 12500.38 13253.34 15693.34
+idb_keys 1969.952 19699.52 24721.51 25401.00
+idb_ops 186.077 1860.77 1892.41 2227.93
+image_decode 10.655 106.55 107.02 146.75
+input 0.279 2.79 3.32 3.55
+ipc_decode 977.649 9776.49 12098.15 13556.56
+media_demux 2.249 22.49 29.51 33.58
+media_query 6.704 67.04 72.93 105.15
+mime_sniff 440.897 4408.97 5367.11 8160.64
+mutation 1.602 16.02 20.11 21.54
+pipeline 1.722 17.22 21.57 25.81
+preload_scan 194.652 1946.52 2699.56 3077.08
+referrer 396.793 3967.93 4919.23 5079.39
+script 0.933 9.33 10.37 10.92
+selector_parse 469.475 4694.75 5048.13 6715.89
+storage 0.155 1.55 1.99 2.69
+style_document 35.598 355.98 394.53 555.52
+svg 4.990 49.90 50.99 82.56
+sw_registry 22.946 229.46 241.46 306.11
+url_parse 12.410 124.10 127.12 148.91
+values 16.368 163.68 199.89 241.01
+wasm 0.702 7.02 8.59 9.03
+webgl_ops 4.630 46.30 49.25 49.55
+webgpu_ops 2.885 28.85 29.58 35.29
+xml_parse 296.667 2966.67 3270.98 5433.30

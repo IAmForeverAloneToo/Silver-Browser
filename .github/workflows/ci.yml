@@ -199,6 +199,12 @@ jobs:
   fuzz:
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
+    # A backstop: a target whose inputs grew slow runs on until libFuzzer
+    # next looks at its clock, between inputs, which held a push run open
+    # for hours (2026-11-18, 30 times slower). Push runs' fuzz jobs took 6
+    # to 43 minutes and the nightly's 34 to 56; past these, the job is
+    # red, not stuck.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 100 || 75 }}
     # A minute from an empty corpus explores very little, so each target's
     # corpus is carried between runs in the actions cache and every run
     # starts from what the last one found, and from the seeds committed
@@ -247,15 +253,29 @@ jobs:
       - name: Fuzz
         env:
           SECONDS_PER_TARGET: ${{ inputs.fuzz_seconds || (github.event_name == 'schedule' && 1800 || 60) }}
+        # An input is a failure past 30 s (-timeout): the slowest a green
+        # run's targets took under the address sanitizer was 12 s.
         # A page nested to the parser's cap needs about 17 MiB of stack
         # under the address sanitizer (engine::STACK_SIZE): more than the
-        # main thread's 8 MiB.
+        # main thread's 8 MiB. Its output kept (bash's pipefail fails the
+        # step with it) for the throughput check below.
+        shell: bash
         run: |
           ulimit -s 65536
           mkdir -p fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
           cargo fuzz run --target "$FUZZ_TARGET_TRIPLE" ${{ (matrix.target == 'webgpu_ops' || matrix.target == 'webgl_ops') && '--features gpu' || '' }} ${{ matrix.target }} \
             fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} \
-            -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 -rss_limit_mb=2048
+            -- -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 -rss_limit_mb=2048 -timeout=30 \
+            2>&1 | tee fuzz-run.log
+      # A push run's rate (libFuzzer's last line, "Done N runs in T
+      # second(s)") under the target's floor (fuzz/throughput-floors.txt, a
+      # tenth of its slowest over three green push runs) fails the job,
+      # which says the rate measured and the floor wanted. The nightly's
+      # longer runs have rates of their own, and no floor.
+      - name: Throughput
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        shell: bash
+        run: bash fuzz/throughput.sh ${{ matrix.target }} fuzz-run.log fuzz/throughput-floors.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
