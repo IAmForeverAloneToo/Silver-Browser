@@ -8370,8 +8370,11 @@ impl Engine {
         self.for_each_frame(&mut |frame| frame.network.share_client(client.clone()));
     }
 
+    /// Fetches from now on with `client`, its transport its own (its
+    /// resolver rules, trust and timeouts) though the engine joined a
+    /// context: a test's network.
     pub fn set_network(&mut self, client: Client) {
-        self.network.set_client(client);
+        self.network.set_own_client(client);
         let client = self.network.client();
         self.for_each_frame(&mut |frame| frame.network.share_client(client.clone()));
     }

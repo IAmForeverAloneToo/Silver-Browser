@@ -589,6 +589,21 @@ impl Network {
         self.client = Some(Arc::new(crate::blob_urls::Resolving { inner }));
     }
 
+    /// Fetches from now on with `client` and its own transport: the
+    /// resolver rules, trust and timeouts it was made with, where
+    /// [`Network::set_client`] puts the context's in their place; the
+    /// context's cookies, cache and the rest kept. A test's network: a
+    /// window's tab joins its context, whose transport made a test's
+    /// search go to the real engine's host, not to the port the test
+    /// gave it (2026-11-19).
+    pub(crate) fn set_own_client(&mut self, client: Client) {
+        if self.remote_cookies.is_some() {
+            return;
+        }
+        let inner = Arc::new(self.keeping(client));
+        self.client = Some(Arc::new(crate::blob_urls::Resolving { inner }));
+    }
+
     /// Fetches from now on through `fetcher`, and reaches the cookies of
     /// `document.cookie` through `cookies`: the browser's, in a renderer
     /// (M34.1).
@@ -630,12 +645,19 @@ impl Network {
         }
     }
 
-    /// `client` keeping the engine's cookies and cache.
+    /// `client` keeping the engine's cookies and cache, through the
+    /// context's connections.
     fn shared(&self, client: Client) -> Client {
         let client = match &self.transport {
             Some(transport) => client.with_transport(transport.clone()),
             None => client,
         };
+        self.keeping(client)
+    }
+
+    /// `client` keeping the engine's cookies and cache, through its own
+    /// connections.
+    fn keeping(&self, client: Client) -> Client {
         let client = client
             .with_cookies(self.cookies.clone())
             .with_cache(self.cache.clone())

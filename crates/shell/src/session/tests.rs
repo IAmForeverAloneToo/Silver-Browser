@@ -428,16 +428,32 @@ fn an_address_of_another_program_stays_in_the_field_with_a_notice() {
     );
 }
 
+/// A network whose search engines' hosts are a port of this machine
+/// that was free a moment ago, and is closed: a connection there is
+/// refused at once. Not 443, which a CI runner may answer or drop until
+/// the connection's timeout, past the wait of the test (twice on
+/// `ubuntu`, once on `macos`, 2026-11-18 and 19); and its timeouts well
+/// inside that wait, should a refusal still be slow.
+fn closed_search_engines() -> net::transport::Config {
+    use std::net::{Ipv4Addr, SocketAddr};
+    let closed = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .and_then(|listener| listener.local_addr())
+        .expect("a free port");
+    let closed = SocketAddr::new(closed.ip(), closed.port());
+    let mut config = net::transport::Config::default()
+        .resolve_at("duckduckgo.com", closed)
+        .resolve_at("www.bing.com", closed);
+    config.connect_timeout = WAIT / 6;
+    config.read_timeout = WAIT / 6;
+    config
+}
+
 #[test]
 fn what_is_not_an_address_is_searched_for_with_the_engine_chosen() {
-    use std::net::{IpAddr, Ipv4Addr};
-    // M37: the search engines' hosts are this machine, where nothing
-    // listens on 443: no request leaves it, and the search's page is the
+    // M37: the search engines' hosts are a port of this machine the test
+    // holds closed: no request leaves it, and the search's page is the
     // error page under the search's URL.
-    let here = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let config = net::transport::Config::default()
-        .resolve("duckduckgo.com", here)
-        .resolve("www.bing.com", here);
+    let config = closed_search_engines();
     let mut window = Window::new(None, Platform::Other);
     window.settle();
     window
@@ -450,6 +466,17 @@ fn what_is_not_an_address_is_searched_for_with_the_engine_chosen() {
     assert_eq!(
         window.session.engine().url().map(Url::as_str),
         Some("https://duckduckgo.com/?q=two+words%3F")
+    );
+    // Refused at the test's closed port: not the engine's real page,
+    // which the window's context's transport fetched in place of the
+    // test's (CI runs that waited on it ran out, 2026-11-18 and 19).
+    assert!(
+        matches!(
+            window.session.engine().load_state(),
+            LoadState::Failed(engine::LoadError::Network(net::NetworkError::Connect(_)))
+        ),
+        "{:?}",
+        window.session.engine().load_state()
     );
     // Another engine chosen in the settings.
     window
@@ -2849,7 +2876,6 @@ fn a_day_of_browsing_on_local_servers() {
     // downloaded and found in its folder, a setting changed and kept
     // across a restart, the session restored, and a private window
     // keeping nothing.
-    use std::net::{IpAddr, Ipv4Addr};
     let folder = std::env::temp_dir().join(format!("silver-day-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
     let server = days_pages();
@@ -2869,12 +2895,12 @@ fn a_day_of_browsing_on_local_servers() {
     window.wait_until(|session| titles(session) == ["Home", "Second"]);
 
     // A search from the address field: the engine's page for the words,
-    // its host this machine, where nothing listens.
+    // its host a port of this machine the test holds closed.
     window.chord("t", CTRL);
-    let here = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    window.session.engine_mut().set_network(net::Client::new(
-        net::transport::Config::default().resolve("duckduckgo.com", here),
-    ));
+    window
+        .session
+        .engine_mut()
+        .set_network(net::Client::new(closed_search_engines()));
     window.type_text("silver browser");
     window.press_key(Key::Enter, NONE);
     window.settle();

@@ -56,8 +56,9 @@ pub struct Config {
     pub limits: Limits,
     /// Roots trusted beside Mozilla's: only tests add one.
     pub(crate) extra_roots: Vec<CertificateDer<'static>>,
-    /// Names resolved without the resolver: only tests give one.
-    pub(crate) hosts: Vec<(String, IpAddr)>,
+    /// Names resolved without the resolver, and the port each is reached
+    /// at in place of its URL's when given: only tests give one.
+    pub(crate) hosts: Vec<(String, IpAddr, Option<u16>)>,
     /// Address spaces given to addresses in place of their own: only
     /// tests give one.
     pub(crate) spaces: Vec<(SocketAddr, AddressSpace)>,
@@ -114,7 +115,23 @@ impl Config {
     /// such option outside tests.
     #[cfg(any(test, feature = "test-server"))]
     pub fn resolve(mut self, host: &str, address: IpAddr) -> Config {
-        self.hosts.push((host.to_ascii_lowercase(), address));
+        self.hosts.push((host.to_ascii_lowercase(), address, None));
+        self
+    }
+
+    /// Resolves the domain `host` to `address`, its port too, whatever
+    /// its URL's: a test's name for a host whose URL it does not choose
+    /// (a search engine's), reached at a port of the test's own, which
+    /// it knows is closed, rather than at one the machine it runs on may
+    /// answer or drop (a CI runner's 443, which ran out a shell test's
+    /// wait, 2026-11-19). There is no such option outside tests.
+    #[cfg(any(test, feature = "test-server"))]
+    pub fn resolve_at(mut self, host: &str, address: SocketAddr) -> Config {
+        self.hosts.push((
+            host.to_ascii_lowercase(),
+            address.ip(),
+            Some(address.port()),
+        ));
         self
     }
 
@@ -764,8 +781,8 @@ impl Transport {
                 .config
                 .hosts
                 .iter()
-                .find(|(known, _)| known == name)
-                .map(|&(_, address)| vec![SocketAddr::new(address, port)]),
+                .find(|(known, ..)| known == name)
+                .map(|&(_, address, at)| vec![SocketAddr::new(address, at.unwrap_or(port))]),
             _ => None,
         };
         match given {

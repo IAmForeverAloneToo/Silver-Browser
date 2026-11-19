@@ -671,12 +671,15 @@ fn a_host_at_another_address_is_not_carried() {
     // not: its own connection fails, as it must not take a.test's.
     let here = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     let elsewhere = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
-    let transport = Transport::new(
-        Config::default()
-            .trust(authority.root.clone())
-            .resolve("a.test", here)
-            .resolve("d.test", elsewhere),
-    );
+    let mut config = Config::default()
+        .trust(authority.root.clone())
+        .resolve("a.test", here)
+        .resolve("d.test", elsewhere);
+    // An address a machine need not have (macOS gives its loopback
+    // 127.0.0.1 alone): a connection there may hang, not be refused, so
+    // it is given up well before a test's wait.
+    config.connect_timeout = std::time::Duration::from_secs(5);
+    let transport = Transport::new(config);
     get(&transport, &at(&server, "a.test", "/")).unwrap();
     assert!(get(&transport, &at(&server, "d.test", "/")).is_err());
     assert_eq!(server.requests().len(), 1);
