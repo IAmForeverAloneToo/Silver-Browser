@@ -4,9 +4,12 @@ Status: approved 2026-11-18; phases 1 and 2 built (2026-11-19), 3 to
 6 to come. Phase 2 as built, beyond section 1: a window handed out for
 a frame before its realm existed forwards to the frame's window once
 it does; a window's `postMessage` called from another realm of the
-agent is that realm's post (its `source`, its serializing); a frame's
-realm is made at its commit when its agent has a realm, scripts of its
-own or none; and a node of another document given to a node argument,
+agent is that realm's post (its `source`, its serializing); a
+document's realm is made when it runs a script (made at every frame's
+commit, a page of many scriptless frames paid some 25 ms and 3 MB a
+frame, and the frames fuzz target ran 30 times slower: until phase 3
+makes the realm as it is first reached, a scriptless document is not
+reached); and a node of another document given to a node argument,
 `getComputedStyle` or an animation's target throws NotSupportedError,
 said and counted (`nodesAcrossDocuments`), until phase 5.
 G90 is a beta requirement (the lead's ruling, 2026-11-18): Gmail, Docs

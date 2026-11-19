@@ -900,7 +900,7 @@ fetched.notThere();",
         )),
         "/page.html" => Some(html(
             "<meta http-equiv=Content-Security-Policy content=\"img-src 'none'\">\
-             <img src=/a.png><iframe srcdoc='<p>child</p>'></iframe>\
+             <img src=/a.png><iframe srcdoc='<p>child</p><script>0</script>'></iframe>\
              <script>notInThisEngine();</script>\
              <script>document.body.animateX();</script>\
              <script>var holder = { notAThing: 1 };\nholder.notAThing();</script>\
@@ -1017,4 +1017,31 @@ fn the_memory_report_counts_a_pages_parts() {
         part(&after, "framePixels") >= 200.0 * 100.0 * 4.0,
         "{after:?}"
     );
+}
+
+/// The heap of an agent's runtime counted once in the memory report,
+/// though each of its realms reports the whole (G90): a page and its
+/// frames of its origin share one.
+#[test]
+fn the_memory_report_counts_a_shared_runtime_once() {
+    let frames = "<iframe srcdoc='<script>0</script>'></iframe>".repeat(4);
+    let body: &'static str = Box::leak(
+        format!("{frames}<script>onload = () => document.title = 'done';</script>")
+            .into_boxed_str(),
+    );
+    let server = serve(body);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.load(server.url("/"));
+    tab.wait_until(|engine| engine.title() == "done");
+    tab.engine.inspect(r#"{"id":1,"method":"page.memory"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = Json::parse(&answers[0]).expect("JSON");
+    let heap = answer
+        .get("result")
+        .and_then(|result| result.get("jsHeap"))
+        .and_then(Json::as_f64)
+        .expect("a heap");
+    // The runtime is the page's realm's: what it reports is the whole.
+    assert_eq!(heap, tab.engine.shown.scripts.heap() as f64, "{answer:?}");
 }

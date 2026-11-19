@@ -8074,28 +8074,20 @@ impl Engine {
     /// dropped; or in the entry reloaded or traversed to, at its saved
     /// scroll position.
     fn commit(&mut self, mut shown: Shown, url: Option<Url>, handling: Handling) {
-        // Its realm is made in its origin's agent (G90); a frame whose
-        // origin another document of the renderer has makes it now, which
-        // that document may reach at once.
+        // Its realm is made in its origin's agent (G90), when it runs a
+        // script: a document that runs none has no realm, and the frames
+        // and parent of its origin do not reach it until one is made as
+        // it is reached (phase 3). Made for each such document at once,
+        // a page of many frames paid a realm's making for each.
         if shown.scripts.agent().is_none() {
             let (agent, _) = self.agent_for(shown.page.origin());
             shown.scripts.join_agent(agent, self.frame.id);
         }
-        // A frame whose agent has a realm already, another document's of
-        // its origin that may reach it, makes its own now, scripts of its
-        // own or none (a document always has its window).
-        let make_realm = self.frame.depth > 0
-            && self.scripting
-            && shown.scripts.agent().is_some_and(js::Agent::has_realms);
-        let secure = shown.page.is_secure_context();
         // The document it replaces is no more its frame's; one back from
         // the history is again (G90).
         self.shown.scripts.leave_frame();
         shown.scripts.return_to_frame();
         self.commit_shown(shown, url, handling);
-        if make_realm {
-            self.shown.scripts.make_realm(secure);
-        }
     }
 
     /// The agent of `origin`'s documents in this renderer, made if there

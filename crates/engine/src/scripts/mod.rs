@@ -3029,14 +3029,6 @@ impl Scripts {
         self.agent.as_ref()
     }
 
-    /// Makes its realm now, as a frame of an agent another document of
-    /// shares does (G90): a script of that document may reach it before
-    /// the frame runs a script of its own (an `about:blank` its creator
-    /// made and reads at once). Whether it has one.
-    pub(crate) fn make_realm(&mut self, secure: bool) -> bool {
-        self.ensure_realm(secure)
-    }
-
     fn stop(&mut self) {
         self.halt();
         self.push(ConsoleEntry::of(

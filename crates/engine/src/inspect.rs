@@ -165,13 +165,23 @@ impl Engine {
     fn memory_report(&mut self) -> Json {
         let mut parts = self.memory();
         let mut frames = 0;
+        // A runtime's heap counted once: the realms of an agent share it,
+        // and each reports the whole (G90).
+        let mut agents: Vec<_> = self.shown.scripts.agent().into_iter().cloned().collect();
         self.for_each_frame(&mut |frame| {
             let theirs = frame.memory();
             parts.nodes += theirs.nodes;
             parts.styles += theirs.styles;
             parts.layout += theirs.layout;
             parts.images += theirs.images;
-            parts.heap += theirs.heap;
+            match frame.shown.scripts.agent() {
+                Some(agent) if agents.iter().any(|known| known.same(agent)) => {}
+                Some(agent) => {
+                    agents.push(agent.clone());
+                    parts.heap += theirs.heap;
+                }
+                None => parts.heap += theirs.heap,
+            }
             frames += 1;
         });
         let (items, pixels) = self.backend.kept_bytes();

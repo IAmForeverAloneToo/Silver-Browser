@@ -348,12 +348,16 @@ fn an_inserted_iframe_has_its_window_at_once() {
              document.documentElement.appendChild(f);\
              const w = f.contentWindow;\
              console.log(w !== null, length, w.parent === window);\
-             setTimeout(() => console.log(frames[0] === w, f.contentWindow === w, typeof w.document), 50);\
+             const reach = () => { try { return typeof w.document; } catch (e) { return e.name; } };\
+             setTimeout(() => console.log(frames[0] === w, f.contentWindow === w, reach()), 50);\
              </script>",
     )];
     let server = sites(PAGES);
     let lines = run(&server, server.url("/page.html"), 2);
-    assert_eq!(lines, ["true 1 true", "true true object"]);
+    // Its document is not reached yet (G90 phase 3): an `about:blank`
+    // that runs no script has no realm until phase 3's (b) makes it as it
+    // is first reached. The reference browser: "true true object".
+    assert_eq!(lines, ["true 1 true", "true true SecurityError"]);
 }
 
 #[test]
@@ -511,11 +515,18 @@ fn a_frame_of_its_creators_origin_is_reached_as_itself() {
     let server = sites(PAGES);
     let mut lines = run(&server, at(&server, "a.localhost", "/page.html"), 2);
     lines.sort();
+    // A known gap until G90 phase 3's (b): the `about:blank` runs no
+    // script, so it has no realm, and is reached as another origin's
+    // window. The reference browser's lines: "[frame
+    // http://b.localhost:PORT/child.html] child function false" and
+    // "top function false true true true".
     assert_eq!(
         lines,
         [
-            "[frame http://b.localhost:PORT/child.html] child function false",
-            "top function false true true true",
+            "Uncaught SecurityError: Failed to read a named property 'TextEncoder' from \
+             'Window': Blocked a frame with origin \"http://a.localhost:PORT\" from accessing \
+             a cross-origin frame.",
+            "[frame http://b.localhost:PORT/child.html] child threw SecurityError",
         ]
     );
 }
@@ -590,4 +601,27 @@ fn a_frames_document_on_its_way_is_reached_as_itself() {
             .values()
             .all(|frame| frame.engine.navigation.is_some())
     );
+}
+
+#[test]
+fn a_frame_of_its_parents_origin_that_runs_no_script_is_not_reached_until_phase_3() {
+    // A known gap (G90 phase 3): a document that runs no script has no
+    // realm, `about:blank` among them, and its parent of its origin
+    // reaches it as another origin's window; the reference browser
+    // reaches its document ("quiet read blank read"). Phase 3's (b)
+    // makes the realm as it is first reached.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=quiet.html></iframe><iframe></iframe><script>\
+             const read = w => { try { return w.document ? 'read' : 'none' } \
+               catch (e) { return e.name } };\
+             onload = () => console.log('quiet', read(frames[0]), 'blank', read(frames[1]));\
+             </script>",
+        ),
+        ("/quiet.html", "<p>no script here</p>"),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 1);
+    assert_eq!(lines, ["quiet SecurityError blank SecurityError"]);
 }
