@@ -542,6 +542,18 @@ pub(super) struct ModuleResolver<H: ScriptingHost> {
     pub(super) budget: Budget,
 }
 
+/// What an `import()` of a realm the agent does not know throws: one
+/// dropped, its function held by another realm (G90), fails as a
+/// detached window's import does, a `TypeError` its promise rejects with;
+/// any other is a fault of the engine's.
+fn no_realm(ctx: &Ctx<'_>) -> rquickjs::Error {
+    if super::realm_gone(ctx) {
+        Exception::throw_type(ctx, "Failed to fetch dynamically imported module")
+    } else {
+        Exception::throw_internal(ctx, "a module of no realm")
+    }
+}
+
 impl<H: ScriptingHost> Resolver for ModuleResolver<H> {
     fn resolve<'js>(
         &mut self,
@@ -551,7 +563,7 @@ impl<H: ScriptingHost> Resolver for ModuleResolver<H> {
         attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
         let Some(links) = super::links_of(&self.realms, ctx) else {
-            return Err(Exception::throw_internal(ctx, "a module of no realm"));
+            return Err(no_realm(ctx));
         };
         let kind = requested(attributes.as_ref())?;
         if let Some(found) = links.modules.scan.borrow_mut().as_mut() {
@@ -614,7 +626,7 @@ impl<H: ScriptingHost> Loader for ModuleLoader<H> {
         _: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
         let Some(links) = super::links_of(&self.realms, ctx) else {
-            return Err(Exception::throw_internal(ctx, "a module of no realm"));
+            return Err(no_realm(ctx));
         };
         if name == SCAN_NAME {
             return Module::declare(ctx.clone(), SCAN_NAME, "");

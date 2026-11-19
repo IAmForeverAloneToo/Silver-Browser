@@ -241,6 +241,22 @@ What follows the frame is the old global, once its document is left:
   lent (`frame_pixels` through `with_frame`): its animation frame
   callbacks may be a parent's functions, which read the parent's
   document.
+- A realm whose document went (its frame removed or navigated from)
+  may keep running functions another realm of its agent holds (the
+  clean-realm pattern: an `iframe` made, its window's `URL`, `fetch` or
+  `setTimeout` taken, the `iframe` removed; 1Password and weather.com's
+  ads, found by the sweep's `documentsNotLent`). Its natives then answer
+  as a detached window's, by kind: a call that needs no document (URL,
+  CSS and encoding parsing, random bytes) is answered by the host type
+  with no host (`ScriptingHost::pure`); a timer or a cleanup does
+  nothing (`setTimeout` gives its id and never fires); a
+  promise-returning call, and a URL resolved against the gone document,
+  throws a `TypeError` the promise rejects with (`fetch()` rejects with
+  "Failed to fetch", `import()` with its own); any other call throws
+  `InvalidStateError`, where Chrome's detached document may still
+  answer. A realm dropped is told from a document not lent by the
+  thread's live realms (`realm_gone`): only the latter counts in
+  `documentsNotLent`, which stays an alarm.
 - An `iframe`'s `src` or `srcdoc` set to the value it has navigates its
   frame again, as HTML's "process the iframe attributes" does (the DOM
   journals that set for an `iframe` alone).

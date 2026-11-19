@@ -1368,6 +1368,20 @@ pub(super) fn install<'js, H: ScriptingHost>(
                     ctx: &ctx,
                     values: &args.0,
                 })?;
+                // No document lent: a call that needs none is answered all
+                // the same, and one of a realm dropped answers as a
+                // detached window's does (G90).
+                if host.try_borrow().is_ok_and(|slot| slot.is_none()) {
+                    if let Some(answer) = H::pure(&call) {
+                        return answer.map_or_else(
+                            |error| Err(throw(&ctx, &error)),
+                            |answer| value(&ctx, answer),
+                        );
+                    }
+                    if super::realm_gone(&ctx) {
+                        return gone(&ctx, name);
+                    }
+                }
                 // An object of this realm's collected in a run of another
                 // realm of its agent, whose finalizer runs there while
                 // this document is not lent (G90): its node is released
@@ -1576,7 +1590,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
         )?,
     )?;
     #[cfg(debug_assertions)]
-    guard_natives(ctx, &natives, guards)?;
+    guard_natives::<H>(ctx, &natives, guards)?;
     #[cfg(not(debug_assertions))]
     let _ = guards;
     let bootstrap: Function<'js> = super::bytecode::bootstrap(ctx)?;
@@ -1593,7 +1607,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
 /// context goes: a value a native's closure held itself would keep the
 /// realm's every object.
 #[cfg(debug_assertions)]
-fn guard_natives<'js>(
+fn guard_natives<'js, H: ScriptingHost>(
     ctx: &Ctx<'js>,
     natives: &Object<'js>,
     guards: &Guards,
@@ -1615,8 +1629,11 @@ fn guard_natives<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, this: This<Value<'js>>, args: Rest<Value<'js>>| {
                 let native = kept.borrow().get(at).cloned();
+                // The realm was dropped, its natives with it: its function a
+                // realm of its agent still holds answers as a detached
+                // window's (G90), as the native would have.
                 let Some(native) = native else {
-                    return Err(Exception::throw_internal(&ctx, "the realm is gone"));
+                    return gone_native::<H>(&ctx, &named, &args.0);
                 };
                 // One pending before the call is not this native's: the
                 // stale one QuickJS-ng's parser can leave ([`clear_stale`]).
@@ -1927,6 +1944,97 @@ fn value<'js>(ctx: &Ctx<'js>, answer: Answer) -> rquickjs::Result<Value<'js>> {
             array.into_value()
         }
     })
+}
+
+/// The natives a realm dropped (its frame removed or navigated from) answers
+/// with nothing: a cleanup of what went with its document, a timer that
+/// never fires (the bootstrap gives the script its id, as a detached
+/// window's `setTimeout` does), a report no one reads.
+const GONE_NOTHING: &[&str] = &[
+    "setTimer",
+    "clearTimer",
+    "released",
+    "consoleMessage",
+    "abortFetch",
+    "dropRange",
+    "dropIterator",
+    "mutationDisconnect",
+    "resizeUnobserve",
+    "intersectionUnobserve",
+    "mediaForget",
+    "blobUrlRevoke",
+    "portClose",
+    "workerTerminate",
+    "frameSweep",
+    "devtoolsSend",
+    "idbWake",
+];
+
+/// The natives a realm dropped refuses with a `TypeError`: those of
+/// promise-returning calls, whose bootstrap code gives the script a
+/// promise rejected with it, as a detached window's `fetch()` rejects; and
+/// a URL resolved against the gone document (a request's, first).
+const GONE_REJECTED: &[&str] = &[
+    "resolveUrl",
+    "resolveUrlUtf8",
+    "resolveUrlFromDocument",
+    "fetch",
+    "fetchNow",
+    "caches",
+    "idb",
+    "serviceWorker",
+    "storageUsage",
+    "media",
+    "audio",
+    "gpu",
+    "importScript",
+];
+
+/// What the native `name` of a realm dropped answers (G90), its document
+/// gone, its function held by another realm of its agent (an `iframe`
+/// made, its window's `URL` or `fetch` taken, the `iframe` removed): as
+/// a detached window's does, by kind. A call that needs no document is
+/// answered before this (`ScriptingHost::pure`); a cleanup or a timer
+/// does nothing ([`GONE_NOTHING`]); a promise-returning call throws a
+/// `TypeError` its promise rejects with ([`GONE_REJECTED`]); the rest
+/// throw `InvalidStateError`, where the reference browser's detached
+/// document may still answer. Never the internal error of a document not
+/// lent, which counts as an alarm (`take_unlent_calls`).
+fn gone<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Value<'js>> {
+    if GONE_NOTHING.contains(&name) {
+        return Ok(Value::new_undefined(ctx.clone()));
+    }
+    if GONE_REJECTED.contains(&name) {
+        let message = match name {
+            "fetch" | "fetchNow" => "Failed to fetch",
+            _ => "The window's document is no longer active.",
+        };
+        return Err(Exception::throw_type(ctx, message));
+    }
+    Err(super::gone_error(ctx))
+}
+
+/// Debug builds: [`gone`] for the native `name`, whose guard outlived it,
+/// given `args`: a call that needs no document answered.
+#[cfg(debug_assertions)]
+fn gone_native<'js, H: ScriptingHost>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    args: &[Value<'js>],
+) -> rquickjs::Result<Value<'js>> {
+    if let Some(&(_, decode)) = NATIVES.iter().find(|(native, _)| *native == name) {
+        let call = decode(&Args { ctx, values: args })?;
+        if let Some(answer) = H::pure(&call) {
+            return answer
+                .map_or_else(|error| Err(throw(ctx, &error)), |answer| value(ctx, answer));
+        }
+    }
+    match name {
+        // The agent's: what the release build's natives answer for them.
+        "frameWindow" => Ok(Value::new_null(ctx.clone())),
+        "entryFrame" => Ok(Value::new_float(ctx.clone(), -1.0)),
+        _ => gone(ctx, name),
+    }
 }
 
 /// Throws the exception a failed call is: one of ECMAScript's errors,

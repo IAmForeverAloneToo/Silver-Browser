@@ -823,6 +823,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let global: Global = Rc::default();
         let frame: Rc<Cell<Option<u32>>> = Rc::default();
         let released: Released = Rc::default();
+        LIVE.with(|live| live.borrow_mut().insert(key));
         core.realms.borrow_mut().insert(
             key,
             Links {
@@ -1054,6 +1055,7 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         // The agent forgets it; its hooks are the agent's, which goes
         // with its last realm.
         self.agent.realms.borrow_mut().remove(&self.key);
+        LIVE.with(|live| live.borrow_mut().remove(&self.key));
         self.agent.fit_heap(true);
         *self.global.borrow_mut() = None;
         self.rejections.borrow_mut().clear();
@@ -2184,11 +2186,37 @@ fn with_host<H: ScriptingHost, R>(
     };
     match slot.as_mut() {
         Some(host) => Ok(f(host)),
+        // A realm dropped, its function held by another realm of its
+        // agent (G90): its document is gone, not unlent.
+        None if realm_gone(ctx) => Err(gone_error(ctx)),
         None => {
             UNLENT.with(|count| count.set(count.get().saturating_add(1)));
             Err(Exception::throw_internal(ctx, "no script is running"))
         }
     }
+}
+
+thread_local! {
+    /// The contexts of the realms not dropped, on this thread (G90): a
+    /// function of a realm dropped (its frame removed or navigated from)
+    /// that another realm of its agent holds finds its realm gone, rather
+    /// than its document not lent.
+    static LIVE: RefCell<std::collections::HashSet<usize>> = RefCell::default();
+}
+
+/// Whether the realm of `ctx` was dropped ([`LIVE`]).
+pub(crate) fn realm_gone(ctx: &Ctx<'_>) -> bool {
+    !LIVE.with(|live| live.borrow().contains(&context_key(ctx)))
+}
+
+/// What a call that needs the document of a realm dropped throws (G90):
+/// `InvalidStateError`, as a detached window's document refuses.
+pub(crate) fn gone_error(ctx: &Ctx<'_>) -> rquickjs::Error {
+    Exception::throw_dom(
+        ctx,
+        "InvalidStateError",
+        "The window's document is no longer active.",
+    )
 }
 
 #[cfg(test)]

@@ -435,6 +435,17 @@ pub trait ScriptingHost: Default + 'static {
     fn reached_as(&mut self) -> (bool, bool) {
         (false, false)
     }
+    /// The answer to `call` when it needs no document (G90): parsing a
+    /// URL, a CSS name or value, an encoding's label, random bytes. The
+    /// same whatever document asks, so a function of a realm whose
+    /// document went (its frame removed) that another realm holds still
+    /// answers it, as a detached window's does. `None` for any other.
+    fn pure(_call: &Call) -> Option<Result<Answer, DomError>>
+    where
+        Self: Sized,
+    {
+        None
+    }
     /// A host of a new initial `about:blank` for frame `frame`, whose
     /// `iframe` this document's run inserted and now reaches before the
     /// engine made the frame (G90 phase 3 (b)): of this document's origin

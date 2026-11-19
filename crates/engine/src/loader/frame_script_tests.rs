@@ -1517,3 +1517,65 @@ fn the_sweep_counts_a_documents_call_into_one_of_its_agent_not_lent() {
         "{answer:?}"
     );
 }
+
+/// The clean-realm pattern (1Password, weather.com's ads): an `iframe`
+/// made, its window's functions taken, the `iframe` removed, the
+/// functions kept. Its realm goes with its document; what its functions
+/// do then is a detached window's (G90).
+#[test]
+fn a_removed_frames_functions_answer_as_a_detached_windows() {
+    // `URL` parses as before, its objects its realm's; `fetch` rejects
+    // with a TypeError; `setTimeout` gives an id and never fires; a call
+    // that needs the document throws InvalidStateError. Nothing counts
+    // as a document not lent. As the reference browser, but for the
+    // last, whose detached document still answers.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         const f = document.createElement('iframe');\
+         document.documentElement.appendChild(f);\
+         const w = f.contentWindow;\
+         const { URL: CleanURL, fetch: cleanFetch, setTimeout: cleanTimeout } = w;\
+         const cleanCreate = w.document.createElement.bind(w.document);\
+         f.remove();\
+         setTimeout(() => {\
+           const u = new CleanURL('/a?b=1#c', 'https://example.test/x/');\
+           console.log('url', u.href, u.searchParams.get('b'),\
+             Object.getPrototypeOf(u) === CleanURL.prototype, u instanceof URL);\
+           const id = cleanTimeout(() => console.log('FIRED'), 1);\
+           console.log('timer', typeof id, id > 0);\
+           try { cleanCreate('p'); console.log('created'); }\
+           catch (e) { console.log('document', e.name); }\
+           cleanFetch('/page.html').then(() => console.log('fetched'),\
+             e => console.log('fetch', e.constructor === w.TypeError || e instanceof TypeError || e.name));\
+           setTimeout(() => console.log('done'), 50);\
+         }, 10);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|line| line == "done"));
+    assert_eq!(
+        lines,
+        [
+            "url https://example.test/a?b=1#c 1 true false",
+            "timer number true",
+            "document InvalidStateError",
+            "fetch true",
+            "done",
+        ]
+    );
+    tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = devtools::Json::parse(&answers[0]).expect("JSON");
+    let counts = answer.get("result").expect("a result");
+    assert_eq!(
+        counts
+            .get("documentsNotLent")
+            .and_then(devtools::Json::as_u64),
+        Some(0),
+        "{answer:?}"
+    );
+}

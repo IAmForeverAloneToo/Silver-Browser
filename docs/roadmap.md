@@ -4010,6 +4010,11 @@ site sweep or the dogfood sessions show a site breaking on it.
   xslt-strict-dynamic-blocked). The sweep counts each such loss
   (`blankWindowStateLost`), to rank it: HTML's model commits that first
   document into the blank's realm.
+- A function of a removed frame's window that a script kept (the
+  clean-realm pattern) answers as a detached window's for URL parsing,
+  timers (an id, never fired) and promise-returning calls (rejected),
+  but throws `InvalidStateError` for what needs its document, which
+  Chrome's detached document still answers (its DOM, its `title`).
 - An external script `document.write` puts in a document that
   `document.open()` opened does not block its parser: what is written
   after it runs before it has (an inline script calling a function it

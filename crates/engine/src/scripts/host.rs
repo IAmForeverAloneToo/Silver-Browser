@@ -551,6 +551,47 @@ impl ScriptingHost for DocumentHost {
         (page.is_secure_context(), guarded)
     }
 
+    fn pure(call: &Call) -> Option<Result<Answer, DomError>> {
+        // The same answers `dom` gives these, from the same helpers: none
+        // reads the document (G90, a detached window's `URL`).
+        let answer = match call {
+            Call::UrlParse(input, base) => super::url::parse(input, base.as_deref()),
+            Call::UrlSet { href, part, value } => super::url::set(href, part, value),
+            Call::UrlHasCredentials(url) => {
+                Answer::Bool(net::Url::parse(url).is_ok_and(|url| url.includes_credentials()))
+            }
+            Call::TextDecoderName(label) => super::decoding::name(label),
+            Call::MimeCharset(kind) => super::decoding::mime_charset(kind),
+            Call::RandomBytes(count) => return Some(random_bytes(*count)),
+            Call::CssCanonical(name) => {
+                let name = cssom::canonical(name);
+                Answer::MaybeString(cssom::known(&name).then_some(name))
+            }
+            Call::CssShorthand(name, flat) => {
+                Answer::String(cssom::shorthand_value(name, &cssom::from_flat(flat)))
+            }
+            Call::CssLonghands(name) => Answer::Strings(
+                cssom::longhands(name)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|l| (*l).to_owned())
+                    .collect(),
+            ),
+            Call::CssBlockText(flat) => Answer::String(cssom::block_text(&cssom::from_flat(flat))),
+            Call::CssValid(name, value) => {
+                Answer::Bool(cssom::valid(&cssom::canonical(name), value))
+            }
+            Call::CssSupports(name, value) => {
+                Answer::Bool(super::cssom::supports(name, value.as_deref()))
+            }
+            Call::PlatformNewline => {
+                Answer::String(if cfg!(windows) { "\r\n" } else { "\n" }.to_owned())
+            }
+            _ => return None,
+        };
+        Some(Ok(answer))
+    }
+
     fn blank_frame(&mut self, frame: u32) -> Option<Self> {
         // The initial `about:blank` of an `iframe` this run inserted,
         // whose frame the engine makes after the run (G90 phase 3 (b)):
