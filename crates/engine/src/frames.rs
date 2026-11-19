@@ -1361,12 +1361,24 @@ impl Engine {
         frame.engine.shared_agents(&mut agents);
         let lent = self.lend_around(None, &agents);
         frame.engine.unload_shown(false);
+        frame.engine.detach_tree();
         frame.engine.stop();
         if lent > 0 {
             self.take_back_around(None, &agents);
         }
         let lines = frame.engine.take_console();
         self.departed.extend(lines);
+    }
+
+    /// Its document's window and its frames', removed with it: each kept
+    /// by a script answers as a closed one (2026-11-19).
+    pub(crate) fn detach_tree(&mut self) {
+        self.shown.scripts.detach();
+        for frame in self.shown.frames.values_mut() {
+            if frame.remote.is_none() {
+                frame.engine.detach_tree();
+            }
+        }
     }
 
     /// Unloads the document shown (M33.2): a frame's, dropped with it or

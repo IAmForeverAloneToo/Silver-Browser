@@ -524,6 +524,10 @@
     native.released(handle);
   });
 
+  // Its frame was removed (HTML's "destroy a child navigable"): its window,
+  // kept by a script, answers as a closed one (2026-11-19).
+  let detached = false;
+
   // The text controls with live OpaqueRanges (gap batch H), by handle:
   // their ranges and their value as the ranges last saw it.
   const opaqueControls = new $Map();
@@ -21376,14 +21380,25 @@
     }
 
     // The window's relatives among the tab's frames (M33.2): itself at
-    // the top.
+    // the top. A removed frame's window has none, and is closed, as the
+    // reference browser's (2026-11-19).
     get top() {
+      if (detached) {
+        return null;
+      }
       return windowFor(native.frameTop(selfFrame()));
     }
 
     get parent() {
+      if (detached) {
+        return null;
+      }
       const parent = native.frameParent(selfFrame());
       return parent < 0 ? global : windowFor(parent);
+    }
+
+    get closed() {
+      return detached;
     }
 
     get frames() {
@@ -21391,6 +21406,9 @@
     }
 
     get length() {
+      if (detached) {
+        return 0;
+      }
       return native.frameLength(selfFrame());
     }
 
@@ -21401,6 +21419,9 @@
     // The element that shows this frame in its parent's document, when
     // the parent is of this window's agent (G90); null across agents.
     get frameElement() {
+      if (detached) {
+        return null;
+      }
       const id = selfFrame();
       if (id < 0) {
         return null;
@@ -21419,10 +21440,6 @@
 
     set name(value) {
       native.setWindowName(str(value));
-    }
-
-    get closed() {
-      return false;
     }
 
     get performance() {
@@ -33733,6 +33750,11 @@
       native.framePost(id, posted[0], posted[1]);
     },
     guardCode,
+    // The frame was removed: a window of it kept answers as a closed one,
+    // asking no native, which go with the realm (2026-11-19).
+    detach() {
+      detached = true;
+    },
     devtools: devtoolsMessage,
     idb: () => chunkInstall("idb").idbTask(),
     serviceWorker: swTask,

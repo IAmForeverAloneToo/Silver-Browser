@@ -43,6 +43,14 @@ pub(crate) struct SweepCounts {
     /// for the run (G90 phase 4: a frame's animation frame callbacks, a
     /// service worker's task, calling into their parent): it throws.
     pub(crate) documents_not_lent: u32,
+    /// Frames whose `iframe` is out of its document and whose engine is
+    /// kept, timers and realm and all, as the sweep reads them: what a
+    /// removed frame left running (2026-11-19). Set when read, not
+    /// added.
+    pub(crate) removed_frames_alive: u32,
+    /// The heap of their agents that they alone hold (an agent their
+    /// parent's documents share is not theirs to count).
+    pub(crate) removed_frames_heap: u64,
     /// `document.domain` set, which widens nothing here (each origin its
     /// own agent; the reference browser's default too).
     pub(crate) document_domain_sets: u32,
@@ -200,6 +208,14 @@ impl SweepCounts {
             (
                 "mostRealmsInAgent",
                 Json::from(f64::from(self.most_realms_in_agent)),
+            ),
+            (
+                "removedFramesAlive",
+                Json::from(f64::from(self.removed_frames_alive)),
+            ),
+            (
+                "removedFramesHeap",
+                Json::from(self.removed_frames_heap as f64),
             ),
             (
                 "documentsNotLent",

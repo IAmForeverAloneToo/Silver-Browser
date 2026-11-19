@@ -3995,10 +3995,12 @@ site sweep or the dogfood sessions show a site breaking on it.
   3 (b)): anti-bot scripts such as Kasada (Twitch's reads `TextEncoder`
   from an about:blank child it made) may still get a SecurityError where
   Chrome gives the child's own.
-- A removed frame's document is not unloaded: its timers and idle
-  callbacks run on and its realm stays in its agent (an eager frame's
-  as a reached one's; found by G90 phase 3 (b)'s removal check,
-  2026-11-19). Chrome stops them and frees the realm.
+- A removed frame's window that a script kept answers as Chrome's does
+  for `closed` (true), `parent`, `top` and `frameElement` (null) and
+  `length` (0), but its `document`, `location` and the rest throw ("the
+  realm is gone"), where Chrome keeps them readable with nothing
+  running: windows do not outlive their documents until G90 phase 3's
+  WindowProxy work (a known deviation, failing closed; 2026-11-19).
 - `selectionchange` is not fired at the document when a script changes
   the selection (`getSelection().selectAllChildren(...)`), in a frame's
   realm made by its own script or as it is reached alike (found by the

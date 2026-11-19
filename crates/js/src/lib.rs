@@ -556,6 +556,10 @@ pub enum Task {
     /// (M33.1): `eval` and the function constructors ask the host from
     /// now on.
     GuardCode,
+    /// The document's frame was removed (HTML's "destroy a child
+    /// navigable"): a window of it kept answers as a closed one, with no
+    /// parent, top or frame element, before its realm goes (2026-11-19).
+    Detach,
     /// A message from the browser to the DevTools panel's page (M36):
     /// `devtools.onmessage` is called with it.
     DevTools(String),

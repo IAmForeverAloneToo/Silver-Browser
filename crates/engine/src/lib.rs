@@ -8568,6 +8568,26 @@ impl Engine {
                 activated,
             );
         }
+        // A frame whose `iframe` went out and was freed with its subtree
+        // before this heard of it (nothing of the scripts held it) is
+        // dropped all the same: its node is gone, so the changes below
+        // no longer name an `iframe`, and it ran on, timers and realm
+        // and all (2026-11-19). The frames, not the document, are walked.
+        if changes
+            .iter()
+            .any(|change| matches!(change, Change::Removed { .. }))
+        {
+            let gone: Vec<NodeId> = self
+                .shown
+                .frames
+                .keys()
+                .copied()
+                .filter(|&node| !self.shown.document.is_connected(node))
+                .collect();
+            for node in gone {
+                self.drop_frame(node);
+            }
+        }
         // An `iframe` in, out or navigated (M33.2): one taken out loses
         // its frame, put back or not.
         if changes

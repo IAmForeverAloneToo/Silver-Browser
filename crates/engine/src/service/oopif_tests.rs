@@ -101,6 +101,9 @@ fn server() -> TestServer {
                  setTimeout(() => {{ document.getElementById('f').remove(); \
                  console.log('removed') }}, 100);</script>"
             ),
+            "/readded" => format!(
+                "<iframe id=f src='http://b.localhost:{port}/still'></iframe>                 <script>document.getElementById('f').onload = () =>                  setTimeout(() => {{ document.getElementById('f').remove();                  console.log('removed'); setTimeout(() => {{                  const g = document.createElement('iframe');                  g.src = 'http://b.localhost:{port}/still'; document.body.append(g);                  console.log('added') }}, 200) }}, 100);</script>"
+            ),
             "/back" => format!(
                 "<iframe id=f src='http://b.localhost:{port}/still'></iframe>\
                  <script>let once = false; document.getElementById('f').onload = () => {{ \
@@ -394,4 +397,72 @@ fn a_parents_load_waits_for_its_frame_handed_over_however_late_the_browser_says_
         lines.iter().any(|line| line.starts_with("load "))
     });
     assert!(lines.contains(&"load 2".to_owned()), "{lines:?}");
+}
+
+/// The renderer of a frame of another site, removed, is shut down once it
+/// has shown nothing for the grace period (2026-11-19).
+#[test]
+fn a_removed_frames_renderer_goes_after_the_grace_period() {
+    let server = server();
+    let mut tab = tab();
+    tab.set_retire_after(Duration::from_millis(300));
+    tab.navigate(url(&server, "a.localhost", "/removed"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the frame shown", |tab, _| {
+        !tab.frame_roots().is_empty()
+    });
+    let framing = tab.frame_roots()[0].0;
+    settle(&mut tab, &mut lines, "the frame gone", |tab, lines| {
+        lines.iter().any(|line| line == "removed") && tab.frame_roots().is_empty()
+    });
+    // Kept meanwhile, shut down after.
+    assert!(tab.renderers().iter().any(|(number, _)| *number == framing));
+    settle(&mut tab, &mut lines, "its renderer gone", |tab, _| {
+        tab.renderers().iter().all(|(number, _)| *number != framing)
+    });
+    assert_eq!(tab.renderers().len(), 1, "{:?}", tab.renderers());
+}
+
+/// A frame of the same site put back within the grace period is shown by
+/// the same renderer, no other started.
+#[test]
+fn a_frame_put_back_within_the_grace_period_reuses_its_renderer() {
+    let server = server();
+    let mut tab = tab();
+    tab.set_retire_after(Duration::from_secs(5));
+    tab.navigate(url(&server, "a.localhost", "/readded"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the frame shown", |tab, _| {
+        !tab.frame_roots().is_empty()
+    });
+    let framing = tab.frame_roots()[0].0;
+    let (started, _) = tab.renderers_launched();
+    settle(&mut tab, &mut lines, "the frame back", |tab, lines| {
+        lines.iter().any(|line| line == "added") && !tab.frame_roots().is_empty()
+    });
+    assert_eq!(tab.frame_roots()[0].0, framing);
+    assert_eq!(tab.renderers_launched().0, started);
+}
+
+/// A renderer whose site is in the tab's history stays, for going back.
+#[test]
+fn a_renderer_of_a_site_in_the_history_stays() {
+    let server = server();
+    let mut tab = tab();
+    tab.set_retire_after(Duration::from_millis(200));
+    tab.navigate(url(&server, "b.localhost", "/still"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the first page", |tab, _| {
+        tab.load_state() == &LoadState::Loaded
+    });
+    let first = tab.shown_renderer().expect("a renderer");
+    tab.navigate(url(&server, "a.localhost", "/same"));
+    settle(&mut tab, &mut lines, "the second page", |tab, _| {
+        tab.load_state() == &LoadState::Loaded && tab.shown_renderer() != Some(first)
+    });
+    let waited = Instant::now();
+    settle(&mut tab, &mut lines, "past the grace period", |_, _| {
+        waited.elapsed() > Duration::from_millis(800)
+    });
+    assert!(tab.renderers().iter().any(|(number, _)| *number == first));
 }

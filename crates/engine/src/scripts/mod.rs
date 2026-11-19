@@ -3113,6 +3113,17 @@ impl Scripts {
         }
     }
 
+    /// Its frame was removed (HTML's "destroy a child navigable"): a
+    /// window of it a script kept answers as a closed one before its
+    /// realm goes (2026-11-19).
+    pub(crate) fn detach(&mut self) {
+        if let Some(realm) = &mut self.realm
+            && !realm.is_lent()
+        {
+            let _ = realm.enter(&js::Task::Detach, &mut self.host);
+        }
+    }
+
     /// Its document is its frame's again (back from the history).
     pub(crate) fn return_to_frame(&mut self) {
         if let (Some(realm), Some(frame)) = (&mut self.realm, self.frame) {

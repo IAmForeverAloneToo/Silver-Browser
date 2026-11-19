@@ -1230,10 +1230,11 @@ fn an_agent_out_of_memory_names_its_origin_and_documents() {
 }
 
 /// A frame removed with an interval, an idle callback and an animation
-/// frame pending, its realm made by a script of its own (`e`) or as its
-/// parent reached it (`r`, G90 phase 3 (b)): the two behave alike.
+/// frame pending hears none of them after, its realm made by a script of
+/// its own (`e`) or as its parent reached it (`r`, G90 phase 3 (b)), and
+/// the agent forgets its realm.
 #[test]
-fn a_removed_frame_behaves_alike_whichever_way_its_realm_was_made() {
+fn a_removed_frames_callbacks_stop_and_its_realm_goes_whichever_way_it_was_made() {
     let server = two_pages(
         "<iframe id=e srcdoc=\"<script>0</script>\"></iframe>\
          <iframe id=r srcdoc=\"<p>quiet\"></iframe><script>\
@@ -1254,25 +1255,68 @@ fn a_removed_frame_behaves_alike_whichever_way_its_realm_was_made() {
     tab.engine.set_scripting(true);
     load_all(&mut tab, server.url("/page.html"));
     let lines = tab.run_until(|lines| lines.iter().any(|line| line == "done"));
-    // A known gap, of frames' lifecycle and not of how a realm is made: a
-    // removed frame's document is not unloaded, its timers and idle
-    // callbacks run on and its realm stays (an eager frame's as a reached
-    // one's; found 2026-11-19, G90 phase 3 (b)'s check). The reference
-    // browser: no line but "done", and the agent's one realm left. What
-    // holds now: the two ways of making a realm behave alike.
-    let kinds = |id: &str| -> std::collections::BTreeSet<String> {
-        lines
-            .iter()
-            .filter_map(|line| line.strip_prefix(id))
-            .map(str::to_owned)
-            .collect()
-    };
-    assert_eq!(kinds("e "), kinds("r "), "{lines:?}");
-    assert!(lines.iter().any(|line| line == "done"));
+    // Nothing of the removed frames runs after, and the agent forgets
+    // their realms, an eager frame's as a reached one's: as the reference
+    // browser. (Their iframes were freed with nothing holding them before
+    // the engine heard of the removal, which named no iframe then: the
+    // frames ran on, 2026-11-19.)
+    assert_eq!(lines, ["done"]);
     let agent = tab.engine.shown.scripts.agent().expect("the page's agent");
-    assert_eq!(
-        agent.realm_count(),
-        3,
-        "the known gap: both removed frames' realms stay"
+    assert_eq!(agent.realm_count(), 1);
+    assert_eq!(tab.engine.removed_frames_alive(), (0, 0));
+}
+
+/// A removed frame's window a script kept answers as the reference
+/// browser's does: closed, with no parent, top or frame element and no
+/// frames, its realm made by a script of its own (`e`) or as its parent
+/// reached it (`r`). Its document and the rest fail closed until windows
+/// outlive their documents (G90 phase 3's WindowProxy work).
+#[test]
+fn a_kept_window_of_a_removed_frame_reads_as_closed() {
+    let server = two_pages(
+        "<iframe id=e srcdoc=\"<script>0</script>\"></iframe>\
+         <iframe id=r srcdoc=\"<p>quiet\"></iframe><script>\
+         onload = () => {\
+           const kept = ['e', 'r'].map(id => { const f = document.getElementById(id);\
+             const w = f.contentWindow; w.length; f.remove(); return w; });\
+           setTimeout(() => console.log(kept.map(w => [w.closed, w.parent === null,\
+             w.top === null, w.frameElement, w.length].join(' ')).join(' | ')), 100);\
+         };</script>",
+        "",
     );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["true true true  0 | true true true  0"]);
+}
+
+/// An iframe taken out and put back in one task loses its frame and gets
+/// a new one, as the reference browser has it: a new window, the old one
+/// closed, its document loaded again and the old realm's timers stopped.
+/// (`moveBefore` keeps the frame: a move, not a removal.)
+#[test]
+fn an_iframe_taken_out_and_put_back_in_one_task_is_a_new_frame() {
+    let server = two_pages(
+        "<div id=b></div>\
+         <iframe id=f srcdoc=\"<script>parent.loads = (parent.loads || 0) + 1;\
+           setInterval(() => parent.ticks = (parent.ticks || 0) + 1, 10)</script>\"></iframe>\
+         <iframe id=g srcdoc=\"<script>parent.gloads = (parent.gloads || 0) + 1</script>\"></iframe>\
+         <script>\
+         onload = () => {\
+           const f = document.getElementById('f'), g = document.getElementById('g');\
+           const before = f.contentWindow, gbefore = g.contentWindow;\
+           f.remove(); document.getElementById('b').append(f);\
+           document.getElementById('b').moveBefore(g, null);\
+           setTimeout(() => { window.ticks = 0; }, 30);\
+           setTimeout(() => console.log(f.contentWindow === before, before.closed, window.loads,\
+             g.contentWindow === gbefore, window.gloads, window.ticks < 40), 300);\
+         };</script>",
+        "",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["false true 2 true 1 true"]);
 }

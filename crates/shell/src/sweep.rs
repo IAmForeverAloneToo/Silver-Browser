@@ -338,6 +338,16 @@ fn capture(asked: &Asked) -> Result<(), String> {
         ),
         ("console", Json::Array(console)),
         ("counters", counters),
+        // The renderers the tab started over the whole run, and those
+        // alive at its end: a site's churn of frames of other sites (a
+        // removed frame's renderer goes after a grace period, 2026-11-19).
+        (
+            "renderers",
+            Json::object([
+                ("spawned", Json::from(tab.renderers_launched().0 as f64)),
+                ("alive", Json::from(tab.renderers_launched().1 as f64)),
+            ]),
+        ),
         // The counts after [`IDLE`] more with no input: less `counters`,
         // what a page left alone does in that time.
         ("idleCounters", idle),

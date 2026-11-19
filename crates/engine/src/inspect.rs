@@ -217,7 +217,36 @@ impl Engine {
                 *all += theirs;
             }
         });
+        let (alive, heap) = self.removed_frames_alive();
+        total.removed_frames_alive = alive;
+        total.removed_frames_heap = heap;
         total.json(layouts, &frames)
+    }
+
+    /// The frames of this engine's tree whose `iframe` is out of its
+    /// document while their engine is kept, and the heap of the agents
+    /// they alone hold.
+    pub(crate) fn removed_frames_alive(&self) -> (u32, u64) {
+        let document = &self.shown.document;
+        let own = self.shown.scripts.agent();
+        let (mut alive, mut heap) = (0u32, 0u64);
+        for (&node, frame) in &self.shown.frames {
+            if frame.remote.is_some() {
+                continue;
+            }
+            if !document.is_connected(node) {
+                alive += 1;
+                let theirs = frame.engine.shown.scripts.agent();
+                let shared = matches!((own, theirs), (Some(own), Some(theirs)) if own.same(theirs));
+                if !shared {
+                    heap += frame.engine.shown.scripts.heap() as u64;
+                }
+            }
+            let (more, more_heap) = frame.engine.removed_frames_alive();
+            alive += more;
+            heap += more_heap;
+        }
+        (alive, heap)
     }
 
     /// Queues `message` for the panel, unless too many wait.

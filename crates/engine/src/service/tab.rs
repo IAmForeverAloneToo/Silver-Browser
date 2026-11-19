@@ -60,7 +60,16 @@ struct Slot {
     lock: Option<Lock>,
     /// When one of its views was last shown.
     shown: Instant,
+    /// Since when it has shown nothing, holds none of the tab's history
+    /// and is not the spare: it goes [`RETIRE_AFTER`] later (2026-11-19).
+    idle_since: Option<Instant>,
 }
+
+/// How long a renderer that shows nothing, holds none of the tab's
+/// history and is not the spare is kept before it is shut down: a frame
+/// of its site put back meanwhile (an ad's churn) reuses it, rather than
+/// a process started and ended every few seconds.
+pub(crate) const RETIRE_AFTER: Duration = Duration::from_secs(10);
 
 /// A run of the tab's history in one view.
 struct Segment {
@@ -197,6 +206,12 @@ pub struct RemoteTab {
     /// for the next site.
     cap: usize,
     spare: bool,
+    /// How long an idle renderer waits to be shut down ([`RETIRE_AFTER`];
+    /// shorter in the tests), and how many renderers the tab started.
+    retire_after: Duration,
+    launched: u64,
+    /// When the next idle renderer is to be shut down, if one waits.
+    retire_due: Option<Instant>,
     segments: Vec<Segment>,
     current: usize,
     frame_views: HashMap<ViewId, FrameView>,
@@ -421,6 +436,9 @@ impl RemoteTab {
             listener,
             next_view: 1,
             cap: cap.max(1),
+            retire_after: RETIRE_AFTER,
+            launched: 0,
+            retire_due: None,
             spare,
             segments: Vec::new(),
             current: 0,
@@ -599,6 +617,7 @@ impl RemoteTab {
             return None;
         }
         let number = self.context.new_renderer();
+        self.launched += 1;
         let serve: Arc<dyn super::Serve> = self.services.clone();
         match Renderer::start(
             self.launcher.as_ref(),
@@ -631,6 +650,7 @@ impl RemoteTab {
                         renderer,
                         lock: None,
                         shown: Instant::now(),
+                        idle_since: None,
                     },
                 );
                 Some(number)
@@ -662,6 +682,56 @@ impl RemoteTab {
         };
         self.forget(number);
         true
+    }
+
+    /// Shuts down each renderer that has shown nothing, held none of the
+    /// tab's history and not been the spare for [`RemoteTab::retire_after`]
+    /// (a removed frame's, 2026-11-19); marks the ones that just became
+    /// so. When the next is due, if one waits.
+    fn retire_idle(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let shown = self.segment().and_then(|segment| segment.renderer);
+        let held: Vec<u32> = self
+            .segments
+            .iter()
+            .filter_map(|segment| segment.renderer)
+            .chain(self.frame_views.keys().map(|(renderer, _)| *renderer))
+            .chain(shown)
+            .collect();
+        let mut due = None;
+        let mut gone = Vec::new();
+        for (number, slot) in &mut self.renderers {
+            // The spare (unlocked) waits for the next site; one in use or
+            // holding history is kept.
+            if slot.lock.is_none() || held.contains(number) {
+                slot.idle_since = None;
+                continue;
+            }
+            let since = *slot.idle_since.get_or_insert(now);
+            let at = since + self.retire_after;
+            if at <= now {
+                gone.push(*number);
+            } else {
+                due = Some(due.map_or(at, |due: Instant| due.min(at)));
+            }
+        }
+        for number in gone {
+            self.forget(number);
+        }
+        due
+    }
+
+    /// How many renderers the tab has started, for the site sweep (its
+    /// churn), and how many live now.
+    pub fn renderers_launched(&self) -> (u64, usize) {
+        (self.launched, self.renderers.len())
+    }
+
+    /// Shortens how long an idle renderer waits to be shut down, for the
+    /// tests.
+    #[cfg(test)]
+    pub(crate) fn set_retire_after(&mut self, after: Duration) {
+        self.retire_after = after;
     }
 
     /// Lets go of renderer `number`: its segments keep their entries, to
@@ -2334,6 +2404,7 @@ impl View for RemoteTab {
     fn run_tasks(&mut self) -> bool {
         let changed = self.take_events();
         self.handovers.expire();
+        self.retire_due = self.retire_idle();
         let now = self.now();
         let due = {
             let storage = self.storage.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2350,10 +2421,17 @@ impl View for RemoteTab {
     }
 
     fn next_task_at(&self) -> Option<Duration> {
-        self.storage
+        let flush = self
+            .storage
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .flush_at(&self.jar)
+            .flush_at(&self.jar);
+        // An idle renderer's retirement wakes the loop when it is due.
+        let retire = self.retire_due.map(|at| {
+            self.now()
+                .saturating_add(at.saturating_duration_since(Instant::now()))
+        });
+        [flush, retire].into_iter().flatten().min()
     }
 
     fn needs_frame(&self) -> bool {
