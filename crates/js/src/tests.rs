@@ -1311,3 +1311,29 @@ mod frame_tests {
         drop(agent);
     }
 }
+
+/// A realm a thread-local holds goes as its thread ends, perhaps after
+/// the realms' own thread-locals went: its drop reaches none of them
+/// destroyed (the clone fuzz target's, CI 2026-11-20: "cannot access a
+/// Thread Local Storage value during or after destruction").
+#[test]
+fn a_realm_a_thread_local_holds_goes_with_its_thread() {
+    thread_local! {
+        static HELD: std::cell::RefCell<Option<Box<dyn Realm<Recorder>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let ended = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(|| {
+            // Held first, so that its destructor is registered before
+            // the realm's thread-locals', and may run after theirs.
+            HELD.with(|held| held.borrow().is_none());
+            let realm = QuickJs
+                .realm_of::<Recorder>(crate::RealmKind::Window, Limits::default(), None)
+                .expect("a realm");
+            HELD.with(|held| *held.borrow_mut() = Some(realm));
+        })
+        .expect("a thread")
+        .join();
+    assert!(ended.is_ok(), "the thread's end panicked");
+}

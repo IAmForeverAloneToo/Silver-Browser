@@ -823,7 +823,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let global: Global = Rc::default();
         let frame: Rc<Cell<Option<u32>>> = Rc::default();
         let released: Released = Rc::default();
-        LIVE.with(|live| live.borrow_mut().insert(key));
+        let _ = LIVE.try_with(|live| live.borrow_mut().insert(key));
         core.realms.borrow_mut().insert(
             key,
             Links {
@@ -1055,7 +1055,9 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         // The agent forgets it; its hooks are the agent's, which goes
         // with its last realm.
         self.agent.realms.borrow_mut().remove(&self.key);
-        LIVE.with(|live| live.borrow_mut().remove(&self.key));
+        // A realm a thread-local held goes as the thread ends, perhaps
+        // after this set did: nothing to forget then.
+        let _ = LIVE.try_with(|live| live.borrow_mut().remove(&self.key));
         self.agent.fit_heap(true);
         *self.global.borrow_mut() = None;
         self.rejections.borrow_mut().clear();
@@ -2206,7 +2208,10 @@ thread_local! {
 
 /// Whether the realm of `ctx` was dropped ([`LIVE`]).
 pub(crate) fn realm_gone(ctx: &Ctx<'_>) -> bool {
-    !LIVE.with(|live| live.borrow().contains(&context_key(ctx)))
+    // As the thread ends, the set gone: every realm is.
+    !LIVE
+        .try_with(|live| live.borrow().contains(&context_key(ctx)))
+        .unwrap_or(false)
 }
 
 /// What a call that needs the document of a realm dropped throws (G90):
