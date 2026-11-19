@@ -472,6 +472,10 @@ pub struct Engine {
     /// What the site sweep counted of the documents this engine showed
     /// and left (`sweep`); the shown one's are its scripts'.
     sweep_left: sweep::SweepCounts,
+    /// The tests' way to reach a document of the agent not lent (G90):
+    /// this engine lends nothing, its document nor its frames.
+    #[cfg(test)]
+    pub(crate) withhold_lending: bool,
     /// The margins of the iframe this engine's frame is in, which the
     /// document's `body` takes.
     pub(crate) frame_margins: style::FrameMargins,
@@ -1789,6 +1793,8 @@ impl Engine {
             last_drawn: None,
             frames_unpainted: 0,
             sweep_left: sweep::SweepCounts::default(),
+            #[cfg(test)]
+            withhold_lending: false,
             frame_margins: style::FrameMargins::default(),
             layouts_kept: 0,
             boxes_laid_out: 0,
@@ -1955,7 +1961,12 @@ impl Engine {
         // A frame's document left goes: a script holding its window
         // finds the frame's next document through it (G90 phase 3).
         if !kept && self.frame.is_frame() {
-            left.scripts.navigated();
+            // Its initial blank's window, whose state a script set is not
+            // kept for a document of its origin (HTML reuses that
+            // `Window`): counted for the sweep.
+            let blank = left.initial && left.page.origin() == self.shown.page.origin();
+            left.scripts.navigated(blank);
+            self.sweep_left.blank_window_state_lost += left.scripts.sweep().blank_window_state_lost;
         }
         if kept {
             left.scripts.collect();
@@ -2590,6 +2601,10 @@ impl Engine {
         except: Option<NodeId>,
         agents: &[js::Agent<scripts::DocumentHost>],
     ) -> usize {
+        #[cfg(test)]
+        if self.withhold_lending {
+            return 0;
+        }
         if agents.is_empty() {
             return 0;
         }
@@ -8215,7 +8230,7 @@ impl Engine {
             // A frame's window held finds the reloaded document through
             // the global the old one left (G90 phase 3).
             if self.frame.is_frame() {
-                left.scripts.navigated();
+                left.scripts.navigated(false);
             }
             self.network.cancel(left.page.id(), None);
         } else {
@@ -8606,6 +8621,16 @@ impl Engine {
         {
             for node in frames::removed_frames(&self.shown.document, &changes) {
                 self.drop_frame(node);
+            }
+            // A `src` or `srcdoc` set navigates its frame, to the same
+            // source too (HTML's "process the iframe attributes").
+            for change in &changes {
+                if let Change::AttributeChanged { element, name, .. } = change
+                    && (name == "src" || name == "srcdoc")
+                    && let Some(frame) = self.shown.frames.get_mut(element)
+                {
+                    frame.source_set = true;
+                }
             }
             self.update_frames();
         }

@@ -1602,6 +1602,17 @@ impl Document {
                         Some(value),
                     );
                 }
+                // An `iframe`'s `src` or `srcdoc` set to the same value
+                // navigates its frame again (HTML's "process the iframe
+                // attributes"): the engine hears it.
+                if matches!(name.as_str(), "src" | "srcdoc") && self.tag(element) == Some("iframe")
+                {
+                    self.record_change(Change::AttributeChanged {
+                        element,
+                        name,
+                        old: Some(value.to_owned()),
+                    });
+                }
                 return Ok(());
             }
             Some((_, v)) => Some(v.len()),

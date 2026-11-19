@@ -1328,13 +1328,13 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("detach")?
                     .call::<_, Value<'_>>(())
             }),
-            Task::Navigated => {
-                let core = Rc::downgrade(&self.agent);
+            Task::Navigated(blank) => {
+                let (core, blank) = (Rc::downgrade(&self.agent), *blank);
                 self.stepped(&entries, move |ctx, entries| {
                     let current = current_window_native(ctx, core)?;
                     entries
                         .get::<_, Function<'_>>("navigated")?
-                        .call::<_, Value<'_>>((current,))
+                        .call::<_, Value<'_>>((current, blank))
                 })
             }
             Task::GuardCode => self.stepped(&entries, |_, entries| {

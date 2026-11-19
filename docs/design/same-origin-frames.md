@@ -237,6 +237,13 @@ What follows the frame is the old global, once its document is left:
 - Nothing of the old document runs after: its timers, observers and
   listeners went with its engine's scripts. A function of it a script
   kept still runs when called, as in Chrome.
+- A frame of a shared agent is drawn with the agent's other documents
+  lent (`frame_pixels` through `with_frame`): its animation frame
+  callbacks may be a parent's functions, which read the parent's
+  document.
+- An `iframe`'s `src` or `srcdoc` set to the value it has navigates its
+  frame again, as HTML's "process the iframe attributes" does (the DOM
+  journals that set for an `iframe` alone).
 - Memory: a held old global keeps its realm's context and what could
   not go: the language's globals and the page's own `var`s. That is
   one old realm per holder per frame, not one per navigation (the

@@ -3169,11 +3169,11 @@ impl Scripts {
     /// Its frame went on to another document and this one goes (G90
     /// phase 3): its global, if a script of the agent holds it, answers
     /// as the frame's window from now on, before its realm goes.
-    pub(crate) fn navigated(&mut self) {
+    pub(crate) fn navigated(&mut self, blank: bool) {
         if let Some(realm) = &mut self.realm
             && !realm.is_lent()
         {
-            let _ = realm.enter(&js::Task::Navigated, &mut self.host);
+            let _ = realm.enter(&js::Task::Navigated(blank), &mut self.host);
         }
     }
 

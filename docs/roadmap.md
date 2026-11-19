@@ -4007,7 +4007,14 @@ site sweep or the dogfood sessions show a site breaking on it.
   document of its origin it navigates to (HTML's reuse of the initial
   about:blank's `Window`): listeners a script added to the blank's
   window before that load are lost, where Chrome keeps them (WPT
-  xslt-strict-dynamic-blocked).
+  xslt-strict-dynamic-blocked). The sweep counts each such loss
+  (`blankWindowStateLost`), to rank it: HTML's model commits that first
+  document into the blank's realm.
+- An external script `document.write` puts in a document that
+  `document.open()` opened does not block its parser: what is written
+  after it runs before it has (an inline script calling a function it
+  defines throws), where Chrome waits for it (WPT execution-timing
+  071 and 101). The document's own load blocks as it should.
 - A removed frame's window that a script kept answers as Chrome's does
   for `closed` (true), `parent`, `top` and `frameElement` (null) and
   `length` (0), but its `document`, `location` and the rest throw ("the

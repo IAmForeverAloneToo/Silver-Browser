@@ -33,6 +33,10 @@ pub(crate) struct SweepCounts {
     /// `contentDocument` read as null of a frame of the reader's origin
     /// (G90).
     pub(crate) frame_document_same_origin: u32,
+    /// A frame's initial `about:blank` left for a document of its origin
+    /// while a script had set properties or listeners on its window,
+    /// which HTML's reuse of that `Window` keeps and this version loses.
+    pub(crate) blank_window_state_lost: u32,
     /// A node of another frame's document of the same origin given to a
     /// method, refused until nodes move between documents (G90 phase 5).
     pub(crate) nodes_across_documents: u32,
@@ -155,6 +159,7 @@ impl SweepCounts {
         self.budget_stops += other.budget_stops;
         self.frame_refused_same_origin += other.frame_refused_same_origin;
         self.frame_document_same_origin += other.frame_document_same_origin;
+        self.blank_window_state_lost += other.blank_window_state_lost;
         self.nodes_across_documents += other.nodes_across_documents;
         self.most_realms_in_agent = self.most_realms_in_agent.max(other.most_realms_in_agent);
         self.documents_not_lent += other.documents_not_lent;
@@ -202,6 +207,10 @@ impl SweepCounts {
             (
                 "frameDocumentSameOrigin",
                 Json::from(f64::from(self.frame_document_same_origin)),
+            ),
+            (
+                "blankWindowStateLost",
+                Json::from(f64::from(self.blank_window_state_lost)),
             ),
             (
                 "nodesAcrossDocuments",

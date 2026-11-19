@@ -1404,3 +1404,116 @@ fn a_held_window_finds_its_frames_reloaded_document() {
     let lines = run(&server, server.url("/page.html"), 1);
     assert_eq!(lines, ["heard done false"]);
 }
+
+#[test]
+fn an_iframes_src_set_to_its_own_value_navigates_it_again() {
+    // HTML's "process the iframe attributes" runs as `src` is set, to
+    // the value it had too: the frame loads again, and its element
+    // hears `load` again (WPT webstorage event_body_attribute). As the
+    // reference browser.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<body><script>\
+             const f = document.createElement('iframe');\
+             document.body.appendChild(f);\
+             let loads = 0;\
+             f.onload = () => {\
+               loads++;\
+               console.log('load', loads, f.contentWindow.document.body.textContent);\
+               if (loads < 3) f.src = 'child.html';\
+             };\
+             f.src = 'child.html';\
+             </script>",
+        ),
+        ("/child.html", "<body>child"),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 3);
+    assert_eq!(lines, ["load 1 child", "load 2 child", "load 3 child"]);
+}
+
+#[test]
+fn the_sweep_counts_a_blanks_window_state_lost_to_its_frames_first_document() {
+    // A script sets a property, or adds a listener, on a fresh frame's
+    // window before its first document of the page's origin comes, as
+    // sign-in and widget loaders do. HTML gives that document the
+    // blank's `Window`, so the reference browser keeps them; this
+    // version does not, and the sweep counts it. A frame left alone, or
+    // whose first document is of another origin, counts nothing.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<script>\
+             const make = src => { const f = document.createElement('iframe'); f.src = src;\
+               document.documentElement.appendChild(f); return f.contentWindow; };\
+             make('child.html').expando = 1;\
+             make('child.html').addEventListener('message', () => {});\
+             make('child.html');\
+             make('http://b.localhost:' + location.port + '/child.html').other = 1;\
+             onload = () => console.log('loaded', frames.length);\
+             </script>",
+        ),
+        ("/child.html", "<p>child"),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server, "a.localhost", "/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loaded 4"]);
+    tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = devtools::Json::parse(&answers[0]).expect("JSON");
+    let counts = answer.get("result").expect("a result");
+    assert_eq!(
+        counts
+            .get("blankWindowStateLost")
+            .and_then(devtools::Json::as_u64),
+        Some(2),
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn the_sweep_counts_a_documents_call_into_one_of_its_agent_not_lent() {
+    // Every document of the agent is lent for a run since G90 phase 3,
+    // so the tests withhold the frames' to reach one not lent: the call
+    // into it throws, and the sweep counts it (documentsNotLent).
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<iframe srcdoc=\"<title>child</title><script>var made = 1;</script>\"></iframe><script>\
+         onload = () => {\
+           console.log('loaded', frames[0].document.title);\
+           setTimeout(() => {\
+             try { console.log('read', frames[0].document.title); }\
+             catch (e) { console.log('refused', e.message); }\
+           }, 100);\
+         };\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loaded child"]);
+    // The frame's engine lends its document for the page's runs.
+    for frame in tab.engine.shown.frames.values_mut() {
+        frame.engine.withhold_lending = true;
+    }
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["refused no script is running"]);
+    tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = devtools::Json::parse(&answers[0]).expect("JSON");
+    let counts = answer.get("result").expect("a result");
+    assert!(
+        counts
+            .get("documentsNotLent")
+            .and_then(devtools::Json::as_u64)
+            >= Some(1),
+        "{answer:?}"
+    );
+}

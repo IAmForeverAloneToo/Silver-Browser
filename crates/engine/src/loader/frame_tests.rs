@@ -1320,3 +1320,37 @@ fn an_iframe_taken_out_and_put_back_in_one_task_is_a_new_frame() {
     let lines = tab.run_until(|lines| !lines.is_empty());
     assert_eq!(lines, ["false true 2 true 1 true"]);
 }
+
+#[test]
+fn a_parents_function_a_frames_animation_frame_calls_reaches_the_parents_document() {
+    // A frame's `requestAnimationFrame` callbacks run as it is drawn; one
+    // may be a function of its parent, of the same agent, which reads
+    // and writes the parent's document: the parent's document is lent to
+    // its realm meanwhile (WPT viewport-units-after-font-load). As the
+    // reference browser.
+    let server = two_pages(
+        "<title>parent</title><iframe srcdoc='<p>child'></iframe><script>\
+         onload = () => frames[0].requestAnimationFrame(t => {\
+           document.title = 'drawn';\
+           console.log('callback', typeof t, document.title, frames[0].document.body.textContent);\
+         });</script>",
+        "",
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let mut lines = Vec::new();
+    for ms in 0..20 {
+        tab.engine.frame_at(
+            400,
+            300,
+            crate::FrameTime::at(Duration::from_millis(ms * 16)),
+        );
+        tab.engine.run_tasks();
+        lines.extend(console(&mut tab));
+        if !lines.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(lines, ["callback number drawn child"]);
+}

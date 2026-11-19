@@ -966,9 +966,9 @@ inModule.notHere();</script>             <script type=module src=/m.js></script>
     assert_eq!(number("frameRefusedSameOrigin"), Some(0), "{answer:?}");
     assert_eq!(number("frameDocumentSameOrigin"), Some(0), "{answer:?}");
     assert_eq!(number("nodesAcrossDocuments"), Some(1), "{answer:?}");
-    // Its frame's animation frame callback reaches the page, not lent to
-    // a frame's rendering yet (phase 4): it throws, and is counted.
-    assert!(number("documentsNotLent") >= Some(1), "{answer:?}");
+    // Its frame's animation frame callback reaches the page, lent to the
+    // frame's rendering since G90 phase 3: nothing counted.
+    assert_eq!(number("documentsNotLent"), Some(0), "{answer:?}");
     assert_eq!(number("documentDomainSets"), Some(1), "{answer:?}");
     assert!(number("layouts") >= Some(1), "{answer:?}");
 }

@@ -33721,6 +33721,16 @@
     }),
   };
 
+  // The global's own names as the bindings leave it, before any page
+  // ran: one a page adds is state of its own (`navigated`).
+  const bindingGlobals = new $Map();
+  {
+    const names = ReflectOwnKeys(global);
+    for (let i = 0; i < names.length; i++) {
+      MapSet(bindingGlobals, names[i], true);
+    }
+  }
+
   // The entry points the realm calls (M26): a timer's task; an event
   // the engine makes, dispatched at the node `handle` names or, for
   // null, at the window, as a generator `resume` steps through, which
@@ -33809,8 +33819,26 @@
     // its functions still called find, as the reference browser's find
     // their realm's; and `document`, which forwards (the reference
     // browser's old functions read the old document there).
-    navigated(current) {
+    navigated(current, blank) {
       const id = selfFrame();
+      // The frame's initial blank left for a document of its origin,
+      // which HTML would give this `Window`: the state a script set on
+      // it (its own properties, its listeners) is lost here, and the
+      // sweep counts it.
+      if (blank) {
+        let state = listenersOf(global).length > 0;
+        const names = ReflectOwnKeys(global);
+        for (let i = 0; i < names.length && !state; i++) {
+          state = MapGet(bindingGlobals, names[i]) === undefined;
+        }
+        if (state) {
+          try {
+            native.frameSweep(id, 2);
+          } catch {
+            // No host to tell: nothing counted.
+          }
+        }
+      }
       // Never this global itself, which would forward to itself.
       const target = () => {
         const window = current(id);

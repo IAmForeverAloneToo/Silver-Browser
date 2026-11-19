@@ -4396,7 +4396,11 @@ impl DocumentHost {
             )),
             Call::FrameClosed(id) => Ok(Answer::Bool(!crate::frames::lock(&env.tree).contains(id))),
             Call::FrameSweep(id, what) => {
-                if crate::frames::lock(&env.tree).same_origin(me, id) {
+                // Its own window's state, lost as its initial blank went
+                // (`navigated`).
+                if what == 2 {
+                    self.sweep.blank_window_state_lost += 1;
+                } else if crate::frames::lock(&env.tree).same_origin(me, id) {
                     match what {
                         0 => self.sweep.frame_refused_same_origin += 1,
                         _ => self.sweep.frame_document_same_origin += 1,

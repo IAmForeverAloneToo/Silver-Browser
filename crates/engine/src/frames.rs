@@ -896,6 +896,10 @@ pub(crate) struct Frame {
     /// nor wants its page's frames, until it is (as the reference browser
     /// throttles a frame out of view or not rendered).
     pub(crate) in_view: bool,
+    /// Its element's `src` or `srcdoc` was set since the frame was last
+    /// navigated by them: navigated again, even to the same source (HTML's
+    /// "process the iframe attributes" as either is set).
+    pub(crate) source_set: bool,
     tree: SharedTree,
 }
 
@@ -1202,7 +1206,7 @@ impl Engine {
                 lock(&self.frame.tree).set_element_policy(frame.id, sandbox, allow);
             }
             match self.shown.frames.get(&node) {
-                Some(frame) if frame.source == source => continue,
+                Some(frame) if frame.source == source && !frame.source_set => continue,
                 Some(_) => {}
                 None => {
                     let Some(frame) = self.make_frame(node) else {
@@ -1330,6 +1334,7 @@ impl Engine {
             told_completions: 0,
             drawn: None,
             in_view: true,
+            source_set: false,
             tree: self.frame.tree.clone(),
         })
     }
@@ -1369,6 +1374,7 @@ impl Engine {
             .container_local_network
             .clone_from(&local_network);
         frame.source = source.clone();
+        frame.source_set = false;
         // What its frame showed before is never told now: the initial
         // `about:blank` hears no `load` when a navigation follows (HTML's
         // "process the iframe attributes"); a `javascript:` URL brings no
@@ -2443,10 +2449,25 @@ impl Engine {
             .is_none_or(|drawn| drawn.size != raster)
             || frame.engine.needs_frame();
         if stale {
-            let bytes = match time {
-                Some(time) => frame.engine.frame_at(raster.0, raster.1, time).to_vec(),
-                None => frame.engine.frame(raster.0, raster.1),
+            let draw = |engine: &mut Engine| match time {
+                Some(time) => engine.frame_at(raster.0, raster.1, time).to_vec(),
+                None => engine.frame(raster.0, raster.1),
             };
+            // Its frame callbacks may be functions of another document of
+            // its agent (a parent's `requestAnimationFrame` on the frame's
+            // window): that one's document lent to its realm meanwhile.
+            let shared = frame
+                .engine
+                .shown
+                .scripts
+                .agent()
+                .is_some_and(js::Agent::shared);
+            let bytes = if shared {
+                self.with_frame(node, draw)?
+            } else {
+                draw(&mut frame.engine)
+            };
+            let frame = self.shown.frames.get_mut(&node)?;
             if bytes.is_empty() {
                 frame.drawn = None;
                 return None;
@@ -2466,7 +2487,9 @@ impl Engine {
                 pixels: Arc::new(image),
             });
         }
-        frame
+        self.shown
+            .frames
+            .get(&node)?
             .drawn
             .as_ref()
             .map(|drawn| (drawn.frame, drawn.pixels.clone()))

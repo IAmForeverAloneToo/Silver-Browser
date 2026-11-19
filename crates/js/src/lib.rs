@@ -564,8 +564,10 @@ pub enum Task {
     /// is not kept for: its global, which scripts of the agent may hold,
     /// answers from now on as the frame's window does, whatever document
     /// it shows (HTML's WindowProxy), before its realm goes (G90 phase 3,
-    /// `docs/design/same-origin-frames.md`).
-    Navigated,
+    /// `docs/design/same-origin-frames.md`). Whether the document left was
+    /// the frame's initial `about:blank` and the next of its origin: its
+    /// window's state a script set is lost, and counted for the sweep.
+    Navigated(bool),
     /// A message from the browser to the DevTools panel's page (M36):
     /// `devtools.onmessage` is called with it.
     DevTools(String),
