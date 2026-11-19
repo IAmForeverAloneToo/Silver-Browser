@@ -167,6 +167,16 @@ jobs:
       # Every test binary runs, and the step after too, whatever fails:
       # one run says all that does.
       - run: cargo test --workspace --locked --no-fail-fast
+      # A test binary a signal ends names no test (2026-11-20: the render
+      # crate's, SIGSEGV, on Linux, whose wgpu tests run on Mesa's software
+      # Vulkan): when the step above failed, the render crate's tests run
+      # again one at a time with backtraces, each named as it starts, so
+      # that a crash says which test, and whether it needs the others
+      # running beside it.
+      - if: ${{ failure() }}
+        run: cargo test -p render --locked --no-fail-fast -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
       # And the shell's tests once more as one process (M34.6).
       - if: ${{ !cancelled() }}
         run: cargo test -p silver-browser --features single-process --locked --no-fail-fast
