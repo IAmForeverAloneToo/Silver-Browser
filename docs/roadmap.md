@@ -3993,11 +3993,21 @@ site sweep or the dogfood sessions show a site breaking on it.
   the next it reads as a removed frame's. Chrome's is closed at once.
   (Reached in the task that inserts it, it is its initial about:blank
   since G90 phase 3 (b)'s `blank_frame`, 2026-11-19.)
-- An iframe with a `src` or `srcdoc` that a script inserts is refused
-  (`SecurityError`) when reached in the same task, where Chrome gives
-  its initial about:blank; from the next task it is what came. To lift
-  with WindowProxy across navigation (G90 phase 3), which lets a window
-  of the blank kept by a script follow the frame.
+- A window a script holds follows its frame across navigations through
+  the global its old document left (G90 phase 3, 2026-11-19), not one
+  WindowProxy: the frame's own new `window` is another object; the
+  held object keeps the old page's own `var` globals (of the holder's
+  origin) and the language's, as its own keys; its prototype is the
+  forwarder; a function of the old page reads the frame's current
+  `document`, where Chrome's reads the old one; an object of the old
+  page's realm that needs its document (a `DOMParser` made from it, its
+  nodes) fails after ("the realm is gone"), where Chrome's still works
+  (`docs/design/same-origin-frames.md`, "As built").
+- A frame's initial about:blank's `Window` is not reused by the first
+  document of its origin it navigates to (HTML's reuse of the initial
+  about:blank's `Window`): listeners a script added to the blank's
+  window before that load are lost, where Chrome keeps them (WPT
+  xslt-strict-dynamic-blocked).
 - A removed frame's window that a script kept answers as Chrome's does
   for `closed` (true), `parent`, `top` and `frameElement` (null) and
   `length` (0), but its `document`, `location` and the rest throw ("the

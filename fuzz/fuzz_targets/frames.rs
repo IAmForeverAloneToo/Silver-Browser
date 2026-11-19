@@ -70,6 +70,15 @@ const CALLS: &[&str] = &[
      var rw = r.contentWindow; rw.document.body.append('y'); r.remove(); \
      setTimeout(() => rw.closed && parent.postMessage(rw.length, '*'), 3)",
     "frames.length && frames[0].document && frames[0].document.body.append('reached')",
+    // A frame navigating while its window is held (G90 phase 3, the
+    // global its old document left forwards): to its origin, and to an
+    // opaque one, the held window read after.
+    "var h = document.querySelector('iframe'); var hw = h && h.contentWindow; \
+     h && (h.srcdoc = '<p>next'); setTimeout(() => { try { hw.document.body.append('held'); \
+     hw.postMessage(hw.length, '*'); } catch (e) {} }, 3)",
+    "var o = document.querySelector('iframe'); var ow = o && o.contentWindow; \
+     o && (o.src = 'data:text/html,<p>away'); setTimeout(() => { try { ow.document; } \
+     catch (e) { ow && ow.postMessage(String(ow.closed), '*'); } }, 3)",
 ];
 
 struct Input<'a>(&'a [u8]);

@@ -1952,6 +1952,11 @@ impl Engine {
             // run whatever the setting the page coming back has.
             && !left.page.url().is_some_and(internal::is_internal);
         self.unload(&mut left, kept);
+        // A frame's document left goes: a script holding its window
+        // finds the frame's next document through it (G90 phase 3).
+        if !kept && self.frame.is_frame() {
+            left.scripts.navigated();
+        }
         if kept {
             left.scripts.collect();
             // Its decoded images go, decoded again if it is shown, and
@@ -8207,6 +8212,11 @@ impl Engine {
             // gone, not kept.
             let mut left = left;
             self.unload(&mut left, false);
+            // A frame's window held finds the reloaded document through
+            // the global the old one left (G90 phase 3).
+            if self.frame.is_frame() {
+                left.scripts.navigated();
+            }
             self.network.cancel(left.page.id(), None);
         } else {
             self.leave(left, left_state);

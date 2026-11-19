@@ -1217,6 +1217,31 @@ impl Engine {
                     if source == Source::Blank {
                         continue;
                     }
+                    // A run that reached its blank before it was made
+                    // navigated it (but by a reload), or opened it
+                    // (`document.open()`), after HTML's navigation of the
+                    // insertion, which that replaced or stopped; unless
+                    // the run set its `src` or `srcdoc` after its reach,
+                    // which navigates last. Its blank's `load` is not
+                    // told, as for any navigation.
+                    let (src, srcdoc) = (
+                        self.shown.document.attr(node, "src").map(str::to_owned),
+                        self.shown.document.attr(node, "srcdoc").map(str::to_owned),
+                    );
+                    if let Some(frame) = self.shown.frames.get_mut(&node)
+                        && frame.engine.shown.scripts.reached_source() == Some(&(src, srcdoc))
+                        && (frame
+                            .engine
+                            .navigation
+                            .as_ref()
+                            .is_some_and(|navigation| navigation.handling != Handling::Reload)
+                            || frame.engine.shown.scripts.was_opened())
+                    {
+                        frame.source = source;
+                        frame.told = frame.engine.completed;
+                        frame.told_completions = frame.engine.completions;
+                        continue;
+                    }
                 }
             }
             self.navigate_frame(node, source);

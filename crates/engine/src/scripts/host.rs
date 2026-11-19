@@ -358,6 +358,11 @@ pub(crate) struct DocumentHost {
     /// How many times `document.open()` opened the document, ever: once
     /// closed, it loads again (its lifecycle's events anew).
     pub(crate) reopened: u64,
+    /// For an initial `about:blank` made as a run reached its `iframe`
+    /// before its frame was made (`blank_frame`): the element's `src`
+    /// and `srcdoc` then, which the frame's making compares with its
+    /// own, to know whether the run set them after its reach.
+    pub(crate) reached_source: Option<(Option<String>, Option<String>)>,
     /// The document's readiness when `document.open()` made it loading.
     before_open: ReadyState,
     /// That parser is parsing, its scripts running; and what they wrote,
@@ -570,23 +575,6 @@ impl ScriptingHost for DocumentHost {
             return None;
         }
         let page = self.page.as_mut()?;
-        // One with a source navigates away from its blank after the run,
-        // and a window of the blank's realm kept would go with it until
-        // windows outlive their documents (WindowProxy across navigation):
-        // it is reached by its frame's number, as before, meanwhile.
-        if self.document.attr(element, "srcdoc").is_some() {
-            return None;
-        }
-        if let Some(src) = self
-            .document
-            .attr(element, "src")
-            .filter(|src| !src.is_empty())
-            && page
-                .resolve(&self.document, src)
-                .is_none_or(|url| url.as_str() != "about:blank")
-        {
-            return None;
-        }
         let element_sandbox = self
             .document
             .attr(element, "sandbox")
@@ -628,7 +616,12 @@ impl ScriptingHost for DocumentHost {
             },
             ..self.window.clone()
         };
+        let reached_source = Some((
+            self.document.attr(element, "src").map(str::to_owned),
+            self.document.attr(element, "srcdoc").map(str::to_owned),
+        ));
         Some(DocumentHost {
+            reached_source,
             lent_version: document.version(),
             document,
             page: Some(page),

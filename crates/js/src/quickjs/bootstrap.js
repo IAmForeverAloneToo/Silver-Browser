@@ -58,6 +58,17 @@
   const FromCharCode = String.fromCharCode;
   const MapGet = uncurry(Map.prototype.get);
   const MapSet = uncurry(Map.prototype.set);
+  // The globals the realm had before the bindings: the language's own
+  // (`Object`, `JSON`, `Promise`...), which a global its frame's
+  // navigation left keeps, so that its functions still called find them
+  // as the reference browser's do (G90 phase 3, `navigated`).
+  const languageGlobals = new $Map();
+  {
+    const names = ReflectOwnKeys(global);
+    for (let i = 0; i < names.length; i++) {
+      MapSet(languageGlobals, names[i], true);
+    }
+  }
   const MapDelete = uncurry(Map.prototype.delete);
   const MapHas = uncurry(Map.prototype.has);
   const ArraySlice = uncurry(Array.prototype.slice);
@@ -527,6 +538,11 @@
   // Its frame was removed (HTML's "destroy a child navigable"): its window,
   // kept by a script, answers as a closed one (2026-11-19).
   let detached = false;
+
+  // Its frame went on to another document (G90 phase 3): the frame's
+  // window now, as the realm whose run is under way sees it, which this
+  // global forwards to; null while its document is its frame's.
+  let forwardTo = null;
 
   // The text controls with live OpaqueRanges (gap batch H), by handle:
   // their ranges and their value as the ranges last saw it.
@@ -21508,12 +21524,17 @@
     return selfFrameId;
   }
 
-  // The windows of other frames, one object a frame.
+  // The cross-origin windows of other frames, one object a frame.
   const frameWindows = new $Map();
   const frameLocations = new $Map();
+  // The globals of frames of this window's agent handed out, held
+  // weakly (G90 phase 3): while one is held, it is the frame's window
+  // here, its documents' navigations followed (`navigated`).
+  const handedWindows = new $Map();
 
   // The window of frame `id`: this one's own, another's object, or
-  // `null` for none.
+  // `null` for none. One object a frame, across its navigations, while
+  // a script holds it, as HTML's WindowProxy is.
   function windowFor(id) {
     if (id < 0) {
       return null;
@@ -21521,20 +21542,36 @@
     if (id === selfFrame()) {
       return global;
     }
+    // A global of the frame handed out before and still held: its own
+    // still, or one its frame's navigation left, which forwards.
+    const handed = MapGet(handedWindows, id);
+    const held = handed === undefined ? undefined : WeakRefDeref(handed);
+    if (held !== undefined) {
+      return held;
+    }
     // The window handed out for the frame before, when it had none of
     // this window's agent then: it reaches the frame's own window when
     // that is of the agent, as HTML's WindowProxy does (G90 phase 2).
-    let window = MapGet(frameWindows, id);
+    const window = MapGet(frameWindows, id);
     if (window !== undefined) {
       return window;
     }
     // A frame of this window's agent: its own window.
     const own = native.frameWindow(id);
     if (own !== null) {
+      MapSet(handedWindows, id, new $WeakRef(own));
       return own;
     }
-    window = frameWindow(id);
-    MapSet(frameWindows, id, window);
+    return crossWindowFor(id);
+  }
+
+  // The cross-origin window of frame `id`, made once.
+  function crossWindowFor(id) {
+    let window = MapGet(frameWindows, id);
+    if (window === undefined) {
+      window = frameWindow(id);
+      MapSet(frameWindows, id, window);
+    }
     return window;
   }
 
@@ -22949,6 +22986,12 @@
   // realm is made before any host is there to ask.
   let document = null;
   function theDocument() {
+    // Its frame went on (G90 phase 3): the frame's document now, or the
+    // cross-origin window's refusal.
+    if (forwardTo !== null) {
+      const window = forwardTo();
+      return window === null ? undefined : window.document;
+    }
     if (document === null) {
       document = wrap(native.document());
     }
@@ -33754,6 +33797,118 @@
     // asking no native, which go with the realm (2026-11-19).
     detach() {
       detached = true;
+    },
+    // The frame went on to another document, this one not kept (G90
+    // phase 3): this global, which scripts of the agent may hold,
+    // answers from now on as the frame's window, as HTML's WindowProxy
+    // does. `current(id)` gives that window as the realm whose run is
+    // under way sees it: its own global, or the cross-origin window. The
+    // global's own properties of the platform go, and its prototype
+    // forwards them. What stays: the language's globals (`Object`,
+    // `JSON`...) and the page's own `var` and `function` globals, which
+    // its functions still called find, as the reference browser's find
+    // their realm's; and `document`, which forwards (the reference
+    // browser's old functions read the old document there).
+    navigated(current) {
+      const id = selfFrame();
+      // Never this global itself, which would forward to itself.
+      const target = () => {
+        const window = current(id);
+        return window === global ? null : window;
+      };
+      // A function read through this global is called on the frame's
+      // window when called on this global (`held.addEventListener(...)`):
+      // one proxy a function, which constructs and has its `prototype`
+      // as the function does.
+      const methods = new $WeakMap();
+      const method = (value) => {
+        let made = WeakMapGet(methods, value);
+        if (made === undefined) {
+          made = new $Proxy(value, {
+            apply(fn, receiver, args) {
+              if (receiver === global) {
+                const window = target();
+                receiver = window === null ? undefined : window;
+              }
+              return ReflectApply(fn, receiver, args);
+            },
+          });
+          WeakMapSet(methods, value, made);
+        }
+        return made;
+      };
+      const forward = new $Proxy(ObjectCreate(null), {
+        get(_, prop) {
+          const window = target();
+          if (window === null) {
+            return undefined;
+          }
+          const value = ReflectGet(window, prop, window);
+          return typeof value === "function" ? method(value) : value;
+        },
+        set(_, prop, value) {
+          const window = target();
+          return window !== null && ReflectSet(window, prop, value, window);
+        },
+        has(_, prop) {
+          const window = target();
+          return window !== null && ReflectHas(window, prop);
+        },
+        getOwnPropertyDescriptor(_, prop) {
+          const window = target();
+          if (window === null) {
+            return undefined;
+          }
+          // Configurable, as a WindowProxy reports each: the target is
+          // not the window's.
+          const descriptor = ReflectGetOwnPropertyDescriptor(window, prop);
+          if (descriptor !== undefined) {
+            descriptor.configurable = true;
+          }
+          return descriptor;
+        },
+        defineProperty(_, prop, descriptor) {
+          const window = target();
+          return window !== null && ReflectDefineProperty(window, prop, descriptor);
+        },
+        deleteProperty(_, prop) {
+          const window = target();
+          return window !== null && ReflectDeleteProperty(window, prop);
+        },
+        ownKeys() {
+          const window = target();
+          return window === null ? [] : ReflectOwnKeys(window);
+        },
+        getPrototypeOf() {
+          const window = target();
+          return window === null ? null : ReflectGetPrototypeOf(window);
+        },
+        setPrototypeOf() {
+          return false;
+        },
+        preventExtensions() {
+          return false;
+        },
+      });
+      const keys = ReflectOwnKeys(global);
+      for (let i = 0; i < keys.length; i++) {
+        const descriptor = ReflectGetOwnPropertyDescriptor(global, keys[i]);
+        if (descriptor !== undefined && descriptor.configurable &&
+          MapGet(languageGlobals, keys[i]) === undefined) {
+          ReflectDeleteProperty(global, keys[i]);
+        }
+      }
+      ReflectSetPrototypeOf(global, forward);
+      forwardTo = target;
+    },
+    // The window of frame `id` as this realm sees it now, for a global
+    // its frame's navigation left (`navigated`): never one such global.
+    liveWindowFor(id) {
+      if (id === selfFrame()) {
+        return global;
+      }
+      const own = native.frameWindow(id);
+      return own !== null ? own : crossWindowFor(id);
     },
     devtools: devtoolsMessage,
     idb: () => chunkInstall("idb").idbTask(),

@@ -1070,32 +1070,35 @@ fn a_same_task_reach_keeps_its_creators_policy() {
 }
 
 #[test]
-fn a_same_task_reach_of_an_insert_with_a_source_is_refused_until_windows_outlive_documents() {
-    // A `src` or `srcdoc` is navigated to after the run. The reference
-    // browser's run reaches the initial blank, and a later task what
-    // came through the same window. Here the run is refused (a known
-    // deviation): a window of the blank's realm kept would go with the
-    // blank until WindowProxy across navigation. A later task reaches
-    // what came, another origin's document (of another site or of a
-    // subdomain of the page's) refused, as the reference browser.
+fn a_same_task_reach_of_an_insert_with_a_source_gives_the_blank_then_what_came() {
+    // A `src` or `srcdoc` is navigated to after the run: the run reaches
+    // the initial blank, a later task what came through the same window
+    // (the blank's global, which follows its frame). Another origin's
+    // document, of another site or of a subdomain of the page's, is
+    // refused then, a property set on the blank before too. As the
+    // reference browser.
     static PAGES: &[(&str, &str)] = &[
         (
             "/page.html",
             "<script>\
              const read = w => { try { return w.document.URL + ' ' + w.document.body.innerHTML; }\
                catch (e) { return e.name; } };\
+             const kept = w => { try { return String(w.kept); } catch (e) { return e.name; } };\
              const make = (attr, value) => {\
                const f = document.createElement('iframe');\
                f[attr] = value;\
                document.documentElement.appendChild(f);\
-               console.log(attr, 'now', read(f.contentWindow));\
-               return f;\
+               const w = f.contentWindow;\
+               w.kept = 1;\
+               console.log(attr, 'now', read(w));\
+               return [f, w];\
              };\
              const port = location.port;\
              const all = [make('srcdoc', '<p>s</p>'),\
                make('src', 'http://b.localhost:' + port + '/child.html'),\
                make('src', 'http://sub.a.localhost:' + port + '/child.html')];\
-             onload = () => all.forEach(f => console.log('later', read(f.contentWindow)));\
+             onload = () => all.forEach(([f, w]) =>\
+               console.log('later', read(w), w === f.contentWindow, kept(w)));\
              </script>",
         ),
         ("/child.html", "<p>child</p>"),
@@ -1105,12 +1108,12 @@ fn a_same_task_reach_of_an_insert_with_a_source_is_refused_until_windows_outlive
     assert_eq!(
         lines,
         [
-            "srcdoc now SecurityError",
-            "src now SecurityError",
-            "src now SecurityError",
-            "later about:srcdoc <p>s</p>",
-            "later SecurityError",
-            "later SecurityError",
+            "srcdoc now about:blank ",
+            "src now about:blank ",
+            "src now about:blank ",
+            "later about:srcdoc <p>s</p> true undefined",
+            "later SecurityError true SecurityError",
+            "later SecurityError true SecurityError",
         ]
     );
 }
@@ -1143,4 +1146,261 @@ fn a_blank_reached_and_removed_in_one_run_leaves_no_realm() {
     let agent = tab.engine.shown.scripts.agent().expect("its agent").clone();
     assert_eq!(agent.realm_count(), 1, "the page's realm alone");
     assert!(!agent.has_made(1));
+}
+
+/// A window a script holds is its frame's across the frame's navigations
+/// (G90 phase 3, HTML's WindowProxy): the global its first document's
+/// realm had answers, once that document is left, as the frame's window
+/// now, of its origin or another's.
+#[test]
+fn a_held_window_follows_its_frame_and_stays_its_message_source() {
+    // The parent holds the window of its frame, which loads a page of its
+    // origin, then another site's, then its own again; the frame's
+    // messages come from that same window each time. As the reference
+    // browser.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=one.html></iframe><script>\
+             const f = document.querySelector('iframe');\
+             let w = null, step = 0;\
+             const read = () => { try { return w.document.title; } catch (e) { return e.name; } };\
+             addEventListener('message', e => console.log('message', e.data,\
+               e.source === w, e.source === f.contentWindow));\
+             f.onload = () => {\
+               step++;\
+               if (w === null) w = f.contentWindow;\
+               console.log('load', step, read(), w === f.contentWindow, w === frames[0]);\
+               if (step === 1) w.location.href = 'two.html';\
+               else if (step === 2) f.src = 'http://b.localhost:' + location.port + '/other.html';\
+               else if (step === 3) f.src = 'three.html';\
+             };\
+             </script>",
+        ),
+        (
+            "/one.html",
+            "<title>one</title><script>parent.postMessage('one', '*')</script>",
+        ),
+        (
+            "/two.html",
+            "<title>two</title><script>parent.postMessage('two', '*')</script>",
+        ),
+        (
+            "/other.html",
+            "<title>other</title><script>parent.postMessage('other', '*')</script>",
+        ),
+        (
+            "/three.html",
+            "<title>three</title><script>parent.postMessage('three', '*')</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, at(&server, "a.localhost", "/page.html"), 8);
+    assert_eq!(
+        lines,
+        [
+            "message one false true",
+            "load 1 one true true",
+            "message two true true",
+            "load 2 two true true",
+            "message other true true",
+            "load 3 SecurityError true true",
+            "message three true true",
+            "load 4 three true true",
+        ]
+    );
+}
+
+#[test]
+fn a_left_documents_realm_runs_nothing_and_its_functions_read_the_frames_document() {
+    // Once its frame went on, nothing of the old document runs: its
+    // timers and its listeners (they write to the parent at once, so that
+    // nothing queued before the navigation is counted). A function of it
+    // a script kept still runs when called, as in the reference browser,
+    // its own globals found; its `document` is the frame's now (a known
+    // deviation: the reference browser's reads the old document).
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=old.html></iframe><script>\
+             var ticks = 0, oldRan = [];\
+             const f = document.querySelector('iframe');\
+             let w = null, readTitle = null, before = 0;\
+             addEventListener('message', e => console.log('message', e.data));\
+             f.onload = () => {\
+               if (w === null) { w = f.contentWindow; readTitle = w.readTitle;\
+                 setTimeout(() => { w.location.href = 'new.html'; }, 20); return; }\
+               before = ticks;\
+               console.log('kept function reads', readTitle());\
+               w.addEventListener('message', e => console.log('listener added through it', e.data));\
+               w.postMessage('hello', '*');\
+               setTimeout(() => console.log('old ran', ticks > 0, ticks - before, oldRan.join()), 60);\
+             };\
+             </script>",
+        ),
+        (
+            "/old.html",
+            "<title>old</title><body><script>\
+             setInterval(() => parent.ticks++, 2);\
+             addEventListener('message', () => parent.oldRan.push('heard'));\
+             function readTitle() { return document.title; }\
+             </script>",
+        ),
+        (
+            "/new.html",
+            "<title>new</title><body><script>\
+             addEventListener('message', e => parent.postMessage('new heard ' + e.data, '*'));\
+             </script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 4);
+    assert_eq!(
+        lines,
+        [
+            "kept function reads new",
+            "listener added through it hello",
+            "message new heard hello",
+            "old ran true 0 ",
+        ]
+    );
+}
+
+#[test]
+fn a_held_window_of_a_frame_gone_to_another_origin_answers_as_its_window() {
+    // What a held window answers once its frame shows another origin's
+    // document: what that origin's window answers (the cross-origin
+    // window's allowlist, `SecurityError` for the rest), as the reference
+    // browser. Known deviations, the held object being the old global:
+    // its own properties stay its own. The old page's own `var` and
+    // `function` globals, of the holder's origin, read as they were (the
+    // reference browser: `SecurityError`); the language's globals
+    // (`JSON`...) stay, so that its functions still work; its own keys
+    // are those, not the allowlist; its prototype is the forwarder, not
+    // null; `location` has no own descriptor. `instanceof Window` is
+    // false, as there.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=mine.html></iframe><script>\
+             const f = document.querySelector('iframe');\
+             let w = null;\
+             const t = g => { try { return String(g()); } catch (e) { return e.name; } };\
+             f.onload = () => {\
+               if (w === null) { w = f.contentWindow;\
+                 f.src = 'http://b.localhost:' + location.port + '/other.html'; return; }\
+               console.log(t(() => 'location' in w), t(() => 'postMessage' in w),\
+                 t(() => 'alert' in w), t(() => w.mine), t(() => 'mine' in w),\
+                 t(() => w.document), t(() => w.alert), t(() => w.closed),\
+                 t(() => w.length), t(() => w.parent === window), t(() => w.top === window));\
+               const names = Object.getOwnPropertyNames(w);\
+               console.log(['mine', 'JSON', 'document', 'alert', 'location', 'postMessage']\
+                   .map(n => n + ':' + names.includes(n)).join(' '),\
+                 t(() => Object.getPrototypeOf(w) === null), t(() => w instanceof Window),\
+                 t(() => Object.getOwnPropertyDescriptor(w, 'location')));\
+             };\
+             </script>",
+        ),
+        ("/mine.html", "<script>var mine = 'own data';</script>"),
+        ("/other.html", "<p>other</p>"),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, at(&server, "a.localhost", "/page.html"), 2);
+    assert_eq!(
+        lines,
+        [
+            "true true SecurityError own data true SecurityError SecurityError false 0 true true",
+            "mine:true JSON:true document:true alert:false location:false postMessage:false \
+             false false undefined",
+        ]
+    );
+}
+
+#[test]
+fn a_held_window_keeps_one_old_realm_however_often_its_frame_navigates() {
+    // Ad and refresh frames reload again and again while their parent
+    // holds their window: the first global, held, keeps its realm's
+    // context and what it could not let go; each realm after goes.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<iframe src=child.html></iframe><script>\
+             const f = document.querySelector('iframe');\
+             let w = null, n = 0;\
+             f.onload = () => {\
+               if (w === null) w = f.contentWindow;\
+               n++;\
+               if (n === 10 || n === 50) console.log('loads', n, w.document.URL.endsWith(n - 1));\
+               if (n < 50) w.location.href = 'child.html?' + n;\
+             };\
+             </script>",
+        ),
+        (
+            "/child.html",
+            "<script>var big = new Array(200000).fill(1).map((x, i) => ({ i }));</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loads 10 true"]);
+    tab.engine.shown.scripts.collect();
+    let agent = tab.engine.shown.scripts.agent().expect("its agent").clone();
+    let (heap_ten, realms_ten) = (tab.engine.shown.scripts.heap(), agent.realm_count());
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["loads 50 true"]);
+    tab.engine.shown.scripts.collect();
+    let (heap_fifty, realms_fifty) = (tab.engine.shown.scripts.heap(), agent.realm_count());
+    assert_eq!(
+        (realms_ten, realms_fifty),
+        (2, 2),
+        "the page's and the frame's"
+    );
+    assert!(
+        heap_fifty < heap_ten + (4 << 20),
+        "the heap grew from {heap_ten} to {heap_fifty} over 40 navigations"
+    );
+}
+
+#[test]
+fn a_held_window_finds_its_frames_reloaded_document() {
+    // A reload leaves its old document too: the parent's window of the
+    // frame posts to the reloaded one, and what the old one posted to
+    // its own frame as it went is not delivered (WPT
+    // postMessage-to-target-not-fully-active-on-reload). As the
+    // reference browser.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<body><script>\
+             window.ran = false;\
+             const s = document.createElement('iframe');\
+             s.src = 'mid.html';\
+             let n = 0;\
+             s.addEventListener('load', () => {\
+               n++;\
+               if (n === 1) s.contentWindow.location.reload();\
+               else s.contentWindow.postMessage('reloaded', '*');\
+             });\
+             addEventListener('message', e => console.log('heard', e.data, window.ran));\
+             document.body.appendChild(s);\
+             </script>",
+        ),
+        (
+            "/mid.html",
+            "<body><script>\
+             addEventListener('unload', () => { if (window[0]) window[0].postMessage('foo', '*'); });\
+             addEventListener('message', () => parent.postMessage('done', '*'));\
+             </script><iframe src=leaf.html></iframe>",
+        ),
+        (
+            "/leaf.html",
+            "<script>addEventListener('message', () => { parent.parent.ran = true; });</script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 1);
+    assert_eq!(lines, ["heard done false"]);
 }

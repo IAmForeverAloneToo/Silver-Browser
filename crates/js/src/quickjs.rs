@@ -453,6 +453,39 @@ pub(crate) fn frame_global<'js, H: ScriptingHost>(
     found.map(|global| global.restore(ctx)).transpose()
 }
 
+/// The function a global left by its frame's navigation forwards by
+/// ([`Task::Navigated`]): given the frame's number, its window as the
+/// realm whose run is under way sees it now (that realm's
+/// `liveWindowFor`), or null with no run. Made apart from the realm's
+/// natives, so that it outlives the realm whose global holds it; it
+/// holds its agent weakly.
+fn current_window_native<'js, H: ScriptingHost + 'static>(
+    ctx: &Ctx<'js>,
+    core: std::rc::Weak<AgentCore<H>>,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, frame: f64| -> rquickjs::Result<Value<'js>> {
+            let null = Value::new_null(ctx.clone());
+            let Some(core) = core.upgrade() else {
+                return Ok(null);
+            };
+            if !(frame >= 0.0 && frame <= f64::from(u32::MAX)) {
+                return Ok(null);
+            }
+            let Some(entry) = core.entry.get() else {
+                return Ok(null);
+            };
+            let Some(entries) = frame_entries(&core.realms, &ctx, entry)? else {
+                return Ok(null);
+            };
+            entries
+                .get::<_, Function<'js>>("liveWindowFor")?
+                .call::<_, Value<'js>>((frame,))
+        },
+    )
+}
+
 /// The bootstrap's entry points of the realm of `frame` in the agent of
 /// `ctx`'s realm, if it has one there (G90).
 pub(crate) fn frame_entries<'js, H: ScriptingHost>(
@@ -1295,6 +1328,15 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("detach")?
                     .call::<_, Value<'_>>(())
             }),
+            Task::Navigated => {
+                let core = Rc::downgrade(&self.agent);
+                self.stepped(&entries, move |ctx, entries| {
+                    let current = current_window_native(ctx, core)?;
+                    entries
+                        .get::<_, Function<'_>>("navigated")?
+                        .call::<_, Value<'_>>((current,))
+                })
+            }
             Task::GuardCode => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("guardCode")?

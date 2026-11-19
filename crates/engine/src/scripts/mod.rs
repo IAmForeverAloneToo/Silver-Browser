@@ -1823,6 +1823,17 @@ impl Scripts {
         std::mem::take(&mut self.stop_navigation)
     }
 
+    /// The `src` and `srcdoc` of its `iframe` as a run reached its blank
+    /// before its frame was made (`blank_frame`); none otherwise.
+    pub(crate) fn reached_source(&self) -> Option<&(Option<String>, Option<String>)> {
+        self.host.reached_source.as_ref()
+    }
+
+    /// Whether `document.open()` ever opened the document.
+    pub(crate) fn was_opened(&self) -> bool {
+        self.host.reopened > 0
+    }
+
     /// Whether `document.open()` left the document open, loading until
     /// `document.close()`.
     pub(crate) fn document_open(&self) -> bool {
@@ -3152,6 +3163,17 @@ impl Scripts {
             && !realm.is_lent()
         {
             let _ = realm.enter(&js::Task::Detach, &mut self.host);
+        }
+    }
+
+    /// Its frame went on to another document and this one goes (G90
+    /// phase 3): its global, if a script of the agent holds it, answers
+    /// as the frame's window from now on, before its realm goes.
+    pub(crate) fn navigated(&mut self) {
+        if let Some(realm) = &mut self.realm
+            && !realm.is_lent()
+        {
+            let _ = realm.enter(&js::Task::Navigated, &mut self.host);
         }
     }
 

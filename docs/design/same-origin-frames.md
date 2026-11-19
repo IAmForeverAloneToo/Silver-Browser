@@ -194,6 +194,86 @@ renderer (another site, where the parent keeps a remote frame, as
 M34). Coming back to the agent's origin makes a new realm in it, and
 the proxy's target is that realm's global again.
 
+**As built (phase 3, 2026-11-19): the old global forwards, no proxy in
+the steady state.** One proxy per frame for every reach was not built.
+QuickJS cannot make a realm's `globalThis` a proxy, so a frame's own
+`window` stays its raw global. Proxies handed to every other realm
+would then break identities that hold today (`w.parent === window` in
+the parent, `parent.frames[0] === window` in the frame), and put every
+same-origin access through traps. So the steady state stays as it
+was: a frame's realm's global is handed out while its document lives.
+What follows the frame is the old global, once its document is left:
+
+- Each realm's `windowFor` keeps, per frame, the first object it
+  handed out: a raw global, held weakly, or the cross-origin window.
+  `contentWindow`, `frames[n]` and `event.source` stay one object in
+  that realm across the frame's navigations while a script holds it.
+- A frame's history keeps no document (`Engine::leave`), so a frame's
+  document left always goes. Before its realm goes, it runs
+  `Task::Navigated`. The bootstrap deletes the global's own properties
+  of the platform and sets its prototype to a forwarding `Proxy`:
+  get, set, has, define, delete, own keys and prototype go to the
+  frame's window now. `document`, an accessor that cannot be deleted,
+  forwards too.
+- "The frame's window now" comes from a function made apart from the
+  realm's natives (`current_window_native`), holding its agent weakly,
+  so it outlives the realm. It is the frame's realm's global if of the
+  agent (made by reach if not yet), else the cross-origin window, both
+  as the realm whose run is under way sees them (`liveWindowFor`). So
+  a refusal names the caller's origin, as Chrome's does. Turning
+  cross-origin and back is checked at each access, and nothing of
+  another agent is handed out raw.
+- A reload leaves its document too (`commit_shown`'s reload, which
+  does not go through `leave`): it runs `Task::Navigated` the same way.
+- A function read through the old global is called on the frame's
+  window when called on the old global (`held.addEventListener(...)`
+  reaches the frame's window): one `Proxy` a function, with an `apply`
+  trap only, so that it constructs and has its `prototype` as the
+  function does.
+- An insert reached in its task whose run navigated its blank
+  (`location.replace`) or opened it (`document.open()`) is not then
+  navigated to its `src`: HTML's navigation of the insertion came
+  first, and the run's replaced or stopped it.
+- Nothing of the old document runs after: its timers, observers and
+  listeners went with its engine's scripts. A function of it a script
+  kept still runs when called, as in Chrome.
+- Memory: a held old global keeps its realm's context and what could
+  not go: the language's globals and the page's own `var`s. That is
+  one old realm per holder per frame, not one per navigation (the
+  first handed out is the one held). A test navigates a held frame 50
+  times: realms and heap after 10 and after 50 are the same.
+
+Known deviations, against Chrome (probed 2026-11-19):
+
+1. After a navigation, the frame's own `window` (its new global) is
+   not the object the parent holds; Chrome has one WindowProxy.
+2. What stays on the held object stays its own. The old page's own
+   `var` and `function` globals read as they were, from a holder of
+   the same origin as that page (the holder had the raw global only
+   because it was of the page's agent): Chrome reads the new
+   document's, or refuses cross-origin. The language's globals
+   (`JSON`, `Array`...) stay so that the old page's functions still
+   called find them, as Chrome's find their realm's. So the held
+   object's own keys are those, not the cross-origin allowlist. Its
+   prototype is the forwarder, where Chrome gives the frame's
+   `Window.prototype`, or null cross-origin. `location` has no own
+   descriptor (Chrome gives the cross-origin accessor's). `has` and
+   reads of anything else answer as the frame's window, and
+   `instanceof Window` is false, both as in Chrome.
+3. A realm that first meets the frame after its navigation gets the
+   new global, so two realms may hold different objects for the
+   frame.
+4. A function of the old page called later reads the frame's current
+   document through `document`; Chrome's reads the old document (its
+   realm's global is the old `Window`). One accessor serves both
+   holder and old function here, and holders reading `w.document` are
+   the common case.
+5. An object of the old document's realm that needs its document or
+   host (a `DOMParser` made from the old window, its nodes) fails once
+   the realm goes ("the realm is gone"); Chrome's keeps working on the
+   old document (WPT DOMParser-parseFromString-url-moretests, "crossing
+   navigation").
+
 ### The event loop
 
 An agent has one event loop. Its documents' tasks (timers, fetches'
@@ -475,13 +555,11 @@ still connected in the reaching document: a host of an empty
 `about:blank` (`html`, `head`, `body`), its page `Page::fetched`
 `about:blank` inheriting the creator and sandboxed by the element's
 flags and the creator's; one whose origin that makes opaque is
-refused. So is one whose element has a `srcdoc`, or a `src` other
-than `about:blank`, until WindowProxy across navigation: its frame
+refused. (One whose element has a `srcdoc` or a `src` was refused too
+at first, until WindowProxy across navigation below: its frame
 navigates after the run, and a window of the blank's realm a script
-kept would go with the blank (the WPT run showed it: kept windows of
-such inserts read "the realm is gone"). Such a reach answers by frame
-number as before, refused in the run (Chrome gives the blank), and
-reaching what came from the next task. Its window is the frame's as its engine will make it (300 by
+kept went with the blank, as the WPT run showed with "the realm is
+gone". It gives the blank since.) Its window is the frame's as its engine will make it (300 by
 150, its frame number, its partition, its readiness `complete`). The
 page is the run's alone: `make_frame` shows its initial blank as
 before, then `Engine::adopt_reached` takes the realm from the agent

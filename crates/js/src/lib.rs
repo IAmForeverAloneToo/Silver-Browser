@@ -560,6 +560,12 @@ pub enum Task {
     /// navigable"): a window of it kept answers as a closed one, with no
     /// parent, top or frame element, before its realm goes (2026-11-19).
     Detach,
+    /// The document's frame went on to another document, which this one
+    /// is not kept for: its global, which scripts of the agent may hold,
+    /// answers from now on as the frame's window does, whatever document
+    /// it shows (HTML's WindowProxy), before its realm goes (G90 phase 3,
+    /// `docs/design/same-origin-frames.md`).
+    Navigated,
     /// A message from the browser to the DevTools panel's page (M36):
     /// `devtools.onmessage` is called with it.
     DevTools(String),
