@@ -582,9 +582,6 @@ struct QuickJsRealm<H: ScriptingHost> {
     rejections: Rc<RefCell<Vec<Rejection>>>,
     /// The bootstrap's entry points, which [`Realm::enter`] calls (M26).
     entries: Entries,
-    /// The natives as made, which a debug build's guard of each calls
-    /// (`dom::guard_natives`); emptied with the entries.
-    guards: dom::Guards,
     /// The errors of the jobs run between an engine dispatch's
     /// listeners, which the next checkpoint reports.
     deferred: Vec<ScriptError>,
@@ -814,7 +811,6 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         let muted = Rc::new(Cell::new(false));
         let budget = core.budget.clone();
         let entries: Entries = Rc::default();
-        let guards: dom::Guards = Rc::default();
         // Module scripts (D61): CSS modules a window's only.
         let module_state: Rc<modules::State> = Rc::default();
         module_state
@@ -850,7 +846,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 limits.secure,
                 &host,
                 &budget,
-                (&entries, &guards),
+                &entries,
                 (&module_state, &core.realms, &core.entry, &core.reach),
             )
             .map(|entries| Persistent::save(&ctx, entries))
@@ -858,10 +854,9 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             .map_err(|e| e.to_string())
         })
         .map_err(|message| {
-            // A realm not made goes without its `Drop`: the natives a
-            // debug build guards go before its context, as there, and
-            // the agent forgets it.
-            guards.borrow_mut().clear();
+            // A realm not made goes without its `Drop`: the agent forgets
+            // it, as there.
+            let _ = LIVE.try_with(|live| live.borrow_mut().remove(&key));
             core.realms.borrow_mut().remove(&key);
             // Grown for it under a run's lock: fitted again before the
             // next run, the lock not held then.
@@ -884,7 +879,6 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         Ok(QuickJsRealm {
             rejections,
             entries,
-            guards,
             deferred: Vec::new(),
             unwind: false,
             host,
@@ -1063,7 +1057,6 @@ impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
         self.rejections.borrow_mut().clear();
         self.modules.clear();
         *self.entries.borrow_mut() = None;
-        self.guards.borrow_mut().clear();
     }
 }
 
@@ -2040,7 +2033,7 @@ fn install<'js, H: ScriptingHost>(
     secure: bool,
     host: &Slot<H>,
     budget: &dom::Budget,
-    (entries, guards): (&Entries, &dom::Guards),
+    entries: &Entries,
     (modules, realms, entry, reach): (&Rc<modules::State>, &Realms<H>, &Entry, &Rc<Reach<H>>),
 ) -> rquickjs::Result<Object<'js>> {
     let global = ctx.globals();
@@ -2130,7 +2123,7 @@ fn install<'js, H: ScriptingHost>(
         kind,
         secure,
         (host, budget),
-        (entries, guards),
+        entries,
         (modules, realms, entry, reach),
         console,
     )

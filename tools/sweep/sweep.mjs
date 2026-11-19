@@ -448,7 +448,14 @@ function commit() {
 
 export async function run(options) {
   const date = new Date().toISOString().slice(0, 10);
-  const out = options.out || path.join(ROOT, "target", "sweep", date);
+  // Beside the repository, its scratch folder's, where the work folder
+  // is; else the repository's own target.
+  const scratch = path.join(ROOT, "..", "silver-work", "scratch");
+  const out =
+    options.out ||
+    (fs.existsSync(scratch)
+      ? path.join(scratch, "sweeps", date)
+      : path.join(ROOT, "target", "sweep", date));
   fs.mkdirSync(out, { recursive: true });
   const silver = silverExe(options.silver);
   if (!silver) throw new Error("no release shell: cargo build --release -p silver-browser");

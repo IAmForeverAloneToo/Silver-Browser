@@ -11,9 +11,6 @@ use rquickjs::{Array, CaughtError, Coerced, Ctx, Exception, Function, Object, Va
 
 use super::modules::{self, Referrer};
 
-/// The natives a debug build guards, kept until the realm drops
-/// ([`guard_natives`]); none in a release build.
-pub(super) type Guards = Rc<std::cell::RefCell<Vec<rquickjs::Persistent<Function<'static>>>>>;
 use super::{Entries, Slot, evaluate, report, thrown, with_host};
 use crate::{
     Answer, Call, CustomCall, DomError, ErrorKind, Handle, MAX_HANDLE, RealmKind, ScriptError,
@@ -1328,7 +1325,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
     kind: &RealmKind,
     secure: bool,
     (host, budget): (&Slot<H>, &Budget),
-    (entries, guards): (&Entries, &Guards),
+    entries: &Entries,
     (state, realms, entry, reach): (
         &Rc<modules::State>,
         &super::Realms<H>,
@@ -1590,9 +1587,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
         )?,
     )?;
     #[cfg(debug_assertions)]
-    guard_natives::<H>(ctx, &natives, guards)?;
-    #[cfg(not(debug_assertions))]
-    let _ = guards;
+    guard_natives(ctx, &natives)?;
     let bootstrap: Function<'js> = super::bytecode::bootstrap(ctx)?;
     bootstrap.call::<_, Object<'js>>((natives, ctx.globals()))
 }
@@ -1603,43 +1598,34 @@ pub(super) fn install<'js, H: ScriptingHost>(
 /// conversion that throws) leaves its exception for whatever runs next
 /// to throw, far from its cause: the fetch native's "not a string" on
 /// MDN, 2026-11-18.
-/// Each native is kept in `guards`, which the realm empties before its
-/// context goes: a value a native's closure held itself would keep the
-/// realm's every object.
+/// The guard is given its native as a bound argument
+/// (`Function.prototype.bind`), so that the native is held in the realm's
+/// heap like any value, collected with it, and called through the guard
+/// after the realm drops as before: a function of a realm dropped that
+/// another realm holds runs the same native as in a release build (G90).
 #[cfg(debug_assertions)]
-fn guard_natives<'js, H: ScriptingHost>(
-    ctx: &Ctx<'js>,
-    natives: &Object<'js>,
-    guards: &Guards,
-) -> rquickjs::Result<()> {
+fn guard_natives<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> rquickjs::Result<()> {
     use rquickjs::function::This;
     let names = natives
         .keys::<String>()
         .collect::<rquickjs::Result<Vec<String>>>()?;
+    let bind: Function<'js> = ctx
+        .globals()
+        .get::<_, Object<'js>>("Function")?
+        .get::<_, Object<'js>>("prototype")?
+        .get("bind")?;
     for name in names {
         let Ok(native) = natives.get::<_, Function<'js>>(name.as_str()) else {
             continue;
         };
-        let at = guards.borrow().len();
-        guards
-            .borrow_mut()
-            .push(rquickjs::Persistent::save(ctx, native));
-        let (named, kept) = (name.clone(), guards.clone());
-        let guarded = Function::new(
+        let named = name.clone();
+        let guard = Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, this: This<Value<'js>>, args: Rest<Value<'js>>| {
-                let native = kept.borrow().get(at).cloned();
-                // The realm was dropped, its natives with it: its function a
-                // realm of its agent still holds answers as a detached
-                // window's (G90), as the native would have.
-                let Some(native) = native else {
-                    return gone_native::<H>(&ctx, &named, &args.0);
-                };
+            move |ctx: Ctx<'js>, native: Function<'js>, args: Rest<Value<'js>>| {
                 // One pending before the call is not this native's: the
                 // stale one QuickJS-ng's parser can leave ([`clear_stale`]).
                 super::clear_stale(&ctx, super::Stale::Native);
-                let native = native.restore(&ctx)?;
-                let result = native.call::<_, Value<'js>>((This(this.0), Rest(args.0)));
+                let result = native.call::<_, Value<'js>>((Rest(args.0),));
                 if result.is_ok() && ctx.has_exception() {
                     let pending = ctx.catch();
                     panic!("the native {named} returned with an exception pending: {pending:?}");
@@ -1648,6 +1634,8 @@ fn guard_natives<'js, H: ScriptingHost>(
             },
         )?
         .with_name(name.as_str())?;
+        let guarded: Function<'js> =
+            bind.call((This(guard), Value::new_undefined(ctx.clone()), native))?;
         natives.set(name.as_str(), guarded)?;
     }
     Ok(())
@@ -2012,29 +2000,6 @@ fn gone<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Value<'js>> {
         return Err(Exception::throw_type(ctx, message));
     }
     Err(super::gone_error(ctx))
-}
-
-/// Debug builds: [`gone`] for the native `name`, whose guard outlived it,
-/// given `args`: a call that needs no document answered.
-#[cfg(debug_assertions)]
-fn gone_native<'js, H: ScriptingHost>(
-    ctx: &Ctx<'js>,
-    name: &str,
-    args: &[Value<'js>],
-) -> rquickjs::Result<Value<'js>> {
-    if let Some(&(_, decode)) = NATIVES.iter().find(|(native, _)| *native == name) {
-        let call = decode(&Args { ctx, values: args })?;
-        if let Some(answer) = H::pure(&call) {
-            return answer
-                .map_or_else(|error| Err(throw(ctx, &error)), |answer| value(ctx, answer));
-        }
-    }
-    match name {
-        // The agent's: what the release build's natives answer for them.
-        "frameWindow" => Ok(Value::new_null(ctx.clone())),
-        "entryFrame" => Ok(Value::new_float(ctx.clone(), -1.0)),
-        _ => gone(ctx, name),
-    }
 }
 
 /// Throws the exception a failed call is: one of ECMAScript's errors,

@@ -256,7 +256,10 @@ What follows the frame is the old global, once its document is left:
   `InvalidStateError`, where Chrome's detached document may still
   answer. A realm dropped is told from a document not lent by the
   thread's live realms (`realm_gone`): only the latter counts in
-  `documentsNotLent`, which stays an alarm.
+  `documentsNotLent`, which stays an alarm. Debug builds' guards of the
+  natives hold each as a bound argument (`Function.prototype.bind`), in
+  the realm's heap, so a gone realm's call runs the same native, and the
+  same code, as in a release build: the tests prove that path.
 - An `iframe`'s `src` or `srcdoc` set to the value it has navigates its
   frame again, as HTML's "process the iframe attributes" does (the DOM
   journals that set for an `iframe` alone).
