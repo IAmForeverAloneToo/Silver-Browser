@@ -52,9 +52,18 @@ pub const OFFLINE_VARIABLE: &str = "SILVER_TEST_OFFLINE";
 pub const OFFLINE_REFUSAL: &str = "SILVER_TEST_OFFLINE: no test's host";
 
 /// Whether this process is a test run kept off the web
-/// ([`OFFLINE_VARIABLE`] is `1`).
+/// ([`OFFLINE_VARIABLE`] is `1`). Debug builds alone, which the tests'
+/// are: a release build never reads the variable, so that none set by
+/// chance takes a user's browser off the web.
+#[cfg(debug_assertions)]
 pub(crate) fn offline_from_env() -> bool {
     std::env::var_os(OFFLINE_VARIABLE).is_some_and(|value| value == "1")
+}
+
+/// A release build is never a test run kept off the web.
+#[cfg(not(debug_assertions))]
+pub(crate) fn offline_from_env() -> bool {
+    false
 }
 
 /// An offline test run's refusal of `what`, a host or an address, said
