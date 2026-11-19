@@ -3988,13 +3988,16 @@ site sweep or the dogfood sessions show a site breaking on it.
   level; the matcher keeps no memo of a list's answer for an element.
   To be fixed with style invalidation and matching, whose acceptance
   gains a fuzz case of matching depth.)
-- An iframe a script inserts and reaches in the same task, before the
-  engine makes its frame, is reached as another origin's window until
-  G90 phase 3 (b)'s `blank_frame` gives it its initial about:blank at
-  once (reached in a later task, as `onload`, it is its own since phase
-  3 (b)): anti-bot scripts such as Kasada (Twitch's reads `TextEncoder`
-  from an about:blank child it made) may still get a SecurityError where
-  Chrome gives the child's own.
+- An iframe a script inserts, reaches and removes in one task reads as
+  open (`closed` false, its `parent`) for the rest of that task; from
+  the next it reads as a removed frame's. Chrome's is closed at once.
+  (Reached in the task that inserts it, it is its initial about:blank
+  since G90 phase 3 (b)'s `blank_frame`, 2026-11-19.)
+- An iframe with a `src` or `srcdoc` that a script inserts is refused
+  (`SecurityError`) when reached in the same task, where Chrome gives
+  its initial about:blank; from the next task it is what came. To lift
+  with WindowProxy across navigation (G90 phase 3), which lets a window
+  of the blank kept by a script follow the frame.
 - A removed frame's window that a script kept answers as Chrome's does
   for `closed` (true), `parent`, `top` and `frameElement` (null) and
   `length` (0), but its `document`, `location` and the rest throw ("the

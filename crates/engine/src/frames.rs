@@ -364,7 +364,7 @@ impl FrameTree {
         &mut self,
         parent: FrameId,
         children: &[(FrameId, NodeId, String, bool)],
-    ) {
+    ) -> Vec<FrameId> {
         for (id, element, name, shadowed) in children {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.element = Some(*element);
@@ -380,7 +380,7 @@ impl FrameTree {
             .filter(|id| self.nodes.get(id).is_some_and(|node| node.reserved))
             .filter(|id| !children.iter().any(|(child, ..)| child == id))
             .collect();
-        for id in reserved {
+        for &id in &reserved {
             self.remove(id);
         }
         // The document's frames alone: a document the history keeps
@@ -388,6 +388,7 @@ impl FrameTree {
         if let Some(node) = self.nodes.get_mut(&parent) {
             node.children = children.iter().map(|(id, ..)| *id).collect();
         }
+        reserved
     }
 
     /// The frame of `parent`'s `element`, made now in the tree when it
@@ -412,6 +413,12 @@ impl FrameTree {
             node.shadowed = shadowed;
         }
         Some(id)
+    }
+
+    /// Whether frame `id` is reserved for an `iframe` a script inserted,
+    /// which no engine has made yet ([`FrameTree::reserve`]).
+    pub(crate) fn is_reserved(&self, id: FrameId) -> bool {
+        self.nodes.get(&id).is_some_and(|node| node.reserved)
     }
 
     /// The frame `parent`'s engine makes for `element`: the number a
@@ -1202,6 +1209,14 @@ impl Engine {
                         continue;
                     };
                     self.shown.frames.insert(node, frame);
+                    // With no `src` or `srcdoc`, its initial `about:blank`
+                    // is its document, and its element hears its `load`
+                    // (HTML's "process the iframe attributes" as it is
+                    // first inserted): a run that reached it made its
+                    // realm in it.
+                    if source == Source::Blank {
+                        continue;
+                    }
                 }
             }
             self.navigate_frame(node, source);
@@ -1223,7 +1238,19 @@ impl Engine {
                 Some((frame.id, node, name, document.root_of(node) != root))
             })
             .collect();
-        lock(&self.frame.tree).set_children(self.frame.id, &children);
+        let unmade = lock(&self.frame.tree).set_children(self.frame.id, &children);
+        // A realm a run made as it reached an `iframe` it inserted, gone
+        // before its frame was made, goes: it would keep its agent. Its
+        // window, if kept, answers as a removed frame's.
+        if let Some(agent) = self.shown.scripts.agent() {
+            for id in unmade {
+                if let Some(mut realm) = agent.take_made(id)
+                    && let Some(mut host) = realm.reclaim()
+                {
+                    let _ = realm.enter(&js::Task::Detach, &mut host);
+                }
+            }
+        }
         let names = children
             .into_iter()
             .filter(|&(.., shadowed)| !shadowed)
@@ -1264,6 +1291,11 @@ impl Engine {
         engine.set_frame_margins(margins);
         let creator = self.shown.page.creator(&self.shown.document);
         engine.show_blank(&creator, true);
+        // A run of this document's that inserted the iframe and reached
+        // its window made its realm and blank then (G90 phase 3 (b)).
+        if let Some(agent) = self.shown.scripts.agent().cloned() {
+            engine.adopt_reached(&agent);
+        }
         Some(Frame {
             id,
             engine,
@@ -1388,6 +1420,42 @@ impl Engine {
         let mut shown = std::mem::replace(&mut self.shown, placeholder);
         self.unload(&mut shown, kept);
         self.shown = shown;
+    }
+
+    /// Takes the realm a run of `agent` made for this frame as it reached
+    /// the frame's `iframe` before the frame was made, and the blank it
+    /// made and changed as the initial `about:blank` shown (G90 phase 3
+    /// (b)): what that run did of it is done as its own run's would be.
+    /// A realm of an agent not its document's goes.
+    fn adopt_reached(&mut self, agent: &js::Agent<crate::scripts::DocumentHost>) {
+        let Some(realm) = agent.take_made(self.frame.id) else {
+            return;
+        };
+        if !self
+            .shown
+            .scripts
+            .agent()
+            .is_some_and(|own| own.same(agent))
+        {
+            return;
+        }
+        let ready = self.ready_state();
+        let shown = &mut self.shown;
+        let mut lent = crate::scripts::Lent {
+            document: &mut shown.document,
+            frames: None,
+            images: Some(&mut shown.images),
+            animations: Some(shown.animations.get_mut()),
+            styled: Some(&mut shown.styled),
+            page: &mut shown.page,
+            parser: None,
+            network: &mut self.network,
+            ready,
+            window: crate::scripts::WindowEnv::default(),
+        };
+        if shown.scripts.adopt_made(&mut lent, realm) {
+            self.scripts_ran();
+        }
     }
 
     /// Shows an `about:blank` of `creator`'s origin: a frame's initial

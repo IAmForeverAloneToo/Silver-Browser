@@ -546,6 +546,105 @@ impl ScriptingHost for DocumentHost {
         (page.is_secure_context(), guarded)
     }
 
+    fn blank_frame(&mut self, frame: u32) -> Option<Self> {
+        // The initial `about:blank` of an `iframe` this run inserted,
+        // whose frame the engine makes after the run (G90 phase 3 (b)):
+        // the frame's number reserved for it, its element still in the
+        // document. Of this document's origin and policies, as HTML's
+        // creator's; a sandbox that makes its origin opaque makes it
+        // another agent's, whose window the run does not reach.
+        let env = self.window.frames.clone()?;
+        let (element, partition) = {
+            let tree = crate::frames::lock(&env.tree);
+            if !tree.is_reserved(frame) {
+                return None;
+            }
+            // As its engine's `frame_partition` will say.
+            let partition = tree.partition(frame, &tree.top_origin());
+            (tree.element_of(env.id, frame)?, partition)
+        };
+        if !self.document.contains(element)
+            || self.document.tag(element) != Some("iframe")
+            || !self.connected(element)
+        {
+            return None;
+        }
+        let page = self.page.as_mut()?;
+        // One with a source navigates away from its blank after the run,
+        // and a window of the blank's realm kept would go with it until
+        // windows outlive their documents (WindowProxy across navigation):
+        // it is reached by its frame's number, as before, meanwhile.
+        if self.document.attr(element, "srcdoc").is_some() {
+            return None;
+        }
+        if let Some(src) = self
+            .document
+            .attr(element, "src")
+            .filter(|src| !src.is_empty())
+            && page
+                .resolve(&self.document, src)
+                .is_none_or(|url| url.as_str() != "about:blank")
+        {
+            return None;
+        }
+        let element_sandbox = self
+            .document
+            .attr(element, "sandbox")
+            .map_or(Sandbox::NONE, Sandbox::parse);
+        let sandbox = element_sandbox.with(page.sandbox());
+        if sandbox.has(Sandbox::ORIGIN) {
+            return None;
+        }
+        let creator = page.creator(&self.document);
+        let url = net::Url::parse("about:blank").ok()?;
+        // Its page is the run's alone: the frame's engine makes its own as
+        // it makes the frame, and takes the document from this one.
+        let page = Page::fetched(0, url, encoding::UTF_8, None, creator.address_space)
+            .inheriting(&creator)
+            .with_sandbox(sandbox);
+        let document = crate::parsed_or_empty("");
+        let window = super::WindowEnv {
+            viewport: (300, 150),
+            frame_margins: style::FrameMargins::default(),
+            scroll: Arc::default(),
+            styles_pending: None,
+            scrolling: false,
+            scrolled: Arc::default(),
+            snaps: Arc::default(),
+            target: None,
+            moved: Arc::default(),
+            focused: false,
+            drawables: None,
+            frames: Some(crate::frames::FramesEnv {
+                tree: env.tree.clone(),
+                id: frame,
+                wake: env.wake.clone(),
+            }),
+            partition: Some(partition),
+            history: super::HistoryView {
+                length: 1,
+                initial: true,
+                ..super::HistoryView::default()
+            },
+            ..self.window.clone()
+        };
+        Some(DocumentHost {
+            lent_version: document.version(),
+            document,
+            page: Some(page),
+            cookies: self.cookies.clone(),
+            client: self.client.clone(),
+            ready: ReadyState::Complete,
+            window,
+            frames: vec![Frame {
+                element: None,
+                external: false,
+                written: false,
+            }],
+            ..DocumentHost::default()
+        })
+    }
+
     fn console_record(&mut self, record: js::ConsoleRecord) {
         let entry = ConsoleEntry::recorded(super::ConsoleSource::Console, record);
         self.outputs.console.push(entry);
@@ -4517,6 +4616,12 @@ impl DocumentHost {
         self.calls != calls
             || self.document.version() != self.lent_version
             || !self.outputs.console.is_empty()
+    }
+
+    /// Drops the page it holds, which a give-back then leaves the
+    /// engine's: a reached blank's, made for its run alone.
+    pub(crate) fn forget_page(&mut self) {
+        self.page = None;
     }
 
     pub(crate) fn give_back(&mut self, lent: &mut Lent<'_>) -> Outputs {

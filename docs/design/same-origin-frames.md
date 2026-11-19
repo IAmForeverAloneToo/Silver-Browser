@@ -469,6 +469,36 @@ reference-count test; a bootstrap out of heap leaves no realm and the
 frame reachable later; re-entry as above; the frames fuzz target's
 rate within its floor.
 
+**Landed: `blank_frame` (2026-11-19).** `DocumentHost::blank_frame`
+answers for a frame number the tree holds reserved for an `iframe`
+still connected in the reaching document: a host of an empty
+`about:blank` (`html`, `head`, `body`), its page `Page::fetched`
+`about:blank` inheriting the creator and sandboxed by the element's
+flags and the creator's; one whose origin that makes opaque is
+refused. So is one whose element has a `srcdoc`, or a `src` other
+than `about:blank`, until WindowProxy across navigation: its frame
+navigates after the run, and a window of the blank's realm a script
+kept would go with the blank (the WPT run showed it: kept windows of
+such inserts read "the realm is gone"). Such a reach answers by frame
+number as before, refused in the run (Chrome gives the blank), and
+reaching what came from the next task. Its window is the frame's as its engine will make it (300 by
+150, its frame number, its partition, its readiness `complete`). The
+page is the run's alone: `make_frame` shows its initial blank as
+before, then `Engine::adopt_reached` takes the realm from the agent
+(`Scripts::adopt_made`), and the host's document, not its page, goes
+into what is shown. A frame with neither `src` nor `srcdoc` is no
+longer navigated to a second blank after its first: its initial one
+stays its document, as HTML's "process the iframe attributes" on first
+insertion, and its element hears that one's `load`. A realm made so
+whose `iframe` left before its frame was made goes when its reserved
+number does (`sync_frame_children`), told `Task::Detach` first, so a
+window of it kept reads as a removed frame's from the next task; in
+the run that removed it, it reads as open (Chrome's is closed at
+once: a known deviation). Chrome, probed again: under `script-src
+'self' 'unsafe-inline'`, an inline script appended to the reached
+blank runs, as its policy allows; `eval` and `new Function` throw
+`EvalError`, and the blank's listeners hear both violations.
+
 ## 4. Not in this note
 
 - `Origin-Agent-Cluster: ?0` and `document.domain` widening an agent

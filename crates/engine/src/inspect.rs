@@ -220,6 +220,7 @@ impl Engine {
         let (alive, heap) = self.removed_frames_alive();
         total.removed_frames_alive = alive;
         total.removed_frames_heap = heap;
+        total.removed_remote_frames_alive = self.removed_remote_frames_alive();
         total.json(layouts, &frames)
     }
 
@@ -247,6 +248,21 @@ impl Engine {
             heap += more_heap;
         }
         (alive, heap)
+    }
+
+    /// The frames of this engine's tree shown by another renderer whose
+    /// `iframe` is out of its document while the frame is still held:
+    /// the browser not told, that renderer keeps its document running.
+    pub(crate) fn removed_remote_frames_alive(&self) -> u32 {
+        let document = &self.shown.document;
+        self.shown
+            .frames
+            .iter()
+            .map(|(&node, frame)| match &frame.remote {
+                Some(_) => u32::from(!document.is_connected(node)),
+                None => frame.engine.removed_remote_frames_alive(),
+            })
+            .sum()
     }
 
     /// Queues `message` for the panel, unless too many wait.

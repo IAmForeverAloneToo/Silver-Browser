@@ -899,3 +899,248 @@ fn serde_json_string(text: &str) -> String {
     out.push('"');
     out
 }
+
+/// The `iframe` a script inserts and reaches in the same task, before its
+/// parent's engine makes its frame: its initial `about:blank`, made then
+/// with its realm (G90 phase 3 (b), `blank_frame`), is the frame's.
+#[test]
+fn a_same_task_reach_of_an_inserted_iframe_gives_its_blank() {
+    // The way of anti-bot scripts (Kasada's reads `TextEncoder` of a
+    // child it makes) and of `iframe-nosrc`. As the reference browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         const f = document.createElement('iframe');\
+         document.documentElement.appendChild(f);\
+         const w = f.contentWindow;\
+         console.log('A', typeof w.document, w.document.readyState, w.location.href,\
+           w.document.URL, String(w.document.body), new w.TextEncoder().encode('ab').length,\
+           w.document === f.contentDocument, w.origin === origin, w.document.characterSet,\
+           w.innerWidth, w.innerHeight);\
+         w.document.body.innerHTML = '<p id=p style=\"height:20px;margin:0\">made</p>';\
+         const made = w.document.getElementById('p');\
+         setTimeout(() => console.log('A later', frames[0] === w, f.contentWindow === w,\
+           f.contentDocument.getElementById('p').textContent,\
+           f.contentDocument.getElementById('p').offsetHeight,\
+           made === f.contentDocument.getElementById('p'), w.document.readyState), 50);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 2);
+    assert_eq!(
+        lines,
+        [
+            "A object complete about:blank about:blank [object HTMLBodyElement] 2 true true \
+             UTF-8 300 150",
+            "A later true true made 20 true complete",
+        ]
+    );
+}
+
+#[test]
+fn a_same_task_reach_of_a_sandboxed_insert_is_refused_unless_of_its_origin() {
+    // A sandbox without `allow-same-origin` makes the blank's origin
+    // opaque: another agent's, reached as its window. As the reference
+    // browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         const b = document.createElement('iframe');\
+         b.sandbox = 'allow-scripts';\
+         document.documentElement.appendChild(b);\
+         console.log('B', b.contentDocument === null,\
+           (() => { try { return typeof b.contentWindow.document; } catch (e) { return e.name; } })(),\
+           b.contentWindow !== null);\
+         const s = document.createElement('iframe');\
+         s.sandbox = 'allow-same-origin';\
+         document.documentElement.appendChild(s);\
+         console.log('B2', s.contentDocument !== null,\
+           (() => { try { return s.contentWindow.document.URL; } catch (e) { return e.name; } })());\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 2);
+    assert_eq!(lines, ["B true SecurityError true", "B2 true about:blank"]);
+}
+
+#[test]
+fn a_hundred_inserts_reached_in_one_run_are_each_their_blank() {
+    // Each blank's realm made in the run, the agent's heap fitted to them
+    // as they come: every read succeeds, and the agent lives on. As the
+    // reference browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         let ok = 0;\
+         for (let i = 0; i < 100; i++) {\
+           const g = document.createElement('iframe');\
+           g.style.display = 'none';\
+           document.documentElement.appendChild(g);\
+           try { if (g.contentWindow.document.body) ok++; }\
+           catch (e) { console.log(e.name, e.message); }\
+         }\
+         console.log('C', ok);\
+         setTimeout(() => {\
+           let later = 0;\
+           for (let i = 0; i < frames.length; i++) {\
+             try { if (frames[i].document.body) later++; } catch (e) { console.log(e.name); }\
+           }\
+           console.log('C later', frames.length, later, frames[99].eval('1 + 1'));\
+         }, 50);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 2);
+    assert_eq!(lines, ["C 100", "C later 100 100 2"]);
+}
+
+#[test]
+fn a_reached_blank_inserts_and_reaches_its_own_iframe() {
+    // The blank's run is its parent's: an `iframe` inserted in the blank
+    // is reached as its own blank too, and is the blank's frame once
+    // both are made. As the reference browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         const f = document.createElement('iframe');\
+         document.documentElement.appendChild(f);\
+         const w = f.contentWindow;\
+         const inner = w.document.createElement('iframe');\
+         w.document.body.appendChild(inner);\
+         console.log('E', typeof inner.contentWindow.document, inner.contentWindow.parent === w,\
+           w.length);\
+         setTimeout(() => console.log('E later', w.length, w.frames[0] === inner.contentWindow,\
+           typeof w.frames[0].document), 50);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 2);
+    assert_eq!(lines, ["E object true 1", "E later 1 true object"]);
+}
+
+#[test]
+fn a_same_task_reach_keeps_its_creators_policy() {
+    // The blank's policy is its creator's from its first reach: code from
+    // strings throws `EvalError` and is told to the blank's listeners, an
+    // inline script its policy allows runs. As the reference browser.
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<meta http-equiv=Content-Security-Policy content=\"script-src 'self' 'unsafe-inline'\">\
+         <script>\
+         const f = document.createElement('iframe');\
+         document.documentElement.appendChild(f);\
+         const w = f.contentWindow;\
+         w.addEventListener('securitypolicyviolation',\
+           e => console.log('frame heard', e.violatedDirective));\
+         try { w.eval('1'); console.log('FAIL'); } catch (e) { console.log('eval', e.name); }\
+         try { new w.Function('return 1'); console.log('FAIL'); }\
+         catch (e) { console.log('Function', e.name); }\
+         const s = w.document.createElement('script');\
+         s.textContent = 'parent.console.log(`inline ran`)';\
+         w.document.documentElement.appendChild(s);\
+         console.log('after inline');\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 8);
+    // The run's lines in order; the frame's console and the events queued
+    // for it after, in an order of their own.
+    assert_eq!(
+        lines[..4],
+        [
+            "eval EvalError",
+            "Function EvalError",
+            "inline ran",
+            "after inline"
+        ]
+    );
+    let mut later = lines[4..].to_vec();
+    later.sort();
+    assert_eq!(
+        later,
+        [
+            "[frame about:blank] Content-Security-Policy refused a string as code: \
+             script-src 'self' 'unsafe-inline'",
+            "[frame about:blank] Content-Security-Policy refused a string as code: \
+             script-src 'self' 'unsafe-inline'",
+            "frame heard script-src",
+            "frame heard script-src",
+        ]
+    );
+}
+
+#[test]
+fn a_same_task_reach_of_an_insert_with_a_source_is_refused_until_windows_outlive_documents() {
+    // A `src` or `srcdoc` is navigated to after the run. The reference
+    // browser's run reaches the initial blank, and a later task what
+    // came through the same window. Here the run is refused (a known
+    // deviation): a window of the blank's realm kept would go with the
+    // blank until WindowProxy across navigation. A later task reaches
+    // what came, another origin's document (of another site or of a
+    // subdomain of the page's) refused, as the reference browser.
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<script>\
+             const read = w => { try { return w.document.URL + ' ' + w.document.body.innerHTML; }\
+               catch (e) { return e.name; } };\
+             const make = (attr, value) => {\
+               const f = document.createElement('iframe');\
+               f[attr] = value;\
+               document.documentElement.appendChild(f);\
+               console.log(attr, 'now', read(f.contentWindow));\
+               return f;\
+             };\
+             const port = location.port;\
+             const all = [make('srcdoc', '<p>s</p>'),\
+               make('src', 'http://b.localhost:' + port + '/child.html'),\
+               make('src', 'http://sub.a.localhost:' + port + '/child.html')];\
+             onload = () => all.forEach(f => console.log('later', read(f.contentWindow)));\
+             </script>",
+        ),
+        ("/child.html", "<p>child</p>"),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, at(&server, "a.localhost", "/page.html"), 6);
+    assert_eq!(
+        lines,
+        [
+            "srcdoc now SecurityError",
+            "src now SecurityError",
+            "src now SecurityError",
+            "later about:srcdoc <p>s</p>",
+            "later SecurityError",
+            "later SecurityError",
+        ]
+    );
+}
+
+#[test]
+fn a_blank_reached_and_removed_in_one_run_leaves_no_realm() {
+    // Its realm made as it was reached goes with its element, before any
+    // frame was made of it: it would keep its agent. Its window kept
+    // answers as a removed frame's from the next task, as the reference
+    // browser's; in the run that removed it, as open still (a known
+    // deviation: the reference browser's is closed at once).
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<script>\
+         const r = document.createElement('iframe');\
+         document.documentElement.appendChild(r);\
+         const rw = r.contentWindow;\
+         rw.document.body.textContent = 'gone';\
+         r.remove();\
+         console.log('D', rw.closed);\
+         setTimeout(() => console.log('D later', rw.closed, rw.parent === null, rw.length), 50);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 2);
+    assert_eq!(lines, ["D false", "D later true true 0"]);
+    let agent = tab.engine.shown.scripts.agent().expect("its agent").clone();
+    assert_eq!(agent.realm_count(), 1, "the page's realm alone");
+    assert!(!agent.has_made(1));
+}

@@ -11571,7 +11571,7 @@ fn refusal(url: &Url, source: Option<&str>, made: bool, framed: bool) -> Option<
 
 /// The document HTML `source` parses to, or an empty one if the parser
 /// refuses it.
-fn parsed_or_empty(source: &str) -> Document {
+pub(crate) fn parsed_or_empty(source: &str) -> Document {
     html::parse_document(source)
         .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
 }

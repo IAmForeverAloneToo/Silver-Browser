@@ -59,6 +59,17 @@ const CALLS: &[&str] = &[
     "setTimeout(() => parent.postMessage('later', '*'), 5)",
     "top.frames.length",
     "document.body.style.width = '20px'",
+    // Reaches in the task that inserts the iframe (G90 phase 3 (b)'s
+    // `blank_frame`): the blank changed, an iframe in it, and one removed
+    // in the same task with its window kept.
+    "var n = document.createElement('iframe'); document.body.append(n); \
+     n.contentWindow.document.body.append('x'); new n.contentWindow.TextEncoder()",
+    "var m = document.createElement('iframe'); document.body.append(m); \
+     m.contentWindow.document.body.innerHTML = '<iframe></iframe>'; m.contentWindow.frames.length",
+    "var r = document.createElement('iframe'); document.body.append(r); \
+     var rw = r.contentWindow; rw.document.body.append('y'); r.remove(); \
+     setTimeout(() => rw.closed && parent.postMessage(rw.length, '*'), 3)",
+    "frames.length && frames[0].document && frames[0].document.body.append('reached')",
 ];
 
 struct Input<'a>(&'a [u8]);

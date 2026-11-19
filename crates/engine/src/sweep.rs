@@ -51,6 +51,8 @@ pub(crate) struct SweepCounts {
     /// The heap of their agents that they alone hold (an agent their
     /// parent's documents share is not theirs to count).
     pub(crate) removed_frames_heap: u64,
+    /// Such frames of another renderer's, whose memory is that one's.
+    pub(crate) removed_remote_frames_alive: u32,
     /// `document.domain` set, which widens nothing here (each origin its
     /// own agent; the reference browser's default too).
     pub(crate) document_domain_sets: u32,
@@ -216,6 +218,10 @@ impl SweepCounts {
             (
                 "removedFramesHeap",
                 Json::from(self.removed_frames_heap as f64),
+            ),
+            (
+                "removedRemoteFramesAlive",
+                Json::from(f64::from(self.removed_remote_frames_alive)),
             ),
             (
                 "documentsNotLent",

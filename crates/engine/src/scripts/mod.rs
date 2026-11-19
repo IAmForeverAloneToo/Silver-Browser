@@ -2478,6 +2478,37 @@ impl Scripts {
         touched
     }
 
+    /// Takes `realm` as its own: the realm a run of its agent made for its
+    /// frame's initial `about:blank` as the run reached the `iframe` it
+    /// inserted, before the frame was made (G90 phase 3 (b)). The blank
+    /// that run made and changed is the document from now on; the page
+    /// stays the engine's, of the same origin and policies.
+    pub(crate) fn adopt_made(
+        &mut self,
+        lent: &mut Lent<'_>,
+        mut realm: Box<dyn js::Realm<DocumentHost>>,
+    ) -> bool {
+        if self.realm.is_some() || self.unborn_lent {
+            return false;
+        }
+        let Some(mut host) = realm.reclaim() else {
+            return false;
+        };
+        host.forget_page();
+        self.realm = Some(realm);
+        self.code_guarded = !lent.page.csp(lent.document).eval_violations("").is_empty();
+        if let Some(agent) = &self.agent {
+            let count = u32::try_from(agent.realm_count()).unwrap_or(u32::MAX);
+            let most = &mut host.sweep.most_realms_in_agent;
+            *most = (*most).max(count);
+        }
+        self.host = host;
+        let mut outputs = self.host.give_back(lent);
+        self.outputs_before(lent, &mut outputs);
+        self.outputs_after(lent, outputs);
+        true
+    }
+
     /// Whether it has a realm its document may be lent to, not lent now
     /// ([`Scripts::lend_out`]): what a lending asks before it gathers
     /// what it lends.
