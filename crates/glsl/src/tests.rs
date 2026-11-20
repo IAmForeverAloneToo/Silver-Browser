@@ -563,3 +563,26 @@ fn a_float_of_constants_that_is_no_finite_number_is_left_to_the_run() {
         void main() { color = vec4(0.0 / 0.0); }\n";
     program(vs, fs, &webgl2());
 }
+
+/// Nested function-like macros whose arguments are used again in their
+/// bodies make far more tokens than any output: the expansion is bounded
+/// as a whole, its arguments' expansions and substitutions too, and the
+/// shader refused (2026-11-20, the nightly fuzz run's glsl_parse: 2 GB
+/// from 3 KB of source).
+#[test]
+fn a_macro_expansion_too_large_is_refused_not_made() {
+    // A(C(1)) substitutes fifteen copies of C(1)'s 759,375 tokens, and
+    // DROP outputs none of them.
+    let source = "#define A(x) x x x x x x x x x x x x x x x\n\
+                  #define C(x) A(A(A(A(A(x)))))\n\
+                  #define DROP(x)\n\
+                  void main() { DROP(A(C(1))); }\n";
+    let began = std::time::Instant::now();
+    let said = error(source, Stage::Vertex, &webgl1());
+    assert!(said.contains("macro expansion too large"), "{said}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(20));
+    // A macro used as a shader uses one expands as ever.
+    let source = "#define TWICE(x) ((x) + (x))\n\
+                  void main() { gl_Position = vec4(TWICE(TWICE(0.25))); }\n";
+    compile(source, Stage::Vertex, &webgl1()).expect("it compiles");
+}

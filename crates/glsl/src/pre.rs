@@ -142,6 +142,7 @@ pub fn preprocess(source: &str, stage: Stage, options: &Options) -> Result<Prepr
         warnings: String::new(),
         options,
         line_offset: 0,
+        spent: std::cell::Cell::new(0),
     };
     // `#version`, when there is one, before anything but space.
     let mut first = true;
@@ -293,7 +294,18 @@ struct Pre<'a> {
     options: &'a Options,
     /// What `#line` moved the numbers by.
     line_offset: i64,
+    /// The tokens its macros' expansion has made, the whole shader's:
+    /// [`MAX_EXPANSION`] at most.
+    spent: std::cell::Cell<usize>,
 }
+
+/// The most tokens the expansion of a shader's macros may make, its
+/// arguments' and their substitutions' with its output's (2026-11-20:
+/// the nightly fuzz run's glsl_parse found nested function-like macros,
+/// each argument used in its body again, take 2 GB in 3 KB of source;
+/// the limit had held the output alone, not the arguments expanded on
+/// the way). Four times what a shader may have after preprocessing.
+const MAX_EXPANSION: usize = 4 * MAX_GLSL_TOKENS;
 
 impl Pre<'_> {
     /// The line `physical` is numbered.
@@ -561,6 +573,17 @@ impl Pre<'_> {
         Ok(())
     }
 
+    /// Counts `made` tokens more of the expansion, refusing the shader
+    /// past [`MAX_EXPANSION`].
+    fn spend(&self, made: usize, line: u32) -> Result<(), Error> {
+        let spent = self.spent.get().saturating_add(made);
+        self.spent.set(spent);
+        if spent > MAX_EXPANSION {
+            return Err(Error::new(line, "", "macro expansion too large"));
+        }
+        Ok(())
+    }
+
     /// `tokens`, their macros expanded, pushed to `out`: `disabled` the
     /// macros being expanded, not expanded again.
     fn expand(
@@ -580,6 +603,7 @@ impl Pre<'_> {
             if out.len() > MAX_GLSL_TOKENS {
                 return Err(Error::new(token.line, "", "the shader has too many tokens"));
             }
+            self.spend(1, token.line)?;
             let Some(name) = token.ident() else {
                 out.push(token.clone());
                 i += 1;
@@ -704,6 +728,16 @@ impl Pre<'_> {
                         self.expand(arg, disabled, &mut e, depth + 1)?;
                         expanded_args.push(e);
                     }
+                    // What the substitution makes, counted before it is.
+                    let size = body
+                        .iter()
+                        .map(|t| {
+                            t.ident()
+                                .and_then(|n| params.iter().position(|p| p == n))
+                                .map_or(1, |k| expanded_args[k].len())
+                        })
+                        .fold(0usize, usize::saturating_add);
+                    self.spend(size, line)?;
                     let mut substituted = Vec::new();
                     for t in &body {
                         match t.ident().and_then(|n| params.iter().position(|p| p == n)) {
