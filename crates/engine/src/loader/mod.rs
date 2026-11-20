@@ -75,6 +75,7 @@ pub(crate) mod pool;
 pub(crate) mod preload;
 #[cfg(test)]
 mod preload_tests;
+pub(crate) mod quality;
 #[cfg(test)]
 mod referrer_tests;
 #[cfg(test)]
@@ -422,6 +423,9 @@ impl Cookies for Mutex<Jar> {
 /// on, and those in flight, each of which can be aborted.
 pub(crate) struct Network {
     pool: Pool<Fetched>,
+    /// The network's quality its fetches measured (2026-11-20,
+    /// `navigator.connection`).
+    quality: Arc<Mutex<quality::Quality>>,
     /// The documents that are service workers' clients, by their pages,
     /// each its client's id (M39), and the service workers their requests
     /// go to first; none in a renderer, whose requests the browser gives
@@ -492,6 +496,7 @@ impl Network {
     pub(crate) fn new() -> Network {
         Network {
             pool: Pool::new(MAX_FETCH_THREADS),
+            quality: Arc::default(),
             service_clients: HashMap::new(),
             intercept: None,
             reserved: HashMap::new(),
@@ -923,18 +928,59 @@ impl Network {
                 abort: request.abort.clone(),
             },
         );
+        let quality = self.quality.clone();
         self.pool.run(id, move |report| {
+            let started = std::time::Instant::now();
             if !streamed {
-                return Fetched::Done(client.fetch(&request));
+                let result = client.fetch(&request);
+                // Its head's time is not known apart: a small one is a
+                // round trip, a big one's throughput is over the whole.
+                if let Ok(response) = &result
+                    && public(response)
+                {
+                    let whole = started.elapsed();
+                    let head = if response.body.len() >= 32 * 1024 {
+                        std::time::Duration::ZERO
+                    } else {
+                        whole
+                    };
+                    quality
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .measured(head, whole, response.body.len());
+                }
+                return Fetched::Done(result);
             }
-            Fetched::Done(
-                client.fetch_streaming(&request, &mut |delivery| match delivery {
-                    Delivery::Head(response) => report.send(Fetched::Head(response.clone())),
-                    Delivery::Body(bytes) => report.send(Fetched::Body(bytes.to_vec())),
-                }),
-            )
+            let mut head = None;
+            let mut bytes = 0;
+            let result = client.fetch_streaming(&request, &mut |delivery| match delivery {
+                Delivery::Head(response) => {
+                    head = Some((started.elapsed(), public(response)));
+                    report.send(Fetched::Head(response.clone()))
+                }
+                Delivery::Body(body) => {
+                    bytes += body.len();
+                    report.send(Fetched::Body(body.to_vec()))
+                }
+            });
+            if let Some((at, true)) = head {
+                quality
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .measured(at, started.elapsed(), bytes);
+            }
+            Fetched::Done(result)
         });
         id
+    }
+
+    /// The network's quality its fetches measured: the round trip in
+    /// milliseconds and the throughput in megabits a second.
+    pub(crate) fn quality(&self) -> (f64, f64) {
+        self.quality
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .estimate()
     }
 
     /// Starts fetching a media element's resource (M40), `request`, for
@@ -1418,4 +1464,11 @@ impl Incoming {
             Incoming::Waiting { page, .. } | Incoming::Parsing { page, .. } => page.id(),
         }
     }
+}
+
+/// Whether `response` came from a server of the public network, which
+/// the network's quality is measured by (as the reference's estimate
+/// leaves local and loopback servers out), not from a cache.
+fn public(response: &net::Response) -> bool {
+    response.protocol.is_some() && response.address_space == Some(net::AddressSpace::Public)
 }

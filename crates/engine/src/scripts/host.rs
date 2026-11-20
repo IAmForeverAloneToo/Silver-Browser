@@ -3010,6 +3010,21 @@ impl DocumentHost {
                 self.push_state(state.into(), url, replace)?;
                 Ok(Answer::Nothing)
             }
+            Call::Connection => {
+                let host = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.url())
+                    .and_then(|url| url.host().map(ToString::to_string))
+                    .unwrap_or_default();
+                let (kind, rtt, downlink) =
+                    crate::loader::quality::told(&host, self.window.connection);
+                Ok(Answer::Strings(vec![
+                    kind.to_owned(),
+                    rtt.to_string(),
+                    downlink.to_string(),
+                ]))
+            }
             Call::UserAgentData => Ok(if self.window.compat {
                 Answer::String(user_agent_data())
             } else {

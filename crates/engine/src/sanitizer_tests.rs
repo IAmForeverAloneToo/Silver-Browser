@@ -82,9 +82,10 @@ fn the_default_configuration_and_the_safe_baseline_are_the_reference_browsers() 
              \"http://www.w3.org/1999/xhtml\",\"attributes\":[]}]",
             "[\"base\",\"embed\",\"frame\",\"iframe\",\"object\",\"script\",\"script\",\"use\"]",
             "139onabortonwheel",
-            "constructor,get,allowElement,removeElement,replaceElementWithChildren,\
+            // `constructor` last, as the reference's interfaces list it.
+            "get,allowElement,removeElement,replaceElementWithChildren,\
              allowAttribute,removeAttribute,setComments,setDataAttributes,removeUnsafe,\
-             allowProcessingInstruction,removeProcessingInstruction",
+             allowProcessingInstruction,removeProcessingInstruction,constructor",
         ]
     );
 }

@@ -422,6 +422,10 @@ pub(crate) struct WindowEnv {
     pub(crate) clock: Option<crate::Clock>,
     /// Whether the window is hidden: minimized or covered (M26).
     pub(crate) hidden: bool,
+    /// The network's quality its fetches measured: the round trip in
+    /// milliseconds and the throughput in megabits a second (2026-11-20,
+    /// `navigator.connection`).
+    pub(crate) connection: (f64, f64),
     /// Whether the document a frame's window is shown in changed since it
     /// last gave the frame its size (the frame-size gap): what the sweep
     /// counts a read of a size Chrome would have laid out anew by.

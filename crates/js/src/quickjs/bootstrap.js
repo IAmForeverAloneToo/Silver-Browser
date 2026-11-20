@@ -662,6 +662,11 @@
       desc.enumerable = true;
       defineProperty(proto, keys[i], desc);
     }
+    // `constructor` last, as the reference's interfaces list it.
+    const constructor = getOwnPropertyDescriptor(proto, "constructor");
+    if (constructor !== undefined && ReflectDeleteProperty(proto, "constructor")) {
+      defineProperty(proto, "constructor", constructor);
+    }
     defineProperty(proto, toStringTag, { value: name, configurable: true });
     madeInterfaces[name] = cls;
     if (!exposedHere(WORKER_INTERFACES[name])) {
@@ -21476,6 +21481,44 @@
   expose(NavigatorUAData, "NavigatorUAData");
   let userAgentData = null;
 
+  // ---- Network Information (2026-11-20) -----------------------------------
+
+  // `navigator.connection`: what the engine's fetches measured of the
+  // network, as the reference tells a page of its host (the host's
+  // values, rounded and moved by its factor). Its members in the
+  // reference's order: `onchange` first.
+  class NetworkInformation extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("NetworkInformation");
+      }
+      super();
+    }
+  }
+  defineHandlers(NetworkInformation.prototype, ["change"], false);
+  {
+    const told = () => native.connection();
+    const members = {
+      get effectiveType() {
+        return told()[0];
+      },
+      get rtt() {
+        return $Number(told()[1]);
+      },
+      get downlink() {
+        return $Number(told()[2]);
+      },
+      get saveData() {
+        return false;
+      },
+    };
+    for (const name of ["effectiveType", "rtt", "downlink", "saveData"]) {
+      defineProperty(NetworkInformation.prototype, name, getOwnPropertyDescriptor(members, name));
+    }
+  }
+  expose(NetworkInformation, "NetworkInformation");
+  let connection = null;
+
   class Navigator {
     constructor(key) {
       if (key !== KEY) {
@@ -21557,6 +21600,13 @@
 
     get webdriver() {
       return false;
+    }
+
+    get connection() {
+      if (connection === null) {
+        connection = new NetworkInformation(KEY);
+      }
+      return connection;
     }
 
     // In the Chrome compatibility mode alone; the Gecko mode has none.

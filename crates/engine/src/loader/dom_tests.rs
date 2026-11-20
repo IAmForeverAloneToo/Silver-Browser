@@ -3579,3 +3579,26 @@ fn window_chrome_is_the_references_of_the_navigation_as_it_went() {
         ]
     );
 }
+
+/// `navigator.connection` (2026-11-20, Network Information) as the
+/// reference gives it: one object, its members in the reference's order;
+/// with no public response measured (the test's server is loopback, which
+/// the estimate leaves out), the reference's estimate of a profile that
+/// measured none, as told to the host: 4g, 100 ms, 1.6 Mbps moved by the
+/// host's factor to a step of 0.05.
+#[test]
+fn navigator_connection_tells_the_estimate_as_the_reference_does() {
+    let console = logged(
+        "<script>const c = navigator.connection;\
+         console.log(String(c), c === navigator.connection, c instanceof EventTarget,\
+           Object.getOwnPropertyNames(Object.getPrototypeOf(c)).join(), c.onchange,\
+           c.effectiveType, c.rtt, c.saveData,\
+           c.downlink >= 1.4 && c.downlink <= 1.8 && Math.round(c.downlink * 1000) % 50 === 0);\
+         </script>",
+    );
+    assert_eq!(
+        console,
+        ["[object NetworkInformation] true true \
+          onchange,effectiveType,rtt,downlink,saveData,constructor null 4g 100 false true"]
+    );
+}

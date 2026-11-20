@@ -923,6 +923,10 @@ pub enum Call {
     /// What `navigator` reports (D12): its user agent string, its
     /// platform, and its compatibility mode, `gecko` or `chrome`.
     NavigatorInfo,
+    /// `navigator.connection`'s values (2026-11-20, Network Information):
+    /// the effective type, the round trip and the throughput, as told to
+    /// the document's host.
+    Connection,
     /// `navigator.userAgentData`'s values (2026-11-20, User-Agent Client
     /// Hints), as JSON: every hint, the bindings giving those asked for;
     /// none in the Gecko mode.

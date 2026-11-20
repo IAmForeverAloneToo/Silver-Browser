@@ -2890,6 +2890,7 @@ impl Engine {
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
+            connection: self.network.quality(),
             owner_moved: self.owner_version.is_some() && self.owner_version != self.owner_pushed,
             fonts_loading: self.fonts_loading(),
             fonts_unsettled: self.fonts_unsettled(),
