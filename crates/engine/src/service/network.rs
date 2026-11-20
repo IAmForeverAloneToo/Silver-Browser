@@ -1051,6 +1051,7 @@ fn renderer_head(response: &Response) -> Response {
         address_space: response.address_space,
         response_type: response.response_type,
         cors_exposed: response.cors_exposed.clone(),
+        protocol: response.protocol,
     };
     head.headers.delete(b"Set-Cookie");
     head.headers.delete(b"Set-Cookie2");

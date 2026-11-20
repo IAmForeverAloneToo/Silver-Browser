@@ -322,6 +322,7 @@ pub(crate) fn given(head: &Json, body: Vec<u8>) -> Option<Response> {
         address_space: None,
         response_type,
         cors_exposed: Vec::new(),
+        protocol: None,
     })
 }
 

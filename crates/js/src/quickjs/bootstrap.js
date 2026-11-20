@@ -32378,10 +32378,12 @@
   // the time origin, -1 for those not yet come): its type (0 navigate,
   // 1 reload, 2 back_forward), its response's status, then the response's
   // start and end, the document interactive, DOMContentLoaded's start and
-  // end, the document complete, load's start and end.
+  // end, the document complete, load's start and end; then the HTTP
+  // version its response came over (0 none, 1 HTTP/1.0, 2 HTTP/1.1, 3
+  // HTTP/2) and its first frame.
   let navigationTimes = null;
   function navigationTime(index) {
-    if (navigationTimes === null || navigationTimes[9] < 0) {
+    if (navigationTimes === null || navigationTimes[9] < 0 || navigationTimes[11] < 0) {
       navigationTimes = native.navigationTiming();
     }
     return navigationTimes[index];
@@ -32392,6 +32394,71 @@
     return time < 0 ? 0 : time;
   }
   const NAVIGATION_TYPES = ["navigate", "reload", "back_forward"];
+  // The ALPN names of the HTTP versions, as the reference gives them.
+  const NEXT_HOP = ["", "http/1.0", "http/1.1", "h2"];
+
+  // ---- window.chrome (2026-11-20) ------------------------------------------
+
+  // What the reference gives an ordinary page (probed, Chrome 157): an
+  // own, writable, enumerable `chrome`, its `loadTimes()` and `csi()` of
+  // the navigation's real times, and `app`, no app installed. Not
+  // `runtime`, which extensions bring.
+  function makeChrome() {
+    const epoch = () => native.timeOrigin();
+    const at = (index) => {
+      const time = navigationTime(index);
+      return time < 0 ? 0 : epoch() + time;
+    };
+    const seconds = (ms) => ms === 0 ? 0 : MathRound(ms) / 1000;
+    const protocol = () => navigationTime(10);
+    const secure = () => StringSlice(location.href, 0, 6) === "https:";
+    const loadTimes = [function () {
+      const version = protocol();
+      const named = NEXT_HOP[version] || "unknown";
+      const negotiated = version === 3 || (version === 2 && secure());
+      return {
+        requestTime: seconds(epoch()),
+        startLoadTime: seconds(epoch()),
+        commitLoadTime: seconds(at(2)),
+        finishDocumentLoadTime: seconds(at(8)),
+        finishLoadTime: seconds(at(9)),
+        firstPaintTime: seconds(at(11)),
+        firstPaintAfterLoadTime: 0,
+        navigationType: ["Other", "Reload", "BackForward"][navigationTime(0)] || "Other",
+        wasFetchedViaSpdy: version === 3,
+        wasNpnNegotiated: negotiated,
+        npnNegotiatedProtocol: negotiated ? named : "unknown",
+        wasAlternateProtocolAvailable: false,
+        connectionInfo: named,
+      };
+    }][0];
+    const csi = [function () {
+      return {
+        startE: MathRound(epoch()),
+        onloadT: MathRound(at(8)),
+        pageT: native.now(),
+        tran: 15,
+      };
+    }][0];
+    const app = {
+      isInstalled: false,
+      getDetails: [function () { return null; }][0],
+      getIsInstalled: [function () { return false; }][0],
+      installState: [function (callback) {
+        if (typeof callback === "function") {
+          queueMicrotask(() => callback("not_installed"));
+        }
+      }][0],
+      runningState: [function () { return "cannot_run"; }][0],
+      InstallState: { DISABLED: "disabled", INSTALLED: "installed", NOT_INSTALLED: "not_installed" },
+      RunningState: { CANNOT_RUN: "cannot_run", READY_TO_RUN: "ready_to_run", RUNNING: "running" },
+    };
+    for (const name of ["getDetails", "getIsInstalled", "runningState"]) {
+      defineProperty(app[name], "length", { value: 0, configurable: true });
+    }
+    defineProperty(app.installState, "length", { value: 0, configurable: true });
+    return { loadTimes, csi, app };
+  }
 
   // A PerformanceTiming attribute's value: milliseconds since the Unix
   // epoch, 0 for a time not come (or not kept: unload and redirects).
@@ -32607,7 +32674,7 @@
     }
 
     get nextHopProtocol() {
-      return "";
+      return NEXT_HOP[navigationTime(10)] || "";
     }
 
     get renderBlockingStatus() {
@@ -34324,6 +34391,18 @@
     }
     wrap(global, "getComputedStyle", "window.getComputedStyle");
     wrap(global, "matchMedia", "window.matchMedia");
+  }
+
+  // A window's `chrome` (2026-11-20), as the reference's ordinary page has.
+  if (native.realmKind === "window") {
+    defineProperty(global, "chrome", {
+      value: makeChrome(),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    // The bindings', not a page's state (`navigated`).
+    MapSet(bindingGlobals, "chrome", true);
   }
 
   return {

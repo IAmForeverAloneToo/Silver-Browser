@@ -1547,6 +1547,7 @@ impl Engine {
             address_space: None,
             response_type: net::ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: None,
         };
         let id = self.new_page_id();
         self.navigation = Some(Navigation {

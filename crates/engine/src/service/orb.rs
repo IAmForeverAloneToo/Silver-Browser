@@ -395,6 +395,7 @@ mod tests {
             address_space: None,
             response_type: net::ResponseType::Opaque,
             cors_exposed: Vec::new(),
+            protocol: None,
         }
     }
 

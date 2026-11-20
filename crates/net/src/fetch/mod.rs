@@ -511,6 +511,10 @@ pub struct Response {
     /// The header names a CORS response exposes beyond the safelisted
     /// ones (Fetch's CORS-exposed header-name list).
     pub cors_exposed: Vec<Vec<u8>>,
+    /// The HTTP version it came over, from the network: none from the
+    /// cache, a file, `data:` or `about:` (2026-11-20, what
+    /// `nextHopProtocol` and `chrome.loadTimes()` tell).
+    pub protocol: Option<crate::http::Version>,
 }
 
 /// What a script may see of a response (Fetch 2.2.6's filtered
@@ -1081,6 +1085,7 @@ impl Client {
                     address_space: Some(received.address_space),
                     response_type: ResponseType::Basic,
                     cors_exposed: Vec::new(),
+                    protocol: Some(response.version),
                 })
             }
             other => Err(NetworkError::BadScheme(other.to_owned())),
@@ -1155,6 +1160,7 @@ impl Client {
             address_space: stored.address_space,
             response_type: ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: None,
         })
     }
 
@@ -1878,6 +1884,7 @@ impl transport::ResponseStream for Streaming<'_, '_> {
             address_space: Some(space),
             response_type: ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: self.protocol,
         };
         // A redirect, or a broken one, is the fetch's to follow or fail.
         if !matches!(location(&response, self.url), Ok(None)) {
@@ -2107,6 +2114,7 @@ pub fn blob(request: &Request, blob: Option<(&[u8], &str)>) -> Result<Response, 
         address_space: None,
         response_type: ResponseType::Basic,
         cors_exposed: Vec::new(),
+        protocol: None,
     };
     let Some(range) = request.headers.get(b"Range") else {
         response
@@ -2154,6 +2162,7 @@ fn basic(url: &Url, mime_type: MimeType, body: Vec<u8>) -> Response {
         address_space: None,
         response_type: ResponseType::Basic,
         cors_exposed: Vec::new(),
+        protocol: None,
     }
 }
 

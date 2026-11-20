@@ -74,6 +74,7 @@ impl Engine {
             address_space: None,
             response_type: net::ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: None,
         };
         self.document_head(id, head.clone());
         self.document_body(id, body.as_bytes());

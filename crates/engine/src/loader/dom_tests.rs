@@ -3533,3 +3533,49 @@ fn user_agent_data_answers_as_the_client_hints_say() {
         ]
     );
 }
+
+/// `window.chrome` as the reference gives an ordinary page (2026-11-20,
+/// probed in Chrome 157): `loadTimes()` and `csi()` of the navigation's
+/// own times and protocol, `app` with no app installed; and
+/// `nextHopProtocol` the response's HTTP version.
+#[test]
+fn window_chrome_is_the_references_of_the_navigation_as_it_went() {
+    static PAGE: &str = "<script>onload = () => setTimeout(() => {\
+           const d = Object.getOwnPropertyDescriptor(window, 'chrome');\
+           console.log(Object.keys(chrome).join(), d.enumerable, d.writable, String(chrome.loadTimes),\
+             chrome.loadTimes.name === '', chrome.loadTimes.length);\
+           const t = chrome.loadTimes();\
+           console.log(Object.keys(t).join());\
+           console.log(t.connectionInfo, t.npnNegotiatedProtocol, t.wasNpnNegotiated, t.wasFetchedViaSpdy,\
+             t.navigationType, t.firstPaintAfterLoadTime, t.wasAlternateProtocolAvailable,\
+             t.requestTime === Math.round(performance.timeOrigin) / 1000,\
+             t.commitLoadTime >= t.requestTime, t.finishLoadTime >= t.commitLoadTime);\
+           const c = chrome.csi();\
+           console.log(Object.keys(c).join(), c.tran, c.startE === Math.round(performance.timeOrigin),\
+             c.onloadT >= c.startE, typeof c.pageT);\
+           const a = chrome.app;\
+           console.log(Object.keys(a).join(), a.isInstalled, a.getDetails(), a.getIsInstalled(),\
+             a.runningState(), a.installState(), JSON.stringify(a.InstallState));\
+           console.log(performance.getEntriesByType('navigation')[0].nextHopProtocol);\
+         }, 50);</script>";
+    let server = serve(|path| (path == "/page.html").then(|| html(PAGE)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let console = tab.run_until(|lines| lines.len() >= 6);
+    assert_eq!(
+        console,
+        [
+            "loadTimes,csi,app true true function () { [native code] } true 0",
+            "requestTime,startLoadTime,commitLoadTime,finishDocumentLoadTime,finishLoadTime,\
+             firstPaintTime,firstPaintAfterLoadTime,navigationType,wasFetchedViaSpdy,\
+             wasNpnNegotiated,npnNegotiatedProtocol,wasAlternateProtocolAvailable,connectionInfo",
+            "http/1.1 unknown false false Other 0 false true true true",
+            "startE,onloadT,pageT,tran 15 true true number",
+            "isInstalled,getDetails,getIsInstalled,installState,runningState,InstallState,RunningState \
+             false null false cannot_run undefined \
+             {\"DISABLED\":\"disabled\",\"INSTALLED\":\"installed\",\"NOT_INSTALLED\":\"not_installed\"}",
+            "http/1.1",
+        ]
+    );
+}

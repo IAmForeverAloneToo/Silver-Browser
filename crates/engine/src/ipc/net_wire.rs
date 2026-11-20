@@ -440,6 +440,12 @@ impl Head<'_> {
         for name in &response.cors_exposed {
             out.bytes(name);
         }
+        out.u8(match response.protocol {
+            None => 0,
+            Some(net::http::Version::Http10) => 1,
+            Some(net::http::Version::Http11) => 2,
+            Some(net::http::Version::Http2) => 3,
+        });
     }
 }
 
@@ -464,6 +470,13 @@ pub fn decode_head(input: &mut Decoder<'_>) -> Result<Response, Malformed> {
                 names.push(input.bytes()?.to_vec());
             }
             names
+        },
+        protocol: match input.u8()? {
+            0 => None,
+            1 => Some(net::http::Version::Http10),
+            2 => Some(net::http::Version::Http11),
+            3 => Some(net::http::Version::Http2),
+            _ => return Err(Malformed::Invalid("protocol")),
         },
     })
 }

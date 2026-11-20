@@ -2564,6 +2564,7 @@ impl Engine {
             address_space: None,
             response_type: net::ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: None,
         };
         let id = self.new_page_id();
         self.navigation = Some(Navigation {
@@ -7333,6 +7334,7 @@ impl Engine {
                 Handling::Push | Handling::Replace => 0,
             };
             timing.status = response.status;
+            timing.protocol = response.protocol;
             timing.response_start = Some(now);
             navigation.incoming = Incoming::Parsing {
                 page: Box::new(page),
@@ -9744,6 +9746,11 @@ impl Engine {
     /// Draws a frame and times its stages, overrunning past `budget`.
     fn draw(&mut self, width: u32, height: u32, budget: Duration) -> &[u8] {
         let start = Instant::now();
+        // The document's first frame (2026-11-20, `chrome.loadTimes()`).
+        if self.shown.scripts.navigation_timing().first_paint.is_none() {
+            let now = self.now();
+            self.shown.scripts.navigation_timing().first_paint = Some(now);
+        }
         let wanted = self.frame_wanted_by();
         if wanted == 0 {
             self.frame_causes[FRAME_CAUSES.len()] += 1;

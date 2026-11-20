@@ -44,6 +44,7 @@ pub(super) fn fetch(url: &Url, limit: usize) -> Result<Response, NetworkError> {
         address_space: Some(AddressSpace::Loopback),
         response_type: super::ResponseType::Basic,
         cors_exposed: Vec::new(),
+        protocol: None,
     })
 }
 

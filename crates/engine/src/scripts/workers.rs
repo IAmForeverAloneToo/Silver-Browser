@@ -1860,6 +1860,7 @@ impl WorkerHost {
             address_space: None,
             response_type: net::ResponseType::Basic,
             cors_exposed: Vec::new(),
+            protocol: None,
         };
         self.modules.arrived_at(url.to_string(), Ok(response));
         let mut scan = |url: &str, text: &str| realm.module_requests(url, text).ok();

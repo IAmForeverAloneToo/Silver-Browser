@@ -487,6 +487,10 @@ pub(crate) struct NavigationTiming {
     pub(crate) complete: Option<Duration>,
     pub(crate) load_start: Option<Duration>,
     pub(crate) load_end: Option<Duration>,
+    /// The HTTP version its response came over (2026-11-20), and when
+    /// its first frame was drawn.
+    pub(crate) protocol: Option<net::http::Version>,
+    pub(crate) first_paint: Option<Duration>,
 }
 
 impl NavigationTiming {
@@ -509,6 +513,13 @@ impl NavigationTiming {
             since(self.complete),
             since(self.load_start),
             since(self.load_end),
+            match self.protocol {
+                None => 0.0,
+                Some(net::http::Version::Http10) => 1.0,
+                Some(net::http::Version::Http11) => 2.0,
+                Some(net::http::Version::Http2) => 3.0,
+            },
+            since(self.first_paint),
         ]
     }
 }
@@ -4387,6 +4398,7 @@ mod tests {
             address_space: None,
             response_type,
             cors_exposed: Vec::new(),
+            protocol: None,
         };
         let muted = |response_type| {
             script_source(&response(response_type), encoding::UTF_8)
