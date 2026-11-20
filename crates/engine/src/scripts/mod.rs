@@ -1031,8 +1031,11 @@ type Others = Option<(js::Agent<DocumentHost>, usize)>;
 fn lend_others(agent: Option<&js::Agent<DocumentHost>>, lent: &mut Lent<'_>) -> Others {
     let agent = agent.filter(|agent| agent.shared())?;
     let frames = lent.frames.as_deref_mut()?;
+    // A frame another renderer shows is not this one's: the document left
+    // here is no one's to reach (G90, 2026-11-20).
     let count = frames
         .values_mut()
+        .filter(|frame| frame.remote.is_none())
         .map(|frame| frame.engine.lend_around(None, std::slice::from_ref(agent)))
         .sum();
     Some((agent.clone(), count))
@@ -1047,7 +1050,7 @@ fn take_others_back(others: Others, lent: &mut Lent<'_>) {
         return;
     }
     if let Some(frames) = lent.frames.as_deref_mut() {
-        for frame in frames.values_mut() {
+        for frame in frames.values_mut().filter(|frame| frame.remote.is_none()) {
             frame
                 .engine
                 .take_back_around(None, std::slice::from_ref(&agent));
@@ -3201,6 +3204,17 @@ impl Scripts {
             && !realm.is_lent()
         {
             let _ = realm.enter(&js::Task::Navigated(blank), &mut self.host);
+        }
+    }
+
+    /// Its frame is shown by another renderer from now on (M34, G90,
+    /// 2026-11-20): its global, if a script of the agent holds it,
+    /// answers as the frame's window, another origin's, and its realm
+    /// goes, not kept unnamed, so that nothing reaches this document.
+    pub(crate) fn retire(&mut self) {
+        self.navigated(false);
+        if self.realm.as_ref().is_some_and(|realm| !realm.is_lent()) {
+            self.halt();
         }
     }
 

@@ -603,6 +603,29 @@ once: a known deviation). Chrome, probed again: under `script-src
 blank runs, as its policy allows; `eval` and `new Function` throw
 `EvalError`, and the blank's listeners hear both violations.
 
+### Phase 3 closed: data:, blob:, javascript: and frames gone elsewhere (2026-11-20)
+
+Probed in Chrome 157 and held by tests: a `data:` frame is opaque, an
+agent of its own, refused both ways; a `blob:` frame of its parent's
+making is of its origin and reached as itself, and one another origin
+made is that origin's (Chrome refuses to load another site's blob URL
+at all, its blob URL partitioning; this version loads it as its
+creator's, which gives nothing wider); a `javascript:` URL runs in the
+frame's realm, never its parent's, and only for a document of the
+frame's document's origin (HTML's "navigate": another origin's does
+nothing, as Chrome's).
+
+A frame another renderer shows (M34) was still reached here: the
+parent's run lent its frames' documents to the agent (`lend_others`)
+without the remote ones left out, so a reach made a realm for the
+`about:blank` the frame had left here, and a `javascript:` URL set into
+it ran there. No other site's data was in reach, the remote document
+being in its own process, but the boundary is G90's. Now a remote
+frame is not lent, a `javascript:` URL into one runs nowhere, and as a
+frame goes to another renderer the realm of the document left here
+goes (`Scripts::retire`): a window of it a script kept answers as the
+frame's, another origin's.
+
 ### The frame-size gap: a frame's size is its box as asked (2026-11-20)
 
 Before: a frame's engine started at 300 by 150 and took its size only

@@ -119,6 +119,9 @@ fn server() -> TestServer {
                  onload = () => console.log('load ' + loads);</script>"
             ),
             "/same" => "<p>same</p>".to_owned(),
+            "/reached" => format!(
+                "<iframe id=f src='http://b.localhost:{port}/still'></iframe>                 <script>const f = document.getElementById('f');                  addEventListener('message', e => console.log('parent got', e.data));                  f.onload = () => {{                    let r; try {{ r = typeof f.contentWindow.document; }} catch (e) {{ r = e.name; }}                    console.log('reach', r, f.contentDocument === null);                    f.src = 'javascript:void(parent.postMessage(\"ran \" + (window === top), \"*\"))';                    setTimeout(() => console.log('after'), 300); }};</script>"
+            ),
             "/margined" => format!(
                 "<body style='margin: 0; background: #fed'>                 <iframe src='http://b.localhost:{port}/bare' marginwidth=0 marginheight=0                  style='border: 0; width: 200px; height: 100px'></iframe>"
             ),
@@ -465,4 +468,29 @@ fn a_renderer_of_a_site_in_the_history_stays() {
         waited.elapsed() > Duration::from_millis(800)
     });
     assert!(tab.renderers().iter().any(|(number, _)| *number == first));
+}
+
+/// A frame of another site is shown by its own renderer, and its parent's
+/// handle on it is another origin's window (G90, 2026-11-20): its
+/// document refused (SecurityError, `contentDocument` null), and a
+/// `javascript:` URL set into it runs nowhere, as Chrome's refuses it.
+/// The frame's initial `about:blank` left behind here answers nothing.
+#[test]
+fn a_frame_of_another_renderer_is_another_origins_window_to_its_parent() {
+    let server = server();
+    let mut tab = tab();
+    tab.frame_at(SIZE.0, SIZE.1, FrameTime::at(Duration::ZERO));
+    tab.navigate(url(&server, "a.localhost", "/reached"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the reach", |_, lines| {
+        lines.iter().any(|line| line == "after")
+    });
+    assert!(
+        lines.contains(&"reach SecurityError true".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.starts_with("parent got ran")),
+        "{lines:?}"
+    );
 }

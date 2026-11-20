@@ -1732,3 +1732,156 @@ fn a_frame_of_another_origin_reads_the_size_its_parents_last_layout_gave() {
         "{answer:?}"
     );
 }
+
+/// Which agent a `data:`, `blob:` or `javascript:` frame lands in (G90
+/// phase 3, probed in Chrome 157, 2026-11-20): a `data:` frame is opaque,
+/// another agent's both ways; a `blob:` frame of the parent's making is
+/// of its origin, reached as itself; a `javascript:` URL runs in the
+/// frame's realm, never its parent's, and a string it gives is the
+/// frame's document from then, its URL kept.
+#[test]
+fn data_blob_and_javascript_frames_land_where_the_reference_puts_them() {
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        r#"<body><script>
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const said = [];
+addEventListener('message', e => said.push(e.origin + '|' + e.data));
+const frame = src => new Promise(resolve => {
+  const f = document.createElement('iframe');
+  f.onload = () => resolve(f);
+  f.src = src;
+  document.body.appendChild(f);
+});
+const reach = f => { let r; try { r = typeof f.contentWindow.document; } catch (e) { r = e.name; }
+  return 'contentDocument ' + (f.contentDocument === null) + ' document ' + r; };
+(async () => {
+  const d = await frame('data:text/html,<script>parent.postMessage(self.origin + " " + (function(){ try { return typeof parent.document; } catch (e) { return e.name; } })(), "*")</scr' + 'ipt>');
+  await wait(100);
+  console.log('data', reach(d), said.join());
+  said.length = 0;
+  const blob = new Blob(['<script>parent.postMessage(self.origin + " " + typeof parent.document, "*")</scr' + 'ipt><p id=p>blob</p>'], { type: 'text/html' });
+  const b = await frame(URL.createObjectURL(blob));
+  await wait(100);
+  console.log('blob', reach(b), b.contentDocument.getElementById('p').textContent, said.join() === location.origin + '|' + location.origin + ' object');
+  const s = await frame('about:blank');
+  s.src = 'javascript:void(window.ranHere = (window === top ? "top" : "frame"))';
+  await wait(100);
+  console.log('javascript', s.contentWindow.ranHere, window.ranHere);
+  const t = await frame('about:blank');
+  t.src = 'javascript:"<p id=q>made</p>"';
+  await wait(100);
+  console.log('javascript string', t.contentDocument.getElementById('q').textContent, t.contentWindow.location.href);
+})();
+</script>"#,
+    )];
+    let server = sites(PAGES);
+    let lines = run(&server, server.url("/page.html"), 4);
+    assert_eq!(
+        lines,
+        [
+            "data contentDocument true document SecurityError null|null SecurityError",
+            "blob contentDocument false document object blob true",
+            "javascript frame undefined",
+            "javascript string made about:blank",
+        ]
+    );
+}
+
+/// The negative cases (G90 phase 3, as Chrome 157): a `javascript:` URL
+/// set into a frame of another origin runs nowhere; a `blob:` frame
+/// another origin made is that origin's, not its parent's.
+#[test]
+fn another_origins_frame_runs_no_javascript_url_and_its_blob_is_its_own() {
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            r#"<body><script>
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const said = [];
+addEventListener('message', e => said.push(String(e.data)));
+const f = document.createElement('iframe');
+f.src = 'http://b.localhost:' + location.port + '/child.html';
+document.body.appendChild(f);
+(async () => {
+  // Its document of another origin in place first: the initial blank
+  // before it is its parent's origin, where a javascript: URL runs.
+  for (let i = 0; i < 500 && !said.includes('ready'); i++) await wait(20);
+  if (!said.includes('ready')) { console.log('the frame never came'); return; }
+  said.length = 0;
+  f.src = 'javascript:void(parent.postMessage("ran", "*"))';
+  await wait(200);
+  console.log('javascript into another origin', said.join() || 'nothing');
+  said.length = 0;
+  f.contentWindow.postMessage('make-blob', '*');
+  for (let i = 0; i < 500 && !said.some(s => s.startsWith('blob:')); i++) await wait(20);
+  const url = said.find(s => s.startsWith('blob:'));
+  if (url === undefined) { console.log('no blob URL came'); return; }
+  said.length = 0;
+  const g = document.createElement('iframe');
+  g.src = url;
+  document.body.appendChild(g);
+  await wait(300);
+  let r; try { r = typeof g.contentWindow.document; } catch (e) { r = e.name; }
+  console.log('foreign blob', g.contentDocument === null, r);
+})();
+</script>"#,
+        ),
+        (
+            "/child.html",
+            r#"<script>
+addEventListener('message', e => {
+  if (e.data === 'make-blob') parent.postMessage(URL.createObjectURL(new Blob(['<p>b</p>'], { type: 'text/html' })), '*');
+});
+parent.postMessage('ready', '*');
+</script>"#,
+        ),
+    ];
+    let server = sites(PAGES);
+    let lines = run(&server, at(&server, "a.localhost", "/page.html"), 2);
+    assert_eq!(
+        lines,
+        [
+            "javascript into another origin nothing",
+            "foreign blob true SecurityError",
+        ]
+    );
+}
+
+/// A frame its parent reached and holds a window of, then shown by
+/// another renderer (G90, 2026-11-20): the window held answers as
+/// another origin's, the frame's document is refused, and the realm of
+/// the document left here goes, not kept unnamed.
+#[test]
+fn a_frame_gone_to_another_renderer_leaves_no_realm_here() {
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        r#"<body><iframe id=f srcdoc="<p>here</p>"></iframe><script>
+const f = document.getElementById('f');
+onload = () => {
+  window.held = f.contentWindow;
+  held.mark = 1;
+  console.log('held', held.document.body.textContent, held.mark);
+  setTimeout(() => {
+    let r; try { r = typeof held.document; } catch (e) { r = e.name; }
+    console.log('after', r, f.contentDocument === null);
+  }, 300);
+};
+</script>"#,
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["held here 1"]);
+    let agent = tab.engine.shown.scripts.agent().expect("an agent").clone();
+    assert_eq!(agent.realm_count(), 2);
+    // The browser says another renderer shows the frame now.
+    let node = *tab.engine.shown.frames.keys().next().expect("a frame");
+    let key = tab.engine.shown.frames[&node].engine.frame.key;
+    assert!(tab.engine.mark_remote(key));
+    assert_eq!(agent.realm_count(), 1, "the realm left here goes");
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["after SecurityError true"]);
+}

@@ -1406,6 +1406,18 @@ impl Engine {
             }
             source => source,
         };
+        // A frame another renderer shows is another site's: a
+        // `javascript:` URL into it runs nowhere, not in the document left
+        // here (G90, 2026-11-20).
+        if self
+            .shown
+            .frames
+            .get(&node)
+            .is_some_and(|frame| frame.remote.is_some())
+            && matches!(&source, Source::Url(url) if url.scheme() == "javascript")
+        {
+            return;
+        }
         self.with_frame(node, |engine| match source {
             Source::Blank => engine.show_blank(&creator, false),
             Source::Srcdoc(text) => engine.show_srcdoc(text, creator),
@@ -1575,13 +1587,32 @@ impl Engine {
             self.navigate_to_fragment(url, Handling::Push, None);
             return;
         }
-        self.cancel_navigation();
         if url.scheme() == "javascript" {
+            // Only a document of its own origin runs a `javascript:` URL in
+            // the frame's (HTML's "navigate": another origin's does
+            // nothing, as Chrome refuses it, and its navigation on the way
+            // goes on). The frame's document is the one parsing on its
+            // way, whose scripts run already, if there is one (2026-11-20).
+            let active = match &self.navigation {
+                Some(Navigation {
+                    incoming: Incoming::Parsing { page, .. },
+                    ..
+                }) => page.origin(),
+                _ => self.shown.page.origin(),
+            };
+            let own = initiator
+                .as_ref()
+                .is_some_and(|initiator| &initiator.origin == active);
+            if !own {
+                return;
+            }
+            self.cancel_navigation();
             if self.scripts_run() {
                 self.run_javascript_url(&url);
             }
             return;
         }
+        self.cancel_navigation();
         if url.scheme() == "about" {
             let error = crate::LoadError::Network(net::NetworkError::BadScheme("about".to_owned()));
             let shown = self.made(crate::pages::error(&url, &error), Some(error));
@@ -2146,8 +2177,10 @@ impl Engine {
                 frame.drawn = None;
                 // Its document here, the initial `about:blank`, is no
                 // longer the frame's: no realm of its agent reaches it as
-                // the frame's window (G90).
+                // the frame's window, and its own realm goes, a window of
+                // it a script kept answering as the frame's (G90).
                 frame.engine.shown.scripts.leave_frame();
+                frame.engine.shown.scripts.retire();
                 lock(&tree).set_remote(frame.id, key);
                 self.changed = true;
                 return true;
