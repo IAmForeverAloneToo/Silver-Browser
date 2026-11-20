@@ -458,7 +458,7 @@ fn a_scripts_uncaught_exception_fires_the_error_event_first() {
     assert_eq!(
         seen,
         Completion::String(
-            "Uncaught Error: plain@3 Uncaught TypeError: cannot read property 'x' of null@1 \
+            "Uncaught Error: plain@3 Uncaught TypeError: Cannot read properties of null (reading 'x')@1 \
              Script error.@0"
                 .to_owned()
         )

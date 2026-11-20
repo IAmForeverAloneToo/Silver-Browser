@@ -2032,16 +2032,33 @@ fn exception_error(exception: &Exception<'_>, url: &str) -> ScriptError {
     }
 }
 
-/// The URL, line and column of a stack's first frame:
-/// `    at f (url:line:column)` or `    at url:line:column`. The URL may
-/// hold spaces and parentheses, as a `data:` URL's may: the place is
-/// what follows the name's ` (`.
-fn first_frame(stack: &str) -> Option<(String, u32, u32)> {
-    let frame = stack.lines().next()?.trim().strip_prefix("at ")?;
-    let place = match frame.strip_suffix(')') {
-        Some(called) => &called[called.find(" (")? + 2..],
-        None => frame,
+/// A stack's line as the bootstrap writes it, the reference's way
+/// (2026-11-20): its function and its place, `url:line:column`, if it
+/// is a frame's. `at f (url:line:column)` or `at url:line:column`; the
+/// URL may hold spaces and parentheses, as a `data:` URL's may: the
+/// place is what follows the name's ` (`. Code from a string's, `at f
+/// (eval at g (url:line:column), <anonymous>:line:column)`, is at its
+/// own place, after the last `, `.
+fn frame_of(line: &str) -> Option<(&str, &str)> {
+    let frame = line.trim().strip_prefix("at ")?;
+    let (function, place) = match frame.strip_suffix(')') {
+        Some(called) => {
+            let at = called.find(" (")?;
+            (&called[..at], &called[at + 2..])
+        }
+        None => ("", frame),
     };
+    let place = match place.strip_prefix("eval at ") {
+        Some(origin) => &origin[origin.rfind(", ")? + 2..],
+        None => place,
+    };
+    Some((function, place))
+}
+
+/// The URL, line and column of a stack's first frame (its heading, the
+/// error's name and message, passed over).
+fn first_frame(stack: &str) -> Option<(String, u32, u32)> {
+    let (_, place) = stack.lines().find_map(frame_of)?;
     let mut parts = place.rsplitn(3, ':');
     let column = parts.next()?.parse().ok()?;
     let line = parts.next()?.parse().ok()?;
@@ -2059,15 +2076,8 @@ pub(crate) fn parse_stack(stack: &str) -> Vec<StackFrame> {
         if frames.len() == MAX_STACK_FRAMES {
             break;
         }
-        let Some(frame) = line.trim().strip_prefix("at ") else {
+        let Some((function, place)) = frame_of(line) else {
             continue;
-        };
-        let (function, place) = match frame.strip_suffix(')') {
-            Some(called) => match called.find(" (") {
-                Some(at) => (&called[..at], &called[at + 2..]),
-                None => continue,
-            },
-            None => ("", frame),
         };
         let mut parts = place.rsplitn(3, ':');
         let (Some(column), Some(line), Some(url)) = (parts.next(), parts.next(), parts.next())

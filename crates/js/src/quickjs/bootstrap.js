@@ -179,6 +179,288 @@
     configurable: true,
   });
 
+  // QuickJS's own accessors of Error's stack state, kept for the
+  // console, which builds a stack its own way (below), before Error's
+  // own properties are made V8's.
+  const QuickStackLimit = getOwnPropertyDescriptor($Error, "stackTraceLimit");
+  const QuickPrepareStack = getOwnPropertyDescriptor($Error, "prepareStackTrace");
+
+  // Errors' stacks as the reference browser writes them (2026-11-20): a
+  // first line of the error's name and message, then a line a frame,
+  // `at f (url:line:column)`, or `at url:line:column` for code of no
+  // name (a script's own), `at eval (eval at f (url:line:column),
+  // <anonymous>:line:column)` for code from a string, and a builtin's
+  // place `<anonymous>`; the bindings' frames left out, as the
+  // reference's are. And the messages of the TypeErrors pages read
+  // most, in its words. QuickJS calls the formatter as each error is
+  // made (its `Error.prepareStackTrace` slot); `Error.prepareStackTrace`
+  // reads undefined until a page sets one, which is called instead.
+  {
+    const prepare = getOwnPropertyDescriptor($Error, "prepareStackTrace");
+    const setPrepare = prepare && prepare.set ? uncurry(prepare.set) : null;
+    if (setPrepare !== null) {
+      // The call sites' methods, as QuickJS gives them.
+      let Site = null;
+      setPrepare($Error, (_, frames) => {
+        Site = frames.length > 0 ? ReflectGetPrototypeOf(frames[0]) : null;
+        return "";
+      });
+      new $Error();
+      setPrepare($Error, undefined);
+      if (Site !== null) {
+        const fileOf = uncurry(Site.getFileName);
+        const nameOf = uncurry(Site.getFunctionName);
+        const lineOf = uncurry(Site.getLineNumber);
+        const columnOf = uncurry(Site.getColumnNumber);
+        const isNative = uncurry(Site.isNative);
+        const isConstructor = uncurry(Site.isConstructor);
+        const HasOwn = Object.hasOwn;
+        const FROM_STRING = "<input>";
+        const bindings = (file) =>
+          file === "bootstrap" || (typeof file === "string" && StringSlice(file, 0, 10) === "bootstrap-");
+        // The reference's words for QuickJS's.
+        // Made as each error is: string tests first, the rest only for
+        // one of the messages it rewords. The message is QuickJS's own,
+        // just made: a value, set again as one.
+        const reword = (error) => {
+          if (!(error instanceof $TypeError) || !HasOwn(error, "message")) {
+            return;
+          }
+          const message = error.message;
+          if (typeof message !== "string" || CharCodeAt(message, 0) !== 99) {
+            return;
+          }
+          let text = null;
+          const read = StringSlice(message, 0, 22) === "cannot read property '";
+          if (read || StringSlice(message, 0, 21) === "cannot set property '") {
+            const at = read ? 22 : 21;
+            let of = null;
+            let end = 0;
+            if (StringEndsWith(message, "' of null")) {
+              of = "null";
+              end = message.length - 9;
+            } else if (StringEndsWith(message, "' of undefined")) {
+              of = "undefined";
+              end = message.length - 14;
+            }
+            if (of !== null && end >= at) {
+              const name = StringSlice(message, at, end);
+              text = read
+                ? "Cannot read properties of " + of + " (reading '" + name + "')"
+                : "Cannot set properties of " + of + " (setting '" + name + "')";
+            }
+          } else if (message === "cannot convert symbol to string") {
+            text = "Cannot convert a Symbol value to a string";
+          }
+          if (text !== null) {
+            error.message = text;
+          }
+        };
+        // The first line: as `Error.prototype.toString` writes it.
+        const heading = (error) => {
+          let name;
+          let message;
+          try {
+            name = error.name;
+            message = error.message;
+            name = name === undefined ? "Error" : "" + name;
+            message = message === undefined ? "" : "" + message;
+          } catch {
+            return "Error";
+          }
+          if (name === "") {
+            return message;
+          }
+          return message === "" ? name : name + ": " + message;
+        };
+        const placeOf = (frame) => {
+          const file = fileOf(frame);
+          const line = lineOf(frame);
+          const column = columnOf(frame);
+          const at = typeof file === "string" ? file : "<anonymous>";
+          return typeof line === "number" && line >= 0 ? at + ":" + line + ":" + column : at;
+        };
+        // The code a string was compiled from, at the frame that ran it.
+        const evalOrigin = (frames, from) => {
+          for (let i = from + 1; i < frames.length; i++) {
+            const file = fileOf(frames[i]);
+            if (file === FROM_STRING || bindings(file) || isNative(frames[i])) {
+              continue;
+            }
+            const name = nameOf(frames[i]);
+            const named = typeof name === "string" && name !== "" && name !== "<eval>";
+            return (named ? name : "<anonymous>") + " (" + placeOf(frames[i]) + ")";
+          }
+          return "<anonymous>";
+        };
+        // The frames a page sees: the bindings' left out, and the builtins
+        // they called; at most `limit`.
+        const hidden = (frames, i) =>
+          bindings(fileOf(frames[i])) ||
+          (isNative(frames[i]) && i + 1 < frames.length && bindings(fileOf(frames[i + 1])));
+        // As an array, for a page's own `Error.prepareStackTrace`: made
+        // with no setter of the page's run (one on Array.prototype's
+        // indices, a descriptor's inherited `get`).
+        const shown = (frames, limit) => {
+          const kept = [];
+          let n = 0;
+          for (let i = 0; i < frames.length && n < limit; i++) {
+            if (!hidden(frames, i)) {
+              defineProperty(kept, n, {
+                __proto__: null,
+                value: frames[i],
+                writable: true,
+                enumerable: true,
+                configurable: true,
+              });
+              n++;
+            }
+          }
+          return kept;
+        };
+        const write = (error, frames, limit) => {
+          let text = heading(error);
+          let written = 0;
+          for (let i = 0; i < frames.length && written < limit; i++) {
+            if (hidden(frames, i)) {
+              continue;
+            }
+            written++;
+            const frame = frames[i];
+            const file = fileOf(frame);
+            let name = nameOf(frame);
+            name = typeof name === "string" && name !== "<eval>" ? name : "";
+            let place;
+            if (isNative(frame)) {
+              place = "<anonymous>";
+            } else if (file === FROM_STRING) {
+              const line = lineOf(frame);
+              place =
+                "eval at " +
+                evalOrigin(frames, i) +
+                ", <anonymous>:" +
+                line +
+                ":" +
+                columnOf(frame);
+              if (name === "" || name === "anonymous") {
+                name = "eval";
+              }
+            } else {
+              const line = lineOf(frame);
+              place = typeof file === "string" ? file : "<anonymous>";
+              if (typeof line === "number" && line >= 0) {
+                place += ":" + line + ":" + columnOf(frame);
+              }
+            }
+            if (name !== "" && isConstructor(frame)) {
+              name = "new " + name;
+            }
+            text += name === "" ? "\n    at " + place : "\n    at " + name + " (" + place + ")";
+          }
+          return text;
+        };
+        // As V8 does at each error: `Error.stackTraceLimit` read, no stack
+        // for one not a number; a page's `Error.prepareStackTrace` called
+        // with the frames. Else the frames are kept, with the limit, and
+        // the reference's form written at the stack's first read (V8's
+        // way too): an error made and never read costs no writing. One an
+        // `Error.captureStackTrace` makes is written at once, its stack an
+        // own value.
+        const lazy = new $WeakMap();
+        const IsError = $Error.isError;
+        let capturing = 0;
+        const format = (error, frames) => {
+          reword(error);
+          const limit = ReflectGet($Error, "stackTraceLimit");
+          if (typeof limit !== "number") {
+            return undefined;
+          }
+          const most = limit > 0 ? limit : 0;
+          const custom = ReflectGet($Error, "prepareStackTrace");
+          if (typeof custom === "function") {
+            return ReflectApply(custom, $Error, [error, shown(frames, most)]);
+          }
+          // Kept for the first read only where QuickJS keeps what this
+          // gives as the error's own stack, which the getter below reads
+          // (an Error's); a value it makes an own property of the object
+          // is written now (a DOMException, a captured stack).
+          if (capturing > 0 || !ReflectApply(IsError, $Error, [error])) {
+            return write(error, frames, most);
+          }
+          WeakMapSet(lazy, frames, most);
+          return frames;
+        };
+        setPrepare($Error, format);
+        const stackPair = getOwnPropertyDescriptor($Error.prototype, "stack");
+        if (stackPair && stackPair.get && stackPair.set) {
+          const quickGet = stackPair.get;
+          const setStack = stackPair.set;
+          const reader = {
+            get stack() {
+              const value = ReflectApply(quickGet, this, []);
+              if (typeof value !== "object" || value === null) {
+                return value;
+              }
+              const most = WeakMapGet(lazy, value);
+              if (most === undefined) {
+                return value;
+              }
+              const text = write(this, value, most);
+              ReflectApply(setStack, this, [text]);
+              return text;
+            },
+          };
+          defineProperty($Error.prototype, "stack", {
+            get: getOwnPropertyDescriptor(reader, "stack").get,
+            set: setStack,
+            enumerable: stackPair.enumerable,
+            configurable: true,
+          });
+        }
+        // Error's own properties as V8 has them: no `prepareStackTrace`
+        // until a page sets one, `stackTraceLimit` a value of 10, in its
+        // order. QuickJS's own limit at its most, the page's read above.
+        const limitPair = getOwnPropertyDescriptor($Error, "stackTraceLimit");
+        if (limitPair && limitPair.set) {
+          ReflectApply(limitPair.set, $Error, [64]);
+        }
+        const capture = getOwnPropertyDescriptor($Error, "captureStackTrace");
+        const isError = getOwnPropertyDescriptor($Error, "isError");
+        for (const name of ["captureStackTrace", "isError", "stackTraceLimit", "prepareStackTrace"]) {
+          ReflectDeleteProperty($Error, name);
+        }
+        if (capture) {
+          const quickCapture = capture.value;
+          const wrapped = {
+            captureStackTrace(object, constructorOpt) {
+              capturing++;
+              try {
+                return ReflectApply(quickCapture, $Error, arguments);
+              } finally {
+                capturing--;
+              }
+            },
+          };
+          defineProperty($Error, "captureStackTrace", {
+            value: wrapped.captureStackTrace,
+            writable: capture.writable,
+            enumerable: capture.enumerable,
+            configurable: capture.configurable,
+          });
+        }
+        if (isError) {
+          defineProperty($Error, "isError", isError);
+        }
+        defineProperty($Error, "stackTraceLimit", {
+          value: 10,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+  }
+
   // The current time (ECMA-262 21.4): `Date.now()`, `new Date()` and
   // `Date()` read the system's precise clock in whole milliseconds, as
   // the reference browser's do. QuickJS reads Windows' coarse clock, which
@@ -30143,8 +30425,8 @@
   // realm's own state: a call is logged with the originals' values set,
   // so that what the page put there runs nothing of its own, and the
   // previews' brand checks, which throw for most objects, build no stack.
-  const stackLimit = getOwnPropertyDescriptor($Error, "stackTraceLimit");
-  const prepareStack = getOwnPropertyDescriptor($Error, "prepareStackTrace");
+  const stackLimit = QuickStackLimit;
+  const prepareStack = QuickPrepareStack;
   // The frames a call's stack is built with: its place, past the
   // bindings' own frames, or all of it for an error or a trace.
   const STACK_PLACE = 8;

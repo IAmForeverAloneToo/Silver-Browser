@@ -1337,3 +1337,114 @@ fn a_realm_a_thread_local_holds_goes_with_its_thread() {
         .join();
     assert!(ended.is_ok(), "the thread's end panicked");
 }
+
+/// Errors' stacks and the commonest TypeErrors' messages are the
+/// reference browser's (2026-11-20, probed in Chrome 156): the first
+/// line the error's name and message, a frame `at f (url:line:column)`,
+/// a script's own `at url:line:column`, code from a string `at eval
+/// (eval at f (url:line:column), <anonymous>:line:column)`; and
+/// `Error.prepareStackTrace` undefined until a page sets one, which is
+/// called instead. The columns are QuickJS's: a `new` expression's at
+/// its callee, where the reference's is at `new`.
+#[test]
+fn stacks_and_messages_are_written_as_the_reference_writes_them() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let run = |realm: &mut Box<dyn Realm<Recorder>>, host: &mut Recorder, source: &str| match realm
+        .run(&script(source), host)
+        .expect("it runs")
+    {
+        Completion::String(text) => text,
+        other => panic!("not a string: {other:?}"),
+    };
+    // Error's own properties as V8's, before a page sets any.
+    assert_eq!(
+        run(
+            &mut realm,
+            &mut host,
+            "['prepareStackTrace' in Error, Object.getOwnPropertyNames(Error).join(),\
+             JSON.stringify(Object.getOwnPropertyDescriptor(Error, 'stackTraceLimit'))].join('|')"
+        ),
+        "false|length,name,prototype,captureStackTrace,isError,stackTraceLimit|\
+         {\"value\":10,\"writable\":true,\"enumerable\":true,\"configurable\":true}"
+    );
+    assert_eq!(
+        run(
+            &mut realm,
+            &mut host,
+            "function named() {\n  return new Error('x').stack;\n}\nnamed()"
+        ),
+        "Error: x\n    at named (https://example.com/page.html:2:14)\n    \
+         at https://example.com/page.html:4:1"
+    );
+    let from_string = run(
+        &mut realm,
+        &mut host,
+        "new Function('return new Error(\"f\").stack')()",
+    );
+    assert!(
+        from_string.starts_with(
+            "Error: f\n    at eval (eval at <anonymous> (https://example.com/page.html:1:"
+        ) && from_string.contains("), <anonymous>:3:"),
+        "{from_string}"
+    );
+    assert_eq!(
+        run(
+            &mut realm,
+            &mut host,
+            "[() => null.length, () => undefined.x, () => { null.y = 1; }, () => '' + Symbol()]\
+             .map(f => { try { f(); } catch (e) { return e.message; } }).join('|')"
+        ),
+        "Cannot read properties of null (reading 'length')|Cannot read properties of undefined \
+         (reading 'x')|Cannot set properties of null (setting 'y')|Cannot convert a Symbol value \
+         to a string"
+    );
+    assert_eq!(
+        run(
+            &mut realm,
+            &mut host,
+            "const before = typeof Error.prepareStackTrace;\
+             Error.prepareStackTrace = (e, frames) => 'mine ' + frames.length;\
+             const mine = new Error('p').stack;\
+             Error.prepareStackTrace = undefined;\
+             Error.stackTraceLimit = 0;\
+             const none = new Error('l').stack;\
+             Error.stackTraceLimit = 10;\
+             [before, mine.slice(0, 5), none, String(Error.prepareStackTrace)].join('|')"
+        ),
+        "undefined|mine |Error: l|undefined"
+    );
+}
+
+/// A stack is written whatever a page put on the built-ins' prototypes
+/// (WPT adoptedstylesheets-observablearray sets an accessor on
+/// Array.prototype's indices and `get` on Object.prototype), and is a
+/// string for an object QuickJS gives an own stack (a DOMException), as
+/// the WebGPU CTS checks.
+#[test]
+fn a_stack_is_written_whatever_the_page_put_on_the_built_ins() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    let answer = realm
+        .run(
+            &script(
+                "Object.defineProperty(Array.prototype, '0', { get() { return 'page'; },\
+                   set() { throw new Error('set'); }, configurable: true });\
+                 Object.defineProperty(Object.prototype, 'get', { value: 1, configurable: true });\
+                 Error.prepareStackTrace = (e, frames) => typeof frames[0].getFileName;\
+                 const custom = new Error('c').stack;\
+                 Error.prepareStackTrace = undefined;\
+                 const plain = new Error('p').stack;\
+                 delete Array.prototype[0];\
+                 delete Object.prototype.get;\
+                 [custom, plain.slice(0, 8), typeof new DOMException('m', 'NotFoundError').stack]\
+                   .join('|')",
+            ),
+            &mut host,
+        )
+        .expect("it runs");
+    assert_eq!(
+        answer,
+        Completion::String("function|Error: p|string".to_owned())
+    );
+}
