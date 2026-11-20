@@ -15,6 +15,22 @@
 //! browser ([`set_sink`]), which writes them ([`write`]), naming each
 //! file itself from its own hash, so that nothing a renderer sends
 //! becomes part of a path.
+//!
+//! Code from strings is dumped too (kind `eval`): in these builds every
+//! document's `eval` and function constructors are guarded, as a policy
+//! that reports them would guard them, and the host dumps each source.
+//!
+//! With `SILVER_TRACE_NULLS` set as well, the bindings trace a page's
+//! nulls (the bootstrap's end): every interface's methods and getters,
+//! and `String.prototype.match` and `RegExp.prototype.exec` with their
+//! expression and string, note the calls that answered null or the
+//! string "null"; an error made for reading or setting a property of
+//! null warns `NULLTRACE` with the last of them, newest first, repeats
+//! counted (how Kasada's null on Twitch was found, 2026-11-20). Known
+//! artifact: the wrappers deepen every call through the bindings, and a
+//! page that recurses through them (Twitch's video worker, Kasada's VM)
+//! meets "Maximum call stack size exceeded" sooner than without them; a
+//! trace run's such errors are the trace's, not the page's.
 
 use std::fs::OpenOptions;
 use std::io::Write as _;

@@ -1338,6 +1338,12 @@ pub(super) fn install<'js, H: ScriptingHost>(
     natives.set("consoleMessage", console)?;
     // Whether the realm is a secure context's (M39).
     natives.set("secure", secure)?;
+    // A sweep build's diagnosis of a page's null (`dump-scripts`), when
+    // its process is asked for it (`SILVER_TRACE_NULLS`).
+    #[cfg(feature = "dump-scripts")]
+    if std::env::var_os("SILVER_TRACE_NULLS").is_some() {
+        natives.set("traceNulls", true)?;
+    }
     // The kind of global the bootstrap makes (M31).
     match kind {
         RealmKind::Window => natives.set("realmKind", "window")?,

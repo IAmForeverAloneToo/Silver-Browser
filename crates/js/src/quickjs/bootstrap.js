@@ -179,6 +179,10 @@
     configurable: true,
   });
 
+  // A sweep build's diagnosis of a page's null (below): given the
+  // property an error read or set of null; none in other builds.
+  let nullTrace = null;
+
   // QuickJS's own accessors of Error's stack state, kept for the
   // console, which builds a stack its own way (below), before Error's
   // own properties are made V8's.
@@ -245,6 +249,9 @@
             }
             if (of !== null && end >= at) {
               const name = StringSlice(message, at, end);
+              if (nullTrace !== null && of === "null") {
+                nullTrace(name);
+              }
               text = read
                 ? "Cannot read properties of " + of + " (reading '" + name + "')"
                 : "Cannot set properties of " + of + " (setting '" + name + "')";
@@ -34025,6 +34032,147 @@
   // callbacks, stepped through the same way; a script's uncaught
   // exception reported; and the bootstrap's own state put back after a
   // run its budget stopped.
+  // Sweep builds' diagnosis of a page's null (`dump-scripts` with
+  // `SILVER_TRACE_NULLS`, never a shipped build): every interface's methods and getters, and the
+  // built-ins that answer null, note the calls that answered null; an
+  // error made for reading or setting a property of null logs the last
+  // of them, the call that likely gave it first among the newest.
+  if (native.traceNulls === true) {
+    const ring = [];
+    const RING = 24;
+    const summary = (args) => {
+      if (args.length === 0) {
+        return "";
+      }
+      const first = args[0];
+      if (typeof first === "string") {
+        return JSONStringify(StringSlice(first, 0, 24));
+      }
+      return typeof first;
+    };
+    // A repeat of the newest is counted, not kept again.
+    let repeats = 0;
+    const keep = (entry) => {
+      if (ring.length > 0 && ring[ring.length - 1] === entry) {
+        repeats++;
+        return;
+      }
+      if (repeats > 0) {
+        ring[ring.length - 1] += " x" + (repeats + 1);
+        repeats = 0;
+      }
+      if (ring.length >= RING) {
+        ArrayShift(ring);
+      }
+      ArrayPush(ring, entry);
+    };
+    const note = (label, args) => keep(label + "(" + summary(args) + ")");
+    // Newest first, a line of the console's length (300) at a time.
+    nullTrace = (property) => {
+      const seen = ArraySlice(ring);
+      queueMicrotask(() => {
+        let line = "NULLTRACE '" + property + "' of null; newest null first:";
+        for (let i = seen.length - 1; i >= 0; i--) {
+          if (line.length + seen[i].length > 280) {
+            console.warn(line);
+            line = "NULLTRACE ...";
+          }
+          line += " " + seen[i];
+        }
+        console.warn(line);
+      });
+    };
+    const wrap = (owner, key, label) => {
+      const d = getOwnPropertyDescriptor(owner, key);
+      if (d === undefined || !d.configurable || key === "constructor") {
+        return;
+      }
+      if (typeof d.value === "function") {
+        const f = d.value;
+        const wrapped = {
+          [key](...args) {
+            const result = ReflectApply(f, this, args);
+            if (result === null || result === "null") {
+              note(result === null ? label : label + '="null"', args);
+            }
+            return result;
+          },
+        }[key];
+        defineProperty(wrapped, "length", { __proto__: null, value: f.length, configurable: true });
+        defineProperty(owner, key, { __proto__: null, value: wrapped, writable: d.writable, enumerable: d.enumerable, configurable: true });
+      } else if (typeof d.get === "function") {
+        const g = d.get;
+        const getter = getOwnPropertyDescriptor({
+          get [key]() {
+            const result = ReflectApply(g, this, []);
+            if (result === null || result === "null") {
+              note(result === null ? label : label + '="null"', []);
+            }
+            return result;
+          },
+        }, key).get;
+        defineProperty(owner, key, { __proto__: null, get: getter, set: d.set, enumerable: d.enumerable, configurable: true });
+      }
+    };
+    const wrapAll = (owner, prefix) => {
+      for (const key of ReflectOwnKeys(owner)) {
+        if (typeof key === "string") {
+          wrap(owner, key, prefix + "." + key);
+        }
+      }
+    };
+    // The platform's interfaces only: ECMAScript's own built-ins are
+    // the bindings' too, and wrapped would wrap what the wrappers use.
+    const builtins = new $Set();
+    for (const name of ["Object", "Function", "Array", "Number", "Boolean", "String", "Symbol", "Date", "Promise", "RegExp", "Error", "AggregateError", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError", "SuppressedError", "InternalError", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry", "ArrayBuffer", "SharedArrayBuffer", "DataView", "Proxy", "Reflect", "BigInt", "Iterator", "DisposableStack", "AsyncDisposableStack", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array", "Intl", "Atomics", "JSON", "Math"]) {
+      SetAdd(builtins, name);
+    }
+    for (const name of getOwnPropertyNames(global)) {
+      if (CharCodeAt(name, 0) < 65 || CharCodeAt(name, 0) > 90 || SetHas(builtins, name)) {
+        continue;
+      }
+      let value;
+      try {
+        value = global[name];
+      } catch {
+        continue;
+      }
+      if (typeof value === "function" && value.prototype !== null && typeof value.prototype === "object") {
+        wrapAll(value.prototype, name);
+      }
+    }
+    // A match's regular expression and string, whole: what was matched.
+    const SourceGet = uncurry(getOwnPropertyDescriptor(RegExp.prototype, "source").get);
+    const regexText = (value) => {
+      try {
+        return "/" + SourceGet(value) + "/";
+      } catch {
+        return typeof value === "string" ? JSONStringify(value) : typeof value;
+      }
+    };
+    const matchers = [
+      [String.prototype, "match", (self, args) => JSONStringify(StringSlice("" + self, 0, 120)) + ".match(" + regexText(args[0]) + ")"],
+      [RegExp.prototype, "exec", (self, args) => regexText(self) + ".exec(" + JSONStringify(StringSlice("" + args[0], 0, 120)) + ")"],
+    ];
+    for (const [owner, key, describe] of matchers) {
+      const f = owner[key];
+      const wrapped = {
+        [key](...args) {
+          const result = ReflectApply(f, this, args);
+          if (result === null) {
+            keep(describe(this, args));
+          }
+          return result;
+        },
+      }[key];
+      defineProperty(wrapped, "length", { __proto__: null, value: f.length, configurable: true });
+      defineProperty(owner, key, { __proto__: null, value: wrapped, writable: true, enumerable: false, configurable: true });
+    }
+    wrap(JSON, "parse", "JSON.parse");
+    wrap(global, "getComputedStyle", "window.getComputedStyle");
+    wrap(global, "matchMedia", "window.matchMedia");
+  }
+
   return {
     timer: runTimer,
     dispatch(handle, iface, type, init) {

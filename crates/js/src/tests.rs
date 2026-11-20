@@ -1448,3 +1448,28 @@ fn a_stack_is_written_whatever_the_page_put_on_the_built_ins() {
         Completion::String("function|Error: p|string".to_owned())
     );
 }
+
+/// The null trace (a sweep build's, `SILVER_TRACE_NULLS`) is off unless
+/// its variable is set: a null read warns nothing.
+#[test]
+fn the_null_trace_is_off_without_its_variable() {
+    if std::env::var_os("SILVER_TRACE_NULLS").is_some() {
+        return;
+    }
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    realm
+        .run(
+            &script("try { null.x; } catch (e) {} try { undefined.y; } catch (e) {}"),
+            &mut host,
+        )
+        .expect("it runs");
+    let _ = realm.checkpoint(&mut host);
+    assert!(
+        host.console
+            .iter()
+            .all(|(_, line)| !line.contains("NULLTRACE")),
+        "{:?}",
+        host.console
+    );
+}
