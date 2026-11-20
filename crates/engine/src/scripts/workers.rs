@@ -1300,6 +1300,12 @@ impl ScriptingHost for WorkerHost {
             } else {
                 Answer::Nothing
             }),
+            // A worker's navigator has the window's `deviceMemory`.
+            Call::DeviceMemory => Ok(if self.compat {
+                Answer::Number(crate::device_memory())
+            } else {
+                Answer::Nothing
+            }),
             Call::NavigatorInfo => {
                 let (agent, mode) = if self.compat {
                     (net::USER_AGENT, "chrome")
