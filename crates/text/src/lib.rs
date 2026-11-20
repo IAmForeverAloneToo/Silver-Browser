@@ -662,6 +662,33 @@ impl FontStore {
             .sum()
     }
 
+    /// `text`'s clusters as one shaping of it makes them, in logical
+    /// order: each one's start in bytes, its advance at `font_size_px`,
+    /// and whether the text may be broken before it and each side shaped
+    /// apart to the same glyphs (HarfBuzz's unsafe-to-break flag unset on
+    /// all its glyphs). A face that would not shape gives none.
+    fn clusters_with(
+        &self,
+        text: &str,
+        font_size_px: f32,
+        options: Options<'_>,
+    ) -> Vec<(usize, f32, bool)> {
+        let Some((face, shaped)) = self.shape_raw(text, options) else {
+            return Vec::new();
+        };
+        let mut clusters: std::collections::BTreeMap<usize, (f32, bool)> =
+            std::collections::BTreeMap::new();
+        for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+            let cluster = clusters.entry(info.cluster as usize).or_insert((0.0, true));
+            cluster.0 += self.advance(face, info, pos, font_size_px);
+            cluster.1 &= !info.unsafe_to_break();
+        }
+        clusters
+            .into_iter()
+            .map(|(start, (advance, safe))| (start, advance, safe))
+            .collect()
+    }
+
     /// Where a caret may stand in `text` at `font_size_px` (M15): the x
     /// of each character boundary, from the run's start, one more than
     /// there are characters, the first 0 and the last the run's advance.
@@ -1628,6 +1655,81 @@ impl FontCollection {
         width
     }
 
+    /// `text`'s widths in `font` measured once (2026-11-21): the width of
+    /// any piece of it, in O(log n), that [`FontCollection::measure_in`]
+    /// of that piece alone gives, wherever the piece may be shaped apart
+    /// to the same glyphs, and `None` elsewhere ([`Widths::of`]). What a
+    /// line breaker measures of a long word, cut a line at a time, is
+    /// then linear in the word, not quadratic.
+    pub fn widths_in(&self, font: Font, text: &str, font_size_px: f32) -> Widths {
+        let mut widths = Widths {
+            len: text.len(),
+            ..Widths::default()
+        };
+        let mut x = 0.0f32;
+        let mut anchors_before = 0u32;
+        self.with_options(font, |options| {
+            self.for_each_face_run(font, text, |range, _, face| {
+                let run = &text[range.clone()];
+                // The run's anchors, the characters that settle a piece's
+                // script and direction as the whole run's: a letter of a
+                // script of its own, strong in its direction. A piece
+                // that holds none of the run's is itemized and shaped
+                // otherwise (its punctuation, spaces and digits take the
+                // script after them), and is measured whole.
+                let anchors: Vec<usize> = run
+                    .char_indices()
+                    .filter(|&(_, c)| is_anchor(c))
+                    .map(|(i, _)| range.start + i)
+                    .collect();
+                // A run of no script of its own is itemized the same whole
+                // or in pieces.
+                let own = run
+                    .chars()
+                    .any(|c| !matches!(c.script(), Script::Common | Script::Inherited));
+                let anchored_from = |at: usize| !own || anchors.last().is_some_and(|&a| a >= at);
+                let anchored_before = |at: usize| !own || anchors.first().is_some_and(|&a| a < at);
+                let index = u32::try_from(widths.own.len()).unwrap_or(u32::MAX);
+                widths.own.push(own);
+                for (start, advance, safe) in face.clusters_with(run, font_size_px, options) {
+                    let at = range.start + start;
+                    let mut flags = 0u8;
+                    if at == range.start {
+                        // A run's own start, shaped apart in any case: a
+                        // piece may end here, the run before whole in it.
+                        flags |= Widths::ENDS;
+                        if anchored_from(at) {
+                            flags |= Widths::STARTS;
+                        }
+                    } else if safe {
+                        if anchored_from(at) {
+                            flags |= Widths::STARTS;
+                        }
+                        if anchored_before(at) {
+                            flags |= Widths::ENDS;
+                        }
+                    }
+                    widths.at.push(at);
+                    widths.x.push(x);
+                    widths.flags.push(flags);
+                    widths.run.push(index);
+                    let within = anchors.partition_point(|&a| a < at);
+                    widths
+                        .anchors
+                        .push(anchors_before + u32::try_from(within).unwrap_or(u32::MAX));
+                    x += advance;
+                }
+                anchors_before += u32::try_from(anchors.len()).unwrap_or(u32::MAX);
+            });
+        });
+        widths.at.push(text.len());
+        widths.x.push(x);
+        widths.flags.push(Widths::STARTS | Widths::ENDS);
+        widths.run.push(u32::MAX);
+        widths.anchors.push(anchors_before);
+        widths
+    }
+
     /// The primary font's x-height at `font_size_px` (see
     /// [`FontStore::x_height`]).
     pub fn x_height(&self, font_size_px: f32) -> f32 {
@@ -1895,6 +1997,89 @@ pub const TEST_FONT: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 /// tests' `monospace` ([`FontCollection::from_bytes_with_monospace`]).
 #[doc(hidden)]
 pub const TEST_MONO_FONT: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+
+/// A run's widths measured once ([`FontCollection::widths_in`]): each
+/// cluster's start, the advance before it, and whether a piece may start
+/// or end there and be measured from these.
+#[derive(Debug, Clone, Default)]
+pub struct Widths {
+    len: usize,
+    at: Vec<usize>,
+    x: Vec<f32>,
+    flags: Vec<u8>,
+    /// Each boundary's run, and the anchors before it in the text.
+    run: Vec<u32>,
+    anchors: Vec<u32>,
+    /// Whether each run has a script of its own.
+    own: Vec<bool>,
+}
+
+impl Widths {
+    /// A piece may start here: what follows is shaped apart to the same
+    /// glyphs, and itemized as the whole was.
+    const STARTS: u8 = 1;
+    /// A piece may end here.
+    const ENDS: u8 = 2;
+
+    /// The width of `text[range]`, as measuring it alone gives it, where
+    /// the piece is shaped apart to the whole's glyphs: its ends at
+    /// cluster boundaries safe to break and its runs itemized as the
+    /// whole's; `None` elsewhere, where it is to be measured. The
+    /// advances are whole pixels, so that a difference of their sums is
+    /// the sum of the piece's.
+    pub fn of(&self, range: Range<usize>) -> Option<f32> {
+        if range.start > range.end || range.end > self.len {
+            return None;
+        }
+        if range.start == range.end {
+            return Some(0.0);
+        }
+        let start = self.at.binary_search(&range.start).ok()?;
+        let end = self.at.binary_search(&range.end).ok()?;
+        if self.flags[start] & Self::STARTS == 0 || self.flags[end] & Self::ENDS == 0 {
+            return None;
+        }
+        // A piece within one run of a script of its own holds one of its
+        // anchors, or is itemized otherwise.
+        let run = self.run[start];
+        if end > start
+            && self.run[end - 1] == run
+            && self.own.get(run as usize).copied().unwrap_or(false)
+            && self.anchors[end] == self.anchors[start]
+        {
+            return None;
+        }
+        Some(self.x[end] - self.x[start])
+    }
+
+    /// The width of `range` from the cluster boundaries nearest its ends:
+    /// what a line breaker takes where [`Widths::of`] gives none and it
+    /// will measure no more.
+    pub fn near(&self, range: Range<usize>) -> f32 {
+        let Some(last) = self.at.len().checked_sub(1) else {
+            return 0.0;
+        };
+        let start = self.at.partition_point(|&at| at < range.start).min(last);
+        let end = self
+            .at
+            .partition_point(|&at| at < range.end)
+            .min(last)
+            .max(start);
+        self.x[end] - self.x[start]
+    }
+}
+
+/// Whether `c` settles a run's script and direction ([`Widths`]): a
+/// letter of a script of its own (not common or inherited), strong in its
+/// direction.
+fn is_anchor(c: char) -> bool {
+    use unicode_bidi::BidiClass;
+    !matches!(c.script(), Script::Common | Script::Inherited)
+        && matches!(
+            unicode_bidi::bidi_class(c),
+            BidiClass::L | BidiClass::R | BidiClass::AL
+        )
+}
 
 #[cfg(test)]
 mod tests {

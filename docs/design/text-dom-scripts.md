@@ -450,7 +450,28 @@ it.
   right-to-left letter is shaped left to right, white space at its ends
   apart. A text shadow is blurred over the whole ink, whatever the clip,
   and decorations cast it. `visibility: collapse` collapses columns.
-  ASCII left to right skips bidi reordering.
+  ASCII left to right skips bidi reordering. *(2026-11-21)* A word cut
+  a line at a time is measured once, not once a line (the nightly fuzz
+  run's pipeline: 470 vertical tabs, each an opportunity, took 3.3 s at
+  width 0; any long CJK run was quadratic). The text crate shapes it
+  once (`FontCollection::widths_in`): each cluster's advance, whole
+  pixels, with whether a piece may start or end there and be shaped
+  apart to the same glyphs (HarfBuzz's unsafe-to-break flag unset, and
+  the piece itemized as the whole: a letter of the run's own script on
+  its side of the cut). A piece's width is a difference of the sums,
+  bit for bit what measuring it alone gives; under `letter-spacing` a
+  table of the letter units' widths does the same (their widths summed,
+  then the spacing), and a text of private-use characters among others
+  has a second table in the font its pieces of those alone take. The
+  opportunities within a piece are found by binary search, and its rest
+  placed in a loop. A known deviation: a piece the tables cannot give,
+  one that starts among the signs and spaces after a run's last letter,
+  which alone take the next run's script, is measured alone up to 16
+  times its word's length and 64 KB a word, and past that read from the
+  table's nearest boundaries, so that a page made to defeat the tables
+  lays out slower, never quadratically. The reference measures pieces
+  in the whole paragraph's itemization, reshaping only at the cut; doing
+  so here would make every piece exact and drop the budget.
 - **The tree builder (step 4, D57).** html5lib's tree tests went from
   1,285 to 1,959 of 1,959: the scripted ones run in the engine
   (`loader::html5lib_tests`), and `selectedcontent` takes a clone of the

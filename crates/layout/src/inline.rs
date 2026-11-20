@@ -150,6 +150,10 @@ pub(crate) enum InlineItem<'a> {
         /// after preserved spaces. It is cut at one only where a line
         /// breaks there.
         breaks: Vec<usize>,
+        /// Its widths, measured once when a line first cuts it, which
+        /// give each piece's ([`piece_width`]); `None` where they are not
+        /// to be had.
+        widths: std::cell::OnceCell<Option<Box<WordWidths>>>,
         /// How much of `width` is preserved spaces at its end, which hang
         /// past the line's end rather than wrap it (CSS Text 3 section
         /// 4.1.3); none under `break-spaces`.
@@ -251,6 +255,10 @@ struct LineWord<'i> {
     /// text this word, all of it or a piece of it, begins.
     breaks: &'i [usize],
     offset: usize,
+    /// The item's text, which `offset` and `breaks` are in, and its
+    /// widths measured once, where it has them.
+    whole: &'i str,
+    widths: Option<&'i std::cell::OnceCell<Option<Box<WordWidths>>>>,
     style: &'i Arc<ComputedStyle>,
     node: NodeId,
     generated: Option<PseudoElement>,
@@ -685,6 +693,7 @@ fn layout_run<'a>(
                 generated,
                 decorations,
                 gap_style,
+                widths,
                 ..
             } => {
                 let word = LineWord {
@@ -695,6 +704,8 @@ fn layout_run<'a>(
                     hyphen: false,
                     breaks,
                     offset: 0,
+                    whole: text.as_str(),
+                    widths: Some(widths),
                     style,
                     node: *node,
                     generated: *generated,
@@ -926,12 +937,14 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                     node,
                     generated,
                     decorations,
+                    widths,
                     ..
                 },
                 LineItem::Word(piece),
             ) if piece.offset == 0 || piece.offset + piece.text.len() == text.len() => {
                 let range = piece.offset..piece.offset + piece.text.len();
                 let whole = range == (0..text.len());
+                let item_text = text.as_str();
                 let text = &text[range];
                 LineItem::Word(LineWord {
                     text,
@@ -949,6 +962,8 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                     hyphen: false,
                     breaks,
                     offset: piece.offset,
+                    whole: item_text,
+                    widths: Some(widths),
                     style,
                     node: *node,
                     generated: *generated,
@@ -1799,6 +1814,7 @@ impl<'a> Collector<'a, '_> {
                 self.gap_placed = false;
                 self.glued.clear();
                 self.push(InlineItem::Word {
+                    widths: std::cell::OnceCell::new(),
                     text: "\t".to_owned(),
                     width: 0.0,
                     hang: 0.0,
@@ -1923,6 +1939,7 @@ impl<'a> Collector<'a, '_> {
         self.glued.push_str(&text[tail..]);
         self.glued_style = Some(style);
         self.push(InlineItem::Word {
+            widths: std::cell::OnceCell::new(),
             text: text.to_string(),
             width: measure_word(text, style, self.fonts),
             hang: hang_of(text, style, self.fonts),
@@ -2562,18 +2579,229 @@ fn hyphen_of(style: &ComputedStyle) -> &str {
 /// tabs, and the other space separators whether preserved or not; none
 /// under `break-spaces`, where they wrap.
 fn hang_of(text: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
+    match kept_of(text, style) {
+        Some(kept) => measure_word(text, style, fonts) - measure_word(&text[..kept], style, fonts),
+        None => 0.0,
+    }
+}
+
+/// How much of `text` is before the white space at its end that hangs
+/// ([`hang_of`]), in bytes; `None` where none hangs.
+fn kept_of(text: &str, style: &ComputedStyle) -> Option<usize> {
     if style.white_space.collapse == style::computed::WhiteSpaceCollapse::BreakSpaces {
-        return 0.0;
+        return None;
     }
     let kept = if style.white_space.preserves_spaces() {
         text.trim_end_matches(|c| c == ' ' || c == '\t' || is_other_space(c))
     } else {
         text.trim_end_matches(is_other_space)
     };
-    if kept.len() == text.len() {
-        return 0.0;
+    (kept.len() < text.len()).then_some(kept.len())
+}
+
+/// The width of `word.text[a..b]`, as [`measure_word`] gives it: from
+/// the item's widths, measured once when a line first cuts it, wherever
+/// they give it exactly ([`text::Widths::of`]), else measured. A word cut
+/// a line at a time is then measured once, not once a line (2026-11-21:
+/// each line measured what was left of the word, a paragraph of an
+/// opportunity at every character quadratic).
+fn piece_width(word: &LineWord<'_>, a: usize, b: usize, fonts: &FontCollection) -> f32 {
+    let measured = || measure_word(&word.text[a..b], word.style, fonts);
+    let Some(cell) = word.widths else {
+        return measured();
+    };
+    let range = word.offset + a..word.offset + b;
+    match cell.get_or_init(|| widths_of(word.whole, word.style, fonts).map(Box::new)) {
+        Some(widths) => widths
+            .of(range.clone())
+            .unwrap_or_else(|| widths.fallback(range, measured)),
+        None => measured(),
     }
-    measure_word(text, style, fonts) - measure_word(kept, style, fonts)
+}
+
+/// [`hang_of`] of `word.text[a..b]`, its widths [`piece_width`]'s.
+fn piece_hang(word: &LineWord<'_>, a: usize, b: usize, fonts: &FontCollection) -> f32 {
+    match kept_of(&word.text[a..b], word.style) {
+        Some(kept) => piece_width(word, a, b, fonts) - piece_width(word, a, a + kept, fonts),
+        None => 0.0,
+    }
+}
+
+/// An item's text's widths measured once in `style`, as [`measure_word`]
+/// measures its pieces ([`WordWidths`]).
+fn widths_of(text: &str, style: &ComputedStyle, fonts: &FontCollection) -> Option<WordWidths> {
+    #[cfg(test)]
+    if MEASURE_ONLY.with(std::cell::Cell::get) {
+        return None;
+    }
+    let main = Table::new(text, font::font_for(fonts, style, text), style, fonts)?;
+    // A piece of private-use characters alone is in their named families
+    // ([`font::font_for`]): a second table, in that font, gives those.
+    let private = match text.chars().find(|&c| text::is_private_use(c)) {
+        Some(c) if !text.chars().all(text::is_private_use) => {
+            let font = font::font_for(fonts, style, c.encode_utf8(&mut [0; 4]));
+            let others = text
+                .char_indices()
+                .filter(|&(_, c)| !text::is_private_use(c))
+                .map(|(i, _)| i)
+                .collect();
+            Some((Table::new(text, font, style, fonts)?, others))
+        }
+        _ => None,
+    };
+    Some(WordWidths {
+        main,
+        private,
+        spent: std::cell::Cell::new(0),
+        budget: fallback_budget(text.len()),
+    })
+}
+
+/// An item's text's widths measured once ([`piece_width`]): in the font
+/// its pieces are measured in, and, for a text of private-use characters
+/// among others, in the one its pieces of those alone are, with where
+/// its other characters start; and what of the text its pieces the
+/// tables could not give were measured, up to [`fallback_budget`].
+pub(crate) struct WordWidths {
+    main: Table,
+    private: Option<(Table, Vec<usize>)>,
+    spent: std::cell::Cell<usize>,
+    budget: usize,
+}
+
+/// How many bytes of a text of `len` bytes its pieces may be measured
+/// alone where the tables cannot give them: past it, a piece is given
+/// from the boundaries nearest its ends ([`WordWidths::near`]), so that a
+/// page whose text defeats the tables (a letter before 100,000 spaces and
+/// signs, whose pieces are itemized otherwise alone) lays out slower,
+/// never quadratically. No text the tests hold measures that much.
+fn fallback_budget(len: usize) -> usize {
+    len.saturating_mul(16).saturating_add(64 * 1024)
+}
+
+impl WordWidths {
+    /// The table `range` of the text is measured in.
+    fn table(&self, range: &std::ops::Range<usize>) -> &Table {
+        if let Some((table, others)) = &self.private {
+            let next = others.partition_point(|&at| at < range.start);
+            if others.get(next).is_none_or(|&at| at >= range.end) {
+                return table;
+            }
+        }
+        &self.main
+    }
+
+    /// The width of `range` of the text, as [`measure_word`] of it alone
+    /// gives it; `None` where the table cannot give it exactly.
+    fn of(&self, range: std::ops::Range<usize>) -> Option<f32> {
+        self.table(&range).of(range)
+    }
+
+    /// The width of `range` where [`WordWidths::of`] gives none: what
+    /// `measure` gives, while the item's budget lasts; past it, from the
+    /// boundaries nearest its ends.
+    fn fallback(&self, range: std::ops::Range<usize>, measure: impl FnOnce() -> f32) -> f32 {
+        let len = range.end.saturating_sub(range.start);
+        let spent = self.spent.get().saturating_add(len);
+        if spent <= self.budget {
+            self.spent.set(spent);
+            return measure();
+        }
+        self.table(&range).near(range)
+    }
+}
+
+/// One font's widths of a text: shaped whole ([`text::Widths`]), or,
+/// under `letter-spacing`, each letter unit's ([`letter_units`]),
+/// measured apart as [`measure_word`] measures them, with how many of
+/// those before each are spaced.
+enum Table {
+    Shaped(text::Widths),
+    Spaced {
+        at: Vec<usize>,
+        sum: Vec<f32>,
+        spaced: Vec<u32>,
+        spacing: f32,
+    },
+}
+
+impl Table {
+    fn new(
+        text: &str,
+        font: text::Font,
+        style: &ComputedStyle,
+        fonts: &FontCollection,
+    ) -> Option<Table> {
+        if style.letter_spacing == 0.0 {
+            return Some(Table::Shaped(fonts.widths_in(
+                font,
+                text,
+                style.font_size_px,
+            )));
+        }
+        let units = letter_units(text);
+        let mut at = Vec::with_capacity(units.len() + 1);
+        let mut sum = Vec::with_capacity(units.len() + 1);
+        let mut spaced = Vec::with_capacity(units.len() + 1);
+        let (mut total, mut count) = (0.0f32, 0u32);
+        for (range, is_spaced) in units {
+            at.push(range.start);
+            sum.push(total);
+            spaced.push(count);
+            total += fonts.measure_in(font, &text[range], style.font_size_px);
+            count += u32::from(is_spaced);
+        }
+        at.push(text.len());
+        sum.push(total);
+        spaced.push(count);
+        Some(Table::Spaced {
+            at,
+            sum,
+            spaced,
+            spacing: style.letter_spacing,
+        })
+    }
+
+    /// The width of `range` from the boundaries nearest its ends.
+    fn near(&self, range: std::ops::Range<usize>) -> f32 {
+        match self {
+            Table::Shaped(widths) => widths.near(range),
+            Table::Spaced {
+                at,
+                sum,
+                spaced,
+                spacing,
+            } => {
+                let a = at.partition_point(|&x| x < range.start).min(at.len() - 1);
+                let b = at
+                    .partition_point(|&x| x < range.end)
+                    .min(at.len() - 1)
+                    .max(a);
+                sum[b] - sum[a] + (spaced[b] - spaced[a]) as f32 * spacing
+            }
+        }
+    }
+
+    /// The width of `range`: where it starts and ends at letter units'
+    /// boundaries, the units' widths between and their spacing.
+    fn of(&self, range: std::ops::Range<usize>) -> Option<f32> {
+        match self {
+            Table::Shaped(widths) => widths.of(range),
+            Table::Spaced {
+                at,
+                sum,
+                spaced,
+                spacing,
+            } => {
+                if range.start >= range.end {
+                    return (range.start == range.end).then_some(0.0);
+                }
+                let a = at.binary_search(&range.start).ok()?;
+                let b = at.binary_search(&range.end).ok()?;
+                Some(sum[b] - sum[a] + (spaced[b] - spaced[a]) as f32 * spacing)
+            }
+        }
+    }
 }
 
 /// Whether `c` is one of the other space separators a line may break
@@ -2596,14 +2824,12 @@ fn cut_word<'i>(
     alone: bool,
     fonts: &FontCollection,
 ) -> Option<(LineWord<'i>, LineWord<'i>)> {
+    // The opportunities within it, which are in order: found by binary
+    // search, not filtered afresh for each line.
     let end = word.offset + word.text.len();
-    let within: Vec<usize> = word
-        .breaks
-        .iter()
-        .copied()
-        .filter(|&at| at > word.offset && at < end)
-        .map(|at| at - word.offset)
-        .collect();
+    let first = word.breaks.partition_point(|&at| at <= word.offset);
+    let last = word.breaks.partition_point(|&at| at < end);
+    let within = &word.breaks[first..last.max(first)];
     // The last opportunity whose head fits: looked for from the first,
     // up to the first whose head does not, a head being no narrower than
     // a shorter one. From the last, each line measured every head of
@@ -2613,17 +2839,15 @@ fn cut_word<'i>(
     // where every character is one, did the same).
     let fits = within
         .iter()
-        .copied()
+        .map(|&at| at - word.offset)
         .take_while(|&at| {
-            let head = &word.text[..at];
             let hyphen = if hyphenates_at(word.text, at, word.style) {
                 measure_word(hyphen_of(word.style), word.style, fonts)
             } else {
                 0.0
             };
             // A head that hangs whole fits a line however full.
-            let width =
-                measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts);
+            let width = piece_width(word, 0, at, fonts) + hyphen - piece_hang(word, 0, at, fonts);
             width <= room || width <= 0.0
         })
         .last();
@@ -2631,7 +2855,7 @@ fn cut_word<'i>(
         Some(at) => at,
         None if !alone => return None,
         None if breaks_anywhere(word.style) => return split_to_fit(word, room, fonts),
-        None => *within.first()?,
+        None => within.first()? - word.offset,
     };
     Some(split_at(word, at, fonts))
 }
@@ -2643,26 +2867,29 @@ fn split_at<'i>(
     fonts: &FontCollection,
 ) -> (LineWord<'i>, LineWord<'i>) {
     let (head, tail) = word.text.split_at(at);
-    let piece = |text: &'i str, offset: usize| LineWord {
+    let piece = |text: &'i str, from: usize| LineWord {
         text,
-        width: measure_word(text, word.style, fonts),
-        hang: hang_of(text, word.style, fonts),
-        offset,
+        width: piece_width(word, from, from + text.len(), fonts),
+        hang: piece_hang(word, from, from + text.len(), fonts),
+        offset: word.offset + from,
         hyphen: false,
         ..*word
     };
-    let mut head = piece(head, word.offset);
+    let mut head = piece(head, 0);
     if hyphenates_at(word.text, at, word.style) {
         head.hyphen = true;
         head.width += measure_word(hyphen_of(word.style), word.style, fonts);
     }
-    (head, piece(tail, word.offset + at))
+    (head, piece(tail, at))
 }
 
 #[cfg(test)]
 thread_local! {
     /// The bytes [`measure_word`] measured on this thread: for the tests.
     static MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether pieces are measured, the items' widths not taken: the
+    /// exact path the tests hold the widths to.
+    static MEASURE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `word` cut where it reaches `room`: the typographic character units
@@ -2673,16 +2900,37 @@ fn split_to_fit<'i>(
     room: f32,
     fonts: &FontCollection,
 ) -> Option<(LineWord<'i>, LineWord<'i>)> {
-    let ends = text::grapheme_boundaries(word.text);
-    let first = *ends.first()?;
+    // Its units' boundaries over a window of its text that doubles until
+    // a head reaches `room`, not over all of what is left of it for each
+    // line. A window's last boundary may move as it grows, so each window
+    // looks only before its own end.
+    let mut window = word.text.len().min(256);
+    let mut first = None;
     let mut cut = None;
-    for end in ends {
-        if measure_word(&word.text[..end], word.style, fonts) > room {
+    loop {
+        while !word.text.is_char_boundary(window) {
+            window += 1;
+        }
+        let whole = window == word.text.len();
+        let ends = text::grapheme_boundaries(&word.text[..window]);
+        let mut reached = false;
+        for end in ends.into_iter().filter(|&end| whole || end < window) {
+            first.get_or_insert(end);
+            if cut.is_some_and(|cut| end <= cut) {
+                continue;
+            }
+            if piece_width(word, 0, end, fonts) > room {
+                reached = true;
+                break;
+            }
+            cut = Some(end);
+        }
+        if reached || whole {
             break;
         }
-        cut = Some(end);
+        window = (window * 2).min(word.text.len());
     }
-    Some(split_at(word, cut.unwrap_or(first), fonts))
+    Some(split_at(word, cut.or(first)?, fonts))
 }
 
 /// A space's width plus `word-spacing` (M8.4), the gap between two
@@ -2699,7 +2947,21 @@ pub(crate) fn space_width(style: &ComputedStyle, fonts: &FontCollection) -> f32 
 /// zero-width format character.
 fn letter_units(text: &str) -> Vec<(std::ops::Range<usize>, bool)> {
     if text.is_ascii() {
-        return (0..text.len()).map(|i| (i..i + 1, true)).collect();
+        // A byte a unit, but CR LF one, as UAX #29 has it: a piece of
+        // ASCII alone is cut into the units the whole was.
+        let bytes = text.as_bytes();
+        let mut units = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let len = if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
+            units.push((i..i + len, true));
+            i += len;
+        }
+        return units;
     }
     let mut units: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
     let mut start = 0;
@@ -2765,13 +3027,19 @@ fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f3
     if style.letter_spacing == 0.0 {
         return fonts.measure_in(font, word, style.font_size_px);
     }
-    letter_units(word)
-        .into_iter()
-        .map(|(range, spaced)| {
-            fonts.measure_in(font, &word[range], style.font_size_px)
-                + if spaced { style.letter_spacing } else { 0.0 }
-        })
-        .sum()
+    // The units' widths, whole pixels, summed exactly, then the spacing
+    // of those spaced: the sum a table of them gives a piece of
+    // ([`Table::Spaced`]).
+    let (sum, spaced) =
+        letter_units(word)
+            .into_iter()
+            .fold((0.0f32, 0u32), |(sum, spaced), (range, is_spaced)| {
+                (
+                    sum + fonts.measure_in(font, &word[range], style.font_size_px),
+                    spaced + u32::from(is_spaced),
+                )
+            });
+    sum + spaced as f32 * style.letter_spacing
 }
 
 /// Positions one line's items (M7.4: baseline-aligned — the shared
@@ -3805,6 +4073,8 @@ fn emit_letter_spaced(
             hyphen: false,
             breaks: &[],
             offset: 0,
+            whole: ch_str,
+            widths: None,
             style: word.style,
             node: word.node,
             generated: word.generated,
@@ -6115,13 +6385,22 @@ mod tests {
     /// level of recursion would overflow: its text pieces, and the bytes
     /// [`measure_word`] measured.
     fn cut_on_a_small_stack(text: &str, width: f32) -> (Vec<String>, usize) {
+        cut_spaced_on_a_small_stack(text, width, 0.0)
+    }
+
+    /// [`cut_on_a_small_stack`] under `letter-spacing: spacing`.
+    fn cut_spaced_on_a_small_stack(text: &str, width: f32, spacing: f32) -> (Vec<String>, usize) {
         let text = text.to_owned();
         std::thread::Builder::new()
             .stack_size(512 * 1024)
             .spawn(move || {
                 let fonts = test_fonts();
                 MEASURED.with(|measured| measured.set(0));
-                let (fragments, _) = lay(&[text_box(&text, 16.0)], width, TextAlign::Left, &fonts);
+                let mut b = text_box(&text, 16.0);
+                let mut style = (*b.style).clone();
+                style.letter_spacing = spacing;
+                b.style = style.into();
+                let (fragments, _) = lay(&[b], width, TextAlign::Left, &fonts);
                 let pieces = fragments
                     .iter()
                     .filter_map(|f| match &f.kind {
@@ -6152,16 +6431,19 @@ mod tests {
             let chars: usize = pieces.iter().map(|p| p.chars().count()).sum();
             assert_eq!(chars, VERTICAL_TABS.chars().count());
             let n = VERTICAL_TABS.len();
-            assert!(measured <= n * n, "{measured} bytes measured at {width}");
+            assert!(
+                measured <= 8 * n + fallback_budget(n),
+                "{measured} bytes measured at {width}"
+            );
         }
         // Deeper: 3,000 tabs and 3,000 CJK characters at width 0. What is
-        // measured grows with the square of the text, each rest measured
-        // whole, not its cube.
+        // measured grows with the text, each piece's width taken from the
+        // item's, not with its square or its cube.
         for text in ["\u{b}".repeat(3000), "\u{4e00}".repeat(3000)] {
             let (pieces, measured) = cut_on_a_small_stack(&text, 0.0);
             assert_eq!(pieces.len(), 3000, "a character a line");
             assert!(
-                measured <= text.len() * text.len(),
+                measured <= 8 * text.len() + fallback_budget(text.len()),
                 "{measured} bytes measured"
             );
         }
@@ -6184,6 +6466,175 @@ mod tests {
         for (piece, w) in &lines[..lines.len() - 1] {
             assert!(*w <= width, "{w}");
             assert!(w + one > width, "a line holds all it may: {piece}");
+        }
+    }
+
+    /// Texts whose shaping changes across a cut, or whose itemizing does:
+    /// kerning and ligatures, Arabic's joining, scripts mixed, leading
+    /// punctuation and digits, marks, CJK and kana, Hebrew, tabs.
+    const VARIED: [&str; 11] = [
+        "AVAWAYTo office fifl Yo. Wa",
+        "\u{645}\u{631}\u{62d}\u{628}\u{627} \u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645} \u{661}\u{662}\u{663}",
+        "abc, \u{6f22}\u{5b57}\u{304b}\u{306a}123 xyz!",
+        "(\u{ab}hello\u{bb}) 42 -- \u{5d}",
+        "\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}\u{4e5d}\u{5341}",
+        "a\u{b}b\u{b}c\u{b}d",
+        "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd} 12",
+        "e\u{301}a\u{308}o\u{302} x\u{332}y",
+        "12, (\u{645}\u{631}) ok \u{627}\u{644}",
+        "ab\u{e000}\u{e001}cd \u{e002}x\u{e003}",
+        "a\r\nb\u{e9}\r\n\rc",
+    ];
+
+    /// A line's word of the whole of `text` in `style`, its widths in
+    /// `cell`.
+    fn whole_word<'i>(
+        text: &'i str,
+        style: &'i Arc<ComputedStyle>,
+        cell: &'i std::cell::OnceCell<Option<Box<WordWidths>>>,
+    ) -> LineWord<'i> {
+        LineWord {
+            text,
+            width: 0.0,
+            hang: 0.0,
+            tab: false,
+            hyphen: false,
+            breaks: &[],
+            offset: 0,
+            whole: text,
+            widths: Some(cell),
+            style,
+            node: crate::testing::no_node(),
+            generated: None,
+            decorations: None,
+        }
+    }
+
+    /// Every piece of each text, from any character boundary to any
+    /// other, is as wide from the item's widths as measured alone: the
+    /// widths give a piece only where shaping and itemizing it apart
+    /// make the whole's glyphs, and are taken for most pieces where
+    /// nothing changes across a cut.
+    #[test]
+    fn a_pieces_width_from_the_items_is_its_width_measured() {
+        let fonts = test_fonts();
+        // 0.1 and 0.3 are no binary fractions: summed a unit at a time
+        // they round otherwise than counted.
+        for spacing in [0.0, 1.5, -0.75, 0.1, 0.3] {
+            let style = Arc::new(ComputedStyle {
+                letter_spacing: spacing,
+                ..ComputedStyle::default()
+            });
+            pieces_measured_as_whole(&style, &fonts);
+        }
+    }
+
+    fn pieces_measured_as_whole(style: &Arc<ComputedStyle>, fonts: &FontCollection) {
+        let (style, fonts) = (style, fonts);
+        for text in VARIED {
+            let cell = std::cell::OnceCell::new();
+            let word = whole_word(text, style, &cell);
+            let bounds: Vec<usize> = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([text.len()])
+                .collect();
+            let (mut taken, mut pieces) = (0, 0);
+            for (k, &a) in bounds.iter().enumerate() {
+                for &b in &bounds[k + 1..] {
+                    let measured = measure_word(&text[a..b], style, fonts);
+                    assert_eq!(
+                        piece_width(&word, a, b, fonts),
+                        measured,
+                        "{text:?} [{a}..{b}] {:?} spacing {}",
+                        &text[a..b],
+                        style.letter_spacing
+                    );
+                    let widths = cell.get().and_then(Option::as_ref).expect("measured once");
+                    taken += usize::from(widths.of(a..b).is_some());
+                    pieces += 1;
+                }
+            }
+            assert!(taken > 0, "{text:?}: no piece from the widths");
+            if text.starts_with('\u{4e00}') {
+                assert_eq!(taken, pieces, "every CJK piece from the widths");
+            }
+        }
+    }
+
+    /// Paragraphs of the varied texts, each a word of an opportunity at
+    /// every character under `word-break: break-all`, laid out at widths
+    /// from one character to many, are placed as when each piece is
+    /// measured alone.
+    #[test]
+    fn lines_cut_from_the_widths_are_placed_as_measured_ones() {
+        let fonts = test_fonts();
+        let laid = |text: &str, width: f32, spacing: f32, measure_only: bool| {
+            MEASURE_ONLY.with(|only| only.set(measure_only));
+            let mut b = text_box(text, 16.0);
+            let mut style = (*b.style).clone();
+            style.word_break = style::computed::WordBreak::BreakAll;
+            style.letter_spacing = spacing;
+            b.style = style.into();
+            let (fragments, height) = lay(&[b], width, TextAlign::Left, &fonts);
+            MEASURE_ONLY.with(|only| only.set(false));
+            let placed: Vec<(String, f32, f32, f32)> = fragments
+                .iter()
+                .filter_map(|f| match &f.kind {
+                    FragmentKind::Text(t) => Some((t.clone(), f.x, f.y, f.w)),
+                    _ => None,
+                })
+                .collect();
+            (placed, height)
+        };
+        for text in VARIED {
+            let long = [text; 4].join("");
+            for width in [0.0, 9.0, 23.0, 40.0, 77.0, 160.0, 400.0] {
+                for spacing in [0.0, 1.5] {
+                    assert_eq!(
+                        laid(&long, width, spacing, false),
+                        laid(&long, width, spacing, true),
+                        "{text:?} at {width}, spacing {spacing}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 100,000 opportunities, a vertical tab's or an ideograph's each,
+    /// under `letter-spacing` too, and among private-use characters, at
+    /// width 0 and at a narrow width: what is measured grows with the
+    /// text, each piece's width taken from the item's.
+    #[test]
+    fn a_hundred_thousand_opportunities_are_cut_in_linear_time() {
+        let cases = [
+            ("\u{b}".repeat(100_000), 0.0),
+            ("\u{4e00}".repeat(100_000), 0.0),
+            ("\u{4e00}".repeat(100_000), 1.5),
+            ("\u{4e00}\u{e000}".repeat(50_000), 0.0),
+            // Carriage returns a script puts in a text node, which the
+            // parser never normalized, under letter-spacing.
+            ("a\r".repeat(100_000), 1.5),
+            ("\u{e9}\r\n".repeat(100_000), 1.5),
+            // A letter before 100,000 signs, which pieces alone itemize
+            // otherwise: the tables cannot give them, the budget bounds
+            // what is measured.
+            (format!("a{}", "\u{b}".repeat(100_000)), 0.0),
+            (format!("a{}", "\u{b}".repeat(100_000)), 1.5),
+        ];
+        for (text, spacing) in cases {
+            for width in [0.0, 50.0] {
+                let began = std::time::Instant::now();
+                let (pieces, measured) = cut_spaced_on_a_small_stack(&text, width, spacing);
+                let took = began.elapsed();
+                assert!(!pieces.is_empty());
+                assert!(
+                    measured <= 8 * text.len() + fallback_budget(text.len()),
+                    "{measured} bytes measured at {width}"
+                );
+                // Debug builds are slow; a quadratic cut took minutes here.
+                assert!(took < std::time::Duration::from_secs(60), "{took:?}");
+            }
         }
     }
 }
