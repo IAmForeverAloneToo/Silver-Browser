@@ -15,6 +15,7 @@
 
 mod address_space;
 pub mod cache;
+pub mod client_hints;
 mod content_coding;
 pub mod cookies;
 pub mod csp;
@@ -41,7 +42,7 @@ pub use cache::{Cache, CacheMode};
 pub use disposition::{Disposition, content_disposition};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
-    CHROME_MAJOR, Client, Credentials, Delivery, Destination, Exposed, Initiator,
+    CHROME_FULL, CHROME_MAJOR, Client, Credentials, Delivery, Destination, Exposed, Initiator,
     MINIMAL_USER_AGENT, Method, Mode, Redirect, Request, Response, ResponseType, USER_AGENT, blob,
 };
 pub use headers::HeaderList;

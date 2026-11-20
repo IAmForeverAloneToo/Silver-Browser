@@ -3010,6 +3010,11 @@ impl DocumentHost {
                 self.push_state(state.into(), url, replace)?;
                 Ok(Answer::Nothing)
             }
+            Call::UserAgentData => Ok(if self.window.compat {
+                Answer::String(user_agent_data())
+            } else {
+                Answer::Nothing
+            }),
             Call::NavigatorInfo => {
                 let (agent, mode) = if self.window.compat {
                     (net::USER_AGENT, "chrome")
@@ -9427,4 +9432,56 @@ pub(crate) fn random_bytes(count: u32) -> Result<Answer, DomError> {
             "The random generator failed.",
         ))
     }
+}
+
+/// `navigator.userAgentData`'s values as JSON (2026-11-20, User-Agent
+/// Client Hints): the reference's for this system, this browser among
+/// the brands (`net::client_hints`), the OS version read at start.
+pub(crate) fn user_agent_data() -> String {
+    use std::fmt::Write as _;
+    let list = |brands: Vec<(String, String)>| {
+        let mut out = String::from("[");
+        for (i, (brand, version)) in brands.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(
+                out,
+                "{{\"brand\":{},\"version\":{}}}",
+                json_string(brand),
+                json_string(version)
+            );
+        }
+        out.push(']');
+        out
+    };
+    let (architecture, bitness) = net::client_hints::architecture();
+    format!(
+        "{{\"architecture\":{},\"bitness\":{},\"brands\":{},\"formFactors\":[\"Desktop\"],\
+         \"fullVersionList\":{},\"mobile\":false,\"model\":\"\",\"platform\":{},\
+         \"platformVersion\":{},\"uaFullVersion\":{},\"wow64\":false}}",
+        json_string(architecture),
+        json_string(bitness),
+        list(net::client_hints::brands(false)),
+        list(net::client_hints::brands(true)),
+        json_string(net::client_hints::platform()),
+        json_string(&crate::platform_version()),
+        json_string(net::CHROME_FULL),
+    )
+}
+
+/// `text` as a JSON string.
+fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

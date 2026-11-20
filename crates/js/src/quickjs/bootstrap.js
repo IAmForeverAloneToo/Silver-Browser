@@ -599,7 +599,7 @@
   const SECURE = native.secure === true;
   const SECURE_ONLY = {
     __proto__: null, Cache: true, CacheStorage: true, ServiceWorker: true,
-    ServiceWorkerContainer: true, ServiceWorkerRegistration: true,
+    ServiceWorkerContainer: true, ServiceWorkerRegistration: true, NavigatorUAData: true,
   };
 
   // Of the interfaces the bindings make, those every worker has too
@@ -618,7 +618,7 @@
     OffscreenCanvas: true, OffscreenCanvasRenderingContext2D: true, Path2D: true,
     Performance: true, PerformanceEntry: true, PerformanceMark: true, PerformanceMeasure: true,
     PerformanceObserver: true, PerformanceObserverEntryList: true,
-    PerformanceResourceTiming: true, Crypto: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
+    PerformanceResourceTiming: true, Crypto: true, NavigatorUAData: true, ProgressEvent: "notservice", QuotaExceededError: true, Request: true,
     Response: true, TextDecoder: true, TextEncoder: true, TextMetrics: true, URL: true,
     URLSearchParams: true, Worker: "notservice", FileReader: true,
     MessageChannel: true, MessagePort: true, Cache: true, CacheStorage: true,
@@ -21387,6 +21387,95 @@
     return languages;
   }
 
+  // ---- User-Agent Client Hints (2026-11-20) --------------------------------
+
+  // `navigator.userAgentData`, a secure context's: what the host says of
+  // the brands, the platform and the high-entropy hints, as the
+  // reference gives them (probed, Chrome 157). A hint answers only when
+  // asked for by name; the low-entropy ones always. The keys of an
+  // answer are in the reference's order, its names sorted.
+  const UA_HINTS = [
+    "architecture", "bitness", "formFactors", "fullVersionList", "model",
+    "platformVersion", "uaFullVersion", "wow64",
+  ];
+  let uaData = null;
+  function uaValues() {
+    if (uaData === null) {
+      const text = native.userAgentData();
+      uaData = typeof text === "string" ? JSONParse(text) : undefined;
+    }
+    return uaData;
+  }
+  // A list of brands as the bindings hand it out: fresh objects.
+  function brandList(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      ArrayPush(out, { brand: list[i].brand, version: list[i].version });
+    }
+    return out;
+  }
+  class NavigatorUAData {
+    #brands;
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("NavigatorUAData");
+      }
+      this.#brands = ObjectFreeze(brandList(uaValues().brands));
+    }
+
+    get brands() {
+      return this.#brands;
+    }
+
+    get mobile() {
+      return uaValues().mobile;
+    }
+
+    get platform() {
+      return uaValues().platform;
+    }
+
+    getHighEntropyValues(hints) {
+      if (!(this instanceof NavigatorUAData)) {
+        return PromiseReject(illegalInvocation());
+      }
+      let asked;
+      try {
+        need(arguments.length, 1, "getHighEntropyValues", "NavigatorUAData");
+        asked = sequence(hints, "getHighEntropyValues", "NavigatorUAData", str);
+      } catch (e) {
+        return PromiseReject(e);
+      }
+      const values = uaValues();
+      const answer = {};
+      const keys = ["brands", "mobile", "platform"];
+      for (let i = 0; i < UA_HINTS.length; i++) {
+        if (ArrayIncludes(asked, UA_HINTS[i])) {
+          ArrayPush(keys, UA_HINTS[i]);
+        }
+      }
+      ArraySort(keys);
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        const value = values[key];
+        if (key === "brands" || key === "fullVersionList") {
+          answer[key] = brandList(value);
+        } else if (key === "formFactors") {
+          answer[key] = ArraySlice(value, 0);
+        } else {
+          answer[key] = value;
+        }
+      }
+      return PromiseResolve(answer);
+    }
+
+    toJSON() {
+      return { brands: brandList(uaValues().brands), mobile: this.mobile, platform: this.platform };
+    }
+  }
+  expose(NavigatorUAData, "NavigatorUAData");
+  let userAgentData = null;
+
   class Navigator {
     constructor(key) {
       if (key !== KEY) {
@@ -21470,6 +21559,17 @@
       return false;
     }
 
+    // In the Chrome compatibility mode alone; the Gecko mode has none.
+    get userAgentData() {
+      if (uaValues() === undefined) {
+        return undefined;
+      }
+      if (userAgentData === null) {
+        userAgentData = new NavigatorUAData(KEY);
+      }
+      return userAgentData;
+    }
+
     get pdfViewerEnabled() {
       return false;
     }
@@ -21485,6 +21585,10 @@
     javaEnabled() {
       return false;
     }
+  }
+  // A secure context's alone ([SecureContext]).
+  if (!SECURE) {
+    ReflectDeleteProperty(Navigator.prototype, "userAgentData");
   }
   expose(Navigator, "Navigator");
   const navigator = new Navigator(KEY);
@@ -21554,6 +21658,10 @@
   {
     const shared = ["appCodeName", "appName", "appVersion", "language", "languages", "onLine",
       "platform", "product", "userAgent"];
+    // A secure context's alone, as the window's.
+    if (SECURE) {
+      ArrayPush(shared, "userAgentData");
+    }
     for (let i = 0; i < shared.length; i++) {
       defineProperty(WorkerNavigator.prototype, shared[i],
         getOwnPropertyDescriptor(Navigator.prototype, shared[i]));

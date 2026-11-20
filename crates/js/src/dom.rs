@@ -923,6 +923,10 @@ pub enum Call {
     /// What `navigator` reports (D12): its user agent string, its
     /// platform, and its compatibility mode, `gecko` or `chrome`.
     NavigatorInfo,
+    /// `navigator.userAgentData`'s values (2026-11-20, User-Agent Client
+    /// Hints), as JSON: every hint, the bindings giving those asked for;
+    /// none in the Gecko mode.
+    UserAgentData,
     /// The viewport's width and height in CSS pixels, and the device
     /// pixel ratio.
     Viewport,

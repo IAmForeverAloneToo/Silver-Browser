@@ -175,6 +175,7 @@ pdf-writer = "0.15"
 # docs/design/processes.md); and the system's time zone and the user's
 # region, for Intl (D63).
 windows-sys = { version = "0.61", features = [
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",
@@ -186,6 +187,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_UI_WindowsAndMessaging",

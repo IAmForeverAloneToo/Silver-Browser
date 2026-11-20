@@ -3485,3 +3485,51 @@ fn a_restyle_walks_the_flat_tree_once_however_deep_slots_nest_it() {
         );
     });
 }
+
+/// `navigator.userAgentData` (2026-11-20, User-Agent Client Hints): the
+/// brands, mobile and platform the client hints give, one object; the
+/// high-entropy hints only when asked for, an answer's keys sorted, an
+/// unknown hint passed over; as the reference's (probed, Chrome 157).
+#[test]
+fn user_agent_data_answers_as_the_client_hints_say() {
+    let console = logged(
+        "<script>\
+         const d = navigator.userAgentData;\
+         console.log(String(d), d === navigator.userAgentData, d.brands === d.brands,\
+           Object.isFrozen(d.brands), JSON.stringify(d.brands), d.mobile, d.platform);\
+         console.log(JSON.stringify(d), typeof NavigatorUAData);\
+         d.getHighEntropyValues(['platformVersion', 'architecture', 'nonsense', 'fullVersionList'])\
+           .then(v => console.log(Object.keys(v).join(), v.architecture, JSON.stringify(v.fullVersionList),\
+             v.platformVersion));\
+         d.getHighEntropyValues(5).catch(e => console.log(e.name));\
+         </script>",
+    );
+    let brands = |full: bool| {
+        net::client_hints::brands(full)
+            .iter()
+            .map(|(brand, version)| format!("{{\"brand\":\"{brand}\",\"version\":\"{version}\"}}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let platform = net::client_hints::platform();
+    assert_eq!(
+        console,
+        [
+            format!(
+                "[object NavigatorUAData] true true true [{}] false {platform}",
+                brands(false)
+            ),
+            format!(
+                "{{\"brands\":[{}],\"mobile\":false,\"platform\":\"{platform}\"}} function",
+                brands(false)
+            ),
+            format!(
+                "architecture,brands,fullVersionList,mobile,platform,platformVersion {} [{}] {}",
+                net::client_hints::architecture().0,
+                brands(true),
+                crate::platform_version()
+            ),
+            "TypeError".to_owned(),
+        ]
+    );
+}

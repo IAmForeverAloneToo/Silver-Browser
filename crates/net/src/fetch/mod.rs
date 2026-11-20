@@ -56,17 +56,21 @@ macro_rules! compat_platform {
 }
 
 /// The major version of the reference browser this one says it is: the
-/// stable Chrome it is probed against (156 on 2026-11-20), moved with it.
-/// The one place every string that names the version takes it from, so
-/// that they agree.
+/// installed stable Chrome it is probed against (157.0.8103.80 on
+/// 2026-11-20), moved with it. The one place every string that names the
+/// version takes it from, so that they agree.
 macro_rules! chrome_major {
     () => {
-        "156"
+        "157"
     };
 }
 
 /// [`chrome_major`]'s version, for what builds its strings at run time.
 pub const CHROME_MAJOR: &str = chrome_major!();
+
+/// The reference's full version, which the client hints' full version
+/// list and `uaFullVersion` give: of [`CHROME_MAJOR`].
+pub const CHROME_FULL: &str = concat!(chrome_major!(), ".0.8103.80");
 
 /// The `User-Agent` requests send unless the user asks otherwise: exactly
 /// the reduced string the reference browser on the same system sends
@@ -1319,6 +1323,20 @@ impl Client {
     fn request_headers(&self, request: &Request, url: &Url, hop: &Hop) -> HeaderList {
         let mut headers = HeaderList::new();
         let author = &hop.author;
+        // The low-entropy client hints, first, to a potentially
+        // trustworthy URL, as the reference sends them (its others only
+        // through Accept-CH, which this version does not take yet).
+        if self.user_agent == USER_AGENT && url.is_potentially_trustworthy() {
+            headers.append(b"sec-ch-ua", crate::client_hints::sec_ch_ua().as_bytes());
+            headers.append(
+                b"sec-ch-ua-mobile",
+                crate::client_hints::SEC_CH_UA_MOBILE.as_bytes(),
+            );
+            headers.append(
+                b"sec-ch-ua-platform",
+                crate::client_hints::sec_ch_ua_platform().as_bytes(),
+            );
+        }
         if !author.contains(b"User-Agent") {
             headers.append(b"User-Agent", self.user_agent.as_bytes());
         }

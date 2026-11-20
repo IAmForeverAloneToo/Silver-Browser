@@ -1123,6 +1123,10 @@ fn main() {
     if let Some((zone, region)) = platform::time_zone() {
         engine::set_windows_time_zone(&zone, &region);
     }
+    // Its Windows build, which the client hints' `platformVersion` names.
+    if let Some(build) = platform::windows_build() {
+        engine::set_windows_build(build);
+    }
     // A renderer (M34) or the check of renderers: no window, no page.
     match std::env::args_os().nth(1) {
         Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),

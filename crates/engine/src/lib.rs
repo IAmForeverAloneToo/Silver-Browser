@@ -180,6 +180,25 @@ pub use image_store::MAX_DECODE_THREADS;
 pub use inspect::MAX_INSPECTED_MESSAGES;
 pub use js::{ConsoleKind, MAX_PREVIEW_BYTES, MAX_STACK_FRAMES, StackFrame};
 pub use js::{ConsoleLevel, set_windows_time_zone, warm_bindings};
+
+/// The system's Windows build (2026-11-20), read once as each process of
+/// the executable starts, as its time zone is: `platformVersion`, which
+/// the client hints give. None elsewhere, or where it could not be read.
+static WINDOWS_BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// Tells the engine the system's Windows build, once.
+pub fn set_windows_build(build: u32) {
+    let _ = WINDOWS_BUILD.set(build);
+}
+
+/// The client hints' `platformVersion`: Windows' contract version for
+/// its build (`net::client_hints`), or empty where none was told.
+pub(crate) fn platform_version() -> String {
+    WINDOWS_BUILD
+        .get()
+        .map(|build| net::client_hints::windows_platform_version(*build))
+        .unwrap_or_default()
+}
 pub use keys::{Key, KeyOutcome};
 pub use loader::{LoadError, LoadState};
 pub use net::{Client, NetworkError, Url};

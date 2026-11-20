@@ -309,6 +309,26 @@ fn a_request_sends_its_fields() {
             ")"
         )
     );
+    // The low-entropy client hints with the reference's string, to a
+    // potentially trustworthy URL (the test server's loopback); none with
+    // D12's (2026-11-20).
+    assert_eq!(
+        sent.header("sec-ch-ua"),
+        Some(crate::client_hints::sec_ch_ua().as_str())
+    );
+    assert_eq!(sent.header("sec-ch-ua-mobile"), Some("?0"));
+    assert_eq!(
+        sent.header("sec-ch-ua-platform"),
+        Some(crate::client_hints::sec_ch_ua_platform().as_str())
+    );
+    assert!(
+        server
+            .requests()
+            .last()
+            .unwrap()
+            .header("sec-ch-ua")
+            .is_none()
+    );
     assert_eq!(
         sent.header("Accept"),
         Some("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")

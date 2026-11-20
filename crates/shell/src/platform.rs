@@ -158,6 +158,19 @@ pub(crate) fn reduced_motion() -> Option<bool> {
     }
 }
 
+/// The system's Windows build number (2026-11-20), which the client
+/// hints' `platformVersion` names; `None` elsewhere.
+pub(crate) fn windows_build() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        windows::build()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// The system's time zone as Windows names it (its key name, `W. Europe
 /// Standard Time`) and the user's region (`DE`, or ""), which `Intl`
 /// maps to an IANA name as ICU does (D63). `None` elsewhere, where the
@@ -1598,6 +1611,7 @@ mod audio {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Globalization::{GEO_ISO2, GEOCLASS_NATION, GetGeoInfoW, GetUserGeoID};
     use windows_sys::Win32::Security::Cryptography::{
@@ -1606,6 +1620,7 @@ mod windows {
     use windows_sys::Win32::System::ProcessStatus::{
         K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::System::Time::{
         DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, TIME_ZONE_ID_INVALID,
@@ -1614,6 +1629,20 @@ mod windows {
         SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
     };
     use windows_sys::core::BOOL;
+
+    /// The system's build number, from RtlGetVersion, which no
+    /// compatibility mode shims (2026-11-20, the client hints'
+    /// `platformVersion`).
+    pub(super) fn build() -> Option<u32> {
+        let mut info = OSVERSIONINFOW {
+            dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+            ..OSVERSIONINFOW::default()
+        };
+        // SAFETY: the structure is ours, its size set as the call wants;
+        // the call only writes into it.
+        let status = unsafe { RtlGetVersion(&raw mut info) };
+        (status == 0 && info.dwBuildNumber > 0).then_some(info.dwBuildNumber)
+    }
 
     /// What process `id` holds: its private bytes and its working set,
     /// read with no more than the right to query it.
@@ -1827,6 +1856,15 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The build RtlGetVersion reads is Windows 10's or later, where the
+    /// executable runs (2026-11-20, the client hints).
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_build_is_read() {
+        let build = windows_build().expect("a build");
+        assert!(build >= 10240, "{build}");
+    }
 
     #[cfg(windows)]
     #[test]

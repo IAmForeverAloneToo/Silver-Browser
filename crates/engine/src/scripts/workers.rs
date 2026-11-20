@@ -1294,6 +1294,11 @@ impl ScriptingHost for WorkerHost {
             )),
             Call::DocumentUrl => Ok(Answer::MaybeString(self.url.as_ref().map(Url::to_string))),
             Call::Location => Ok(Answer::Strings(location_parts(self.url.as_ref()))),
+            Call::UserAgentData => Ok(if self.compat {
+                Answer::String(super::host::user_agent_data())
+            } else {
+                Answer::Nothing
+            }),
             Call::NavigatorInfo => {
                 let (agent, mode) = if self.compat {
                     (net::USER_AGENT, "chrome")

@@ -529,12 +529,18 @@ taken, and asks for the default). **Since 2026-11-20 the string is
 exactly the reference browser's reduced one** for the platform, with
 no `Silver/<version>` token (D80's, void): this browser claims to be
 Chrome, and a token no Chrome sends is what bot checks see (Kasada's
-probes on Twitch run regular expressions over it). Its major version
-is the stable Chrome the probes run against, in one constant
-(`net::CHROME_MAJOR`) every string naming it takes. The browser is to
-be named in client hints only (`navigator.userAgentData` brands and
-`Sec-CH-UA`, next to "Chromium" and the GREASE brand), as Brave is;
-none are sent yet.
+probes on Twitch run regular expressions over it). Its version is the
+installed stable Chrome the probes run against (157.0.8103.80), in one
+place (`net::CHROME_MAJOR`, `net::CHROME_FULL`) every string naming it
+takes. The browser is named in client hints only, as Brave is
+(`net::client_hints`): `navigator.userAgentData`, a secure context's,
+and the `Sec-CH-UA`, `-Mobile` and `-Platform` fields sent to
+potentially trustworthy URLs, give a GREASE brand, "Silver" and
+"Chromium" in the order and GREASE form Chromium derives from the major
+version; the high-entropy hints only through `getHighEntropyValues`
+(Accept-CH is not taken yet), `platformVersion` from the Windows build
+each process reads at start (RtlGetVersion), as the reference's
+Universal API Contract version.
 
 **Mutations reach the frame (M25.3).** Nothing new is needed to make a
 script's change visible: it goes through `dom::Document`'s methods,
