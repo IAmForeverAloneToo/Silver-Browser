@@ -55,16 +55,30 @@ macro_rules! compat_platform {
     };
 }
 
-/// The `User-Agent` requests send unless the user asks otherwise (D80):
-/// what the reference browser on the same system sends, with this
-/// browser named after it, as Edge names itself after Chrome's tokens,
-/// so that a site that gates on the string's shape judges the page's
-/// rendering, not its sniffing.
+/// The major version of the reference browser this one says it is: the
+/// stable Chrome it is probed against (156 on 2026-11-20), moved with it.
+/// The one place every string that names the version takes it from, so
+/// that they agree.
+macro_rules! chrome_major {
+    () => {
+        "156"
+    };
+}
+
+/// [`chrome_major`]'s version, for what builds its strings at run time.
+pub const CHROME_MAJOR: &str = chrome_major!();
+
+/// The `User-Agent` requests send unless the user asks otherwise: exactly
+/// the reduced string the reference browser on the same system sends
+/// (2026-11-20; D80's `Silver/<version>` token is void). This browser
+/// claims to be Chrome, and a token no Chrome sends is what a check sees;
+/// it is named in client hints only, as Brave is.
 pub const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (",
     compat_platform!(),
-    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Silver/",
-    env!("CARGO_PKG_VERSION")
+    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/",
+    chrome_major!(),
+    ".0.0.0 Safari/537.36"
 );
 
 /// D12's honest, minimal string, which named nothing but the browser:

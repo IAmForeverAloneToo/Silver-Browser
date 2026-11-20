@@ -520,14 +520,21 @@ compatibility mode: `vendor` `Google Inc.`, `productSub` `20030107`),
 for a page that refuses an engine it does not recognize. Net takes the
 string from the request rather than a constant.
 
-**D80 (2026-11-13) makes the compatible string the default**: sites gate
+**D80 (2026-11-13) made the compatible string the default**: sites gate
 on the string's shape, and the browser is to be judged on its
-rendering, not its sniffing. Requests and `navigator.userAgent` send the
-reference browser's string with `Silver/<version>` appended, as Edge
-appends its own to Chrome's tokens, and `navigator` takes HTML's Chrome
+rendering, not its sniffing. `navigator` takes HTML's Chrome
 compatibility mode; the shell's `--minimal-user-agent` sends D12's
 string and the Gecko mode instead (`--compat-user-agent` is still
-taken, and asks for the default).
+taken, and asks for the default). **Since 2026-11-20 the string is
+exactly the reference browser's reduced one** for the platform, with
+no `Silver/<version>` token (D80's, void): this browser claims to be
+Chrome, and a token no Chrome sends is what bot checks see (Kasada's
+probes on Twitch run regular expressions over it). Its major version
+is the stable Chrome the probes run against, in one constant
+(`net::CHROME_MAJOR`) every string naming it takes. The browser is to
+be named in client hints only (`navigator.userAgentData` brands and
+`Sec-CH-UA`, next to "Chromium" and the GREASE brand), as Brave is;
+none are sent yet.
 
 **Mutations reach the frame (M25.3).** Nothing new is needed to make a
 script's change visible: it goes through `dom::Document`'s methods,

@@ -1896,7 +1896,9 @@ fn location_navigator_and_screen_say_what_d12_lets_them() {
              n.onLine, n.cookieEnabled, n.webdriver, n.pdfViewerEnabled, n.plugins.length, \
              n.mimeTypes.length, n.javaEnabled(), n.languages === n.languages, \
              typeof n.hardwareConcurrency, typeof n.userAgentData); \
-             console.log(n.userAgent.indexOf(' Silver/') > 0, \
+             console.log(n.userAgent.indexOf('Silver') < 0 && \
+             n.userAgent.endsWith(' Chrome/' + n.appVersion.split('Chrome/')[1]) && \
+             n.appVersion === n.userAgent.slice(8), \
              ['Win32', 'MacIntel', 'Linux x86_64'].indexOf(n.platform) >= 0); \
              console.log(innerWidth, innerHeight); \
              console.log(screen.width === innerWidth, screen.height === innerHeight, \

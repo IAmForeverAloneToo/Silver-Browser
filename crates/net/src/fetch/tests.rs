@@ -269,14 +269,25 @@ fn a_request_sends_its_fields() {
         (sent.method.as_str(), sent.target.as_str()),
         ("GET", "/a?b=c")
     );
-    // The reference browser's string, this browser named after it, by
-    // default (D80).
+    // The reference browser's reduced string exactly, its version the one
+    // constant's, nothing naming this browser (2026-11-20).
     assert_eq!(sent.header("User-Agent"), Some(USER_AGENT));
     assert!(
         USER_AGENT.starts_with("Mozilla/5.0 (")
-            && USER_AGENT.contains(") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/")
-            && USER_AGENT.ends_with(concat!(" Safari/537.36 Silver/", env!("CARGO_PKG_VERSION"))),
+            && USER_AGENT.ends_with(&format!(
+                ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36",
+                super::CHROME_MAJOR
+            ))
+            && !USER_AGENT.contains("Silver"),
         "{USER_AGENT}"
+    );
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        USER_AGENT,
+        format!(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{}.0.0.0 Safari/537.36",
+            super::CHROME_MAJOR
+        )
     );
     // D12's minimal string, when a client is made to send it.
     let compat = client().with_user_agent(super::MINIMAL_USER_AGENT);

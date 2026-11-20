@@ -41,8 +41,8 @@ pub use cache::{Cache, CacheMode};
 pub use disposition::{Disposition, content_disposition};
 pub use error::{AbortHandle, NetworkError, TlsFailure};
 pub use fetch::{
-    Client, Credentials, Delivery, Destination, Exposed, Initiator, MINIMAL_USER_AGENT, Method,
-    Mode, Redirect, Request, Response, ResponseType, USER_AGENT, blob,
+    CHROME_MAJOR, Client, Credentials, Delivery, Destination, Exposed, Initiator,
+    MINIMAL_USER_AGENT, Method, Mode, Redirect, Request, Response, ResponseType, USER_AGENT, blob,
 };
 pub use headers::HeaderList;
 pub use hsts::Hsts;
