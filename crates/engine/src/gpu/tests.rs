@@ -96,6 +96,9 @@ fn the_client_protocol_reads_back_what_it_wrote() {
                 fallback: false,
                 features: vec!["core-features-and-limits".to_owned()],
                 limits: vec![("maxBindGroups".to_owned(), 4)],
+                pci_vendor: 0x8086,
+                pci_device: 0x9a60,
+                description: "Intel(R) UHD Graphics".to_owned(),
             }),
         },
         Reply::Adapter {
@@ -115,6 +118,9 @@ fn the_client_protocol_reads_back_what_it_wrote() {
         fallback: true,
         features: Vec::new(),
         limits: Vec::new(),
+        pci_vendor: 0,
+        pci_device: 0,
+        description: String::new(),
     });
     // A batch cut short, or with bytes after it, is no batch.
     let bytes = wire::requests(&requests);

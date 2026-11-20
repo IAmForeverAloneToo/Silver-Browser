@@ -3177,7 +3177,61 @@
       "UNSIGNED_NORMALIZED_EXT", 0x8C17],
     WEBGL_compressed_texture_s3tc: ["COMPRESSED_RGB_S3TC_DXT1_EXT", 0x83F0, "COMPRESSED_RGBA_S3TC_DXT1_EXT", 0x83F1,
       "COMPRESSED_RGBA_S3TC_DXT3_EXT", 0x83F2, "COMPRESSED_RGBA_S3TC_DXT5_EXT", 0x83F3],
+    WEBGL_debug_renderer_info: ["UNMASKED_VENDOR_WEBGL", 0x9245, "UNMASKED_RENDERER_WEBGL", 0x9246],
     WEBGL_depth_texture: ["UNSIGNED_INT_24_8_WEBGL", 0x84FA],
+  };
+
+  // Each extension's interface, whose name its objects' tag is, as the
+  // reference's (probed, Chrome 156).
+  const WEBGL_INTERFACES = {
+    ANGLE_instanced_arrays: "ANGLEInstancedArrays",
+    EXT_blend_minmax: "EXTBlendMinMax",
+    EXT_clip_control: "EXTClipControl",
+    EXT_color_buffer_float: "EXTColorBufferFloat",
+    EXT_color_buffer_half_float: "EXTColorBufferHalfFloat",
+    EXT_conservative_depth: "EXTConservativeDepth",
+    EXT_depth_clamp: "EXTDepthClamp",
+    EXT_disjoint_timer_query: "EXTDisjointTimerQuery",
+    EXT_disjoint_timer_query_webgl2: "EXTDisjointTimerQueryWebGL2",
+    EXT_float_blend: "EXTFloatBlend",
+    EXT_frag_depth: "EXTFragDepth",
+    EXT_polygon_offset_clamp: "EXTPolygonOffsetClamp",
+    EXT_render_snorm: "EXTRenderSnorm",
+    EXT_shader_texture_lod: "EXTShaderTextureLOD",
+    EXT_sRGB: "EXTsRGB",
+    EXT_texture_compression_bptc: "EXTTextureCompressionBPTC",
+    EXT_texture_compression_rgtc: "EXTTextureCompressionRGTC",
+    EXT_texture_filter_anisotropic: "EXTTextureFilterAnisotropic",
+    EXT_texture_mirror_clamp_to_edge: "EXTTextureMirrorClampToEdge",
+    EXT_texture_norm16: "EXTTextureNorm16",
+    KHR_parallel_shader_compile: "KHRParallelShaderCompile",
+    NV_shader_noperspective_interpolation: "NVShaderNoperspectiveInterpolation",
+    OES_draw_buffers_indexed: "OESDrawBuffersIndexed",
+    OES_element_index_uint: "OESElementIndexUint",
+    OES_fbo_render_mipmap: "OESFboRenderMipmap",
+    OES_sample_variables: "OESSampleVariables",
+    OES_shader_multisample_interpolation: "OESShaderMultisampleInterpolation",
+    OES_standard_derivatives: "OESStandardDerivatives",
+    OES_texture_float: "OESTextureFloat",
+    OES_texture_float_linear: "OESTextureFloatLinear",
+    OES_texture_half_float: "OESTextureHalfFloat",
+    OES_texture_half_float_linear: "OESTextureHalfFloatLinear",
+    OES_vertex_array_object: "OESVertexArrayObject",
+    OVR_multiview2: "OVRMultiview2",
+    WEBGL_blend_func_extended: "WebGLBlendFuncExtended",
+    WEBGL_clip_cull_distance: "WebGLClipCullDistance",
+    WEBGL_color_buffer_float: "WebGLColorBufferFloat",
+    WEBGL_compressed_texture_s3tc: "WebGLCompressedTextureS3TC",
+    WEBGL_compressed_texture_s3tc_srgb: "WebGLCompressedTextureS3TCsRGB",
+    WEBGL_debug_renderer_info: "WebGLDebugRendererInfo",
+    WEBGL_debug_shaders: "WebGLDebugShaders",
+    WEBGL_depth_texture: "WebGLDepthTexture",
+    WEBGL_draw_buffers: "WebGLDrawBuffers",
+    WEBGL_lose_context: "WebGLLoseContext",
+    WEBGL_multi_draw: "WebGLMultiDraw",
+    WEBGL_polygon_mode: "WebGLPolygonMode",
+    WEBGL_provoking_vertex: "WebGLProvokingVertex",
+    WEBGL_stencil_texturing: "WebGLStencilTexturing",
   };
 
   // An extension's object for a context: its interface's name its
@@ -3189,7 +3243,7 @@
       }
     };
     const proto = cls.prototype;
-    defineProperty(proto, toStringTag, { value: name, configurable: true });
+    defineProperty(proto, toStringTag, { value: WEBGL_INTERFACES[name] || name, configurable: true });
     const constants = WEBGL_EXTENSIONS[name] || [];
     for (let i = 0; i < constants.length; i += 2) {
       defineProperty(proto, constants[i], { value: constants[i + 1], enumerable: true });

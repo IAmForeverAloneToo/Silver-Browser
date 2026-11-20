@@ -180,6 +180,9 @@ pub const INCR_WRAP: u32 = 0x8507;
 pub const DECR_WRAP: u32 = 0x8508;
 
 pub const VENDOR: u32 = 0x1F00;
+/// `WEBGL_debug_renderer_info`'s.
+pub const UNMASKED_VENDOR_WEBGL: u32 = 0x9245;
+pub const UNMASKED_RENDERER_WEBGL: u32 = 0x9246;
 pub const RENDERER: u32 = 0x1F01;
 pub const VERSION: u32 = 0x1F02;
 

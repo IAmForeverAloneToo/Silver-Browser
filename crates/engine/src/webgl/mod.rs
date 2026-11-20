@@ -338,6 +338,8 @@ pub(crate) struct Context {
     pub gpu: draw::Gpu,
     pub surfaces: framebuffer::Surfaces,
     pub features: ext::Features,
+    /// The adapter it draws with, as `WEBGL_debug_renderer_info` names it.
+    pub adapter: ext::Adapter,
     pub ext: ext::Enabled,
     pub v2: webgl2::State2,
 }
@@ -617,7 +619,7 @@ impl Context {
         attributes: Attributes,
         size: (u32, u32),
     ) -> Option<Context> {
-        let (device, features) = draw::device(client)?;
+        let (device, features, adapter) = draw::device(client)?;
         let gpu = draw::Gpu::new(client, device);
         Some(Context {
             version,
@@ -643,6 +645,7 @@ impl Context {
             gpu,
             surfaces: framebuffer::Surfaces::default(),
             features,
+            adapter,
             ext: ext::Enabled::default(),
             v2: webgl2::State2::default(),
         })
@@ -2129,6 +2132,12 @@ impl Context {
         let s = &self.state;
         match name {
             VENDOR => Answer::String("WebKit".to_owned()),
+            UNMASKED_VENDOR_WEBGL if self.ext.on("WEBGL_debug_renderer_info") => {
+                Answer::String(self.adapter.unmasked_vendor())
+            }
+            UNMASKED_RENDERER_WEBGL if self.ext.on("WEBGL_debug_renderer_info") => {
+                Answer::String(self.adapter.unmasked_renderer())
+            }
             RENDERER => Answer::String("WebKit WebGL".to_owned()),
             VERSION => Answer::String(
                 if self.version == 2 {

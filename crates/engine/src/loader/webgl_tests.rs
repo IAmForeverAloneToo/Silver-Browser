@@ -584,7 +584,7 @@ log('divisor ' + gl.getVertexAttrib(1, instanced.VERTEX_ATTRIB_ARRAY_DIVISOR_ANG
             "turned over 0,0,255,255",
             "not a source TypeError",
             "offered true true null",
-            "half [object OES_texture_half_float] 36193 true",
+            "half [object OESTextureHalfFloat] 36193 true",
             "float 8cd5 0.25,2.5,-1,1 5126",
             "divisor 3 0",
         ]
@@ -1067,7 +1067,7 @@ log('webgl1 ' + String(ext) + ' ' + g1.getParameter(ext.MAX_DRAW_BUFFERS_WEBGL) 
             "resolved 0 255,0,255,255",
             "scaled from itself 1282",
             "invalidate 1280",
-            "webgl1 [object WEBGL_draw_buffers] 8 true 0",
+            "webgl1 [object WebGLDrawBuffers] 8 true 0",
         ]
     );
 }
@@ -1123,4 +1123,46 @@ log('done');
             "renderbuffer true 0"
         ]
     );
+}
+
+/// `WEBGL_debug_renderer_info` (2026-11-20, Kasada reads it on Twitch):
+/// offered after the S3TC extension as the reference lists it; its
+/// enums refused until it is enabled, then the reference's ANGLE strings
+/// of the adapter drawn with; its object tagged by its interface, its
+/// constants the reference's. Probed in Chrome 156.
+#[test]
+fn the_debug_renderer_info_names_the_adapter_as_the_reference_does() {
+    for kind in ["webgl", "webgl2"] {
+        let Some(lines) = run_with(
+            kind,
+            r#"
+const before = gl.getParameter(0x9246);
+log('before ' + before + ' ' + gl.getError());
+const names = gl.getSupportedExtensions();
+log('offered ' + names.includes('WEBGL_debug_renderer_info'));
+const info = gl.getExtension('WEBGL_debug_renderer_info');
+log('object ' + String(info) + ' ' + info.UNMASKED_VENDOR_WEBGL + ' ' + info.UNMASKED_RENDERER_WEBGL
+  + ' ' + (gl.getExtension('webgl_debug_renderer_info') === info));
+const vendor = gl.getParameter(info.UNMASKED_VENDOR_WEBGL);
+const renderer = gl.getParameter(info.UNMASKED_RENDERER_WEBGL);
+log('vendor ' + /^Google Inc\. \(.+\)$/.test(vendor));
+log('renderer ' + /^ANGLE \(.+\)$/.test(renderer) + ' ' + gl.getError());
+log('plain ' + gl.getParameter(gl.VENDOR) + ' / ' + gl.getParameter(gl.RENDERER));
+"#,
+        ) else {
+            return;
+        };
+        assert_eq!(
+            lines,
+            [
+                "before null 1280",
+                "offered true",
+                "object [object WebGLDebugRendererInfo] 37445 37446 true",
+                "vendor true",
+                "renderer true 0",
+                "plain WebKit / WebKit WebGL",
+            ],
+            "{kind}"
+        );
+    }
 }

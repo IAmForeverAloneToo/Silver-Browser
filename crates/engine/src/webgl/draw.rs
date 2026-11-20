@@ -93,7 +93,7 @@ pub(crate) struct Gpu {
 
 /// A device for a context, with the features WebGL's extensions take
 /// where the adapter has them: its number, or none without an adapter.
-pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features)> {
+pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features, super::ext::Adapter)> {
     let adapter = client.id();
     let (reply, _) = wait(client, |call| Request::RequestAdapter {
         call,
@@ -116,6 +116,7 @@ pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features)> {
         .map_or(8, |(_, v)| *v)
         .min(16);
     let features = Features::of(&info.features);
+    let named = super::ext::Adapter::of(&info);
     let device = client.id();
     let reply = wait(client, |call| Request::RequestDevice {
         call,
@@ -132,7 +133,7 @@ pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features)> {
     client.flush();
     let (reply, _) = reply?;
     match reply {
-        Reply::Device { result: Ok(_), .. } => Some((device, features)),
+        Reply::Device { result: Ok(_), .. } => Some((device, features, named)),
         _ => None,
     }
 }

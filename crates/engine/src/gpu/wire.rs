@@ -233,13 +233,18 @@ wire_struct! {
 wire_struct! {
     /// What a page is told of an adapter (D39): the vendor by name, from
     /// the adapter's PCI vendor, or empty; whether it is the fallback;
-    /// its features and limits by WebGPU's names.
+    /// its features and limits by WebGPU's names. And for WebGL's
+    /// `WEBGL_debug_renderer_info` (2026-11-20): its PCI vendor and
+    /// device and its description, as the reference names an adapter.
     #[derive(Debug, Clone, PartialEq)]
     pub struct AdapterInfo {
         pub vendor: String,
         pub fallback: bool,
         pub features: Vec<String>,
         pub limits: Vec<(String, u64)>,
+        pub pci_vendor: u32,
+        pub pci_device: u32,
+        pub description: String,
     }
 }
 

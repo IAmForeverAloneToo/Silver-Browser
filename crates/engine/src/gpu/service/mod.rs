@@ -733,5 +733,8 @@ fn info_of(adapter: &wgpu::Adapter) -> AdapterInfo {
         fallback: info.device_type == wgpu::DeviceType::Cpu,
         features: names::feature_names(adapter.features()),
         limits: names::limit_values(&adapter.limits()),
+        pci_vendor: info.vendor,
+        pci_device: info.device,
+        description: info.name,
     }
 }
