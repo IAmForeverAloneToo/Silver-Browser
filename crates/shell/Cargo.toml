@@ -20,6 +20,10 @@ single-process = []
 style-crosscheck = ["engine/style-crosscheck"]
 # The scripts' sampler by URL, `SILVER_JS_SAMPLE=<period>`: a tool, off.
 js-sampler = ["engine/js-sampler"]
+# The scripts pages run dumped into `SILVER_DUMP_SCRIPTS`, for a corpus:
+# sweep builds only, never shipped; off. A renderer sends its sources to
+# the browser, which writes them.
+dump-scripts = ["engine/dump-scripts"]
 
 [dependencies]
 engine.workspace = true

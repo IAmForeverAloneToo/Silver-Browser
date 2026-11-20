@@ -46,6 +46,20 @@ pub(crate) struct Link {
 
 impl Link {
     pub(crate) fn new(sender: Sender<ToBrowser>) -> Arc<Link> {
+        // A sweep build's corpus (`dump-scripts`): the sources this
+        // sandboxed renderer runs go to the browser, which writes them.
+        #[cfg(feature = "dump-scripts")]
+        {
+            let to_dump = sender.clone();
+            js::dump::set_sink(Box::new(move |url, text, module, kind| {
+                let _ = to_dump.send(&ToBrowser::DumpScript {
+                    url: url.to_owned(),
+                    text: text.to_owned(),
+                    module: u32::from(module),
+                    kind: kind.to_owned(),
+                });
+            }));
+        }
         let to_gpu = sender.clone();
         Arc::new(Link {
             sender,

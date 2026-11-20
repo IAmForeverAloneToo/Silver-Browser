@@ -376,6 +376,17 @@ wire_enum! {
             message: String,
             default: String,
         },
+        /// A script a page ran, for a sweep build's corpus
+        /// (`dump-scripts`, js's `dump`): its URL, its text, 1 for a
+        /// module, and how it came. The browser names the file itself.
+        /// Not in a build without the feature, nor understood there.
+        #[cfg(feature = "dump-scripts")]
+        35 => DumpScript {
+            url: String,
+            text: String,
+            module: u32,
+            kind: String,
+        },
     }
 }
 

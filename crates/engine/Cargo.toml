@@ -17,6 +17,9 @@ gpu = ["render/gpu", "dep:wgpu", "dep:pollster"]
 style-crosscheck = []
 # The scripts' sampler by URL (js's `js-sampler`): off, compiled out.
 js-sampler = ["js/js-sampler"]
+# The scripts pages run dumped for a corpus (js's `dump-scripts`): sweep
+# builds only; off, compiled out.
+dump-scripts = ["js/dump-scripts"]
 # The hooks' timing (G247, dom's `hook_timing`): off, compiled out;
 # the benchmarks print a table of them after each measurement.
 hook-timing = [

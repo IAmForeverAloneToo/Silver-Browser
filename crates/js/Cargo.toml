@@ -9,6 +9,10 @@ license.workspace = true
 # which `SILVER_JS_SAMPLE` turns on: a tool, never shipped. Off, compiled
 # out, and the variable is never read.
 js-sampler = []
+# Sweep builds' dump of the scripts pages run (`quickjs/dump.rs`), into
+# the directory `SILVER_DUMP_SCRIPTS` names: a corpus for parsers, never
+# shipped. Off, compiled out, and the variable is never read.
+dump-scripts = []
 
 [dependencies]
 rquickjs.workspace = true

@@ -436,8 +436,13 @@ macro_rules! wire_enum {
         impl $crate::ipc::Wire for $name {
             #[allow(unused_variables)]
             fn encode(&self, out: &mut $crate::ipc::Encoder) {
+                // A variant's attributes are its arm's too: one a feature
+                // leaves out (`#[cfg]`) is not matched; its doc says
+                // nothing there.
+                #[allow(unused_doc_comments)]
                 match self {
                     $(
+                        $(#[$vmeta])*
                         $name::$variant { $($field),* } => {
                             out.u16($tag);
                             $( $crate::ipc::Wire::encode($field, out); )*
@@ -450,8 +455,10 @@ macro_rules! wire_enum {
             fn decode(
                 input: &mut $crate::ipc::Decoder<'_>,
             ) -> Result<Self, $crate::ipc::Malformed> {
+                #[allow(unused_doc_comments)]
                 match input.u16()? {
                     $(
+                        $(#[$vmeta])*
                         $tag => Ok($name::$variant {
                             $( $field: <$ty as $crate::ipc::Wire>::decode(input)?, )*
                         }),

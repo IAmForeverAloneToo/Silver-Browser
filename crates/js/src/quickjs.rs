@@ -7,6 +7,8 @@ mod bytecode;
 pub(crate) mod console;
 mod context;
 mod dom;
+#[cfg(feature = "dump-scripts")]
+pub mod dump;
 mod intl;
 mod intl_dates;
 mod intl_names;
@@ -617,6 +619,9 @@ struct QuickJsRealm<H: ScriptingHost> {
     /// Before the agent, which holds the runtime: a context goes first.
     context: Context,
     agent: Rc<AgentCore<H>>,
+    /// A worker's realm (`dump-scripts`): its sources so named.
+    #[cfg(feature = "dump-scripts")]
+    worker: bool,
 }
 
 impl<H: ScriptingHost> Agent<H> {
@@ -741,6 +746,16 @@ fn made_none(e: rquickjs::Error) -> ScriptError {
 }
 
 impl<H: ScriptingHost> QuickJsRealm<H> {
+    /// The modules a graph or an `import()` brought, dumped
+    /// (`dump-scripts`) by the URL of their responses.
+    #[cfg(feature = "dump-scripts")]
+    fn dump_modules(&self, modules: &[crate::ModuleSource]) {
+        let kind = if self.worker { "worker" } else { "external" };
+        for module in modules {
+            dump::dump(&module.text, &module.base, true, kind);
+        }
+    }
+
     fn new(
         kind: &RealmKind,
         agent: &Agent<H>,
@@ -896,6 +911,11 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             released,
             context,
             agent: core,
+            #[cfg(feature = "dump-scripts")]
+            worker: matches!(
+                kind,
+                RealmKind::DedicatedWorker { .. } | RealmKind::ServiceWorker
+            ),
         })
     }
 
@@ -1066,6 +1086,15 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return Err(dead(death));
         }
         self.begin(host, script.muted);
+        #[cfg(feature = "dump-scripts")]
+        {
+            let kind = match (self.worker, script.base.is_empty()) {
+                (true, _) => "worker",
+                (false, true) => "external",
+                (false, false) => "inline",
+            };
+            dump::dump(script.source, script.url, false, kind);
+        }
         // Its `import()`s' referrer (HTML's script record).
         let base = if script.base.is_empty() {
             script.url
@@ -1159,6 +1188,18 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
             return Err(dead(death));
         }
         self.begin(host, false);
+        #[cfg(feature = "dump-scripts")]
+        {
+            if let Some((text, _)) = script.inline {
+                dump::dump(
+                    text,
+                    script.url,
+                    true,
+                    if self.worker { "worker" } else { "inline" },
+                );
+            }
+            self.dump_modules(script.modules);
+        }
         self.modules.give(script.modules);
         self.modules.set_giving(script.options);
         let (entries, exhausted) = (self.entries.clone(), self.exhausted.clone());
@@ -1470,6 +1511,8 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                 modules,
                 error,
             } => {
+                #[cfg(feature = "dump-scripts")]
+                self.dump_modules(modules);
                 self.modules.give(modules);
                 self.modules.set_giving(self.modules.imported(*id));
                 let (state, slots) = (self.modules.clone(), self.entries.clone());

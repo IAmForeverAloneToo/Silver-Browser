@@ -46,6 +46,9 @@ pub use dom::{
     WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
+/// Sweep builds' dump of the scripts pages run (`dump-scripts`).
+#[cfg(feature = "dump-scripts")]
+pub use quickjs::dump;
 pub use quickjs::{
     Agent, Member, QuickJs, WeakAgent, set_windows_time_zone, take_reentered_reaches,
     take_unlent_calls, warm_bindings,

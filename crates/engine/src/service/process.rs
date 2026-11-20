@@ -340,6 +340,26 @@ pub(super) fn start_within(
                         reading.end(Gone::BadMessage("a second hello".into()), true);
                         None
                     }
+                    // A sweep build's corpus (`dump-scripts`): the browser
+                    // writes what the sandboxed renderer cannot, naming the
+                    // file itself; a module flag not 0 or 1, or a kind not
+                    // known, drops it.
+                    #[cfg(feature = "dump-scripts")]
+                    (
+                        State::Ready,
+                        ToBrowser::DumpScript {
+                            url,
+                            text,
+                            module,
+                            kind,
+                        },
+                    ) => {
+                        drop(state);
+                        if module <= 1 {
+                            js::dump::write(&text, &url, module == 1, &kind);
+                        }
+                        None
+                    }
                     (State::Ready, message) => {
                         drop(state);
                         let served = match &serve {
