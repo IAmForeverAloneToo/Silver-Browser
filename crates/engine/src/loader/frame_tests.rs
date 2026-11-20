@@ -1354,3 +1354,56 @@ fn a_parents_function_a_frames_animation_frame_calls_reaches_the_parents_documen
     }
     assert_eq!(lines, ["callback number drawn child"]);
 }
+
+#[test]
+fn a_frame_shown_after_it_was_made_hidden_hears_resize() {
+    // Made in a `display: none` subtree, its window 0 by 0, then shown:
+    // its first rendering steps at its box's size fire `resize`, as the
+    // reference browser's (WPT dynamic-viewport-units-rule-cache).
+    let mut tab = framed(
+        "<body style='margin:0; display:none'><iframe style='border:0; width:100px; \
+         height:100px' srcdoc=\"<script>onresize = () => console.log('resize', innerWidth, \
+         innerHeight)</script>\"></iframe>",
+    );
+    let at = |engine: &mut Engine, ms: u64| {
+        engine.frame_at(800, 600, crate::FrameTime::at(Duration::from_millis(ms)));
+    };
+    at(&mut tab.engine, 16);
+    assert_eq!(frame(&tab.engine, 0).viewport(), (0, 0));
+    tab.engine.mutate(|document| {
+        let body = document
+            .subtree(document.root())
+            .find(|&node| document.tag(node) == Some("body"))
+            .expect("a body");
+        document
+            .set_attribute(body, "style", "margin:0")
+            .expect("set");
+    });
+    at(&mut tab.engine, 32);
+    at(&mut tab.engine, 48);
+    assert_eq!(frame(&tab.engine, 0).viewport(), (100, 100));
+    assert_eq!(console(&mut tab), ["[frame about:srcdoc] resize 100 100"]);
+}
+
+#[test]
+fn a_frames_size_follows_its_parents_layout_with_no_frame_drawn() {
+    // The frame-size gap: the parent's layout gives each frame its box,
+    // the size another agent's frame reads until the next.
+    let mut tab = framed("<body style='margin:0'><iframe style='border:0'></iframe>");
+    assert_eq!(frame(&tab.engine, 0).viewport(), (300, 150));
+    let node = iframes(&tab.engine)[0];
+    tab.engine.mutate(|document| {
+        document
+            .set_attribute(node, "style", "border:0; width:222px; height:33px")
+            .expect("set");
+    });
+    tab.engine.layout(800.0);
+    assert_eq!(frame(&tab.engine, 0).viewport(), (222, 33));
+    tab.engine.mutate(|document| {
+        document
+            .set_attribute(node, "style", "display:none")
+            .expect("set");
+    });
+    tab.engine.layout(800.0);
+    assert_eq!(frame(&tab.engine, 0).viewport(), (0, 0));
+}

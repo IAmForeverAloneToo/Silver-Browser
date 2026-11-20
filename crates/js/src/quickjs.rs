@@ -310,6 +310,7 @@ pub(crate) fn reach_frame<'js, H: ScriptingHost>(
         },
     };
     let (secure, guarded) = host.reached_as();
+    host.set_owner_sizer(owner_sizer(&core));
     reach.making.set(Some(frame));
     // Its document lent to it before its bootstrap installs.
     let slot: Slot<H> = Rc::new(RefCell::new(Some(host)));
@@ -501,6 +502,45 @@ pub(crate) fn frame_entries<'js, H: ScriptingHost>(
         .find(|links| links.frame.get() == Some(frame))
         .and_then(|links| links.entries.borrow().clone());
     found.map(|entries| entries.restore(ctx)).transpose()
+}
+
+/// The sizer a document lent to a realm of `core`'s agent is given (the
+/// frame-size gap): it asks the host of the document an asking frame is
+/// shown in, when that document is lent to a realm of the same agent,
+/// which sizes itself from its own the same way first. Another agent's
+/// document is never reached, so never laid out for a frame of this one.
+/// The work it does is the run's.
+fn owner_sizer<H: ScriptingHost>(core: &Rc<AgentCore<H>>) -> crate::OwnerSizer {
+    let weak = Rc::downgrade(core);
+    Rc::new(move |ask: crate::OwnerAsk| {
+        let core = weak.upgrade()?;
+        // The realm named by the frame first; a top-level document's is
+        // named by none. Each host answers only for a frame its document
+        // shows, so another lent document answers nothing.
+        let mut slots: Vec<(bool, Slot<H>)> = core
+            .realms
+            .borrow()
+            .values()
+            .filter(|links| links.frame.get().is_none() || links.frame.get() == Some(ask.parent))
+            .map(|links| (links.frame.get().is_some(), Rc::clone(&links.host)))
+            .collect();
+        slots.sort_by_key(|(named, _)| !*named);
+        for (_, slot) in slots {
+            // A document not lent, or in a call of its own, is not asked.
+            let Ok(mut lent) = slot.try_borrow_mut() else {
+                continue;
+            };
+            let Some(host) = lent.as_mut() else {
+                continue;
+            };
+            let answer = host.frame_box(ask.frame, ask.seen);
+            core.budget.charge(host.take_work());
+            if answer.is_some() {
+                return answer;
+            }
+        }
+        None
+    })
 }
 
 /// Whether `value` is a node of another realm of the agent of `ctx`'s
@@ -934,6 +974,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
         // What compiled code of an earlier run left pending ([`clear_stale`]).
         self.context.with(|ctx| clear_stale(&ctx, Stale::Begun));
         release_to(&self.released, host);
+        host.set_owner_sizer(owner_sizer(&self.agent));
         *self.host.borrow_mut() = Some(std::mem::take(host));
         self.agent.entry.set(self.own_frame.or(self.frame.get()));
         self.steps.set(0);
@@ -1651,6 +1692,7 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
 
     fn lend(&mut self, mut host: H) {
         release_to(&self.released, &mut host);
+        host.set_owner_sizer(owner_sizer(&self.agent));
         *self.host.borrow_mut() = Some(host);
     }
 

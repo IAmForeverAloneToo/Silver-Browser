@@ -80,6 +80,9 @@ type SnapLayout = (
 #[derive(Default)]
 pub(crate) struct Outputs {
     pub(crate) console: Vec<ConsoleEntry>,
+    /// The size the window took from the document its frame is shown in
+    /// (the frame-size gap), for the engine to keep.
+    pub(crate) viewport: Option<(u32, u32)>,
     pub(crate) errors: usize,
     pub(crate) wanted: Vec<Wanted>,
     pub(crate) navigation: Option<ScriptNavigation>,
@@ -439,6 +442,20 @@ pub(crate) struct DocumentHost {
     /// The layout scripts asked of (D65), by the document's version it
     /// is of; at most one a version.
     laid_out: Option<(u64, layout::DocumentLayout)>,
+    /// The frame-size gap: the way to the document this document's frame
+    /// is shown in, given as it is lent ([`js::OwnerSizer`]); the frame
+    /// it is shown in, once found (none for a top-level document); what
+    /// it saw of that document when it last took its size from it; and
+    /// whether it is asking now, or counted a stale size this lend.
+    owner_sizer: Option<js::OwnerSizer>,
+    owner_parent: Option<Option<u32>>,
+    owner_seen: Option<js::OwnerSeen>,
+    owner_asking: bool,
+    owner_stale_counted: bool,
+    /// How many times it laid out its document to size a frame shown in
+    /// it (the frame-size gap): what the tests count.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) frame_box_layouts: u64,
     /// The snapping scroll containers of that layout (D72), and where the
     /// scroll containers' `scroll-initial-target`s place them, found once
     /// a version of it.
@@ -729,6 +746,29 @@ impl ScriptingHost for DocumentHost {
 
     fn take_work(&mut self) -> u64 {
         std::mem::take(&mut self.work)
+    }
+
+    fn set_owner_sizer(&mut self, sizer: js::OwnerSizer) {
+        self.owner_sizer = Some(sizer);
+        self.owner_stale_counted = false;
+    }
+
+    fn frame_box(&mut self, child: u32, seen: js::OwnerSeen) -> Option<js::FrameBox> {
+        // Only for a frame this document shows.
+        let env = self.window.frames.clone()?;
+        let element = crate::frames::lock(&env.tree).element_of(env.id, child)?;
+        if !self.document.contains(element) {
+            return None;
+        }
+        // Its own size first, from the document its frame is shown in.
+        self.size_from_owner();
+        let (width, height) = self.window.viewport;
+        let now = (self.document.version(), width, height);
+        if now == seen {
+            return Some(js::FrameBox::Same);
+        }
+        let size = self.frame_box_now(child)?;
+        Some(js::FrameBox::Sized(size, now))
     }
 
     fn take_mutation_wake(&mut self) -> bool {
@@ -2509,12 +2549,16 @@ impl DocumentHost {
                 ))
             }
             Call::MatchMedia(query) => {
+                self.size_from_owner();
                 let (media, _, id) = self.media_lists.make(&query, &self.window.media);
                 Ok(Answer::Strings(vec![media, id.to_string()]))
             }
-            Call::MediaMatches(id) => Ok(Answer::Bool(
-                self.media_lists.matches(id, &self.window.media),
-            )),
+            Call::MediaMatches(id) => {
+                self.size_from_owner();
+                Ok(Answer::Bool(
+                    self.media_lists.matches(id, &self.window.media),
+                ))
+            }
             Call::MediaForget(id) => {
                 self.media_lists.forget(id);
                 Ok(Answer::Nothing)
@@ -2977,6 +3021,7 @@ impl DocumentHost {
                 Ok(Answer::Strings(info))
             }
             Call::Viewport => {
+                self.size_from_owner();
                 let (width, height) = self.window.viewport;
                 // `devicePixelRatio`: the display's scale (M32.4).
                 Ok(Answer::Numbers(vec![
@@ -5251,6 +5296,7 @@ impl DocumentHost {
     /// it (D65): its styles brought up to date, and at most one layout a
     /// version of the document; none for a document without a window.
     fn layout_now(&mut self) -> Option<&layout::DocumentLayout> {
+        self.size_from_owner();
         let version = self.document.version();
         if self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
             return self.laid_out.as_ref().map(|(_, layout)| layout);
@@ -5267,6 +5313,105 @@ impl DocumentHost {
         self.work += self.document.len() as u64;
         self.laid_out = Some((version, laid_out));
         self.laid_out.as_ref().map(|(_, layout)| layout)
+    }
+
+    /// The frame-size gap: this document's viewport as the document its
+    /// frame is shown in sizes it now, when that one is lent to a realm of
+    /// its agent ([`js::OwnerSizer`]): its frame's element's content box
+    /// as laid out now, as Chrome reads a frame's size. Otherwise the size
+    /// the frame was last given; the sweep counts a read of it after that
+    /// document changed since it gave it (another agent's, which is never
+    /// laid out for this one's scripts).
+    fn size_from_owner(&mut self) {
+        if self.owner_asking {
+            return;
+        }
+        let Some(sizer) = self.owner_sizer.clone() else {
+            return;
+        };
+        let Some(env) = self.window.frames.as_ref() else {
+            return;
+        };
+        let frame = env.id;
+        let parent = *self
+            .owner_parent
+            .get_or_insert_with(|| crate::frames::lock(&env.tree).parent(frame));
+        let Some(parent) = parent else {
+            return;
+        };
+        let seen = self.owner_seen.unwrap_or((u64::MAX, u32::MAX, u32::MAX));
+        self.owner_asking = true;
+        let answer = sizer(js::OwnerAsk {
+            parent,
+            frame,
+            seen,
+        });
+        self.owner_asking = false;
+        match answer {
+            Some(js::FrameBox::Sized(size, seen)) => {
+                self.owner_seen = Some(seen);
+                if size != self.window.viewport {
+                    self.resize_viewport(size);
+                }
+            }
+            Some(js::FrameBox::Same) => {}
+            None => {
+                if self.window.owner_moved && !self.owner_stale_counted {
+                    self.owner_stale_counted = true;
+                    self.sweep.frame_viewport_stale += 1;
+                }
+            }
+        }
+    }
+
+    /// The window's size is `size` from now on, as the document its frame
+    /// is shown in laid it out: what was computed at the old size goes,
+    /// and the engine keeps the new one after the run, its resize fired
+    /// at the next rendering steps that find it changed.
+    fn resize_viewport(&mut self, size: (u32, u32)) {
+        self.window.viewport = size;
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        self.window.media.width = width;
+        self.window.media.height = height;
+        self.window.media.device_width = width;
+        self.window.media.device_height = height;
+        self.computed = None;
+        self.laid_out = None;
+        self.snap_containers = None;
+        self.outputs.viewport = Some(size);
+    }
+
+    /// The size of the viewport of frame `child`, shown in this document:
+    /// its `iframe`'s content box as laid out now, rounded as a frame is
+    /// drawn; 0 by 0 for an element with no box. `None` when the frame is
+    /// not shown here or the document cannot be laid out.
+    fn frame_box_now(&mut self, child: u32) -> Option<(u32, u32)> {
+        let env = self.window.frames.clone()?;
+        let element = crate::frames::lock(&env.tree).element_of(env.id, child)?;
+        if !self.document.contains(element) {
+            return None;
+        }
+        let version = self.document.version();
+        if !self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
+            self.frame_box_layouts += 1;
+        }
+        let layout = self.layout_now()?;
+        let size = layout
+            .iter()
+            .find(|f| {
+                f.node == element
+                    && f.generated.is_none()
+                    && !matches!(
+                        f.kind,
+                        layout::FragmentKind::InlineBox | layout::FragmentKind::Text(_)
+                    )
+            })
+            .and_then(|f| f.children.first())
+            .map_or((0, 0), |content| {
+                let side = |v: f32| v.round().clamp(0.0, crate::frames::MAX_FRAME_SIDE) as u32;
+                (side(content.w), side(content.h))
+            });
+        Some(size)
     }
 
     /// The document laid out with its styles as computed, in the window's
@@ -7824,6 +7969,7 @@ impl DocumentHost {
     /// | `lang`, a `content-language` pragma; a policy's `style` checks | journal |
     /// | the response's language | the page's: fixed |
     fn styles_now(&mut self) -> Option<&Styles> {
+        self.size_from_owner();
         self.inline_sheets();
         let page = self.page.as_ref()?;
         // The document's fonts, its web fonts among them, which its

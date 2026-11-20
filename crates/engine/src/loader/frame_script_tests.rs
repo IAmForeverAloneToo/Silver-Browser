@@ -1579,3 +1579,156 @@ fn a_removed_frames_functions_answer_as_a_detached_windows() {
         "{answer:?}"
     );
 }
+
+/// A frame's window's size is its element's content box as its parent is
+/// laid out now (the frame-size gap): read in the same task as the
+/// parent made or changed the element, with no frame drawn, and so are
+/// its viewport units and media queries; a grandchild's after its
+/// parent's. As the reference browser (probed, Chrome 156).
+#[test]
+fn a_frames_size_is_its_box_as_its_parent_is_laid_out_now() {
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<body style='margin:0'><div id=host style='width:600px'></div><script>\
+         const host = document.getElementById('host');\
+         const f = document.createElement('iframe');\
+         f.style.cssText = 'width:123px;height:45px;border:0';\
+         host.appendChild(f);\
+         const w = f.contentWindow;\
+         console.log('made', w.innerWidth, w.innerHeight);\
+         f.style.width = '50%';\
+         console.log('changed', w.innerWidth, w.innerHeight);\
+         const d = w.document.createElement('div');\
+         d.style.cssText = 'width:100vw;height:10px';\
+         w.document.body.appendChild(d);\
+         f.style.width = '200px';\
+         console.log('inside', d.offsetWidth, w.getComputedStyle(d).width,\
+           w.matchMedia('(min-width: 199px)').matches, w.matchMedia('(min-width: 201px)').matches);\
+         const hidden = document.createElement('iframe');\
+         hidden.style.cssText = 'display:none;width:77px;height:33px';\
+         host.appendChild(hidden);\
+         console.log('hidden', hidden.contentWindow.innerWidth, hidden.contentWindow.innerHeight);\
+         const outer = document.createElement('iframe');\
+         outer.style.cssText = 'width:400px;height:100px;border:0';\
+         host.appendChild(outer);\
+         const inner = outer.contentWindow.document;\
+         inner.body.style.margin = '0';\
+         const g = inner.createElement('iframe');\
+         g.style.cssText = 'width:50%;height:20px;border:0';\
+         inner.body.appendChild(g);\
+         console.log('nested', g.contentWindow.innerWidth, g.contentWindow.innerHeight);\
+         outer.style.width = '300px';\
+         console.log('nested later', g.contentWindow.innerWidth);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.len() >= 6);
+    assert_eq!(
+        lines,
+        [
+            "made 123 45",
+            "changed 300 45",
+            "inside 200 200px true false",
+            "hidden 0 0",
+            "nested 200 20",
+            "nested later 150",
+        ]
+    );
+}
+
+/// A frame's size read after each of a thousand changes of its element
+/// is right every time, at one layout of its parent a change (the
+/// frame-size gap): as the reference browser's.
+#[test]
+fn a_frames_size_read_after_each_change_lays_its_parent_out_once_a_change() {
+    static PAGES: &[(&str, &str)] = &[(
+        "/page.html",
+        "<body style='margin:0'><script>\
+         const f = document.createElement('iframe');\
+         f.style.cssText = 'height:40px;border:0';\
+         document.body.appendChild(f);\
+         const w = f.contentWindow;\
+         let wrong = 0;\
+         for (let i = 0; i < 1000; i++) {\
+           const width = 100 + i % 50;\
+           f.style.width = width + 'px';\
+           if (w.innerWidth !== width || w.innerWidth !== width) wrong++;\
+         }\
+         console.log('wrong', wrong);\
+         </script>",
+    )];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.set_viewport(800, 600);
+    tab.engine.navigate(server.url("/page.html"));
+    let started = std::time::Instant::now();
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    let spent = started.elapsed();
+    assert_eq!(lines, ["wrong 0"]);
+    let layouts = tab.engine.shown.scripts.frame_box_layouts();
+    eprintln!("1000 changes: {layouts} layouts for the frame, {spent:?} with the load");
+    assert_eq!(layouts, 1000, "one layout a change, the second read none");
+}
+
+/// A frame of another origin is never sized by a layout of its parent
+/// its own scripts force (the frame-size gap): it reads the size the
+/// parent's last layout gave it, though the parent changed its element
+/// since, and the sweep counts that read.
+#[test]
+fn a_frame_of_another_origin_reads_the_size_its_parents_last_layout_gave() {
+    static PAGES: &[(&str, &str)] = &[
+        (
+            "/page.html",
+            "<body style='margin:0'><iframe style='width:200px;height:100px;border:0'></iframe>\
+             <script>\
+             const f = document.querySelector('iframe');\
+             f.src = 'http://b.localhost:' + location.port + '/child.html';\
+             onmessage = e => {\
+               if (e.data === 'ready') {\
+                 console.log('ready');\
+                 setTimeout(() => {\
+                   f.style.width = '321px';\
+                   f.contentWindow.postMessage('read', '*');\
+                 }, 300);\
+               } else {\
+                 console.log('read', e.data);\
+               }\
+             };\
+             </script>",
+        ),
+        (
+            "/child.html",
+            "<script>\
+             onmessage = () => parent.postMessage(innerWidth + ' ' + innerHeight, '*');\
+             parent.postMessage('ready', '*');\
+             </script>",
+        ),
+    ];
+    let server = sites(PAGES);
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine
+        .navigate(at(&server, "a.localhost", "/page.html"));
+    assert_eq!(tab.run_until(|lines| !lines.is_empty()), ["ready"]);
+    // The parent's layout gives the frame its size.
+    tab.engine
+        .frame_at(800, 600, crate::FrameTime::at(std::time::Duration::ZERO));
+    assert_eq!(tab.run_until(|lines| !lines.is_empty()), ["read 200 100"]);
+    assert_eq!(tab.engine.shown.scripts.frame_box_layouts(), 0);
+    tab.engine.inspect(r#"{"id":1,"method":"page.sweep"}"#);
+    let answers = tab.engine.take_inspected();
+    let answer = devtools::Json::parse(&answers[0]).expect("JSON");
+    let counts = answer.get("result").expect("a result");
+    assert_eq!(
+        counts
+            .get("frameViewportStale")
+            .and_then(devtools::Json::as_u64),
+        Some(1),
+        "{answer:?}"
+    );
+}

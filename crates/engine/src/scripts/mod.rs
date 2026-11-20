@@ -422,6 +422,10 @@ pub(crate) struct WindowEnv {
     pub(crate) clock: Option<crate::Clock>,
     /// Whether the window is hidden: minimized or covered (M26).
     pub(crate) hidden: bool,
+    /// Whether the document a frame's window is shown in changed since it
+    /// last gave the frame its size (the frame-size gap): what the sweep
+    /// counts a read of a size Chrome would have laid out anew by.
+    pub(crate) owner_moved: bool,
     /// Whether the document's web fonts are loading (D54): a face asked
     /// for or on its way, or faces to lay out with not laid out yet.
     pub(crate) fonts_loading: bool,
@@ -976,6 +980,9 @@ pub(crate) struct Scripts {
     /// The faces scripts added to the document's fonts or took away
     /// (D54), which the engine applies after the run.
     pub(crate) font_changes: Vec<crate::web_fonts::FontChange>,
+    /// The size the window took from the document its frame is shown in
+    /// as a run asked (the frame-size gap), which the engine keeps.
+    pub(crate) owner_viewport: Option<(u32, u32)>,
     /// The names of the window's child frames' elements, in tree order
     /// (M33.2), which its realm's frames by index and name follow.
     frame_list: Vec<String>,
@@ -1093,6 +1100,7 @@ impl Scripts {
             answers: VecDeque::new(),
             posted: VecDeque::new(),
             font_changes: Vec::new(),
+            owner_viewport: None,
             frame_list: Vec::new(),
             code_guarded: false,
             reports: Vec::new(),
@@ -2377,6 +2385,9 @@ impl Scripts {
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
+        if outputs.viewport.is_some() {
+            self.owner_viewport = outputs.viewport;
+        }
         self.posted.extend(outputs.messages);
         self.drop_tasks_of(&outputs.terminated);
         self.events.extend(outputs.events);
@@ -3384,6 +3395,13 @@ impl Scripts {
     #[cfg(test)]
     pub(crate) fn style_flushes(&self) -> u64 {
         self.host.style_flushes
+    }
+
+    /// How many times its document was laid out to size a frame shown in
+    /// it (the frame-size gap): for the tests.
+    #[cfg(test)]
+    pub(crate) fn frame_box_layouts(&self) -> u64 {
+        self.host.frame_box_layouts
     }
 
     /// How many times a rule list read its sheet's rules: for the tests.

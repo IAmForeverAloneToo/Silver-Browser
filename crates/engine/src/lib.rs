@@ -560,6 +560,17 @@ pub struct Engine {
     traversals: VecDeque<isize>,
     /// Whether the window is hidden (M26): minimized or covered.
     hidden: bool,
+    /// A frame's (the frame-size gap): the version of the document it is
+    /// shown in as that one's engine last drove it, and as it last gave
+    /// it its size, laid out; a run's read of the size between the two
+    /// is of one Chrome would have laid out anew.
+    owner_version: Option<u64>,
+    owner_pushed: Option<u64>,
+    /// The size the document it is shown in first gave the frame, which
+    /// its first rendering steps compare with: a frame shown at another
+    /// size than that (one made in a `display: none` subtree, 0 by 0,
+    /// then shown) hears `resize`, as in the reference browser.
+    first_size: Option<(u32, u32)>,
     /// When a hidden document's timer last ran.
     hidden_ran: Option<Duration>,
     /// The animation and transition events the frames queued that the
@@ -1828,6 +1839,9 @@ impl Engine {
             storage_events: VecDeque::new(),
             traversals: VecDeque::new(),
             hidden: false,
+            owner_version: None,
+            owner_pushed: None,
+            first_size: None,
             hidden_ran: None,
             pending_events: Vec::new(),
             departed: Vec::new(),
@@ -2856,6 +2870,7 @@ impl Engine {
             languages: self.languages.clone(),
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
+            owner_moved: self.owner_version.is_some() && self.owner_version != self.owner_pushed,
             fonts_loading: self.fonts_loading(),
             fonts_unsettled: self.fonts_unsettled(),
             focused: self.window_focused,
@@ -4954,6 +4969,10 @@ impl Engine {
         }
         // The scroll containers whose scroll ended in the frame.
         let mut ended: HashSet<scroll_state::Scroller> = HashSet::new();
+        // A frame's first: against the size it was first given.
+        if last.is_none() && self.first_size.is_some_and(|size| size != rendered.size) {
+            self.fire(js::Target::Window, js::EventInit::new("Event", "resize"));
+        }
         if let Some(last) = last {
             if last.size != rendered.size {
                 self.fire(js::Target::Window, js::EventInit::new("Event", "resize"));
@@ -7731,6 +7750,12 @@ impl Engine {
     /// After the shown document's scripts ran: their changes are taken as
     /// any change is, and a realm that died says so.
     fn scripts_ran(&mut self) {
+        // The size the window took from the document its frame is shown
+        // in (the frame-size gap): the window's until the next.
+        if let Some(size) = self.shown.scripts.owner_viewport.take() {
+            self.viewport = size;
+            self.first_size.get_or_insert(size);
+        }
         // A document `document.open()` opened and its `close()` ended
         // loads again: its lifecycle's events anew, and a frame's element
         // hears `load` (HTML's "the end").
@@ -9185,6 +9210,7 @@ impl Engine {
             debug_assert!(false, "a layout cleared as it was made");
             self.changed = true;
         }
+        self.push_frame_sizes();
         // An empty layout of the viewport's size, which every reader
         // takes (no NaN to poison their sums): made again at the next.
         let height = self.viewport.1 as f32;
@@ -9195,6 +9221,38 @@ impl Engine {
             fallback: true,
         });
         &cached.layout
+    }
+
+    /// The frame-size gap: each frame of this renderer shown here takes
+    /// its `iframe`'s content box as the window's layout just made it, CSS
+    /// pixels, rounded as a frame is drawn (0 by 0 with no box): the size
+    /// its scripts read until a draw or a run of its agent sizes it again.
+    /// A frame of another agent is sized no other way, never by a layout
+    /// its own scripts force here.
+    fn push_frame_sizes(&mut self) {
+        if self.shown.frames.is_empty() {
+            return;
+        }
+        let Some(cached) = self.shown.layout.as_ref() else {
+            return;
+        };
+        // Only the window's own layout, made of something.
+        if cached.fallback || cached.width != self.viewport.0 as f32 {
+            return;
+        }
+        let version = self.shown.document.version();
+        let side = |v: f32| v.round().clamp(0.0, frames::MAX_FRAME_SIDE) as u32;
+        for (node, frame) in &mut self.shown.frames {
+            if frame.remote.is_some() {
+                continue;
+            }
+            let size = fragment_of(&cached.layout.roots, *node)
+                .and_then(|f| f.children.first())
+                .map_or((0, 0), |content| (side(content.w), side(content.h)));
+            frame.engine.viewport = size;
+            frame.engine.first_size.get_or_insert(size);
+            frame.engine.owner_pushed = Some(version);
+        }
     }
 
     /// Whether faces a `local()` found as the layout asked for them want

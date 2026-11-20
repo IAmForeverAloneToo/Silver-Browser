@@ -603,6 +603,53 @@ once: a known deviation). Chrome, probed again: under `script-src
 blank runs, as its policy allows; `eval` and `new Function` throw
 `EvalError`, and the blank's listeners hear both violations.
 
+### The frame-size gap: a frame's size is its box as asked (2026-11-20)
+
+Before: a frame's engine started at 300 by 150 and took its size only
+as its parent drew it, so a frame not drawn yet (or never: hidden, off
+screen) answered `innerWidth`, its media queries and its viewport
+units at a stale size. Chrome 156, probed, in one task with no frame
+drawn: a new 123 by 45 `iframe` reads 123 45; its width set to 50% of
+600px reads 300 at once; inside it a `100vw` div's `offsetWidth`,
+`getComputedStyle` and `matchMedia` follow; a `display: none` one
+reads 0 0; a grandchild at 50% follows its parent's change at once,
+so the grandparent is laid out first; no `resize` fires synchronously.
+
+Now, three ways by where the document the frame is shown in is:
+
+- **Of the frame's agent** (same-origin, every reached blank): the
+  host's viewport choke points (`Call::Viewport`, `matchMedia` and its
+  matches, `styles_now`, `layout_now`) first call the `js::OwnerSizer`
+  the agent gives each host as it is lent. It finds the lent host of
+  the frame's parent (named by the frame, or a top-level document's,
+  named by none) and asks `ScriptingHost::frame_box(child, seen)`: that
+  host sizes itself the same way, then answers `Same` while its
+  document's version and its own viewport are as the asker last saw,
+  else lays out (`layout_now`, at most once a version) and gives its
+  `iframe`'s content box, 0 by 0 with no box. Only a host whose
+  document holds the frame's element answers. The new size drops the
+  run's styles and layout and goes back to the engine (`Outputs`), its
+  `resize` fired at the next rendering steps that find it changed.
+  1,000 changes each read twice: 1,000 parent layouts, as Chrome.
+- **Of another agent in this process**: never laid out for the frame's
+  scripts, which would let one origin time another's layout. The
+  parent's own layouts give each local frame its box
+  (`push_frame_sizes`), the size read until the next. The sweep's
+  `frameViewportStale` counts a run that read it after the parent's
+  document changed since its last layout (versions recorded by
+  `with_frame` and the push); a pre-turn layout waits for a site that
+  needs it.
+- **Another renderer's**: sized by the browser, as before (Chrome's
+  out-of-process frames are too).
+
+A frame's first rendering steps compare with the size it was first
+given (`first_size`): one laid out hidden at 0 by 0 and then shown
+hears `resize`. One made and shown again before its parent is laid
+out takes its first size at its shown box and hears none: WPT
+`dynamic-viewport-units-rule-cache` keeps that reason. The change made
+84 WPT subtests pass (viewport units, percentages and media queries
+in frames, `MediaQueryList` events, `display: none` frames).
+
 ## 4. Not in this note
 
 - `Origin-Agent-Cluster: ?0` and `document.domain` widening an agent

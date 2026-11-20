@@ -136,6 +136,10 @@ pub(crate) struct FrameTree {
 /// transient activation duration; the reference browser's five seconds).
 pub(crate) const ACTIVATION_SPAN: Duration = Duration::from_secs(5);
 
+/// The longest side a frame's viewport takes from its element's box (the
+/// frame-size gap), CSS pixels.
+pub(crate) const MAX_FRAME_SIDE: f32 = 32_768.0;
+
 /// A tab a document asked the browser to open (M37): its URL, whether it
 /// is shown at once, and whether a script opened it, which may close it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2294,6 +2298,12 @@ impl Engine {
         let child = &self.shown.frames.get(&node)?.engine;
         let mut agents = self.own_agent_for(child);
         child.shared_agents(&mut agents);
+        // What its runs' reads of its size are measured against (the
+        // frame-size gap): this document as it is now.
+        let version = self.shown.document.version();
+        if let Some(frame) = self.shown.frames.get_mut(&node) {
+            frame.engine.owner_version = Some(version);
+        }
         let lent = self.lend_around(Some(node), &agents);
         let result = self
             .shown

@@ -405,6 +405,38 @@ pub enum ConsoleLevel {
     Debug,
 }
 
+/// What a frame's document saw of the document its frame is shown in
+/// when it last took its size from it (the frame-size gap): that
+/// document's version and its own viewport.
+pub type OwnerSeen = (u64, u32, u32);
+
+/// The answer of [`ScriptingHost::frame_box`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameBox {
+    /// As last seen: the frame's size is what it took then.
+    Same,
+    /// The frame's viewport's size now, and what to say next time.
+    Sized((u32, u32), OwnerSeen),
+}
+
+/// What a frame's document asks of the document its frame is shown in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerAsk {
+    /// The frame the asking document's frame is shown in.
+    pub parent: u32,
+    /// The asking document's frame.
+    pub frame: u32,
+    /// What it saw last.
+    pub seen: OwnerSeen,
+}
+
+/// The size of a frame's viewport from the document its frame is shown
+/// in, when that document is lent to a realm of the asker's agent (the
+/// frame-size gap): `None` when it is not (another agent's, or not lent
+/// now), and the frame keeps the size it was last given. Never another
+/// agent's document laid out for it.
+pub type OwnerSizer = std::rc::Rc<dyn Fn(OwnerAsk) -> Option<FrameBox>>;
+
 /// Everything a script can do to the engine (M24.4): plain data in and
 /// out, no reference to anything of the engine's. A run moves the host
 /// into the realm and back, so it must have a value to leave behind
@@ -459,6 +491,19 @@ pub trait ScriptingHost: Default + 'static {
     where
         Self: Sized,
     {
+        None
+    }
+    /// The way to the documents of the realm's agent that show this
+    /// document's frames' ancestors (the frame-size gap): given as the
+    /// document is lent, for [`ScriptingHost::frame_box`] of the one its
+    /// frame is shown in. A host that sizes no frames ignores it.
+    fn set_owner_sizer(&mut self, _sizer: OwnerSizer) {}
+    /// The size of the viewport of frame `child`, a frame shown in this
+    /// document: its element's content box as this document is laid out
+    /// now, CSS pixels; [`FrameBox::Same`] when the document and its own
+    /// viewport are still as `seen` says. `None` when it shows no such
+    /// frame or cannot lay out.
+    fn frame_box(&mut self, _child: u32, _seen: OwnerSeen) -> Option<FrameBox> {
         None
     }
     /// The units of work done since this was last asked, which the

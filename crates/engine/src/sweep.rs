@@ -37,6 +37,10 @@ pub(crate) struct SweepCounts {
     /// while a script had set properties or listeners on its window,
     /// which HTML's reuse of that `Window` keeps and this version loses.
     pub(crate) blank_window_state_lost: u32,
+    /// A frame's viewport read while the document its frame is shown in,
+    /// of another agent, had changed since it last gave the frame its
+    /// size (the frame-size gap): a size Chrome would have laid out anew.
+    pub(crate) frame_viewport_stale: u32,
     /// A node of another frame's document of the same origin given to a
     /// method, refused until nodes move between documents (G90 phase 5).
     pub(crate) nodes_across_documents: u32,
@@ -160,6 +164,7 @@ impl SweepCounts {
         self.frame_refused_same_origin += other.frame_refused_same_origin;
         self.frame_document_same_origin += other.frame_document_same_origin;
         self.blank_window_state_lost += other.blank_window_state_lost;
+        self.frame_viewport_stale += other.frame_viewport_stale;
         self.nodes_across_documents += other.nodes_across_documents;
         self.most_realms_in_agent = self.most_realms_in_agent.max(other.most_realms_in_agent);
         self.documents_not_lent += other.documents_not_lent;
@@ -211,6 +216,10 @@ impl SweepCounts {
             (
                 "blankWindowStateLost",
                 Json::from(f64::from(self.blank_window_state_lost)),
+            ),
+            (
+                "frameViewportStale",
+                Json::from(f64::from(self.frame_viewport_stale)),
             ),
             (
                 "nodesAcrossDocuments",
