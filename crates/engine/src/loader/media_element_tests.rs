@@ -1201,3 +1201,40 @@ log('ready');
     );
     assert_eq!(of("adopted"), ["adopted rejected NotSupportedError"]);
 }
+
+/// A media element's load counts as a fetch until its resource is read
+/// or fails (2026-11-20: a runner on a hand's clock moved past a video
+/// still coming on a slow machine), and for the network's read timeout
+/// at most: one whose server never answers holds no one past it.
+#[test]
+fn a_media_load_counts_as_a_fetch_until_it_is_judged_and_no_longer_than_its_bound() {
+    let server = TestServer::plain(|request| match request.target.as_str() {
+        "/page.html" => html(
+            "<video src=/stalled.webm></video><video id=bad src=/bad.webm></video>\
+             <script>document.getElementById('bad').onerror = () => console.log('bad failed');\
+             </script>",
+        ),
+        "/bad.webm" => Reply::ok("video/webm", b"not media at all"),
+        "/stalled.webm" => Reply::After(
+            std::time::Duration::from_secs(60),
+            Box::new(Reply::ok("video/webm", b"never")),
+        ),
+        _ => Reply::with_fields(404, &[], b""),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l == "bad failed"));
+    assert_eq!(lines, ["bad failed"]);
+    // The stalled one is still under way, the failed one is not.
+    assert!(tab.engine.shown.scripts.media_loading());
+    assert!(tab.engine.fetching());
+    // Past its bound, with its server still silent, it counts no more.
+    tab.engine
+        .shown
+        .scripts
+        .media_mut()
+        .set_load_wait(std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!tab.engine.shown.scripts.media_loading());
+}

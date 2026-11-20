@@ -152,6 +152,9 @@ struct Player {
     refused: bool,
     /// The load's number: a report of an older one is dropped.
     generation: u64,
+    /// When its resource's fetch and pipeline started, until its head is
+    /// read or it fails: what [`Players::loading`] counts.
+    loading_since: Option<std::time::Instant>,
     seek_id: u64,
     /// The `<source>` children not tried yet, in order.
     candidates: Vec<NodeId>,
@@ -210,6 +213,7 @@ impl Player {
             pending_fetch: None,
             refused: false,
             generation: 0,
+            loading_since: None,
             seek_id: 0,
             candidates: Vec::new(),
             trying: None,
@@ -369,6 +373,9 @@ pub(crate) struct Players {
     /// The tasks of events sent to the bindings not yet heard, by the
     /// element they fire at: it is held until they are.
     owed: HashMap<NodeId, u32>,
+    /// How long a load is counted as under way at most ([`Players::loading`]):
+    /// the network's read timeout unless a test says otherwise.
+    load_wait: Option<std::time::Duration>,
 }
 
 impl Players {
@@ -406,6 +413,28 @@ impl Players {
             owe(&mut self.owed, &actions);
             send(inbox, &actions);
         }
+    }
+
+    /// Whether a load is under way whose resource has neither told its
+    /// head nor failed (2026-11-20): its fetch and pipeline run on their
+    /// own threads, apart from the engine's network, and what waits for a
+    /// page's fetches waits for it too. Counted for the network's read
+    /// timeout at most, so that a fetch that stalls, or trickles bytes
+    /// forever, holds no one; an aborted one has no pipeline.
+    pub(crate) fn loading(&self) -> bool {
+        let wait = self.load_wait.unwrap_or(net::transport::READ_TIMEOUT);
+        self.players.values().any(|p| {
+            p.pipeline.is_some()
+                && p.ready == HAVE_NOTHING
+                && p.error.is_none()
+                && p.loading_since.is_some_and(|since| since.elapsed() < wait)
+        })
+    }
+
+    /// Counts a load as under way for `wait` at most: for the tests.
+    #[cfg(test)]
+    pub(crate) fn set_load_wait(&mut self, wait: std::time::Duration) {
+        self.load_wait = Some(wait);
     }
 
     /// Whether a load asked for a fetch not yet started, or was refused
@@ -475,6 +504,7 @@ impl Players {
             }
             player.whole = false;
             player.pipeline = Some(pipeline);
+            player.loading_since = Some(std::time::Instant::now());
         }
     }
 

@@ -2944,6 +2944,18 @@ impl Scripts {
         self.host.media.states()
     }
 
+    /// Whether a media element's load is under way, its resource neither
+    /// read nor failed (2026-11-20, `Players::loading`).
+    pub(crate) fn media_loading(&self) -> bool {
+        self.host.media.loading()
+    }
+
+    /// The media players: for the tests.
+    #[cfg(test)]
+    pub(crate) fn media_mut(&mut self) -> &mut crate::playback::Players {
+        &mut self.host.media
+    }
+
     /// Whether a frame is wanted for them, and that it was asked for.
     pub(crate) fn media_wants_frame(&self) -> bool {
         self.host.media.wants_frame()

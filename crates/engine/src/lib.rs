@@ -8482,9 +8482,14 @@ impl Engine {
     }
 
     /// Whether a fetch is in flight (M27): a runner on a hand's clock
-    /// waits for the network before it moves the clock on.
+    /// waits for the network before it moves the clock on. A media
+    /// element's load counts until its resource is read or fails, its
+    /// fetch and pipeline being apart from the network (2026-11-20: WPT
+    /// on a slow runner moved the clock past one still coming).
     pub fn fetching(&self) -> bool {
-        self.network.in_flight() > 0 || self.frames_busy(Engine::fetching)
+        self.network.in_flight() > 0
+            || self.shown.scripts.media_loading()
+            || self.frames_busy(Engine::fetching)
     }
 
     /// The current document.
