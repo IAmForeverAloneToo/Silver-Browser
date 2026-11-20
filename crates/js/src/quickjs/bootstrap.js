@@ -34143,9 +34143,10 @@
     }
     // A match's regular expression and string, whole: what was matched.
     const SourceGet = uncurry(getOwnPropertyDescriptor(RegExp.prototype, "source").get);
+    const FlagsGet = uncurry(getOwnPropertyDescriptor(RegExp.prototype, "flags").get);
     const regexText = (value) => {
       try {
-        return "/" + SourceGet(value) + "/";
+        return "/" + SourceGet(value) + "/" + FlagsGet(value) + "@" + value.lastIndex;
       } catch {
         return typeof value === "string" ? JSONStringify(value) : typeof value;
       }
@@ -34168,7 +34169,51 @@
       defineProperty(wrapped, "length", { __proto__: null, value: f.length, configurable: true });
       defineProperty(owner, key, { __proto__: null, value: wrapped, writable: true, enumerable: false, configurable: true });
     }
-    wrap(JSON, "parse", "JSON.parse");
+    {
+      const parse = JSON.parse;
+      const wrapped = {
+        parse(...args) {
+          const result = ReflectApply(parse, this, args);
+          if (result === null) {
+            keep("JSON.parse(" + (typeof args[0] === "string" ? JSONStringify(StringSlice(args[0], 0, 80)) : typeof args[0] + ":" + StringSlice("" + args[0], 0, 40)) + ")");
+          }
+          return result;
+        },
+      }.parse;
+      defineProperty(wrapped, "length", { __proto__: null, value: parse.length, configurable: true });
+      defineProperty(JSON, "parse", { __proto__: null, value: wrapped, writable: true, enumerable: false, configurable: true });
+    }
+    {
+      const stringify = JSON.stringify;
+      const ObjectToString = uncurry(Object.prototype.toString);
+      const kind = (value) => {
+        if (value === null) {
+          return "null";
+        }
+        if (typeof value === "number") {
+          return "number:" + value;
+        }
+        if (typeof value === "object") {
+          try {
+            return "object:" + ObjectToString(value);
+          } catch {
+            return "object";
+          }
+        }
+        return typeof value;
+      };
+      const wrapped = {
+        stringify(...args) {
+          const result = ReflectApply(stringify, this, args);
+          if (result === "null") {
+            keep("JSON.stringify(" + kind(args[0]) + ')="null"');
+          }
+          return result;
+        },
+      }.stringify;
+      defineProperty(wrapped, "length", { __proto__: null, value: stringify.length, configurable: true });
+      defineProperty(JSON, "stringify", { __proto__: null, value: wrapped, writable: true, enumerable: false, configurable: true });
+    }
     wrap(global, "getComputedStyle", "window.getComputedStyle");
     wrap(global, "matchMedia", "window.matchMedia");
   }
