@@ -1023,14 +1023,30 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
     }
 
     /// Puts `item`, the run's `index`th, on the line in progress, or on
-    /// a new one when it does not fit and a break before it is allowed.
-    fn place(
+    /// a new one when it does not fit and a break before it is allowed;
+    /// a word cut at the line's end, its rest on the next, and so on.
+    /// One piece at a time, not by recursion: a word with an opportunity
+    /// at every character cut on a line too narrow for any is as many
+    /// pieces as characters (2026-11-20, the nightly fuzz run's
+    /// pipeline, whose stack was its recursion).
+    fn place(&mut self, item: LineItem<'a, 'i>, index: usize, gap_before: bool, can_break: bool) {
+        let mut next = Some((item, gap_before, can_break));
+        while let Some((item, gap_before, can_break)) = next {
+            next = self
+                .place_one(item, index, gap_before, can_break)
+                .map(|tail| (tail, false, true));
+        }
+    }
+
+    /// Puts `item` as [`Self::place`] does, giving back the rest of a
+    /// word it cut, to be placed next.
+    fn place_one(
         &mut self,
         mut item: LineItem<'a, 'i>,
         index: usize,
         gap_before: bool,
         can_break: bool,
-    ) {
+    ) -> Option<LineItem<'a, 'i>> {
         if self.line.is_empty() {
             self.start_line();
             // Nothing fits beside the floats: move the line down to
@@ -1108,9 +1124,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             self.place(LineItem::Word(head), index, gap_before, can_break);
             let was_first = self.first.is_some();
             self.flush(false);
-            let tail = self.settled(LineItem::Word(tail), index, was_first);
-            self.place(tail, index, false, true);
-            return;
+            return Some(self.settled(LineItem::Word(tail), index, was_first));
         }
         // Greedy line breaking at a soft-wrap opportunity (M7.3): if
         // this item doesn't fit, start a new line — unless the line is
@@ -1125,7 +1139,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 self.flush(false);
                 let item = self.settled(item, index, was_first);
                 self.place(item, index, gap_before, can_break);
-                return;
+                return None;
             }
             // No break is allowed before it (glued to the word before,
             // after an inline box's start edge, or `white-space: pre`,
@@ -1149,7 +1163,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
                 }
                 let item = self.settled(item, index, was_first);
                 self.place(item, index, gap_before, can_break);
-                return;
+                return None;
             }
         }
         self.has_content |= item.is_content();
@@ -1162,6 +1176,7 @@ impl<'a, 'i> Lines<'a, 'i, '_, '_> {
             can_break,
             lead,
         });
+        None
     }
 
     /// A float met in the run (M11): placed at the line in progress's
@@ -2589,18 +2604,29 @@ fn cut_word<'i>(
         .filter(|&at| at > word.offset && at < end)
         .map(|at| at - word.offset)
         .collect();
-    let fits = within.iter().rev().copied().find(|&at| {
-        let head = &word.text[..at];
-        let hyphen = if hyphenates_at(word.text, at, word.style) {
-            measure_word(hyphen_of(word.style), word.style, fonts)
-        } else {
-            0.0
-        };
-        // A head that hangs whole fits a line however full.
-        let width =
-            measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts);
-        width <= room || width <= 0.0
-    });
+    // The last opportunity whose head fits: looked for from the first,
+    // up to the first whose head does not, a head being no narrower than
+    // a shorter one. From the last, each line measured every head of
+    // what was left of the word (2026-11-20, the nightly fuzz run's
+    // pipeline: a paragraph of 500 vertical tabs, each a forced
+    // opportunity, took 3 s at width 0; any long run of CJK text,
+    // where every character is one, did the same).
+    let fits = within
+        .iter()
+        .copied()
+        .take_while(|&at| {
+            let head = &word.text[..at];
+            let hyphen = if hyphenates_at(word.text, at, word.style) {
+                measure_word(hyphen_of(word.style), word.style, fonts)
+            } else {
+                0.0
+            };
+            // A head that hangs whole fits a line however full.
+            let width =
+                measure_word(head, word.style, fonts) + hyphen - hang_of(head, word.style, fonts);
+            width <= room || width <= 0.0
+        })
+        .last();
     let at = match fits {
         Some(at) => at,
         None if !alone => return None,
@@ -2631,6 +2657,12 @@ fn split_at<'i>(
         head.width += measure_word(hyphen_of(word.style), word.style, fonts);
     }
     (head, piece(tail, word.offset + at))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The bytes [`measure_word`] measured on this thread: for the tests.
+    static MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `word` cut where it reaches `room`: the typographic character units
@@ -2727,6 +2759,8 @@ fn is_zero_width(c: char) -> bool {
 /// by whatever a given font's kerning happens to be).
 fn measure_word(word: &str, style: &ComputedStyle, fonts: &FontCollection) -> f32 {
     dom::hook!("layout::inline::measure_word");
+    #[cfg(test)]
+    MEASURED.with(|measured| measured.set(measured.get() + word.len()));
     let font = font::font_for(fonts, style, word);
     if style.letter_spacing == 0.0 {
         return fonts.measure_in(font, word, style.font_size_px);
@@ -6035,5 +6069,121 @@ mod tests {
             ..inline_box(vec![with_first_line(text_box("bb", 16.0), restyled())])
         };
         assert!(!restyled_on_first_line(&[atomic]));
+    }
+
+    /// The nightly fuzz run's pipeline input (CI 44740188267): a page
+    /// whose text is some 470 vertical tabs, each an opportunity to
+    /// break, took 3.3 s to lay out at width 0.
+    const VERTICAL_TABS: &str = "\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}]\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}<\u{1}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{c}\u{b}\u{0}\
+     \u{7b}4mg\u{640}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}<\u{1}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{0}\u{7b}4mg\u{640}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{2}\u{0}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}<\u{1}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}<\u{1}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{0}\u{7b}4mg\u{640}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{2}\u{0}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}<\u{1}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{2}\u{0}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}<\u{1}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{0}\
+     \u{7b}9\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{2}\u{0}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}<\u{1}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\
+     \u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}\u{0}\u{7b}9mg\u{640}]pe";
+
+    /// [`lay`] of `text` at `width` on a small stack, which a piece a
+    /// level of recursion would overflow: its text pieces, and the bytes
+    /// [`measure_word`] measured.
+    fn cut_on_a_small_stack(text: &str, width: f32) -> (Vec<String>, usize) {
+        let text = text.to_owned();
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let fonts = test_fonts();
+                MEASURED.with(|measured| measured.set(0));
+                let (fragments, _) = lay(&[text_box(&text, 16.0)], width, TextAlign::Left, &fonts);
+                let pieces = fragments
+                    .iter()
+                    .filter_map(|f| match &f.kind {
+                        FragmentKind::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                (pieces, MEASURED.with(std::cell::Cell::get))
+            })
+            .expect("a thread")
+            .join()
+            .expect("laid out")
+    }
+
+    /// A word with an opportunity at every character, too long for its
+    /// line, is cut a piece a line: each line's head looked for from the
+    /// first opportunity, up to the first whose head does not fit, not
+    /// every head of what is left of it from the last; its rest placed
+    /// in a loop, not by recursion (2026-11-20, the nightly fuzz run's
+    /// pipeline). CJK text has an opportunity at every character too.
+    #[test]
+    fn a_word_cut_at_every_character_is_cut_a_line_at_a_time() {
+        let began = std::time::Instant::now();
+        for width in [0.0, 1.0, 97.0, 800.0] {
+            let (pieces, measured) = cut_on_a_small_stack(VERTICAL_TABS, width);
+            // Every character is laid out, in visual order: the input has
+            // right-to-left text.
+            let chars: usize = pieces.iter().map(|p| p.chars().count()).sum();
+            assert_eq!(chars, VERTICAL_TABS.chars().count());
+            let n = VERTICAL_TABS.len();
+            assert!(measured <= n * n, "{measured} bytes measured at {width}");
+        }
+        // Deeper: 3,000 tabs and 3,000 CJK characters at width 0. What is
+        // measured grows with the square of the text, each rest measured
+        // whole, not its cube.
+        for text in ["\u{b}".repeat(3000), "\u{4e00}".repeat(3000)] {
+            let (pieces, measured) = cut_on_a_small_stack(&text, 0.0);
+            assert_eq!(pieces.len(), 3000, "a character a line");
+            assert!(
+                measured <= text.len() * text.len(),
+                "{measured} bytes measured"
+            );
+        }
+        assert!(began.elapsed() < std::time::Duration::from_secs(60));
+        // At a width that holds some, each line is as full as it may be,
+        // and the pieces are the text in order.
+        let fonts = test_fonts();
+        let text = "\u{4e00}".repeat(3000);
+        let width = 100.0;
+        let (fragments, _) = lay(&[text_box(&text, 16.0)], width, TextAlign::Left, &fonts);
+        let lines: Vec<(&str, f32)> = fragments
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FragmentKind::Text(t) => Some((t.as_str(), f.w)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.iter().map(|l| l.0).collect::<String>(), text);
+        let one = lines[0].1 / lines[0].0.chars().count() as f32;
+        for (piece, w) in &lines[..lines.len() - 1] {
+            assert!(*w <= width, "{w}");
+            assert!(w + one > width, "a line holds all it may: {piece}");
+        }
     }
 }
