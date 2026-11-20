@@ -550,6 +550,19 @@ step:
   sampler reads a 2D array of its faces, the face and texel chosen in
   the shader (GL ES 3.0 table 3.21), as WebGPU loads no texel of a cube
   (step 9).
+  Macro expansion is bounded as a whole (2026-11-20, the nightly
+  fuzz run's glsl_parse): every token the expansion makes, its
+  arguments' and substitutions' with its output's, counts toward four
+  times `MAX_GLSL_TOKENS`, past which the shader is refused "macro
+  expansion too large"; nesting past `MAX_GLSL_DEPTH` (64) is
+  refused "macro expansion too deep". A known deviation, both bounds
+  keeping memory finite: the reference's ANGLE (Chrome 157, probed)
+  refuses far sooner by size, a function-like macro of two copies nested twelve deep (4,096 copies)
+  failing where ten deep passes, with "ERROR: 0:2: ')' : out of
+  memory", naming the token it stopped at; and it takes deeper
+  chains, object-like ones 1,100 deep and function-like ones 200 deep,
+  where this crate stops at 64. A real site's shader that meets the
+  depth of 64 reopens the question.
 - **WebGL's core (step 6).** The clear and blend colours are clamped to
   [0, 1] in both versions. `VENDOR` and `RENDERER` are the masked
   "WebKit" and "WebKit WebGL"; past `MAX_WEBGL_CONTEXTS` (16) the
