@@ -30,8 +30,9 @@ pub const MAX_SOURCE: usize = 8 << 20;
 pub const MAX_TOTAL: u64 = 512 << 20;
 
 /// How a source came: an inline script's text, an external script's or
-/// module's response, a worker's.
-pub const KINDS: &[&str] = &["inline", "external", "worker"];
+/// module's response, a worker's, or code from a string (`eval`, a
+/// function constructor's source), the document's that compiled it.
+pub const KINDS: &[&str] = &["inline", "external", "worker", "eval"];
 
 /// Where a process's sources go instead of its own files: a renderer's
 /// link to the browser.
@@ -70,7 +71,7 @@ fn hash(url: &str, text: &str) -> u64 {
 
 /// A source a realm runs: to this process's sink, if it has one, else
 /// written.
-pub(crate) fn dump(text: &str, url: &str, module: bool, kind: &str) {
+pub fn dump(text: &str, url: &str, module: bool, kind: &str) {
     match SINK.get() {
         Some(sink) => sink(url, text, module, kind),
         None => write(text, url, module, kind),

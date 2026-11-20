@@ -3722,6 +3722,13 @@ impl DocumentHost {
                 let Some(page) = self.page.as_mut() else {
                     return Ok(Answer::String(String::new()));
                 };
+                // A sweep build's corpus: code from strings, as the
+                // document that compiles it (`dump-scripts`).
+                #[cfg(feature = "dump-scripts")]
+                if kind != "wasm" && kind != "handler" {
+                    let url = page.url().map(ToString::to_string).unwrap_or_default();
+                    js::dump::dump(&source, &url, false, "eval");
+                }
                 let csp = page.csp(&self.document);
                 let violations = match kind.as_str() {
                     "wasm" => csp.wasm_violations(),

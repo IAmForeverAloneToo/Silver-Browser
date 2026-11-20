@@ -2076,7 +2076,11 @@ impl Scripts {
         let Some(realm) = &mut self.realm else {
             return;
         };
-        if lent.page.csp(lent.document).eval_violations("").is_empty() {
+        // A sweep build's corpus takes every document's code from strings
+        // (`dump-scripts`), which the guard hands the host.
+        if !cfg!(feature = "dump-scripts")
+            && lent.page.csp(lent.document).eval_violations("").is_empty()
+        {
             return;
         }
         let _ = realm.enter(&js::Task::GuardCode, &mut self.host);
