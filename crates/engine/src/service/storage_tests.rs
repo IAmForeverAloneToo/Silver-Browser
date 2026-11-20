@@ -331,3 +331,70 @@ fn a_renderers_service_worker_requests_are_held_to_its_documents_origin() {
         "the storage of https://victim.test"
     );
 }
+
+#[test]
+fn an_about_blank_documents_service_worker_requests_are_held_to_its_creators_origin() {
+    // A frame's initial about:blank is of its creator's origin, which its
+    // URL does not say (grok.com's renderer was stopped for one, 2026-11-20):
+    // its base URL, its creator's, is held to the key's origin instead. A
+    // base of another origin is still a lie.
+    let site = url("https://a.test/").origin();
+    let wired = wired(Lock::of(&url("https://a.test/")), &[(7, top_of(&site))]);
+    let ask = |base: &str| {
+        wired
+            .link
+            .send(&ToBrowser::Storage {
+                call: 2,
+                frame: 7,
+                local: true,
+                origin: site.clone(),
+                partition: None,
+                op: StorageOp::ServiceWorker {
+                    request: r#"{"op":"check"}"#.to_owned(),
+                    url: Box::new(url("about:blank")),
+                    base: Box::new(url(base)),
+                    page: 1,
+                },
+            })
+            .expect("sent");
+    };
+    ask("https://a.test/page");
+    assert!(
+        wired.bad.recv_timeout(Duration::from_millis(500)).is_err(),
+        "an about:blank of the key's origin is answered"
+    );
+    ask("https://victim.test/page");
+    assert_eq!(
+        wired.bad.recv_timeout(WAIT).expect("a bad message"),
+        "a document of https://victim.test/page for https://a.test"
+    );
+}
+
+#[test]
+fn an_about_blank_of_another_sites_key_and_base_kills_the_renderer() {
+    // A renderer's words agreeing with each other prove nothing: a key and
+    // a base both of victim.test, from a renderer locked to a.test, are
+    // held to the lock before the base is looked at.
+    let site = url("https://a.test/").origin();
+    let wired = wired(Lock::of(&url("https://a.test/")), &[(7, top_of(&site))]);
+    wired
+        .link
+        .send(&ToBrowser::Storage {
+            call: 2,
+            frame: 7,
+            local: true,
+            origin: url("https://victim.test/").origin(),
+            partition: None,
+            op: StorageOp::ServiceWorker {
+                request: r#"{"op":"check"}"#.to_owned(),
+                url: Box::new(url("about:blank")),
+                base: Box::new(url("https://victim.test/page")),
+                page: 1,
+            },
+        })
+        .expect("sent");
+    assert_eq!(
+        wired.bad.recv_timeout(WAIT).expect("a bad message"),
+        "the storage of https://victim.test"
+    );
+}

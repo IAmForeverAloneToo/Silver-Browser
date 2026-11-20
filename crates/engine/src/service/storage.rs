@@ -105,10 +105,14 @@ impl StorageService {
         page: u64,
         reply: &Sender<ToRenderer>,
     ) -> Result<String, String> {
-        if url.origin() != area.origin {
+        // An `about:blank` or `about:srcdoc` document is of its creator's
+        // origin, which its URL does not say: its base URL, its creator's,
+        // does (a script's reach of a frame's initial blank, G90).
+        let said = if url.scheme() == "about" { &base } else { &url };
+        if said.origin() != area.origin {
             return Err(format!(
                 "a document of {} for {}",
-                url,
+                said,
                 area.origin.serialization()
             ));
         }
