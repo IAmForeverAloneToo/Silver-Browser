@@ -52,7 +52,7 @@ pub const MAX_SCRIPT_NESTING: usize = 6;
 use dom::{Document, NodeId};
 use encoding::Encoding;
 use js::{
-    Completion, ConsoleKind, ConsoleLevel, ErrorKind, Limits, QuickJs, Realm, Script, ScriptEngine,
+    Completion, ConsoleKind, ConsoleLevel, ErrorKind, Limits, Realm, Script, ScriptEngine,
     ScriptError, StackFrame,
 };
 use net::csp::{Csp, Violation};
@@ -2046,8 +2046,8 @@ impl Scripts {
                 ..self.limits
             };
             let made = match &self.agent {
-                Some(agent) => QuickJs.realm_in(agent, kind, secure),
-                None => QuickJs.realm_of::<DocumentHost>(kind, limits, None),
+                Some(agent) => js::engine().realm_in(agent, kind, secure),
+                None => js::engine().realm_of::<DocumentHost>(kind, limits, None),
             };
             match made {
                 Ok(mut realm) => {

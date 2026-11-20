@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use js::{
-    Answer, Call, ConsoleLevel, DomError, ErrorKind, Limits, MessageTarget, QuickJs, Realm,
-    RealmKind, Script, ScriptEngine, ScriptError, ScriptingHost, Task,
+    Answer, Call, ConsoleLevel, DomError, ErrorKind, Limits, MessageTarget, Realm, RealmKind,
+    Script, ScriptEngine, ScriptError, ScriptingHost, Task,
 };
 use net::{Credentials, Destination, Initiator, Origin, Request, Url};
 
@@ -678,7 +678,8 @@ fn run(setup: Setup) {
         secure: start.secure,
         ..Limits::worker()
     };
-    let Ok(mut realm) = QuickJs.realm_of::<WorkerHost>(kind, limits, Some(stop.clone())) else {
+    let Ok(mut realm) = js::engine().realm_of::<WorkerHost>(kind, limits, Some(stop.clone()))
+    else {
         return ended(Some(None));
     };
     let origin = if url.scheme() == "data" {
@@ -815,7 +816,7 @@ pub(crate) fn run_service(setup: ServiceSetup) {
         ..Limits::worker()
     };
     let Ok(mut realm) =
-        QuickJs.realm_of::<WorkerHost>(RealmKind::ServiceWorker, limits, Some(stop.clone()))
+        js::engine().realm_of::<WorkerHost>(RealmKind::ServiceWorker, limits, Some(stop.clone()))
     else {
         return tell(None);
     };

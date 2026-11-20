@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+mod backend;
 mod dom;
 mod pattern;
 mod quickjs;
@@ -41,6 +42,7 @@ mod wasm_tests;
 #[cfg(test)]
 mod worker_tests;
 
+pub use backend::{Agent, DEFAULT_ENGINE, Engine, WeakAgent, engine};
 pub use dom::{
     Answer, Call, CanvasCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript,
     WORK_PER_STEP,
@@ -50,8 +52,8 @@ pub use pattern::pattern_matches;
 #[cfg(feature = "dump-scripts")]
 pub use quickjs::dump;
 pub use quickjs::{
-    Agent, Member, QuickJs, WeakAgent, set_windows_time_zone, take_reentered_reaches,
-    take_unlent_calls, warm_bindings,
+    Member, QuickJs, set_windows_time_zone, take_reentered_reaches, take_unlent_calls,
+    warm_bindings,
 };
 pub use stack::remaining_stack;
 

@@ -8207,7 +8207,7 @@ impl Engine {
         if let Some(agent) = kept {
             return (agent, true);
         }
-        let agent = js::QuickJs
+        let agent = js::engine()
             .agent::<scripts::DocumentHost>(self.script_limits, None)
             .expect("an agent's runtime");
         self.agents.borrow_mut().insert(key, agent.downgrade());

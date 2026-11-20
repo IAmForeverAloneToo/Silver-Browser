@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use engine::{Engine, FrameTime, LoadState};
-use js::{ConsoleLevel, Limits, QuickJs, Script, ScriptEngine, ScriptingHost};
+use js::{ConsoleLevel, Limits, Script, ScriptEngine, ScriptingHost};
 use net::test_server::{Reply, TestServer};
 
 const WIDTH: u32 = 1280;
@@ -148,7 +148,7 @@ fn bench() {
     let mut made = Vec::new();
     for _ in 0..support::rounds(RUNS) {
         let start = Instant::now();
-        let realm = QuickJs
+        let realm = js::engine()
             .realm::<Host>(Limits::default())
             .expect("a realm is made");
         made.push(ms(start.elapsed()));
@@ -157,7 +157,7 @@ fn bench() {
     println!("a realm made: {}", spread(&mut made));
     support::hooks("scripts 1");
 
-    let mut realm = QuickJs
+    let mut realm = js::engine()
         .realm::<Host>(Limits::default())
         .expect("a realm is made");
     let mut host = Host::default();
