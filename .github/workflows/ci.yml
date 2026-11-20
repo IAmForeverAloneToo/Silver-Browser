@@ -164,6 +164,15 @@ jobs:
       - if: runner.os == 'Windows'
         run: echo "WGPU_BACKEND=vulkan" >> "$GITHUB_ENV"
         shell: bash
+      # macOS's runner takes the web-platform tests about 2.5 times as
+      # long as the reference machine (1,090 s against 430 s): a test
+      # whose page plays media or renders sound, in real time, is given
+      # three times its wait there, as wptrunner's --timeout-multiplier
+      # gives a slow runner (crates/engine/tests/wpt.rs; CI 44740188267,
+      # preserves-pitch.html).
+      - if: runner.os == 'macOS'
+        run: echo "SILVER_WPT_TIMEOUT_MULTIPLIER=3" >> "$GITHUB_ENV"
+        shell: bash
       # Every test binary runs, and the step after too, whatever fails:
       # one run says all that does.
       - run: cargo test --workspace --locked --no-fail-fast

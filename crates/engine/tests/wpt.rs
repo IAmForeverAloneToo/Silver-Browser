@@ -1758,6 +1758,43 @@ fn status_name(names: &[&'static str], status: u8) -> &'static str {
 /// it: ten seconds, a minute for one whose `timeout` is long.
 const HARNESS_WAIT: Duration = Duration::from_secs(10);
 const HARNESS_WAIT_LONG: Duration = Duration::from_secs(60);
+
+/// wptrunner's `--timeout-multiplier` for a runner slower than the
+/// machines the tests were written for, from
+/// `SILVER_WPT_TIMEOUT_MULTIPLIER` (1 to 10; 1 when unset): CI sets it
+/// on macOS, whose runner takes the whole run about 2.5 times as long
+/// as the reference machine (1,090 s against 430 s). It stretches the
+/// wait only of a test whose page plays media or renders sound, which
+/// run at the output's clock in real time however slowly the rest of
+/// the page runs: `preserves-pitch.html` plays 3.5 s of sound at six
+/// rates, and on that runner its load and seeks, taken 2.5 times as
+/// long, left its last rate short of its ten seconds (CI 44740188267;
+/// here it ends in 5.5 s of page time, 3.6 s of it after the load).
+fn timeout_multiplier() -> u32 {
+    multiplier_of(
+        std::env::var("SILVER_WPT_TIMEOUT_MULTIPLIER")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// The multiplier a value of `SILVER_WPT_TIMEOUT_MULTIPLIER` names.
+fn multiplier_of(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map_or(1, |n| n.clamp(1, 10))
+}
+
+#[test]
+fn the_timeout_multiplier_is_a_whole_number_from_one_to_ten() {
+    assert_eq!(multiplier_of(None), 1);
+    assert_eq!(multiplier_of(Some("3")), 3);
+    assert_eq!(multiplier_of(Some(" 2 ")), 2);
+    assert_eq!(multiplier_of(Some("0")), 1);
+    assert_eq!(multiplier_of(Some("50")), 10);
+    assert_eq!(multiplier_of(Some("2.5")), 1);
+    assert_eq!(multiplier_of(Some("")), 1);
+}
 /// The real time a page with workers is given before each move of its
 /// clock (M31).
 const WORKER_SLICE: Duration = Duration::from_millis(20);
@@ -1861,7 +1898,11 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
     } else {
         HARNESS_WAIT
     };
-    let deadline = Instant::now() + LOAD;
+    let started = Instant::now();
+    // Whether the page played media or rendered sound in real time:
+    // its wait is then the slow runner's, `timeout_multiplier` times as
+    // long.
+    let mut real_time = false;
     // When the page's clock last moved, in real time.
     let mut moved = Instant::now();
     // What the console said, but for the runner.
@@ -1899,6 +1940,9 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                 harness: Some(harness),
             };
         }
+        real_time |= engine.plays_media() || engine.renders_sound();
+        let times = if real_time { timeout_multiplier() } else { 1 };
+        let wait = wait * times;
         if now > wait {
             return unfinished(
                 engine,
@@ -1906,12 +1950,12 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                 format!("TIMEOUT: still running after {wait:?} of its time"),
             );
         }
-        let left = deadline.checked_duration_since(Instant::now());
+        let left = (started + LOAD * times).checked_duration_since(Instant::now());
         let Some(left) = left else {
             return unfinished(
                 engine,
                 said,
-                format!("TIMEOUT: still running after {LOAD:?}"),
+                format!("TIMEOUT: still running after {:?}", LOAD * times),
             );
         };
         // While a fetch is in flight the page's clock runs in real time,

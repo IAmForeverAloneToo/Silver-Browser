@@ -8503,6 +8503,13 @@ impl Engine {
         self.shown.scripts.renders_sound() || self.frames_busy(Engine::renders_sound)
     }
 
+    /// Whether a media element of the document shown plays: its time
+    /// runs at the output's clock, in real time, whatever a runner on a
+    /// hand's clock does with the page's (2026-11-20, CI 44740188267).
+    pub fn plays_media(&self) -> bool {
+        self.shown.scripts.media_playing() || self.frames_busy(Engine::plays_media)
+    }
+
     /// Whether a fetch is in flight (M27): a runner on a hand's clock
     /// waits for the network before it moves the clock on. A media
     /// element's load counts until its resource is read or fails, its

@@ -2968,6 +2968,11 @@ impl Scripts {
         self.host.media.loading()
     }
 
+    /// Whether a media element plays, its time running in real time.
+    pub(crate) fn media_playing(&self) -> bool {
+        !self.stopped && self.host.media.playing()
+    }
+
     /// The media players: for the tests.
     #[cfg(test)]
     pub(crate) fn media_mut(&mut self) -> &mut crate::playback::Players {

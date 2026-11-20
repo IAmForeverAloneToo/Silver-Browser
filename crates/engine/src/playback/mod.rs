@@ -1349,8 +1349,12 @@ fn reported(player: &mut Player, report: Report, env: &Env<'_>, out: &mut Vec<Ac
             out.push(Action::Event(node, "seeked"));
             out.push(Action::Event(node, "canplay"));
             out.push(Action::Event(node, "canplaythrough"));
+            // HTML's "notify about playing": the play promises made as it
+            // sought are resolved with its `playing` (CI 44740188267:
+            // left pending, a pause rejected them).
             if !player.paused {
                 out.push(Action::Event(node, "playing"));
+                player.resolve_pending(out);
             }
         }
         Report::Time(time) => {

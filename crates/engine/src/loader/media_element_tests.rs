@@ -1238,3 +1238,32 @@ fn a_media_load_counts_as_a_fetch_until_it_is_judged_and_no_longer_than_its_boun
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(!tab.engine.shown.scripts.media_loading());
 }
+
+/// A `play()` made while the element seeks is resolved with the seek's
+/// `playing`, as HTML's "notify about playing the media element" says
+/// (CI 44740188267: it was left pending, and the next pause rejected it).
+#[test]
+fn a_play_made_during_a_seek_is_resolved_by_its_playing() {
+    let page = server(
+        r#"
+log('ready');
+(async () => {
+  const a = document.createElement('audio');
+  a.muted = true;
+  a.src = '/media/sine.wav';
+  await new Promise(r => a.addEventListener('canplaythrough', r, {once: true}));
+  await a.play();
+  a.currentTime = 0.25;
+  const seeking = a.seeking;
+  const settled = a.play().then(() => 'resolved', e => 'rejected ' + e.name);
+  const late = new Promise(r => setTimeout(() => r('still pending'), 3000));
+  log('play during a seek (' + seeking + '): ' + await Promise.race([settled, late]) + ', paused ' + a.paused);
+  log('done');
+})().catch(e => log('failed ' + e));
+"#,
+    );
+    assert_eq!(
+        run(&page, false),
+        ["play during a seek (true): resolved, paused false"]
+    );
+}
