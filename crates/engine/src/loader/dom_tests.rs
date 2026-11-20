@@ -3602,3 +3602,59 @@ fn navigator_connection_tells_the_estimate_as_the_reference_does() {
           onchange,effectiveType,rtt,downlink,saveData,constructor null 4g 100 false true"]
     );
 }
+
+#[test]
+fn visual_viewport_is_the_layout_viewport_unzoomed() {
+    let console = logged(
+        "<div style='height: 3000px; width: 3000px'></div><script>\
+         const v = visualViewport;\
+         console.log(String(v), v === visualViewport, v instanceof EventTarget,\
+           Object.getOwnPropertyNames(VisualViewport.prototype).join(),\
+           v.width === innerWidth, v.height === innerHeight, v.scale, v.offsetLeft, v.offsetTop,\
+           v.onresize, v.onscroll, v.onscrollend);\
+         scrollTo(30, 40);\
+         console.log(v.pageLeft === scrollX, v.pageTop === scrollY);\
+         try { new VisualViewport(); } catch (e) { console.log(e.message); }\
+         window.visualViewport = 5; console.log(window.visualViewport);\
+         </script>",
+    );
+    assert_eq!(
+        console,
+        [
+            "[object VisualViewport] true true \
+             offsetLeft,offsetTop,pageLeft,pageTop,width,height,scale,onresize,onscroll,\
+             onscrollend,constructor true true 1 0 0 null null null",
+            "true true",
+            "Failed to construct 'VisualViewport': Illegal constructor",
+            "5"
+        ]
+    );
+}
+
+/// `navigator.deviceMemory`'s rounding, as the reference's: to the
+/// nearer power of two in megabytes, then bounded to 2-32 GB (probed:
+/// Chrome 157 says 32 on a machine of 65,259 MB).
+#[test]
+fn device_memory_is_rounded_and_bounded_as_the_references() {
+    let gb = |mb: u64| crate::approximate_device_memory(mb * 1024 * 1024);
+    assert_eq!(gb(65_259), 32.0);
+    assert_eq!(gb(16_000), 16.0);
+    assert_eq!(gb(12_288), 8.0);
+    assert_eq!(gb(12_289), 16.0);
+    assert_eq!(gb(7_900), 8.0);
+    assert_eq!(gb(3_000), 2.0);
+    assert_eq!(gb(512), 2.0);
+    assert_eq!(gb(0), 2.0);
+    assert_eq!(gb(262_144), 32.0);
+}
+
+#[test]
+fn navigator_device_memory_is_the_engines_told_value() {
+    let console = logged(
+        "<script>const d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory');\
+         console.log(navigator.deviceMemory, typeof d.get, d.enumerable, 'deviceMemory' in navigator);\
+         </script>",
+    );
+    // No memory is told the tests' engine: the reference's for none.
+    assert_eq!(console, ["2 function true true"]);
+}

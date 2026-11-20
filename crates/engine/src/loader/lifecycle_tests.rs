@@ -254,7 +254,7 @@ fn a_frame_fires_resize_and_scroll_when_they_changed() {
     let (mut tab, _) = scripted(
         "<div id=box style='height: 50px; overflow: auto'><div style='height: 500px'></div></div>\
          <div style='height: 3000px'></div><script>\
-         addEventListener('resize', function () { console.log('resize', innerWidth); });\
+         addEventListener('resize', function () { console.log('resize', innerWidth); });         visualViewport.onresize = function (e) { console.log('visual resize',            visualViewport.width, e.isTrusted, e.bubbles); };\
          document.addEventListener('scroll', function (e) { console.log('scroll document', \
            e.bubbles); });\
          addEventListener('scroll', function (e) { console.log('scroll window', \
@@ -274,7 +274,11 @@ fn a_frame_fires_resize_and_scroll_when_they_changed() {
             deadline: Duration::from_millis(1032),
         },
     );
-    assert_eq!(lines(&mut tab), ["resize 300"]);
+    // The visual viewport's after the window's.
+    assert_eq!(
+        lines(&mut tab),
+        ["resize 300", "visual resize 300 true false"]
+    );
     tab.engine.scroll_to(100.0);
     let document = tab.engine.document();
     let boxed = document
@@ -290,6 +294,7 @@ fn a_frame_fires_resize_and_scroll_when_they_changed() {
         lines(&mut tab),
         [
             "resize 200",
+            "visual resize 200 true false",
             "scroll box false",
             "scroll document true",
             "scroll window true"

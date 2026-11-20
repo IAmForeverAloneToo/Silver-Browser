@@ -21519,6 +21519,28 @@
   expose(NetworkInformation, "NetworkInformation");
   let connection = null;
 
+  // ---- User Activation (HTML section 6.4.3, 2026-11-20) ------------------
+
+  // `navigator.userActivation`: whether the user ever activated the
+  // window, and whether that activation is transient still.
+  class UserActivation {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("UserActivation");
+      }
+    }
+
+    get hasBeenActive() {
+      return native.userActivation()[0] === 1;
+    }
+
+    get isActive() {
+      return native.userActivation()[1] === 1;
+    }
+  }
+  expose(UserActivation, "UserActivation");
+  let userActivation = null;
+
   class Navigator {
     constructor(key) {
       if (key !== KEY) {
@@ -21609,6 +21631,13 @@
       return connection;
     }
 
+    get userActivation() {
+      if (userActivation === null) {
+        userActivation = new UserActivation(KEY);
+      }
+      return userActivation;
+    }
+
     // In the Chrome compatibility mode alone; the Gecko mode has none.
     get userAgentData() {
       if (uaValues() === undefined) {
@@ -21618,6 +21647,12 @@
         userAgentData = new NavigatorUAData(KEY);
       }
       return userAgentData;
+    }
+
+    // The device's memory in GB, as the reference rounds and bounds it
+    // (2026-11-20); in the Chrome compatibility mode alone.
+    get deviceMemory() {
+      return native.deviceMemory();
     }
 
     get pdfViewerEnabled() {
@@ -21639,6 +21674,7 @@
   // A secure context's alone ([SecureContext]).
   if (!SECURE) {
     ReflectDeleteProperty(Navigator.prototype, "userAgentData");
+    ReflectDeleteProperty(Navigator.prototype, "deviceMemory");
   }
   expose(Navigator, "Navigator");
   const navigator = new Navigator(KEY);
@@ -21710,7 +21746,7 @@
       "platform", "product", "userAgent"];
     // A secure context's alone, as the window's.
     if (SECURE) {
-      ArrayPush(shared, "userAgentData");
+      ArrayPush(shared, "userAgentData", "deviceMemory");
     }
     for (let i = 0; i < shared.length; i++) {
       defineProperty(WorkerNavigator.prototype, shared[i],
@@ -23463,6 +23499,73 @@
     },
     set(value) {
       defineProperty(global, "event", {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    },
+    enumerable: true,
+    configurable: true,
+  });
+
+  // ---- Visual Viewport (CSSOM View section 7, 2026-11-20) ----------------
+
+  // `window.visualViewport`: the part of the layout viewport shown,
+  // which no pinch zoom makes smaller here: the viewport less its
+  // scrollbars, at its scroll position, at scale 1. Its `resize` follows
+  // the window's; its `scroll` and `scrollend` are a zoomed viewport's
+  // alone, and none comes.
+  class VisualViewport extends EventTarget {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("VisualViewport");
+      }
+      super();
+    }
+  }
+  {
+    const members = {
+      get offsetLeft() {
+        return 0;
+      },
+      get offsetTop() {
+        return 0;
+      },
+      get pageLeft() {
+        return native.scrollOffset(null)[2];
+      },
+      get pageTop() {
+        return native.scrollOffset(null)[0];
+      },
+      get width() {
+        return native.viewport()[0];
+      },
+      get height() {
+        return native.viewport()[1];
+      },
+      get scale() {
+        return 1;
+      },
+    };
+    const names = ["offsetLeft", "offsetTop", "pageLeft", "pageTop", "width", "height", "scale"];
+    for (const name of names) {
+      defineProperty(VisualViewport.prototype, name, getOwnPropertyDescriptor(members, name));
+    }
+  }
+  defineHandlers(VisualViewport.prototype, ["resize", "scroll", "scrollend"], false);
+  let visualViewport = null;
+  expose(VisualViewport, "VisualViewport");
+  // [Replaceable], as `event` is.
+  windowOnly("visualViewport", {
+    get() {
+      if (visualViewport === null) {
+        visualViewport = new VisualViewport(KEY);
+      }
+      return visualViewport;
+    },
+    set(value) {
+      defineProperty(global, "visualViewport", {
         value,
         writable: true,
         enumerable: true,
@@ -34498,6 +34601,17 @@
         s.offset = [init.offsetX, init.offsetY];
       }
       if (handle === null) {
+        // The visual viewport's size is the window's: its `resize` after
+        // the window's (CSSOM View's "run the resize steps").
+        if (type === "resize" && visualViewport !== null) {
+          const second = new known[1](type, dictionary(init, known[2], iface));
+          eventState(second).trusted = true;
+          return (function* () {
+            const result = yield* dispatching(global, event);
+            yield* dispatching(visualViewport, second);
+            return result;
+          })();
+        }
         // The window's `load`, `pageshow` and `pagehide` name the document
         // their target.
         const named = type === "load" || type === "pageshow" || type === "pagehide";

@@ -274,7 +274,7 @@ impl DocumentHost {
 
     /// Whether the tab's documents have the user's transient activation
     /// (HTML section 6.4.3), which this does not consume.
-    fn transiently_active(&self) -> bool {
+    pub(super) fn transiently_active(&self) -> bool {
         let Some(env) = self.window.frames.clone() else {
             return false;
         };

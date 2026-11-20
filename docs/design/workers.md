@@ -281,8 +281,9 @@ worker's fetches run on a pool of six threads of its own, which wake
 its loop through its inbox; the document's offscreen code was split
 out of its host, so that a worker draws with the same code; its
 `WorkerNavigator` has the window navigator's members but
-`hardwareConcurrency`, `deviceMemory` and the like, which neither has
-here; a worker's synchronous `XMLHttpRequest` takes a timeout and a
+`hardwareConcurrency` and the like, which neither has here
+(`deviceMemory` and `userAgentData` both have, a secure context's,
+since 2026-11-20); a worker's synchronous `XMLHttpRequest` takes a timeout and a
 response type, and it has no `responseXML` or `"document"`.)*
 
 **`OffscreenCanvas` from a page's canvas (M31.4).** The roadmap's

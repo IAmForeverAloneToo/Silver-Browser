@@ -3025,6 +3025,26 @@ impl DocumentHost {
                     downlink.to_string(),
                 ]))
             }
+            Call::DeviceMemory => Ok(if self.window.compat {
+                Answer::Number(crate::device_memory())
+            } else {
+                Answer::Nothing
+            }),
+            Call::UserActivation => {
+                // Transient while within the span of the last, and while
+                // no document of the tab consumed it since (HTML section
+                // 6.4.3).
+                let now = self.now();
+                let transient = self
+                    .window
+                    .activation
+                    .is_some_and(|at| now.saturating_sub(at) <= crate::frames::ACTIVATION_SPAN)
+                    && self.transiently_active();
+                Ok(Answer::Numbers(vec![
+                    f64::from(u8::from(self.window.activation.is_some())),
+                    f64::from(u8::from(transient)),
+                ]))
+            }
             Call::UserAgentData => Ok(if self.window.compat {
                 Answer::String(user_agent_data())
             } else {

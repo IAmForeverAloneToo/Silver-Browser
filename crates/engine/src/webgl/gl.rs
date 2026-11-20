@@ -161,6 +161,8 @@ pub const ACTIVE_ATTRIBUTES: u32 = 0x8B89;
 pub const SHADING_LANGUAGE_VERSION: u32 = 0x8B8C;
 pub const CURRENT_PROGRAM: u32 = 0x8B8D;
 pub const COMPILE_STATUS: u32 = 0x8B81;
+/// `KHR_parallel_shader_compile`'s.
+pub const COMPLETION_STATUS_KHR: u32 = 0x91B1;
 
 pub const NEVER: u32 = 0x0200;
 pub const LESS: u32 = 0x0201;

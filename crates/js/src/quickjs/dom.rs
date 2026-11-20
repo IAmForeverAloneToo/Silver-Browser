@@ -1069,6 +1069,8 @@ const NATIVES: &[(&str, Decode)] = &[
     ("navigator", |_| Ok(Call::NavigatorInfo)),
     ("userAgentData", |_| Ok(Call::UserAgentData)),
     ("connection", |_| Ok(Call::Connection)),
+    ("userActivation", |_| Ok(Call::UserActivation)),
+    ("deviceMemory", |_| Ok(Call::DeviceMemory)),
     ("viewport", |_| Ok(Call::Viewport)),
     ("documentInfo", |a| {
         Ok(Call::DocumentInfo(a.maybe_handle(0)?))

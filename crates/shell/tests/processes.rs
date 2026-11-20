@@ -207,6 +207,31 @@ fn a_tab_keeps_at_most_the_cap_of_renderer_processes() {
     assert!(said.contains("site 19: 16 renderers"), "{said}");
 }
 
+/// `navigator.deviceMemory` (2026-11-20): the renderer reads the
+/// physical memory in its sandbox as the browser does, and tells it
+/// rounded as the reference does.
+#[test]
+fn a_renderer_reads_the_device_memory_in_its_sandbox() {
+    let server = net::test_server::TestServer::plain(|_| {
+        net::test_server::Reply::ok(
+            "text/html",
+            b"<script>document.title = String(navigator.deviceMemory)</script>",
+        )
+    });
+    let out = Command::new(BROWSER)
+        .args([
+            "--check-processes",
+            "devicememory",
+            &server.port().to_string(),
+        ])
+        .output()
+        .expect("the check ran");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let complained = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}{complained}");
+    assert!(said.starts_with("device memory: renderer says "), "{said}");
+}
+
 /// M35.1: the memory of each class of page, the page-load benchmark's
 /// pages, each shown in a renderer of its own.
 #[test]

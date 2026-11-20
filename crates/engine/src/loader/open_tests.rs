@@ -232,3 +232,35 @@ fn only_pages_of_the_web_and_a_blank_one_open_in_a_tab() {
         assert!(!open(url), "{url}");
     }
 }
+
+#[test]
+fn user_activation_is_the_documents_and_window_open_consumes_its_transience() {
+    let (mut tab, _) = tab_of(
+        "<style>body { margin: 0 } button { display: block; height: 40px }</style>\
+         <button onclick=\"const u = navigator.userActivation; \
+           console.log('click', u.hasBeenActive, u.isActive); window.open('/next'); \
+           console.log('opened', u.hasBeenActive, u.isActive)\">open</button>\
+         <script>const u = navigator.userActivation; \
+           console.log(String(u), u === navigator.userActivation, \
+             Object.getOwnPropertyNames(UserActivation.prototype).join(), \
+             u.hasBeenActive, u.isActive); \
+           addEventListener('keydown', e => console.log(e.key, u.hasBeenActive, u.isActive));\
+         </script>",
+        true,
+    );
+    assert_eq!(
+        lines(&mut tab),
+        ["[object UserActivation] true hasBeenActive,isActive,constructor false false"]
+    );
+    // Escape activates nothing, as the reference has it.
+    tab.engine.key_down(&crate::Key::new("Escape", "Escape"));
+    assert_eq!(lines(&mut tab), ["Escape false false"]);
+    // A press does; the tab it opens consumes the transience, not the
+    // stickiness.
+    click(&mut tab, 10.0, 20.0);
+    assert_eq!(lines(&mut tab), ["click true true", "opened true false"]);
+    assert_eq!(tab.engine.take_opened().len(), 1);
+    // Another key is an activation again.
+    tab.engine.key_down(&crate::Key::new("a", "KeyA"));
+    assert_eq!(lines(&mut tab), ["a true true"]);
+}

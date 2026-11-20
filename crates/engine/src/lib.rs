@@ -191,6 +191,39 @@ pub fn set_windows_build(build: u32) {
     let _ = WINDOWS_BUILD.set(build);
 }
 
+/// The system's physical memory in bytes (2026-11-20), read once as
+/// each process of the executable starts, as its Windows build is:
+/// `navigator.deviceMemory`, which tells it rounded.
+static PHYSICAL_MEMORY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// Tells the engine the system's physical memory, in bytes, once.
+pub fn set_physical_memory(bytes: u64) {
+    let _ = PHYSICAL_MEMORY.set(bytes);
+}
+
+/// `navigator.deviceMemory`: the physical memory told, in GB, as the
+/// reference gives it; where none was told, what the reference's
+/// rounding makes of none, which its read gives where it fails.
+pub(crate) fn device_memory() -> f64 {
+    approximate_device_memory(PHYSICAL_MEMORY.get().copied().unwrap_or(0))
+}
+
+/// The reference's approximation of `bytes` of memory (Device Memory,
+/// Chrome's `approximated_device_memory.cc` with its 2026 bounds): its
+/// megabytes to the nearer power of two, the lower where both are as
+/// near, in GB, from 2 to 32 on a desktop.
+pub fn approximate_device_memory(bytes: u64) -> f64 {
+    let mb = (bytes / (1024 * 1024)).max(1);
+    let lower = 1u64 << (63 - mb.leading_zeros());
+    let upper = lower * 2;
+    let nearest = if mb - lower <= upper - mb {
+        lower
+    } else {
+        upper
+    };
+    (nearest as f64 / 1024.0).clamp(2.0, 32.0)
+}
+
 /// The client hints' `platformVersion`: Windows' contract version for
 /// its build (`net::client_hints`), or empty where none was told.
 pub(crate) fn platform_version() -> String {
@@ -826,6 +859,10 @@ struct Shown {
     /// What the user's light dismiss, close requests and interest
     /// invokers keep (gap batch H).
     overlays: top_layer::Overlays,
+    /// When the user last activated the document (2026-11-20, HTML's
+    /// last activation timestamp), which `navigator.userActivation`
+    /// tells; a document of its own each, none at first.
+    activation: Option<Duration>,
     /// The `content-visibility: auto` elements the rendering updates
     /// have met (gap batch H), and whether each was last found
     /// relevant to the user.
@@ -979,6 +1016,7 @@ impl Shown {
             pointer_frame: None,
             pressed_frame: None,
             overlays: top_layer::Overlays::default(),
+            activation: None,
             relevance: HashMap::new(),
             watched: None,
         }
@@ -2891,6 +2929,7 @@ impl Engine {
             clock: Some(self.clock.clone()),
             hidden: self.hidden,
             connection: self.network.quality(),
+            activation: self.shown.activation,
             owner_moved: self.owner_version.is_some() && self.owner_version != self.owner_pushed,
             fonts_loading: self.fonts_loading(),
             fonts_unsettled: self.fonts_unsettled(),
@@ -3636,12 +3675,14 @@ impl Engine {
     /// no text control has the focus.
     pub fn key_down(&mut self, key: &Key) -> KeyOutcome {
         self.keyboard = true;
+        // Escape activates nothing, as the reference has it (HTML's
+        // activation-triggering input event: a `keydown` but Escape's).
         if key.key != "Escape" {
             self.note_activation();
+            let now = self.now();
+            frames::lock(&self.frame.tree).activate(now);
+            self.shown.scripts.audio_activated();
         }
-        let now = self.now();
-        frames::lock(&self.frame.tree).activate(now);
-        self.shown.scripts.audio_activated();
         if self.shown.popup.is_some() {
             return self.popup_key(key);
         }

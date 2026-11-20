@@ -927,6 +927,13 @@ pub enum Call {
     /// the effective type, the round trip and the throughput, as told to
     /// the document's host.
     Connection,
+    /// `navigator.userActivation`'s values (2026-11-20): whether the user
+    /// ever activated the window, and whether that activation is
+    /// transient still, 1 or 0 each.
+    UserActivation,
+    /// `navigator.deviceMemory` (2026-11-20): the device's memory in GB,
+    /// rounded and bounded as the reference's; nothing in the Gecko mode.
+    DeviceMemory,
     /// `navigator.userAgentData`'s values (2026-11-20, User-Agent Client
     /// Hints), as JSON: every hint, the bindings giving those asked for;
     /// none in the Gecko mode.

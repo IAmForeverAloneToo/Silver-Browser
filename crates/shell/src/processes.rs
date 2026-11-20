@@ -302,6 +302,7 @@ pub(crate) fn check(what: Option<&str>) -> i32 {
         Some("kill") => check_kill(),
         Some("cap") => check_cap(std::env::args().nth(3)),
         Some("memory") => check_memory(std::env::args().nth(3), std::env::args().skip(4).collect()),
+        Some("devicememory") => check_device_memory(std::env::args().nth(3)),
         Some("gpu") => check_gpu(),
         Some("webgl") => check_webgl(),
         _ => check_all(),
@@ -798,6 +799,36 @@ fn check_cap(port: Option<String>) -> Result<(), String> {
     );
     if ids.len() != engine::service::MAX_RENDERERS {
         return Err(format!("{} renderers, not the cap", ids.len()));
+    }
+    Ok(())
+}
+
+/// `navigator.deviceMemory` as a renderer, in its sandbox, tells it
+/// (2026-11-20): the physical memory it read as it started, rounded,
+/// which must be what this process read, rounded: a renderer whose read
+/// failed would tell the reference's value for none instead. The page at
+/// `/` of the server at that port titles itself with it.
+fn check_device_memory(port: Option<String>) -> Result<(), String> {
+    let port: u16 = port
+        .and_then(|port| port.parse().ok())
+        .ok_or("devicememory: the port of a server of the page")?;
+    let bytes = crate::platform::physical_memory().ok_or("the browser's memory read failed")?;
+    let mut tab = process_tab((400, 300))?;
+    tab.set_scripting(true);
+    let url = Url::parse(&format!("http://127.0.0.1:{port}/")).map_err(|_| "no URL")?;
+    tab.navigate(url.clone());
+    if !wait_for(&mut tab, |tab| {
+        tab.url() == Some(&url) && *tab.load_state() == LoadState::Loaded && !tab.title().is_empty()
+    }) {
+        return Err(format!("the page did not load: {:?}", tab.load_state()));
+    }
+    let expected = engine::approximate_device_memory(bytes);
+    println!(
+        "device memory: renderer says {}, browser read {bytes} bytes, {expected} GB",
+        tab.title()
+    );
+    if tab.title() != expected.to_string() {
+        return Err(format!("the renderer said {}, not {expected}", tab.title()));
     }
     Ok(())
 }

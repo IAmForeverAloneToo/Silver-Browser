@@ -426,6 +426,10 @@ pub(crate) struct WindowEnv {
     /// milliseconds and the throughput in megabits a second (2026-11-20,
     /// `navigator.connection`).
     pub(crate) connection: (f64, f64),
+    /// When the user last activated the window's document (2026-11-20,
+    /// `navigator.userActivation`), on the engine's clock: a press or a
+    /// key other than Escape in it or in a frame of it.
+    pub(crate) activation: Option<std::time::Duration>,
     /// Whether the document a frame's window is shown in changed since it
     /// last gave the frame its size (the frame-size gap): what the sweep
     /// counts a read of a size Chrome would have laid out anew by.

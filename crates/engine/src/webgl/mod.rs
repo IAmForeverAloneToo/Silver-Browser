@@ -91,6 +91,48 @@ pub(crate) struct Shader {
     /// The programs it is attached to: deleted, it lives on while
     /// attached.
     pub attached: usize,
+    /// What its compile's `COMPLETION_STATUS_KHR` is yet to say:
+    /// [`Completion::new`]'s.
+    pub completion: Completion,
+}
+
+/// A compile's or a link's completion as `KHR_parallel_shader_compile`
+/// tells it (2026-11-20), as the reference's, whose compiles and links
+/// run in its GPU process (probed, Chrome 157): the first queries after
+/// it say it is under way, a compile's two, a link's two and then until
+/// [`LINK_TIME`] has passed since it; a query of its status waits for it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Completion {
+    queries: u8,
+    since: Option<std::time::Instant>,
+}
+
+/// The queries a compile or a link is said to be under way for.
+const COMPLETION_QUERIES: u8 = 2;
+/// How long a link is said to be under way, at least.
+const LINK_TIME: Duration = Duration::from_millis(2);
+
+impl Completion {
+    /// Just compiled, or linked with `since` its time.
+    fn new(since: Option<std::time::Instant>) -> Completion {
+        Completion {
+            queries: COMPLETION_QUERIES,
+            since,
+        }
+    }
+
+    /// `COMPLETION_STATUS_KHR`'s answer.
+    fn query(&mut self) -> bool {
+        if self.queries > 0 {
+            self.queries -= 1;
+            return false;
+        }
+        if self.since.is_some_and(|at| at.elapsed() < LINK_TIME) {
+            return false;
+        }
+        self.since = None;
+        true
+    }
 }
 
 /// A linked program: its translation, its modules in the GPU process,
@@ -124,6 +166,8 @@ pub(crate) struct Program {
     pub deleted: bool,
     pub bindings: Vec<(String, u32)>,
     pub links: u32,
+    /// What its link's `COMPLETION_STATUS_KHR` is yet to say.
+    pub completion: Completion,
 }
 
 /// What a uniform location names: a program's uniform or sampler,
@@ -1367,6 +1411,7 @@ impl Context {
                         log: String::new(),
                         deleted: false,
                         attached: 0,
+                        completion: Completion::default(),
                     },
                 );
                 Answer::Number(f64::from(id))
@@ -1397,6 +1442,7 @@ impl Context {
                         } else {
                             glsl::Stage::Fragment
                         };
+                        shader.completion = Completion::new(None);
                         match glsl::compile(&shader.source, stage, &options) {
                             Ok(compiled) => {
                                 shader.log = compiled.log.clone();
@@ -1416,6 +1462,16 @@ impl Context {
             }
             "getShaderParameter" => {
                 let (id, name) = (u(call, 1), u(call, 2));
+                let parallel = self.ext.on("KHR_parallel_shader_compile");
+                if let Some(shader) = self.shaders.get_mut(&id) {
+                    match name {
+                        COMPLETION_STATUS_KHR if parallel => {
+                            return Ok(Answer::Bool(shader.completion.query()));
+                        }
+                        COMPILE_STATUS => shader.completion = Completion::default(),
+                        _ => {}
+                    }
+                }
                 match self.shaders.get(&id) {
                     None => {
                         self.error(INVALID_VALUE);
@@ -1466,6 +1522,7 @@ impl Context {
                         deleted: false,
                         bindings: Vec::new(),
                         links: 0,
+                        completion: Completion::default(),
                     },
                 );
                 Answer::Number(f64::from(id))
@@ -1780,10 +1837,17 @@ impl Context {
     }
 
     fn program_parameter(&mut self, id: u32, name: u32) -> Answer {
-        let Some(p) = self.programs.get(&id) else {
+        let parallel = self.ext.on("KHR_parallel_shader_compile");
+        let Some(p) = self.programs.get_mut(&id) else {
             self.error(INVALID_VALUE);
             return Answer::Nothing;
         };
+        match name {
+            COMPLETION_STATUS_KHR if parallel => return Answer::Bool(p.completion.query()),
+            LINK_STATUS => p.completion = Completion::default(),
+            _ => {}
+        }
+        let p = &self.programs[&id];
         match name {
             DELETE_STATUS => Answer::Bool(p.deleted),
             LINK_STATUS => Answer::Bool(p.link_status),
@@ -1841,6 +1905,9 @@ impl Context {
             _ => Err("Attached vertex and fragment shaders are needed.\n".to_owned()),
         };
         let links = p.links + 1;
+        if let Some(entry) = self.programs.get_mut(&id) {
+            entry.completion = Completion::new(Some(std::time::Instant::now()));
+        }
         let linked = match result {
             Ok(program) => {
                 let made = self.gpu.program(&self.client, &program);

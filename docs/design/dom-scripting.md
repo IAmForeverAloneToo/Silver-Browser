@@ -460,7 +460,9 @@ M26. *(corrected)* The engine gives it to the host at each run.
   `webdriver` `false`, `pdfViewerEnabled` `false` with empty `plugins`
   and `mimeTypes` (HTML's values without a PDF viewer), `javaEnabled()`
   `false`. Nothing else: no `hardwareConcurrency`, `deviceMemory`,
-  `connection` or `userAgentData`.
+  `connection` or `userAgentData`. *(corrected 2026-11-20: the Chrome
+  mode has `deviceMemory`, `connection`, `userActivation` and
+  `userAgentData`, below.)*
 - `screen`: `width`, `height`, `availWidth` and `availHeight` the
   viewport's size in CSS pixels, `colorDepth` and `pixelDepth` 24. The
   screen's real size identifies a machine and helps no page; the window
@@ -541,6 +543,27 @@ version; the high-entropy hints only through `getHighEntropyValues`
 (Accept-CH is not taken yet), `platformVersion` from the Windows build
 each process reads at start (RtlGetVersion), as the reference's
 Universal API Contract version.
+
+**What else the reference tells of the machine (2026-11-20).** Each
+probed in the installed Chrome 157. `navigator.connection` gives the
+network quality the engine's fetches measured over the public network
+(`loader::quality`: the median of 20 round trips and 20 throughputs,
+local servers and caches left out; 100 ms and 1.6 Mbps before any),
+rounded to 50 ms and 50 kbps, capped, and moved by a factor per host in
+[0.9, 1.1], as the reference tells a page. `navigator.deviceMemory`, a
+secure context's in the Chrome mode, is the physical memory each
+process reads at start (GlobalMemoryStatusEx), to the nearer power of
+two in megabytes, bounded to 2-32 GB as the reference's 2026 limits
+are. `navigator.userActivation` tells the document's own activation
+(a press, or a key but Escape, which activates nothing, as in the
+reference) and whether it is transient still: within 5 s
+and not consumed by a tab opened since. `visualViewport` is the layout
+viewport unzoomed (no pinch zoom here): its size the viewport's, at
+its scroll position, scale 1; its `resize` follows the window's.
+`KHR_parallel_shader_compile` says a compile under way for its first
+two queries and a link for two and 2 ms, as the reference's, whose
+compiles run in its GPU process, and a status query waits for it.
+`window.chrome` has the reference's `loadTimes`, `csi` and `app`.
 
 **Mutations reach the frame (M25.3).** Nothing new is needed to make a
 script's change visible: it goes through `dom::Document`'s methods,

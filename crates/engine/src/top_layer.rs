@@ -274,6 +274,7 @@ impl Engine {
     /// Notes the user's activation of the page (a press, or a key other
     /// than Escape), which a close request's `cancel` may then use.
     pub(crate) fn note_activation(&mut self) {
+        self.shown.activation = Some(self.now());
         self.shown.overlays.activation = true;
         self.shown.document.note_user_activation();
     }

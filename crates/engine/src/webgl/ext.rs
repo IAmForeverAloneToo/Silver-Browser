@@ -61,8 +61,9 @@ pub(crate) fn offered(version: u8, features: &Features) -> Vec<&'static str> {
         add(features.float32_blendable, "EXT_float_blend");
         add(true, "EXT_frag_depth");
         add(true, "EXT_shader_texture_lod");
-        add(true, "EXT_sRGB");
         add(true, "EXT_texture_filter_anisotropic");
+        add(true, "EXT_sRGB");
+        add(true, "KHR_parallel_shader_compile");
         add(true, "OES_element_index_uint");
         add(true, "OES_fbo_render_mipmap");
         add(true, "OES_standard_derivatives");
@@ -82,6 +83,7 @@ pub(crate) fn offered(version: u8, features: &Features) -> Vec<&'static str> {
         add(true, "EXT_color_buffer_half_float");
         add(features.float32_blendable, "EXT_float_blend");
         add(true, "EXT_texture_filter_anisotropic");
+        add(true, "KHR_parallel_shader_compile");
         add(features.float32_filterable, "OES_texture_float_linear");
         add(features.bc, "WEBGL_compressed_texture_s3tc");
         add(true, "WEBGL_debug_renderer_info");

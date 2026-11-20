@@ -1166,3 +1166,63 @@ log('plain ' + gl.getParameter(gl.VENDOR) + ' / ' + gl.getParameter(gl.RENDERER)
         );
     }
 }
+
+/// `KHR_parallel_shader_compile` (2026-11-20): offered where the
+/// reference lists it, its enum refused until it is enabled; then a
+/// compile's or a link's first queries say it is under way, as the
+/// reference's do, whose compiles run in its GPU process, and a query of
+/// its status waits for it. Probed in Chrome 157.
+#[test]
+fn parallel_shader_compile_tells_completion_as_the_reference_does() {
+    for kind in ["webgl", "webgl2"] {
+        let Some(lines) = run_with(
+            kind,
+            r#"
+const vs = gl.createShader(gl.VERTEX_SHADER);
+log('before ' + gl.getShaderParameter(vs, 0x91B1) + ' ' + gl.getError());
+const names = gl.getSupportedExtensions();
+log('offered ' + names[names.indexOf('KHR_parallel_shader_compile') - 1]);
+const k = gl.getExtension('KHR_parallel_shader_compile');
+log('object ' + String(k) + ' ' + k.COMPLETION_STATUS_KHR + ' ' + Object.getOwnPropertyNames(Object.getPrototypeOf(k)).join());
+const C = k.COMPLETION_STATUS_KHR;
+log('fresh ' + gl.getShaderParameter(vs, C));
+gl.shaderSource(vs, 'void main() { gl_Position = vec4(0.0); }');
+gl.compileShader(vs);
+log('compiled ' + gl.getShaderParameter(vs, C) + ' ' + gl.getShaderParameter(vs, C) + ' ' + gl.getShaderParameter(vs, C));
+const fs = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fs, 'void main() { gl_FragColor = vec4(1.0); }');
+gl.compileShader(fs);
+log('asked ' + gl.getShaderParameter(fs, gl.COMPILE_STATUS) + ' ' + gl.getShaderParameter(fs, C));
+const p = gl.createProgram();
+log('unlinked ' + gl.getProgramParameter(p, C));
+gl.attachShader(p, vs);
+gl.attachShader(p, fs);
+gl.linkProgram(p);
+log('linked ' + gl.getProgramParameter(p, C) + ' ' + gl.getProgramParameter(p, gl.LINK_STATUS) + ' ' + gl.getProgramParameter(p, C));
+log('threads ' + gl.getParameter(0x91B0) + ' ' + gl.getError() + ' ' + typeof k.maxShaderCompilerThreadsKHR);
+"#,
+        ) else {
+            return;
+        };
+        let previous = if kind == "webgl" {
+            "EXT_sRGB"
+        } else {
+            "EXT_texture_filter_anisotropic"
+        };
+        assert_eq!(
+            lines,
+            [
+                "before null 1280".to_owned(),
+                format!("offered {previous}"),
+                "object [object KHRParallelShaderCompile] 37297 COMPLETION_STATUS_KHR".to_owned(),
+                "fresh true".to_owned(),
+                "compiled false false true".to_owned(),
+                "asked true true".to_owned(),
+                "unlinked true".to_owned(),
+                "linked false true true".to_owned(),
+                "threads null 1280 undefined".to_owned(),
+            ],
+            "{kind}"
+        );
+    }
+}

@@ -3163,6 +3163,7 @@
     EXT_sRGB: ["SRGB_EXT", 0x8C40, "SRGB_ALPHA_EXT", 0x8C42, "SRGB8_ALPHA8_EXT", 0x8C43,
       "FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT", 0x8210],
     EXT_texture_filter_anisotropic: ["TEXTURE_MAX_ANISOTROPY_EXT", 0x84FE, "MAX_TEXTURE_MAX_ANISOTROPY_EXT", 0x84FF],
+    KHR_parallel_shader_compile: ["COMPLETION_STATUS_KHR", 0x91B1],
     OES_standard_derivatives: ["FRAGMENT_SHADER_DERIVATIVE_HINT_OES", 0x8B8B],
     OES_vertex_array_object: ["VERTEX_ARRAY_BINDING_OES", 0x85B5],
     WEBGL_draw_buffers: (() => {
@@ -3243,6 +3244,9 @@
       }
     };
     const proto = cls.prototype;
+    // No interface object, so no `constructor` of its own, as the
+    // reference's (probed, Chrome 157).
+    delete proto.constructor;
     defineProperty(proto, toStringTag, { value: WEBGL_INTERFACES[name] || name, configurable: true });
     const constants = WEBGL_EXTENSIONS[name] || [];
     for (let i = 0; i < constants.length; i += 2) {

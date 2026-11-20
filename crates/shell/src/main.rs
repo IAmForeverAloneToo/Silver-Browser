@@ -1127,6 +1127,10 @@ fn main() {
     if let Some(build) = platform::windows_build() {
         engine::set_windows_build(build);
     }
+    // Its memory, which `navigator.deviceMemory` tells rounded.
+    if let Some(bytes) = platform::physical_memory() {
+        engine::set_physical_memory(bytes);
+    }
     // A renderer (M34) or the check of renderers: no window, no page.
     match std::env::args_os().nth(1) {
         Some(first) if first == "--renderer" => std::process::exit(processes::renderer()),

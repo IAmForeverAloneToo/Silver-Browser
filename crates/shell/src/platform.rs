@@ -171,6 +171,19 @@ pub(crate) fn windows_build() -> Option<u32> {
     }
 }
 
+/// The system's physical memory in bytes (2026-11-20), which
+/// `navigator.deviceMemory` tells rounded; `None` elsewhere.
+pub(crate) fn physical_memory() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        windows::physical_memory()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// The system's time zone as Windows names it (its key name, `W. Europe
 /// Standard Time`) and the user's region (`DE`, or ""), which `Intl`
 /// maps to an IANA name as ICU does (D63). `None` elsewhere, where the
@@ -1620,7 +1633,9 @@ mod windows {
     use windows_sys::Win32::System::ProcessStatus::{
         K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
-    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+    use windows_sys::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX, OSVERSIONINFOW,
+    };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::System::Time::{
         DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, TIME_ZONE_ID_INVALID,
@@ -1642,6 +1657,19 @@ mod windows {
         // the call only writes into it.
         let status = unsafe { RtlGetVersion(&raw mut info) };
         (status == 0 && info.dwBuildNumber > 0).then_some(info.dwBuildNumber)
+    }
+
+    /// The system's physical memory in bytes, as the reference reads it
+    /// for `navigator.deviceMemory` (2026-11-20).
+    pub(super) fn physical_memory() -> Option<u64> {
+        let mut status = MEMORYSTATUSEX {
+            dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+            ..MEMORYSTATUSEX::default()
+        };
+        // SAFETY: the structure is ours, its length set as the call
+        // wants; the call only writes into it.
+        let read = unsafe { GlobalMemoryStatusEx(&raw mut status) };
+        (read != 0 && status.ullTotalPhys > 0).then_some(status.ullTotalPhys)
     }
 
     /// What process `id` holds: its private bytes and its working set,
@@ -1864,6 +1892,15 @@ mod tests {
     fn the_windows_build_is_read() {
         let build = windows_build().expect("a build");
         assert!(build >= 10240, "{build}");
+    }
+
+    /// The physical memory GlobalMemoryStatusEx reads: a machine's, a
+    /// gigabyte or more (2026-11-20, `navigator.deviceMemory`).
+    #[cfg(windows)]
+    #[test]
+    fn the_physical_memory_is_read() {
+        let bytes = physical_memory().expect("the memory");
+        assert!(bytes >= 1 << 30, "{bytes}");
     }
 
     #[cfg(windows)]
