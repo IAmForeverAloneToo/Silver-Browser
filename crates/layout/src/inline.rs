@@ -6423,7 +6423,6 @@ mod tests {
     /// pipeline). CJK text has an opportunity at every character too.
     #[test]
     fn a_word_cut_at_every_character_is_cut_a_line_at_a_time() {
-        let began = std::time::Instant::now();
         for width in [0.0, 1.0, 97.0, 800.0] {
             let (pieces, measured) = cut_on_a_small_stack(VERTICAL_TABS, width);
             // Every character is laid out, in visual order: the input has
@@ -6447,7 +6446,6 @@ mod tests {
                 "{measured} bytes measured"
             );
         }
-        assert!(began.elapsed() < std::time::Duration::from_secs(60));
         // At a width that holds some, each line is as full as it may be,
         // and the pieces are the text in order.
         let fonts = test_fonts();
@@ -6624,16 +6622,15 @@ mod tests {
         ];
         for (text, spacing) in cases {
             for width in [0.0, 50.0] {
-                let began = std::time::Instant::now();
                 let (pieces, measured) = cut_spaced_on_a_small_stack(&text, width, spacing);
-                let took = began.elapsed();
                 assert!(!pieces.is_empty());
+                // The bytes measured, not the time a debug build takes on a
+                // shared runner (CI 44832245893: 62.8 s of a 60 s bound),
+                // say that the cut is linear.
                 assert!(
                     measured <= 8 * text.len() + fallback_budget(text.len()),
                     "{measured} bytes measured at {width}"
                 );
-                // Debug builds are slow; a quadratic cut took minutes here.
-                assert!(took < std::time::Duration::from_secs(60), "{took:?}");
             }
         }
     }
