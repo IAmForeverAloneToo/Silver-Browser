@@ -1884,4 +1884,10 @@ onload = () => {
     assert_eq!(agent.realm_count(), 1, "the realm left here goes");
     let lines = tab.run_until(|lines| !lines.is_empty());
     assert_eq!(lines, ["after SecurityError true"]);
+    // Retired, not out of memory: nothing is left for the frame to say
+    // ("Scripts stopped on this page: out of memory", which every
+    // cross-origin frame of Twitch put on the tab as it went).
+    let frame = tab.engine.shown.frames.get_mut(&node).expect("the frame");
+    assert!(!frame.engine.shown.scripts.take_just_stopped());
+    assert_eq!(tab.engine.take_notice(), None);
 }

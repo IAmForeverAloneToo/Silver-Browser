@@ -3239,6 +3239,11 @@ impl Scripts {
         self.navigated(false);
         if self.realm.as_ref().is_some_and(|realm| !realm.is_lent()) {
             self.halt();
+            // Retired, not stopped for want of memory: the tab says
+            // nothing (2026-11-21, Twitch: every cross-origin frame that
+            // went to its own renderer put "Scripts stopped on this page:
+            // out of memory" on the tab).
+            self.just_stopped = false;
         }
     }
 
