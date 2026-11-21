@@ -9,6 +9,8 @@ webgpu:api,operation,adapter,requestDevice:default:*	:
 # and it is still running at 900 s (measured alone, 2026-11-21). A hang
 # to find, not a slowness; memcpy, the rest of compute,basic, is a query
 # of its own.
+# A known bug, deferred: it holds only its page's promise; other pages,
+# the GPU process and the UI run on (measured 2026-11-21).
 webgpu:api,operation,compute,basic:large_dispatch:*	timeout
 # The uncaptured error of an out-of-memory error with no scope for it can
 # come after the test's end under load.
