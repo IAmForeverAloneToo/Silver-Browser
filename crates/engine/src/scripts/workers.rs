@@ -1380,7 +1380,37 @@ impl ScriptingHost for WorkerHost {
             Call::Socket(call) => {
                 let base = self.url.clone();
                 let resolve = |text: &str| base.as_ref().and_then(|base| base.join(text).ok());
-                let answer = self.sockets.call(*call, &resolve, self.initiator.clone());
+                let policies = self.csp.clone();
+                let mut violations = Vec::new();
+                let mut blocked = |url: &Url| {
+                    let Some(policies) = &policies else {
+                        return false;
+                    };
+                    let found = policies.request_violations(
+                        Destination::Empty,
+                        (url, url),
+                        0,
+                        "",
+                        "",
+                        false,
+                    );
+                    let refused = net::csp::enforced(found.clone()).is_err();
+                    violations.extend(found);
+                    refused
+                };
+                let answer =
+                    self.sockets
+                        .call(*call, &resolve, &mut blocked, self.initiator.clone());
+                if let Some(csp) = &self.csp {
+                    csp.record(&violations);
+                }
+                self.report_violations();
+                // What the call fired comes at the next wake.
+                if !self.sockets.tasks.is_empty()
+                    && let Some(wake) = self.pool.as_ref().and_then(Pool::waker)
+                {
+                    wake();
+                }
                 for said in std::mem::take(&mut self.sockets.said) {
                     self.say(ConsoleSource::Engine, ConsoleLevel::Error, said);
                 }
@@ -1629,7 +1659,7 @@ impl WorkerHost {
         }
     }
 
-    /// Opens the WebSockets its scripts made (G74), held to its policies.
+    /// Opens the WebSockets its scripts made (G74).
     fn start_sockets(&mut self) {
         let wanted = std::mem::take(&mut self.sockets.wanted);
         let waker = self.pool.as_ref().and_then(Pool::waker);
@@ -1650,7 +1680,7 @@ impl WorkerHost {
         for wanted in wanted {
             let mut request = wanted.request;
             request.partition.clone_from(&self.partition);
-            request.csp.clone_from(&self.csp);
+            // Its policies were checked of its `ws:` URL as it was made.
             request.local_network.clone_from(&self.local_network);
             let news = self.socket_news.clone();
             let waker = waker.clone();

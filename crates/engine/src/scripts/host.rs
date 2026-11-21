@@ -2367,7 +2367,35 @@ impl DocumentHost {
                 let initiator = page.and_then(|page| page.initiator());
                 let document = &self.document;
                 let resolve = |text: &str| page.and_then(|page| page.resolve_utf8(document, text));
-                let answer = self.sockets.call(*call, &resolve, initiator);
+                // `connect-src`, of the `ws:` or `wss:` URL itself.
+                let policies = page.map(|page| page.policies().clone());
+                let mut violations = Vec::new();
+                let mut blocked = |url: &net::Url| {
+                    let Some(policies) = &policies else {
+                        return false;
+                    };
+                    let found = policies.request_violations(
+                        net::Destination::Empty,
+                        (url, url),
+                        0,
+                        "",
+                        "",
+                        false,
+                    );
+                    let refused = net::csp::enforced(found.clone()).is_err();
+                    violations.extend(found);
+                    refused
+                };
+                let answer = self.sockets.call(*call, &resolve, &mut blocked, initiator);
+                self.say_violations(violations, None);
+                // What the call fired (a socket refused as it was made),
+                // as tasks.
+                let now = self.now();
+                while let Some((json, bytes)) = self.sockets.tasks.pop_front() {
+                    self.outputs
+                        .messages
+                        .push((now, js::Task::Socket(json, bytes)));
+                }
                 for said in std::mem::take(&mut self.sockets.said) {
                     self.say(ConsoleLevel::Error, said);
                 }

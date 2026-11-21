@@ -260,3 +260,192 @@ fn a_dedicated_workers_websocket_works_as_a_windows_does() {
         ["open chat", "message to worker", "close 4000 true true"]
     );
 }
+
+/// Runs the engine and its frames until a line `done` is logged, or
+/// fails after ten seconds; the lines before it.
+fn logged_until_done(tab: &mut Tab) -> Vec<String> {
+    let mut lines = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        lines.extend(
+            tab.engine
+                .take_console()
+                .into_iter()
+                .map(|entry| entry.text),
+        );
+        if let Some(at) = lines.iter().position(|line| line == "done") {
+            lines.truncate(at);
+            return lines;
+        }
+        assert!(Instant::now() < deadline, "logged only {lines:?}");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn an_insecure_websocket_of_an_https_page_throws_but_a_loopback_ones() {
+    let authority = net::test_server::TestAuthority::new();
+    let server = TestServer::tls(
+        authority.server(&["127.0.0.1"], net::test_server::VALID),
+        |request: &net::test_server::ServerRequest| match request.target.as_str() {
+            "/page.html" => Reply::ok(
+                "text/html",
+                b"<script>const t = (u) => { try { console.log('made', new WebSocket(u).url); }\
+                  catch (e) { console.log(e.name + ': ' + e.message); } };\
+                  t('ws://example.invalid/'); t('http://example.invalid/');\
+                  t('ws://127.0.0.1:1/'); t('ws://localhost:1/'); console.log('done');</script>",
+            ),
+            _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"no"),
+        },
+    );
+    let mut tab = Tab::new();
+    tab.engine.set_network(net::Client::new(
+        net::transport::Config::default().trust(authority.root.clone()),
+    ));
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, server.url("/page.html"));
+    let lines = logged_until_done(&mut tab);
+    let insecure = "SecurityError: Failed to construct 'WebSocket': An insecure WebSocket connection may not be initiated from a page loaded over HTTPS.";
+    assert_eq!(
+        lines,
+        [
+            insecure,
+            insecure,
+            "made ws://127.0.0.1:1/",
+            "made ws://localhost:1/"
+        ]
+    );
+}
+
+#[test]
+fn connect_src_refuses_a_websocket_by_its_ws_url_with_an_error_alone() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().expect("an address").port();
+    let page = format!(
+        "<script>const seen = [];\
+         document.addEventListener('securitypolicyviolation', (e) =>\
+           seen.push('violation ' + e.blockedURI + ' ' + e.effectiveDirective));\
+         const w = new WebSocket('ws://127.0.0.1:{port}/x');\
+         seen.push('made ' + w.readyState);\
+         w.onerror = () => seen.push('error ' + w.readyState);\
+         w.onclose = (e) => seen.push('close ' + e.code);\
+         setTimeout(() => {{ console.log(seen.join('; ')); console.log('done'); }}, 300);</script>"
+    );
+    let pages = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => Reply::with_fields(
+            200,
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", "connect-src 'self'"),
+            ],
+            page.as_bytes(),
+        ),
+        _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"no"),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, pages.url("/page.html"));
+    let lines = logged_until_done(&mut tab);
+    let url = format!("ws://127.0.0.1:{port}/x");
+    // The console's line names the `ws:` URL, then the page's own.
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].contains(&url) && lines[0].contains("connect-src"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[1],
+        format!("made 3; violation {url} connect-src; error 3")
+    );
+    // Nothing connected: no handshake came.
+    listener.set_nonblocking(true).expect("non-blocking");
+    assert_eq!(
+        listener.accept().err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::WouldBlock)
+    );
+}
+
+/// A server for `count` handshakes, each answered 404: each one's
+/// request target and `Origin`, sorted.
+fn origins(count: usize) -> (u16, JoinHandle<Vec<(String, String)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().expect("an address").port();
+    let server = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for _ in 0..count {
+            let (mut stream, _) = listener.accept().expect("a connection");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("a timeout");
+            let mut head = Vec::new();
+            let mut byte = [0u8];
+            while !head.ends_with(b"\r\n\r\n") {
+                assert_eq!(stream.read(&mut byte).expect("reads"), 1);
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).expect("ASCII");
+            let target = head.split(' ').nth(1).unwrap_or_default().to_owned();
+            let origin = head
+                .lines()
+                .find_map(|line| line.strip_prefix("Origin: "))
+                .unwrap_or("(none)")
+                .to_owned();
+            seen.push((target, origin));
+            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        }
+        seen.sort();
+        seen
+    });
+    (port, server)
+}
+
+#[test]
+fn the_handshakes_origin_is_its_creators_null_for_an_opaque_one() {
+    // A sandboxed frame's, by `srcdoc` and by a URL, is opaque: `null`.
+    // (A `data:` frame's handshake to this loopback server is refused
+    // as its fetches are, by Local Network Access.)
+    let (port, server) = origins(4);
+    let open = |path: &str| format!("new WebSocket('ws://127.0.0.1:{port}/{path}');");
+    let page = format!(
+        "<script>{own}\
+         new Worker(URL.createObjectURL(new Blob([\"{blob}\"])));</script>\
+         <iframe sandbox=allow-scripts srcdoc=\"<script>{sandboxed}</script>\"></iframe>\
+         <iframe sandbox=allow-scripts src=/frame.html></iframe>",
+        own = open("window"),
+        blob = open("blob"),
+        sandboxed = open("sandboxed"),
+    );
+    let frame = format!("<script>{}</script>", open("framed"));
+    let pages = TestServer::plain(move |request| match request.target.as_str() {
+        "/page.html" => Reply::ok("text/html", page.as_bytes()),
+        "/frame.html" => Reply::ok("text/html", frame.as_bytes()),
+        _ => Reply::with_fields(404, &[("Content-Type", "text/plain")], b"no"),
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    load_all(&mut tab, pages.url("/page.html"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut console = Vec::new();
+    while !server.is_finished() {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        console.extend(tab.engine.take_console().into_iter().map(|e| e.text));
+        assert!(
+            Instant::now() < deadline,
+            "four handshakes in time; the console: {console:?}"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    let origin = pages.url("/").origin().serialization();
+    assert_eq!(
+        server.join().unwrap(),
+        [
+            ("/blob".to_owned(), origin.clone()),
+            ("/framed".to_owned(), "null".to_owned()),
+            ("/sandboxed".to_owned(), "null".to_owned()),
+            ("/window".to_owned(), origin),
+        ]
+    );
+}

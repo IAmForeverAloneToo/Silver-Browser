@@ -129,6 +129,11 @@ service (M34). There, before a request is sent:
   hung extension cannot hang the page. The full uBO runs so; the cost,
   a round trip to the extension's renderer for each request of the
   tab, is measured in phase 3 against uBO Lite's rules.
+  WebSocket handshakes go through it too, as Chrome's do: type
+  `websocket`, their `ws:` or `wss:` URL, cancelable before the
+  connection opens (`net::Client::open_websocket`, G74, which has no
+  hook yet: phase 3 adds it), and `declarativeNetRequest` rules match
+  them by that type; uBO's lists block such sockets.
 
 ### Cosmetic filtering: a user-origin style sheet
 
@@ -269,8 +274,9 @@ core to the module's own work.
    content script; an `about:blank` frame made by script gets the
    script synchronously; messages by `frameId`.
 3. **Network** (3 to 4 days): `declarativeNetRequest`, `webRequest`
-   with its blocking form and deadline. Tests: rules against Chrome's
-   behaviour on the same requests; the round trip measured on the
+   with its blocking form and deadline, WebSocket handshakes (type
+   `websocket`) among the requests. Tests: rules against Chrome's
+   behaviour on the same requests, a `wss:` one among them; the round trip measured on the
    sweep's ad-heavy sites (weather, bbc, verge).
 4. **Cosmetic CSS and the action** (2 to 3 days): the user cascade
    origin, `insertCSS`/`removeCSS`, the toolbar button, badge and

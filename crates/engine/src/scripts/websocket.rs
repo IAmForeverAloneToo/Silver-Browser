@@ -41,6 +41,11 @@ struct Socket {
     handle: Option<Box<dyn SocketHandle>>,
 }
 
+/// What resolves a constructor's URL, and what says whether policies
+/// refuse a socket's URL, reporting it.
+type Resolve<'a> = &'a dyn Fn(&str) -> Option<Url>;
+type Blocked<'a> = &'a mut dyn FnMut(&Url) -> bool;
+
 /// What a socket asks of its owner, the host's engine: a connection to
 /// open.
 pub(crate) struct Wanted {
@@ -102,16 +107,21 @@ impl Sockets {
     }
 
     /// Answers `call`: `resolve` resolves a constructor's URL against
-    /// the API base URL, as UTF-8; `initiator`
+    /// the API base URL, as UTF-8; `blocked` says whether the policies
+    /// of the document or worker refuse a `ws:` or `wss:` URL, and
+    /// reports it if so (`connect-src`); `initiator`
     /// is the document or worker it is made by (none, a realm gone).
     pub(crate) fn call(
         &mut self,
         call: SocketCall,
         resolve: &dyn Fn(&str) -> Option<Url>,
+        blocked: &mut dyn FnMut(&Url) -> bool,
         initiator: Option<Initiator>,
     ) -> Result<Answer, DomError> {
         match call {
-            SocketCall::Open { url, protocols } => self.open(&url, protocols, resolve, initiator),
+            SocketCall::Open { url, protocols } => {
+                self.open(&url, protocols, (resolve, blocked), initiator)
+            }
             SocketCall::Send { id, binary, data } => {
                 let Some(socket) = self.sockets.get_mut(&id) else {
                     return Ok(Answer::Nothing);
@@ -177,7 +187,7 @@ impl Sockets {
         &mut self,
         url: &str,
         protocols: Vec<String>,
-        resolve: &dyn Fn(&str) -> Option<Url>,
+        (resolve, blocked): (Resolve<'_>, Blocked<'_>),
         initiator: Option<Initiator>,
     ) -> Result<Answer, DomError> {
         let fail = |what: String| Err(syntax(format!("Failed to construct 'WebSocket': {what}")));
@@ -209,7 +219,13 @@ impl Sockets {
         }
         let initiator = initiator
             .ok_or_else(|| syntax("Failed to construct 'WebSocket': no document".into()))?;
-        if scheme == "ws" && initiator.url.scheme() == "https" {
+        // Mixed content (Mixed Content 4.3): a `ws:` URL of an `https:`
+        // document throws, but one the reference counts as trustworthy
+        // already, a loopback host's.
+        let trustworthy = parsed
+            .with_part(Part::Protocol, "http")
+            .is_potentially_trustworthy();
+        if scheme == "ws" && initiator.url.scheme() == "https" && !trustworthy {
             return Err(DomError::new(
                 "SecurityError",
                 "Failed to construct 'WebSocket': An insecure WebSocket connection may not be initiated from a page loaded over HTTPS.",
@@ -221,9 +237,9 @@ impl Sockets {
                 "Failed to construct 'WebSocket': too many WebSockets.",
             ));
         }
-        let shown = parsed.with_part(Part::Protocol, scheme);
-        let origin = shown.origin().serialization();
-        let shown = shown.as_str().to_owned();
+        let socket_url = parsed.with_part(Part::Protocol, scheme);
+        let origin = socket_url.origin().serialization();
+        let shown = socket_url.as_str().to_owned();
         // The handshake's request is the `http:` or `https:` one.
         let parsed = parsed.with_part(
             Part::Protocol,
@@ -236,6 +252,26 @@ impl Sockets {
         request.cache = net::CacheMode::NoStore;
         self.next += 1;
         let id = self.next;
+        // Refused by `connect-src` (WebSockets 3.1, step 11, as the
+        // reference has it): no exception, the socket closed at once,
+        // and an `error` alone, in a task.
+        if blocked(&socket_url) {
+            self.sockets.insert(
+                id,
+                Socket {
+                    url: shown,
+                    origin,
+                    state: CLOSED,
+                    buffered: 0,
+                    protocol: String::new(),
+                    extensions: String::new(),
+                    array_buffer: false,
+                    handle: None,
+                },
+            );
+            self.task(id, r#""type":"error""#, Vec::new());
+            return Ok(Answer::Number(f64::from(id)));
+        }
         self.sockets.insert(
             id,
             Socket {

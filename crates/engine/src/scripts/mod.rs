@@ -3001,12 +3001,12 @@ impl Scripts {
 
     /// Starts the media fetches the run's loads asked for (M40), and
     /// sends what its WebGPU calls queued (M41).
-    /// Opens the WebSockets the run made (G74), held to the document's
-    /// policies as they stand.
+    /// Opens the WebSockets the run made (G74).
     fn start_sockets(&mut self, lent: &mut Lent<'_>) {
         for wanted in std::mem::take(&mut self.host.sockets.wanted) {
             let mut request = wanted.request;
-            request.csp = Some(lent.page.csp(lent.document).clone());
+            // Its policies were checked of its `ws:` URL as it was made.
+            request.csp = None;
             if request.referrer_policy.is_none() {
                 request.referrer_policy = Some(lent.page.referrer_policy(lent.document));
             }
@@ -3830,12 +3830,15 @@ fn report_url(text: &str) -> String {
 }
 
 /// What a report names of a blocked URL (CSP's "strip URL for use in
-/// reports"): one of a scheme other than HTTP's, `data:` and `blob:`
-/// among them, by its scheme alone (WPT's
+/// reports"): one of a scheme other than HTTP's or a WebSocket's,
+/// `data:` and `blob:` among them, by its scheme alone (WPT's
 /// media-src-blocked-data-url.html, M40).
 fn blocked_report_url(text: &str) -> String {
     match Url::parse(text) {
-        Ok(url) if !matches!(url.scheme(), "http" | "https") => url.scheme().to_owned(),
+        // A WebSocket's URL is named whole, as the reference names it.
+        Ok(url) if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") => {
+            url.scheme().to_owned()
+        }
         _ => report_url(text),
     }
 }
