@@ -36,6 +36,7 @@ pub mod sri;
 pub mod test_server;
 pub mod transport;
 pub mod url;
+pub mod websocket;
 
 pub use address_space::{AddressSpace, LocalNetworkAccess, LocalNetworkGate};
 pub use cache::{Cache, CacheMode};
