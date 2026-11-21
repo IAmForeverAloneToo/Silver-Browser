@@ -7,6 +7,7 @@
 mod connect;
 mod pool;
 pub(crate) mod stream;
+pub(crate) mod websocket;
 
 pub use stream::late_wakes;
 mod tls;
@@ -574,7 +575,7 @@ impl Transport {
                 self.pool.speaks_h1(&key);
             }
             if !reused {
-                match self.open(exchange, resolved.take())? {
+                match self.open(exchange, resolved.take(), false)? {
                     Opened::H1(connection) => {
                         if url.scheme() == "https" {
                             self.pool.speaks_h1(&key);
@@ -697,6 +698,63 @@ impl Transport {
                 Err(failure) => return Err(failure.into_error()),
             }
         }
+    }
+
+    /// Sends `exchange`'s request, one that asks to switch protocols (a
+    /// WebSocket's opening handshake, RFC 6455 section 4.1), on a new
+    /// connection of its own over HTTP/1.1, whatever the origin speaks,
+    /// and reads the answer's head. A 101 comes with the connection, for
+    /// the protocol switched to, and the bytes already read past the
+    /// head; any other answer comes without it.
+    pub(crate) fn upgrade(
+        &self,
+        exchange: &Exchange,
+    ) -> Result<(Received, Option<websocket::Upgraded>), NetworkError> {
+        let url = exchange.url;
+        if url.host().is_none()
+            || url.port_or_default().is_none()
+            || !matches!(url.scheme(), "http" | "https")
+        {
+            return Err(NetworkError::BadScheme(url.scheme().to_owned()));
+        }
+        let Opened::H1(mut connection) = self.open(exchange, None, true)? else {
+            unreachable!("HTTP/2 was not offered");
+        };
+        let space = connection.space;
+        if let Some(named) = exchange.target.filter(|&named| named != space) {
+            return Err(NetworkError::TargetAddressSpace {
+                named,
+                reached: space,
+            });
+        }
+        let message = RequestMessage {
+            method: exchange.method,
+            url,
+            headers: exchange.headers,
+            body: exchange.body,
+        };
+        connection.reader.get_mut().lend(exchange.abort);
+        let response = match http::write_request(connection.reader.get_mut(), &message) {
+            Err(e) => Err(Failure::Send(e)),
+            Ok(()) => http::read_upgrade_response(&mut connection.reader, self.config.limits)
+                .map_err(Failure::Read),
+        }
+        .map_err(Failure::into_error)?;
+        connection.reader.get_mut().release();
+        let upgraded = (response.status == 101).then(|| {
+            let buffered = connection.reader.buffer().to_vec();
+            websocket::Upgraded {
+                stream: connection.reader.into_inner(),
+                buffered,
+            }
+        });
+        Ok((
+            Received {
+                response,
+                address_space: space,
+            },
+            upgraded,
+        ))
     }
 
     /// Sends `exchange`'s request on a stream of the HTTP/2 connection
@@ -855,6 +913,7 @@ impl Transport {
         &self,
         exchange: &Exchange,
         resolved: Option<Vec<SocketAddr>>,
+        h1_only: bool,
     ) -> Result<Opened, NetworkError> {
         let (url, partition, abort) = (exchange.url, exchange.partition, exchange.abort);
         let host = url.host().expect("an http: or https: URL has a host");
@@ -877,14 +936,14 @@ impl Transport {
         let timeout = self.config.read_timeout;
         let space = self.config.space_of(address);
         let socket = if url.scheme() == "https" {
-            let tls = tls::handshake(
-                &self.tls_for(partition),
-                host,
-                tcp,
-                &mut waiter,
-                timeout,
-                abort,
-            )?;
+            let mut config = self.tls_for(partition);
+            if h1_only {
+                // The session cache is shared still: it is behind an Arc.
+                let mut only = (*config).clone();
+                only.alpn_protocols = vec![b"http/1.1".to_vec()];
+                config = Arc::new(only);
+            }
+            let tls = tls::handshake(&config, host, tcp, &mut waiter, timeout, abort)?;
             if tls.conn.alpn_protocol() == Some(b"h2") {
                 let settings = h2::Settings {
                     read_timeout: timeout,

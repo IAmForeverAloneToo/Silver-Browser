@@ -628,6 +628,7 @@
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
     InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
     WindowClient: "service", FetchEvent: "service", FontFace: true, FontFaceSet: true,
+    CloseEvent: true, WebSocket: true,
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -30442,6 +30443,182 @@
   expose(MessageEvent, "MessageEvent");
   MapSet(eventInterfaces, "MessageEvent", EVENT_INTERFACES[EVENT_INTERFACES.length - 1]);
 
+  // CloseEvent (WebSockets section 3.4, G74): whether a WebSocket closed
+  // cleanly, its code and its reason.
+  const CLOSE = 1 << 22;
+  const CLOSE_INIT = members(EVENT_INIT, [
+    ["code", "unsigned short", 0],
+    ["reason", "USVString", ""],
+    ["wasClean", "boolean", false],
+  ], "CloseEventInit");
+
+  class CloseEvent extends Event {
+    constructor(type, eventInitDict = undefined) {
+      const args = eventArgs(arguments.length, type, eventInitDict, CLOSE_INIT, "CloseEvent");
+      super(args[0], args[1]);
+      eventState(this).kinds |= CLOSE;
+    }
+
+    get wasClean() {
+      return fieldsOf(this, CLOSE).wasClean;
+    }
+
+    get code() {
+      return fieldsOf(this, CLOSE).code;
+    }
+
+    get reason() {
+      return fieldsOf(this, CLOSE).reason;
+    }
+  }
+  ArrayPush(EVENT_INTERFACES, ["CloseEvent", CloseEvent, CLOSE_INIT]);
+  expose(CloseEvent, "CloseEvent");
+  MapSet(eventInterfaces, "CloseEvent", EVENT_INTERFACES[EVENT_INTERFACES.length - 1]);
+
+  // WebSocket (WebSockets section 3, G74): a shell over the host's
+  // socket, which checks the URL, the subprotocols, a close's code and
+  // reason, and keeps the state, the buffered amount and the binary type
+  // (any engine's bindings share them). The sockets whose events may
+  // still come are kept, by number, until their `close`.
+  const sockets = new $Map();
+  const socketIds = new $WeakMap();
+
+  function socketId(value) {
+    const id = WeakMapGet(socketIds, value);
+    if (id === undefined) {
+      throw illegalInvocation();
+    }
+    return id;
+  }
+
+  class WebSocket extends EventTarget {
+    constructor(url, protocols = undefined) {
+      needToConstruct(arguments.length, 1, "WebSocket");
+      const href = str(url);
+      let list = [];
+      if (protocols !== undefined) {
+        const object = (typeof protocols === "object" && protocols !== null) ||
+          typeof protocols === "function";
+        const iterate = object ? protocols[iteratorSymbol] : undefined;
+        list = iterate !== undefined && iterate !== null
+          ? sequence(protocols, "", "WebSocket", str, iterate)
+          : [str(protocols)];
+      }
+      super();
+      const id = native.socketOpen(href, list);
+      WeakMapSet(socketIds, this, id);
+      MapSet(sockets, id, this);
+    }
+  }
+  {
+    // The members in the reference's order: the attributes and handlers
+    // as it lists them, the constants, then the methods.
+    const own = {
+      get url() {
+        return native.socketGet(socketId(this), "url");
+      },
+      get readyState() {
+        return native.socketGet(socketId(this), "readyState");
+      },
+      get bufferedAmount() {
+        return native.socketGet(socketId(this), "bufferedAmount");
+      },
+      get extensions() {
+        return native.socketGet(socketId(this), "extensions");
+      },
+      get protocol() {
+        return native.socketGet(socketId(this), "protocol");
+      },
+      get binaryType() {
+        return native.socketGet(socketId(this), "binaryType");
+      },
+      set binaryType(value) {
+        native.socketSetBinaryType(socketId(this), str(value));
+      },
+      close() {
+        const id = socketId(this);
+        const code = arguments.length > 0 && arguments[0] !== undefined;
+        const number = code ? $Number(arguments[0]) : 0;
+        const reason = arguments.length > 1 && arguments[1] !== undefined
+          ? str(arguments[1])
+          : null;
+        native.socketClose(id, code, number, reason);
+      },
+      send(data) {
+        const id = socketId(this);
+        need(arguments.length, 1, "send", "WebSocket");
+        if (isBlob(data)) {
+          native.socketSend(id, true, binaryString(blobBytes(data)));
+          return;
+        }
+        const bytes = bufferBytes(data);
+        if (bytes !== undefined) {
+          native.socketSend(id, true, binaryString(bytes));
+          return;
+        }
+        native.socketSend(id, false, str(data));
+      },
+    };
+    const proto = WebSocket.prototype;
+    const copy = (names) => {
+      for (let i = 0; i < names.length; i++) {
+        defineProperty(proto, names[i], getOwnPropertyDescriptor(own, names[i]));
+      }
+    };
+    copy(["url", "readyState", "bufferedAmount"]);
+    defineHandlers(proto, ["open", "error", "close"], false);
+    copy(["extensions", "protocol"]);
+    defineHandlers(proto, ["message"], false);
+    copy(["binaryType"]);
+    constants(WebSocket, ["CONNECTING", 0, "OPEN", 1, "CLOSING", 2, "CLOSED", 3]);
+    copy(["close", "send"]);
+  }
+  expose(WebSocket, "WebSocket");
+
+  // What a socket's connection did, from the host (G74): the event it
+  // fires, all its fields the host's; a binary message's bytes.
+  function* socketTask(text, data) {
+    const told = JSONParse(text);
+    const target = MapGet(sockets, told.id);
+    if (target === undefined) {
+      return false;
+    }
+    let event;
+    switch (told.type) {
+      case "open":
+      case "error":
+        event = new Event(told.type, made(EVENT_INIT, []));
+        break;
+      case "message": {
+        let value = told.text;
+        const kind = told.binary === true ? native.socketGet(told.id, "binaryType") : null;
+        if (kind === "arraybuffer") {
+          value = data === null ? new $ArrayBuffer(0) : data;
+        } else if (kind === "blob") {
+          const bytes = data === null ? new $Uint8Array(0) : new $Uint8Array(data);
+          value = new Blob(KEY, { bytes, type: "" });
+        }
+        event = new MessageEvent("message", made(MESSAGE_INIT, [
+          "data", value,
+          "origin", told.origin,
+        ]));
+        break;
+      }
+      case "close":
+        MapDelete(sockets, told.id);
+        event = new CloseEvent("close", made(CLOSE_INIT, [
+          "code", told.code,
+          "reason", told.reason,
+          "wasClean", told.wasClean,
+        ]));
+        break;
+      default:
+        return false;
+    }
+    yield* firingAt(target, event);
+    return false;
+  }
+
   // Whether `value` is a MessagePort, which M31.5's ports define.
   let isPort = function () {
     return false;
@@ -34772,6 +34949,7 @@
     devtools: devtoolsMessage,
     idb: () => chunkInstall("idb").idbTask(),
     serviceWorker: swTask,
+    socket: socketTask,
     audio: (text, bytes) => chunkInstall("audio").audioTask(text, bytes),
     gpu: (text, bytes) => chunkInstall("gpu").gpuTask(text, bytes),
     media: mediaTask,

@@ -33,6 +33,23 @@ pub const MAX_RENDERER_FETCHES: usize = 256;
 /// past it, the oldest go.
 pub const MAX_ADMITTED_MEDIA: usize = 256;
 
+/// The most WebSockets one renderer has open or opening (G74); past it
+/// a handshake fails, as the reference browser's past its own limit.
+pub const MAX_RENDERER_SOCKETS: usize = 255;
+
+/// A renderer's WebSocket the browser holds: its connection once open,
+/// whether its page dropped it while it opened, and the message being
+/// sent in pieces.
+#[derive(Default)]
+struct HeldSocket {
+    socket: Option<net::websocket::Socket>,
+    dropped: bool,
+    partial: Vec<u8>,
+}
+
+/// The WebSockets held, by renderer and the renderer's number for them.
+type Sockets = Arc<Mutex<HashMap<(u32, u64), HeldSocket>>>;
+
 /// The media URLs admitted, by renderer.
 type Admitted = Arc<Mutex<HashMap<u32, VecDeque<Url>>>>;
 
@@ -241,6 +258,7 @@ pub struct NetworkService {
     /// The media URLs of other origins each renderer's initial request
     /// had admitted (M40), whose later ranges it may then have.
     admitted: Admitted,
+    sockets: Sockets,
 }
 
 /// What fetches a renderer's `request` (M39 steps 5, 6): through its
@@ -300,6 +318,7 @@ impl NetworkService {
             downloads: Mutex::new(None),
             service_workers: Mutex::new(None),
             admitted: Arc::default(),
+            sockets: Arc::default(),
         })
     }
 
@@ -417,6 +436,83 @@ impl NetworkService {
                 handovers.take(handover, (renderer, frame), id, &request.url, reply)?;
                 Ok(None)
             }
+            ToBrowser::SocketOpen {
+                call,
+                id,
+                frame,
+                request,
+                protocols,
+            } => {
+                let (lock, grant) = self.grants.frame(renderer, frame)?;
+                let request = checked(*request, &lock, &grant)?;
+                if !matches!(request.url.scheme(), "http" | "https") {
+                    return Err(format!("a WebSocket of {}", request.url.scheme()));
+                }
+                self.open_socket(renderer, call, id, request, protocols, &lock, reply)?;
+                Ok(None)
+            }
+            ToBrowser::SocketSend {
+                id,
+                binary,
+                bytes,
+                last,
+            } => {
+                let mut sockets = self.sockets.lock().unwrap_or_else(PoisonError::into_inner);
+                let Some(held) = sockets.get_mut(&(renderer, id)) else {
+                    // A socket that ended already, its page not yet told.
+                    return Ok(None);
+                };
+                if held.partial.len() + bytes.0.len() > net::websocket::MAX_MESSAGE {
+                    return Err("a WebSocket message past the bound".into());
+                }
+                held.partial.extend_from_slice(&bytes.0);
+                if last {
+                    let whole = std::mem::take(&mut held.partial);
+                    let Some(socket) = &held.socket else {
+                        return Err("a send on a WebSocket not open".into());
+                    };
+                    match binary {
+                        true => socket.send_binary(&whole),
+                        false => socket.send_text(
+                            std::str::from_utf8(&whole)
+                                .map_err(|_| "a WebSocket text message not UTF-8")?,
+                        ),
+                    }
+                }
+                Ok(None)
+            }
+            ToBrowser::SocketClose { id, code, reason } => {
+                let code = match code {
+                    0 => None,
+                    1000 | 3000..=4999 => Some(code as u16),
+                    _ => return Err(format!("a WebSocket closed with {code}")),
+                };
+                if reason.len() > 123 {
+                    return Err("a WebSocket close reason past 123 bytes".into());
+                }
+                let sockets = self.sockets.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(HeldSocket {
+                    socket: Some(socket),
+                    ..
+                }) = sockets.get(&(renderer, id))
+                {
+                    socket.close(code, &reason);
+                }
+                Ok(None)
+            }
+            ToBrowser::SocketDrop { id } => {
+                let mut sockets = self.sockets.lock().unwrap_or_else(PoisonError::into_inner);
+                match sockets.get_mut(&(renderer, id)) {
+                    // Still opening: it goes once open.
+                    Some(held) if held.socket.is_none() => held.dropped = true,
+                    // Dropped, the connection closes with 1001.
+                    Some(_) => {
+                        sockets.remove(&(renderer, id));
+                    }
+                    None => {}
+                }
+                Ok(None)
+            }
             ToBrowser::CancelFetch { id } => {
                 if let Some(abort) = self.fetches().remove(&(renderer, id)) {
                     abort.abort();
@@ -511,6 +607,110 @@ impl NetworkService {
 
     /// Starts fetching `request`, renderer `renderer`'s fetch `id`, on a
     /// thread of its own, which answers through `reply`.
+    /// Renderer `renderer` is gone: its WebSockets close with 1001.
+    pub fn renderer_gone(&self, renderer: u32) {
+        self.sockets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(of, _), _| *of != renderer);
+    }
+
+    /// Opens renderer `renderer`'s WebSocket `id` for `request` (G74) on
+    /// a thread of its own, answering call `call` when its handshake is
+    /// done; its events go to the renderer as they come.
+    #[allow(clippy::too_many_arguments)]
+    fn open_socket(
+        &self,
+        renderer: u32,
+        call: u64,
+        id: u64,
+        request: Request,
+        protocols: Vec<String>,
+        lock: &Lock,
+        reply: &Sender<ToRenderer>,
+    ) -> Result<(), String> {
+        let refuse = |why: &str| {
+            let _ = reply.send(&ToRenderer::Answer {
+                call,
+                answer: Answer::SocketOpened {
+                    failure: Some(why.to_owned()),
+                    protocol: String::new(),
+                    extensions: String::new(),
+                },
+            });
+        };
+        if matches!(lock, Lock::DevTools | Lock::Internal | Lock::File) {
+            refuse("Error in connection establishment: not from this page");
+            return Ok(());
+        }
+        {
+            let mut sockets = self.sockets.lock().unwrap_or_else(PoisonError::into_inner);
+            if sockets.contains_key(&(renderer, id)) {
+                return Err(format!("WebSocket {id} again"));
+            }
+            let theirs = sockets.keys().filter(|(r, _)| *r == renderer).count();
+            if theirs >= MAX_RENDERER_SOCKETS {
+                drop(sockets);
+                refuse("Error in connection establishment: too many WebSockets");
+                return Ok(());
+            }
+            sockets.insert((renderer, id), HeldSocket::default());
+        }
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let sockets = self.sockets.clone();
+        let reply = reply.clone();
+        let events_reply = reply.clone();
+        let events: crate::loader::SocketEvents = Box::new(move |event| {
+            send_socket_event(&events_reply, id, event);
+        });
+        let opened = thread::Builder::new()
+            .name("websocket handshake".to_owned())
+            .spawn(move || {
+                let result = client.open_websocket(&request, &protocols, events);
+                let answer = match result {
+                    Ok((agreed, socket)) => {
+                        let mut held = sockets.lock().unwrap_or_else(PoisonError::into_inner);
+                        match held.get_mut(&(renderer, id)) {
+                            Some(entry) if !entry.dropped => entry.socket = Some(socket),
+                            // Its page or renderer went while it opened.
+                            _ => {
+                                held.remove(&(renderer, id));
+                            }
+                        }
+                        Answer::SocketOpened {
+                            failure: None,
+                            protocol: agreed.protocol,
+                            extensions: agreed.extensions,
+                        }
+                    }
+                    Err(failure) => {
+                        sockets
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .remove(&(renderer, id));
+                        Answer::SocketOpened {
+                            failure: Some(failure),
+                            protocol: String::new(),
+                            extensions: String::new(),
+                        }
+                    }
+                };
+                let _ = reply.send(&ToRenderer::Answer { call, answer });
+            });
+        if opened.is_err() {
+            self.sockets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&(renderer, id));
+            refuse("Error in connection establishment: no thread");
+        }
+        Ok(())
+    }
+
     fn start(
         &self,
         (renderer, frame): (u32, u32),
@@ -836,6 +1036,58 @@ fn checked(mut request: Request, lock: &Lock, grant: &FrameGrant) -> Result<Requ
     }
     request.partition = partition(request.partition.take(), grant)?;
     Ok(request)
+}
+
+/// Tells a renderer of its WebSocket `id`'s `event`, a message in pieces
+/// the link carries.
+fn send_socket_event(reply: &Sender<ToRenderer>, id: u64, event: net::websocket::SocketEvent) {
+    use net::websocket::SocketEvent;
+    let message = |binary: bool, bytes: &[u8]| {
+        let mut pieces = bytes.chunks(MAX_CHUNK).peekable();
+        if pieces.peek().is_none() {
+            let _ = reply.send(&ToRenderer::SocketMessage {
+                id,
+                binary,
+                bytes: Bytes(Vec::new()),
+                last: true,
+            });
+        }
+        while let Some(piece) = pieces.next() {
+            let _ = reply.send(&ToRenderer::SocketMessage {
+                id,
+                binary,
+                bytes: Bytes(piece.to_vec()),
+                last: pieces.peek().is_none(),
+            });
+        }
+    };
+    match event {
+        SocketEvent::Text(text) => message(false, text.as_bytes()),
+        SocketEvent::Binary(bytes) => message(true, &bytes),
+        SocketEvent::Sent(bytes) => {
+            let _ = reply.send(&ToRenderer::SocketSent {
+                id,
+                bytes: bytes as u64,
+            });
+        }
+        SocketEvent::Closing => {
+            let _ = reply.send(&ToRenderer::SocketClosing { id });
+        }
+        SocketEvent::Closed {
+            clean,
+            code,
+            reason,
+            failed,
+        } => {
+            let _ = reply.send(&ToRenderer::SocketClosed {
+                id,
+                clean,
+                code: u32::from(code),
+                reason,
+                failed,
+            });
+        }
+    }
 }
 
 /// The partition a frame of `grant` is in, the renderer having `claimed`

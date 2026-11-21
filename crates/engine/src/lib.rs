@@ -6483,6 +6483,7 @@ impl Engine {
         while let Some(taken) = self.network.take() {
             match taken {
                 loader::Taken::Arrived(arrived) => self.arrived(arrived),
+                loader::Taken::Socket(socket) => self.socket_arrived(socket),
                 loader::Taken::Head { page, response } => self.document_head(page, response),
                 loader::Taken::Body { page, bytes } => self.document_body(page, &bytes),
             }
@@ -7059,6 +7060,28 @@ impl Engine {
         }
         self.shown.next_image_frame = next;
         self.shown.images.keep_within_budget(frame);
+    }
+
+    /// Gives a page's scripts what its WebSocket did (G74); a page gone
+    /// drops it, which closes the connection.
+    fn socket_arrived(&mut self, socket: loader::SocketArrived) {
+        let now = self.now();
+        let loader::SocketArrived { page, id, update } = socket;
+        if page == self.shown.page.id() {
+            self.shown.scripts.socket_arrived(id, update, now);
+        } else if let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page: incoming,
+                    parsing,
+                    ..
+                },
+            ..
+        }) = &mut self.navigation
+            && incoming.id() == page
+        {
+            parsing.scripts.socket_arrived(id, update, now);
+        }
     }
 
     /// Applies one fetch's result.

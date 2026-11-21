@@ -14,6 +14,8 @@ use std::fmt;
 
 use flate2::{Decompress, FlushDecompress, Status};
 
+pub use crate::transport::websocket::{CLOSING_TIMEOUT, Socket, SocketEvent};
+
 /// The most bytes one message may hold, inflated: past it the connection
 /// is failed with 1009 (message too big). The reference holds no fixed
 /// limit; a page's message past this one is out of all its use.

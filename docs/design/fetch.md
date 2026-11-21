@@ -651,7 +651,13 @@ and the jar's retrieval with 3,000 cookies kept.
 - *The Cookie Store API* (`cookieStore`). G72.
 - *`keepalive`, `navigator.sendBeacon` and `fetchLater`*: requests that
   outlive their page. G73.
-- *WebSockets and server-sent events* (`EventSource`). G74.
+- *WebSockets* (G74, done 2026-11-21): the handshake through `net`,
+  its fields the reference browser's in its order, cookies with it and
+  taken from it, an HSTS host over TLS, no redirect, a connection of its
+  own over HTTP/1.1; the interface's state and checks in the engine
+  (`scripts::websocket`), the bindings a shell over them. In a renderer
+  the browser holds the socket (docs/security.md, section 4.10).
+  *Server-sent events* (`EventSource`): G74, next.
 - *Cookies on disk*, and the HTTP cache that `Request.cache` names. M28
   and M38.
 - *`Referer` and Referrer Policy*, HSTS, Upgrade-Insecure-Requests and

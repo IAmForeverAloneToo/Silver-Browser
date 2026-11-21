@@ -515,6 +515,8 @@ pub(crate) struct DocumentHost {
     /// The fetch options its scripts ran with, each once, by their
     /// numbers less one: what their `import()`s fetch with.
     script_options: Vec<super::ScriptOptions>,
+    /// Its WebSockets (G74).
+    pub(crate) sockets: super::websocket::Sockets,
 }
 
 /// The most sets of script fetch options a document numbers: past them
@@ -2359,6 +2361,17 @@ impl DocumentHost {
                 self.in_flight += 1;
                 self.outputs.fetches.push((call.id, request));
                 Ok(Answer::Nothing)
+            }
+            Call::Socket(call) => {
+                let page = self.page.as_ref();
+                let initiator = page.and_then(|page| page.initiator());
+                let document = &self.document;
+                let resolve = |text: &str| page.and_then(|page| page.resolve_utf8(document, text));
+                let answer = self.sockets.call(*call, &resolve, initiator);
+                for said in std::mem::take(&mut self.sockets.said) {
+                    self.say(ConsoleLevel::Error, said);
+                }
+                answer
             }
             Call::FetchNow(call) => {
                 let page = self

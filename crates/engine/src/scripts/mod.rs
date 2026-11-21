@@ -32,6 +32,7 @@ mod service_workers_tests;
 mod url;
 #[cfg(test)]
 mod wasm_tests;
+pub(crate) mod websocket;
 pub(crate) mod workers;
 
 #[cfg(test)]
@@ -2409,6 +2410,7 @@ impl Scripts {
         self.start_wanted(lent, outputs.wanted, outputs.modules, &outputs.order);
         self.after_modules(lent, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
+        self.start_sockets(lent);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
         if outputs.viewport.is_some() {
@@ -2999,6 +3001,49 @@ impl Scripts {
 
     /// Starts the media fetches the run's loads asked for (M40), and
     /// sends what its WebGPU calls queued (M41).
+    /// Opens the WebSockets the run made (G74), held to the document's
+    /// policies as they stand.
+    fn start_sockets(&mut self, lent: &mut Lent<'_>) {
+        for wanted in std::mem::take(&mut self.host.sockets.wanted) {
+            let mut request = wanted.request;
+            request.csp = Some(lent.page.csp(lent.document).clone());
+            if request.referrer_policy.is_none() {
+                request.referrer_policy = Some(lent.page.referrer_policy(lent.document));
+            }
+            lent.network.open_socket(
+                lent.page.id(),
+                u64::from(wanted.id),
+                request,
+                wanted.protocols,
+            );
+        }
+    }
+
+    /// Takes what WebSocket `id`'s connection did (G74), which came at
+    /// `now`: the events it fires, queued as tasks; what the console is
+    /// to say of it, said.
+    pub(crate) fn socket_arrived(
+        &mut self,
+        id: u64,
+        update: crate::loader::SocketUpdate,
+        now: Duration,
+    ) {
+        let Ok(id) = u32::try_from(id) else {
+            return;
+        };
+        self.host.sockets.arrived(id, update);
+        for said in std::mem::take(&mut self.host.sockets.said) {
+            self.push(ConsoleEntry::of(
+                ConsoleSource::Network,
+                ConsoleLevel::Error,
+                cut(said),
+            ));
+        }
+        while let Some((json, bytes)) = self.host.sockets.tasks.pop_front() {
+            self.posted.push_back((now, js::Task::Socket(json, bytes)));
+        }
+    }
+
     fn start_media(&mut self, lent: &mut Lent<'_>) {
         self.host.flush_gpu();
         if !self.host.media.fetch_pending() {
@@ -3157,6 +3202,7 @@ impl Scripts {
     pub(crate) fn keepable(&self) -> bool {
         !self.stopped
             && !self.host.workers.workers.any()
+            && !self.host.sockets.any()
             && !self.host.audio.sounding()
             && !self.host.media.playing()
     }

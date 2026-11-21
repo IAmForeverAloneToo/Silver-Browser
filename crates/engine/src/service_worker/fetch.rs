@@ -113,6 +113,16 @@ impl Fetcher for Intercepting {
             None => self.inner.fetch_streaming(request, deliver),
         }
     }
+
+    /// A WebSocket's handshake is no fetch a service worker sees.
+    fn open_socket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: crate::loader::SocketEvents,
+    ) -> Result<(net::websocket::Agreed, Box<dyn crate::loader::SocketHandle>), String> {
+        self.inner.open_socket(request, protocols, events)
+    }
 }
 
 /// Handle Fetch: the controlling version's answer to `request`, or none

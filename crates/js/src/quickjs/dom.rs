@@ -225,6 +225,11 @@ impl<'js> Args<'_, 'js> {
 /// A native that makes `call` of the host from its arguments.
 type Decode = fn(&Args<'_, '_>) -> rquickjs::Result<Call>;
 
+/// A WebSocket's call (G74) as the host is asked it.
+fn socket(call: crate::dom::SocketCall) -> Call {
+    Call::Socket(Box::new(call))
+}
+
 /// A custom element call (D70) as the host is asked it.
 fn custom(call: CustomCall) -> Call {
     Call::Custom(Box::new(call))
@@ -1018,6 +1023,44 @@ const NATIVES: &[(&str, Decode)] = &[
     ("animation", |a| Ok(Call::Animation(a.string(0)?))),
     ("audio", |a| {
         Ok(Call::Audio(a.string(0)?, a.bytes(1)?.unwrap_or_default()))
+    }),
+    // A WebSocket's calls (G74): its number first but for `socketOpen`.
+    ("socketOpen", |a| {
+        Ok(socket(crate::dom::SocketCall::Open {
+            url: a.string(0)?,
+            protocols: a.strings(1)?,
+        }))
+    }),
+    ("socketSend", |a| {
+        let binary = a.bool(1);
+        let data = match binary {
+            true => a.bytes(2)?.unwrap_or_default(),
+            false => a.string(2)?.into_bytes(),
+        };
+        Ok(socket(crate::dom::SocketCall::Send {
+            id: a.integer(0) as u32,
+            binary,
+            data,
+        }))
+    }),
+    ("socketClose", |a| {
+        Ok(socket(crate::dom::SocketCall::Close {
+            id: a.integer(0) as u32,
+            code: a.bool(1).then(|| a.number(2)),
+            reason: a.maybe_string(3)?,
+        }))
+    }),
+    ("socketGet", |a| {
+        Ok(socket(crate::dom::SocketCall::Get {
+            id: a.integer(0) as u32,
+            name: a.string(1)?,
+        }))
+    }),
+    ("socketSetBinaryType", |a| {
+        Ok(socket(crate::dom::SocketCall::SetBinaryType {
+            id: a.integer(0) as u32,
+            value: a.string(1)?,
+        }))
     }),
     ("gpu", |a| {
         Ok(Call::Gpu(a.string(0)?, a.bytes(1)?.unwrap_or_default()))

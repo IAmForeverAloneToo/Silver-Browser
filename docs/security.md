@@ -280,6 +280,18 @@ font folders; a file it cannot read, it scans for.
   them, keeps another site's download's body, and refuses `file:` to a
   renderer not of files. `service::compromised_tests` is a renderer
   speaking the protocol itself, asking for each.
+- **WebSockets** (G74). A renderer holds no socket: the browser opens
+  each (`ToBrowser::SocketOpen`) for a frame it granted, its request
+  checked as a fetch's is, `http:` or `https:` alone, at most
+  `MAX_RENDERER_SOCKETS` (255) a renderer, on a thread of its own, and
+  sends the renderer its events. A message either way comes in pieces
+  of at most `MAX_CHUNK`, put together within `websocket::MAX_MESSAGE`
+  (64 MiB), text as UTF-8, or the renderer is killed; so is a close
+  code but 1000 and 3000 to 4999, or a reason past 123 bytes. The
+  browser's thread reads the server's frames within the same bound,
+  inflated ones too, and fails the connection on any breach of RFC
+  6455 (`fuzz/fuzz_targets/websocket.rs`). A renderer gone closes its
+  sockets with 1001.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

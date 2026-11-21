@@ -5,9 +5,9 @@
 //! processes turn into their IPC (M31.3), the messages already strings.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -1198,6 +1198,10 @@ pub(crate) struct WorkerHost {
     /// are being fetched.
     modules: Modules,
     importing: bool,
+    /// Its WebSockets (G74), and what their connections did, from their
+    /// threads, which wake it through its pool's waker.
+    sockets: super::websocket::Sockets,
+    socket_news: Arc<Mutex<VecDeque<(u32, crate::loader::SocketUpdate)>>>,
 }
 
 impl Default for WorkerHost {
@@ -1219,6 +1223,8 @@ impl Default for WorkerHost {
             last_frame: None,
             pool: None,
             fetching: HashMap::new(),
+            sockets: super::websocket::Sockets::default(),
+            socket_news: Arc::default(),
             next_job: 0,
             canvases: Canvases::default(),
             viewport: (0, 0),
@@ -1370,6 +1376,16 @@ impl ScriptingHost for WorkerHost {
                     .insert(job, (call.id, request.url.clone(), request.abort.clone()));
                 pool.run(job, move |_| client.fetch(&request));
                 Ok(Answer::Nothing)
+            }
+            Call::Socket(call) => {
+                let base = self.url.clone();
+                let resolve = |text: &str| base.as_ref().and_then(|base| base.join(text).ok());
+                let answer = self.sockets.call(*call, &resolve, self.initiator.clone());
+                for said in std::mem::take(&mut self.sockets.said) {
+                    self.say(ConsoleSource::Engine, ConsoleLevel::Error, said);
+                }
+                self.start_sockets();
+                answer
             }
             Call::FetchNow(call) => {
                 let mut request = super::fetch::request(self.initiator.clone(), &call)?;
@@ -1613,11 +1629,69 @@ impl WorkerHost {
         }
     }
 
+    /// Opens the WebSockets its scripts made (G74), held to its policies.
+    fn start_sockets(&mut self) {
+        let wanted = std::mem::take(&mut self.sockets.wanted);
+        let waker = self.pool.as_ref().and_then(Pool::waker);
+        let Some(client) = self.client.clone() else {
+            // Each fails, its events at the next wake.
+            for wanted in wanted {
+                let failed = Err("Error in connection establishment: no network".to_owned());
+                self.socket_news
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_back((wanted.id, crate::loader::SocketUpdate::Opened(failed)));
+            }
+            if let Some(wake) = &waker {
+                wake();
+            }
+            return;
+        };
+        for wanted in wanted {
+            let mut request = wanted.request;
+            request.partition.clone_from(&self.partition);
+            request.csp.clone_from(&self.csp);
+            request.local_network.clone_from(&self.local_network);
+            let news = self.socket_news.clone();
+            let waker = waker.clone();
+            let id = wanted.id;
+            crate::loader::open_socket_with(
+                client.clone(),
+                request,
+                wanted.protocols,
+                move |update| {
+                    news.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push_back((id, update));
+                    if let Some(wake) = &waker {
+                        wake();
+                    }
+                },
+            );
+        }
+    }
+
     /// The answers of the worker's fetches that finished, as tasks; why
-    /// one failed goes to the console. Those aborted are dropped.
+    /// one failed goes to the console. Those aborted are dropped. Its
+    /// WebSockets' events come with them.
     fn take_fetched(&mut self) -> Vec<Task> {
         self.report_violations();
         let mut tasks = Vec::new();
+        let news: Vec<_> = self
+            .socket_news
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        for (id, update) in news {
+            self.sockets.arrived(id, update);
+        }
+        for said in std::mem::take(&mut self.sockets.said) {
+            self.say(ConsoleSource::Network, ConsoleLevel::Error, said);
+        }
+        while let Some((json, bytes)) = self.sockets.tasks.pop_front() {
+            tasks.push(Task::Socket(json, bytes));
+        }
         while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
             let Some((id, url, _)) = self.fetching.remove(&job) else {
                 continue;

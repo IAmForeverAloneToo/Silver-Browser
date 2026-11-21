@@ -1236,6 +1236,39 @@ pub enum Call {
     /// What the custom element bindings ask of the document (D70): one
     /// variant for them all.
     Custom(Box<CustomCall>),
+    /// What the WebSocket bindings ask (G74): one variant for them all.
+    Socket(Box<SocketCall>),
+}
+
+/// A WebSocket's call (G74, WebSockets section 3). The bindings are a
+/// shell: the URL's and the subprotocols' checks, the state, the
+/// buffered amount, the close code's and reason's checks and the binary
+/// type are the host's, which answers and throws as the reference
+/// browser does, so that any engine's bindings share them. Its events
+/// come as `Task::Socket`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SocketCall {
+    /// `new WebSocket(url, protocols)`: the socket's number, a
+    /// `Number`. `url` as given, the host resolving it.
+    Open { url: String, protocols: Vec<String> },
+    /// `send(data)`: text, or bytes (`binary`).
+    Send {
+        id: u32,
+        binary: bool,
+        data: Vec<u8>,
+    },
+    /// `close(code, reason)`: the code as a number, before Web IDL's
+    /// clamp, if given; the reason, made well formed, if given.
+    Close {
+        id: u32,
+        code: Option<f64>,
+        reason: Option<String>,
+    },
+    /// An attribute's value: `url`, `readyState`, `bufferedAmount`,
+    /// `protocol`, `extensions` or `binaryType`.
+    Get { id: u32, name: String },
+    /// `binaryType = value`.
+    SetBinaryType { id: u32, value: String },
 }
 
 /// A custom element call (D70): the document keeps the elements'

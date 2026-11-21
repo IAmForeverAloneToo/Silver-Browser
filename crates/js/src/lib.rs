@@ -45,7 +45,7 @@ mod worker_tests;
 pub use backend::{Agent, DEFAULT_ENGINE, Engine, WeakAgent, engine};
 pub use dom::{
     Answer, Call, CanvasCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript,
-    WORK_PER_STEP,
+    SocketCall, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
 /// Sweep builds' dump of the scripts pages run (`dump-scripts`).
@@ -737,6 +737,10 @@ pub enum Task {
         modules: Vec<ModuleSource>,
         error: Option<String>,
     },
+    /// What a WebSocket's connection did (G74), as JSON (its number,
+    /// the event to fire and its fields, all the host's), and a binary
+    /// message's bytes.
+    Socket(String, Vec<u8>),
 }
 
 /// Where a message is delivered (M31).

@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use net::cookies::Context;
 use net::csp::Violation;
+use net::websocket::{Agreed, SocketEvent};
 use net::{Delivery, NetworkError, Request, Response, Url};
 
 use crate::gpu::GpuClient;
 use crate::ipc::{Answer, Bytes, Calls, Closed, Sender, StorageOp, ToBrowser, ToRenderer};
-use crate::loader::{Cookies, Fetcher};
+use crate::loader::{Cookies, Fetcher, SocketEvents, SocketHandle};
 use crate::storage::{AreaKey, Areas, OverQuota};
 
 /// How often a fetch waiting for the browser looks whether it was
@@ -36,6 +37,9 @@ pub(crate) struct Link {
     calls: Calls<Answer>,
     fetches: Mutex<Option<HashMap<u64, mpsc::Sender<Part>>>>,
     next_fetch: AtomicU64,
+    /// The WebSockets open through the browser (G74), by the renderer's
+    /// number: where their events go, and the message coming in pieces.
+    sockets: Mutex<HashMap<u64, (SocketEvents, Vec<u8>)>>,
     /// What the browser last said the output played of the renderer's
     /// sound (M40).
     played: AtomicU64,
@@ -66,6 +70,7 @@ impl Link {
             calls: Calls::new(),
             fetches: Mutex::new(Some(HashMap::new())),
             next_fetch: AtomicU64::new(1),
+            sockets: Mutex::new(HashMap::new()),
             played: AtomicU64::new(0),
             gpu: Arc::new(GpuClient::new(Box::new(move |bytes| {
                 let _ = to_gpu.send(&ToBrowser::Gpu {
@@ -171,6 +176,57 @@ impl Link {
                 self.gpu.deliver(&bytes.0)?;
                 return Ok(None);
             }
+            ToRenderer::SocketMessage {
+                id,
+                binary,
+                bytes,
+                last,
+            } => {
+                let mut sockets = self.sockets();
+                if let Some((events, partial)) = sockets.get_mut(&id) {
+                    if partial.len() + bytes.0.len() > net::websocket::MAX_MESSAGE {
+                        return Err("a WebSocket message past the bound".into());
+                    }
+                    partial.extend_from_slice(&bytes.0);
+                    if last {
+                        let whole = std::mem::take(partial);
+                        let event = match binary {
+                            true => SocketEvent::Binary(whole),
+                            false => SocketEvent::Text(
+                                String::from_utf8(whole)
+                                    .map_err(|_| "a WebSocket text message not UTF-8")?,
+                            ),
+                        };
+                        events(event);
+                    }
+                }
+                return Ok(None);
+            }
+            ToRenderer::SocketSent { id, bytes } => {
+                self.socket_event(id, SocketEvent::Sent(bytes as usize), false);
+                return Ok(None);
+            }
+            ToRenderer::SocketClosing { id } => {
+                self.socket_event(id, SocketEvent::Closing, false);
+                return Ok(None);
+            }
+            ToRenderer::SocketClosed {
+                id,
+                clean,
+                code,
+                reason,
+                failed,
+            } => {
+                let code = u16::try_from(code).map_err(|_| "a close code past 16 bits")?;
+                let event = SocketEvent::Closed {
+                    clean,
+                    code,
+                    reason,
+                    failed,
+                };
+                self.socket_event(id, event, true);
+                return Ok(None);
+            }
             ToRenderer::FetchHead { id, response } => (id, Part::Head(response)),
             ToRenderer::FetchBody { id, bytes } => (id, Part::Body(bytes.0)),
             ToRenderer::FetchDone {
@@ -195,10 +251,83 @@ impl Link {
         Ok(None)
     }
 
+    fn sockets(&self) -> MutexGuard<'_, HashMap<u64, (SocketEvents, Vec<u8>)>> {
+        self.sockets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tells WebSocket `id`'s page of `event`; the last, its end.
+    fn socket_event(&self, id: u64, event: SocketEvent, last: bool) {
+        let mut sockets = self.sockets();
+        if let Some((events, _)) = sockets.get_mut(&id) {
+            events(event);
+        }
+        if last {
+            sockets.remove(&id);
+        }
+    }
+
+    /// Opens a WebSocket for frame `frame` through the browser (G74).
+    fn open_socket(
+        self: &Arc<Link>,
+        frame: u32,
+        request: &Request,
+        protocols: &[String],
+        events: SocketEvents,
+    ) -> Result<(Agreed, Box<dyn SocketHandle>), String> {
+        let id = self.next_fetch.fetch_add(1, Ordering::Relaxed);
+        // Its events may come before the answer is read: they wait in
+        // the table, in order, for the page's side.
+        self.sockets().insert(id, (events, Vec::new()));
+        let mut asked = request.clone();
+        asked.csp = request.csp.as_ref().map(net::csp::Csp::inherited);
+        let answer = self.call(|call| ToBrowser::SocketOpen {
+            call,
+            id,
+            frame,
+            request: Box::new(asked),
+            protocols: protocols.to_vec(),
+        });
+        let failure = match answer {
+            Ok(Answer::SocketOpened {
+                failure: None,
+                protocol,
+                extensions,
+            }) => {
+                let agreed = Agreed {
+                    protocol,
+                    extensions,
+                    deflate: None,
+                };
+                let socket = RemoteSocket {
+                    link: self.clone(),
+                    id,
+                };
+                return Ok((agreed, Box::new(socket)));
+            }
+            Ok(Answer::SocketOpened {
+                failure: Some(failure),
+                ..
+            }) => failure,
+            _ => "Error in connection establishment: the browser is gone".to_owned(),
+        };
+        self.sockets().remove(&id);
+        Err(failure)
+    }
+
     /// The browser is gone: everyone waiting stops.
     pub(crate) fn close(&self) {
         self.calls.close();
         *self.fetches() = None;
+        // Each WebSocket ends as a dropped connection does.
+        let sockets: Vec<_> = self.sockets().drain().collect();
+        for (_, (mut events, _)) in sockets {
+            events(SocketEvent::Closed {
+                clean: false,
+                code: 1006,
+                reason: String::new(),
+                failed: false,
+            });
+        }
         self.sender.close();
     }
 
@@ -330,6 +459,70 @@ impl Fetcher for RemoteFetcher {
         let handover = self.handed_over(request);
         self.link
             .fetch(self.frame, request, true, handover, deliver)
+    }
+
+    fn open_socket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: SocketEvents,
+    ) -> Result<(Agreed, Box<dyn SocketHandle>), String> {
+        self.link
+            .open_socket(self.frame, request, protocols, events)
+    }
+}
+
+/// The renderer's side of a WebSocket the browser holds (G74).
+struct RemoteSocket {
+    link: Arc<Link>,
+    id: u64,
+}
+
+impl RemoteSocket {
+    /// Sends a message in pieces the link carries.
+    fn send(&self, binary: bool, bytes: &[u8]) {
+        let mut pieces = bytes.chunks(crate::ipc::MAX_CHUNK).peekable();
+        if pieces.peek().is_none() {
+            let _ = self.link.send(&ToBrowser::SocketSend {
+                id: self.id,
+                binary,
+                bytes: Bytes(Vec::new()),
+                last: true,
+            });
+        }
+        while let Some(piece) = pieces.next() {
+            let _ = self.link.send(&ToBrowser::SocketSend {
+                id: self.id,
+                binary,
+                bytes: Bytes(piece.to_vec()),
+                last: pieces.peek().is_none(),
+            });
+        }
+    }
+}
+
+impl SocketHandle for RemoteSocket {
+    fn send_text(&self, text: &str) {
+        self.send(false, text.as_bytes());
+    }
+
+    fn send_binary(&self, bytes: &[u8]) {
+        self.send(true, bytes);
+    }
+
+    fn close(&self, code: Option<u16>, reason: &str) {
+        let _ = self.link.send(&ToBrowser::SocketClose {
+            id: self.id,
+            code: code.map_or(0, u32::from),
+            reason: reason.to_owned(),
+        });
+    }
+}
+
+impl Drop for RemoteSocket {
+    fn drop(&mut self) {
+        self.link.sockets().remove(&self.id);
+        let _ = self.link.send(&ToBrowser::SocketDrop { id: self.id });
     }
 }
 

@@ -899,3 +899,119 @@ fn a_renderers_reload_may_bypass_the_cache() {
         .expect("the reload");
     assert_eq!(last.header("Cache-Control"), Some("no-cache"));
 }
+
+/// A WebSocket's server for one connection (G74): the handshake's head
+/// sent back over `heads`, its 101, then `script`; its port.
+fn websocket_server(
+    heads: std::sync::mpsc::Sender<String>,
+    script: impl FnOnce(std::net::TcpStream) + Send + 'static,
+) -> (u16, thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+    let port = listener.local_addr().expect("an address").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a connection");
+        stream.set_read_timeout(Some(WAIT)).expect("a timeout");
+        let mut head = Vec::new();
+        let mut byte = [0u8];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(stream.read(&mut byte).expect("reads"), 1);
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).expect("ASCII");
+        let key = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .expect("a key")
+            .to_owned();
+        heads.send(head).expect("the test waits");
+        let answer = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+            net::websocket::accept_for(&key)
+        );
+        stream.write_all(answer.as_bytes()).expect("answers");
+        script(stream);
+    });
+    (port, server)
+}
+
+/// A client's frame, unmasked, any length: its first byte and payload.
+fn client_frame(stream: &mut std::net::TcpStream) -> (u8, Vec<u8>) {
+    use std::io::Read;
+    let mut two = [0u8; 2];
+    stream.read_exact(&mut two).expect("a frame");
+    let len = match two[1] & 0x7f {
+        126 => {
+            let mut b = [0u8; 2];
+            stream.read_exact(&mut b).expect("its length");
+            usize::from(u16::from_be_bytes(b))
+        }
+        127 => {
+            let mut b = [0u8; 8];
+            stream.read_exact(&mut b).expect("its length");
+            u64::from_be_bytes(b) as usize
+        }
+        n => usize::from(n),
+    };
+    let mut mask = [0u8; 4];
+    stream.read_exact(&mut mask).expect("its mask");
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload).expect("its payload");
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b ^= mask[i % 4];
+    }
+    (two[0], payload)
+}
+
+#[test]
+fn a_websocket_goes_through_the_browser_with_its_cookies_and_messages_in_pieces() {
+    use std::io::Write;
+    // Past the link's piece both ways (`MAX_CHUNK`).
+    const BIG: usize = ipc::MAX_CHUNK * 2 + 1;
+    let (heads, head) = std::sync::mpsc::channel();
+    let (port, server) = websocket_server(heads, |mut stream| {
+        let (first, payload) = client_frame(&mut stream);
+        assert_eq!(first, 0x81);
+        assert_eq!(payload.len(), BIG + 1);
+        assert!(payload.iter().all(|&b| b == b'x'));
+        let mut out = vec![0x82, 127];
+        out.extend_from_slice(&(BIG as u64).to_be_bytes());
+        out.extend(std::iter::repeat_n(7u8, BIG));
+        stream.write_all(&out).unwrap();
+        stream.write_all(&[0x88, 0x02, 0x03, 0xe8]).unwrap();
+        let (first, _) = client_frame(&mut stream);
+        assert_eq!(first, 0x88);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    });
+    let page = format!(
+        "<script>const w = new WebSocket('ws://127.0.0.1:{port}/live'); w.binaryType = 'arraybuffer';\
+         w.onopen = () => w.send('x'.repeat({BIG}) + 'x');\
+         w.onmessage = (e) => console.log('message', e.data.byteLength, new Uint8Array(e.data)[{BIG} - 1]);\
+         w.onclose = (e) => console.log('close', e.code, e.wasClean);</script>"
+    );
+    let server_page = TestServer::plain(move |_| {
+        Reply::with_fields(
+            200,
+            &[("Content-Type", "text/html"), ("Set-Cookie", "session=1")],
+            page.as_bytes(),
+        )
+    });
+    let mut tab = tab();
+    tab.set_scripting(true);
+    tab.navigate(server_page.url("/"));
+    shown(&mut tab);
+    let mut lines = Vec::new();
+    settle(&mut tab, |tab| {
+        lines.extend(tab.take_console().into_iter().map(|e| e.text));
+        lines.len() >= 2
+    });
+    server.join().unwrap();
+    assert_eq!(
+        lines,
+        [format!("message {BIG} 7"), "close 1000 true".to_owned()]
+    );
+    let head = head.recv_timeout(WAIT).unwrap();
+    // The browser's jar's cookie for the host, whatever its port.
+    assert!(head.contains("\r\nCookie: session=1\r\n"), "{head}");
+    assert!(head.starts_with("GET /live HTTP/1.1\r\n"), "{head}");
+}

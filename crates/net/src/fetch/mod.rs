@@ -798,6 +798,135 @@ impl Client {
         result
     }
 
+    /// Establishes a WebSocket connection (Fetch's "establish a
+    /// WebSocket connection", RFC 6455 section 4.1) for `request`: its
+    /// URL `http:` or `https:`, a `ws:` or `wss:` one made so, and
+    /// `protocols` offered. The handshake's fields are the reference
+    /// browser's, in its order; cookies go with it and are taken from
+    /// its answer, an HSTS host is reached over TLS, and no redirect is
+    /// followed. Once the server agrees, the connection's own thread
+    /// tells `events` what comes. An `Err` says why it failed, as the
+    /// reference browser's console says it.
+    pub fn open_websocket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: Box<dyn FnMut(crate::websocket::SocketEvent) + Send>,
+    ) -> Result<(crate::websocket::Agreed, crate::websocket::Socket), String> {
+        use crate::websocket::{self as ws};
+        let mut url = request.url.clone();
+        if let Some(upgraded) = self
+            .hsts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade(&url, (self.clock)())
+        {
+            url = upgraded;
+        }
+        check(request, &url, 0).map_err(|error| error.to_string())?;
+        let hop = Hop {
+            fetch: None,
+            cached: Default::default(),
+            protocol: Default::default(),
+            method: Method::GET,
+            author: HeaderList::new(),
+            body: None,
+            url_list: vec![url.clone()],
+            tainting: ResponseType::Basic,
+            tainted_origin: false,
+            referrer_policy: request.referrer_policy.unwrap_or_default(),
+        };
+        let key = ws::new_key();
+        let mut headers = HeaderList::new();
+        headers.append(b"Connection", b"Upgrade");
+        headers.append(b"Pragma", b"no-cache");
+        headers.append(b"Cache-Control", b"no-cache");
+        headers.append(b"User-Agent", self.user_agent.as_bytes());
+        headers.append(b"Upgrade", b"websocket");
+        headers.append(b"Origin", serialized_origin(request, false).as_bytes());
+        headers.append(b"Sec-WebSocket-Version", ws::VERSION.as_bytes());
+        headers.append(b"Accept-Encoding", ACCEPT_ENCODING);
+        match &self.languages {
+            Some(languages) => {
+                let languages = languages.lock().unwrap_or_else(PoisonError::into_inner);
+                headers.append(b"Accept-Language", languages.as_bytes());
+            }
+            None => headers.append(b"Accept-Language", ACCEPT_LANGUAGE),
+        }
+        if includes_credentials(request, &hop) {
+            let mut jar = self.cookies.lock().expect("never poisoned");
+            let context = cookie_context(request, &hop);
+            if let Some(cookie) = jar.header(&url, cookies::Api::Http, context, SystemTime::now()) {
+                headers.append(b"Cookie", &cookie);
+            }
+        }
+        headers.append(b"Sec-WebSocket-Key", key.as_bytes());
+        headers.append(
+            b"Sec-WebSocket-Extensions",
+            ws::OFFERED_EXTENSIONS.as_bytes(),
+        );
+        if !protocols.is_empty() {
+            headers.append(b"Sec-WebSocket-Protocol", protocols.join(", ").as_bytes());
+        }
+        let initiator = request
+            .initiator
+            .as_ref()
+            .map(|initiator| initiator.address_space);
+        let ask = match (&request.local_network, &self.gate) {
+            (Some(access), Some(gate)) => Some(transport::Ask {
+                gate: gate.as_ref(),
+                access,
+            }),
+            _ => None,
+        };
+        let partition = request.partition.as_ref().map(Partition::key);
+        let exchange = Exchange {
+            partition: partition.as_deref(),
+            method: "GET",
+            url: &url,
+            headers: &headers,
+            body: None,
+            initiator,
+            ask,
+            target: request.target_address_space,
+            abort: &request.abort,
+            body_limit: request.body_limit,
+            priority: None,
+        };
+        let (received, upgraded) = self
+            .transport
+            .upgrade(&exchange)
+            .map_err(|error| format!("Error in connection establishment: {error}"))?;
+        let response = received.response;
+        self.take_cookies(request, &url, &hop, &response.headers);
+        self.take_hsts(&url, &response.headers);
+        let field = |name: &str| {
+            let values: Vec<String> = response
+                .headers
+                .iter()
+                .filter(|(n, _)| n.eq_ignore_ascii_case(name.as_bytes()))
+                .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+                .collect();
+            (!values.is_empty()).then(|| values.join(", "))
+        };
+        let agreed =
+            ws::check_answer(response.status, &field, &key, protocols).map_err(
+                |why| match why {
+                    "Unexpected response code" => {
+                        format!(
+                            "Error during WebSocket handshake: {why}: {}",
+                            response.status
+                        )
+                    }
+                    _ => format!("Error during WebSocket handshake: {why}"),
+                },
+            )?;
+        let upgraded = upgraded.expect("a 101 comes with its connection");
+        let socket = crate::transport::websocket::Socket::start(upgraded, agreed.deflate, events)
+            .map_err(|error| format!("Error in connection establishment: {error}"))?;
+        Ok((agreed, socket))
+    }
+
     /// [`Client::fetch_to`]'s hops, fetch `fetch` of the observer's.
     fn fetch_hops<'d>(
         &self,

@@ -134,14 +134,14 @@ pub(crate) enum Socket {
 
 impl Socket {
     /// The TCP stream underneath.
-    fn tcp(&self) -> &TcpStream {
+    pub(crate) fn tcp(&self) -> &TcpStream {
         match self {
             Socket::Plain(tcp) => tcp,
             Socket::Tls(tls) => &tls.sock,
         }
     }
 
-    fn tcp_mut(&mut self) -> &mut TcpStream {
+    pub(crate) fn tcp_mut(&mut self) -> &mut TcpStream {
         match self {
             Socket::Plain(tcp) => tcp,
             Socket::Tls(tls) => &mut tls.sock,
@@ -150,7 +150,7 @@ impl Socket {
 
     /// Whether TLS has records of its own to send (an alert, a key's
     /// update) besides what a write gives it.
-    fn tls_wants_write(&self) -> bool {
+    pub(crate) fn tls_wants_write(&self) -> bool {
         matches!(self, Socket::Tls(tls) if tls.conn.wants_write())
     }
 }
@@ -232,6 +232,12 @@ impl Stream {
                 .wait(self.socket.tcp_mut(), deadline - now, write)?;
             waited_out = self.waiter.timed_out();
         }
+    }
+
+    /// The socket and its poll, for a connection's thread of its own (a
+    /// WebSocket's) that waits for both itself.
+    pub(crate) fn into_parts(self) -> (Socket, Waiter) {
+        (self.socket, self.waiter)
     }
 
     /// Whether an idle connection can still carry a request: the server

@@ -748,6 +748,8 @@ impl RemoteTab {
     /// handed over to a new view.
     fn left(&mut self, number: u32) {
         self.grants.forget(number);
+        // Its WebSockets close (G74).
+        self.network.renderer_gone(number);
         // Its objects in the GPU process go (M41).
         self.context.gpu_relay(&self.launcher).renderer_gone(number);
         for segment in &mut self.segments {

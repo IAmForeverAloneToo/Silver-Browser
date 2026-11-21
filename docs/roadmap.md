@@ -3098,7 +3098,9 @@ Deferred from the milestones above, each with what it waits on:
 - [ ] G73 Requests that outlive their page: `keepalive`,
        `navigator.sendBeacon`, `fetchLater`. Named at M27.
 - [ ] G74 WebSockets and server-sent events (`EventSource`). Named at
-       M27.
+       M27. WebSockets done 2026-11-21 (windows and workers, through
+       the browser in a renderer); `EventSource` and the web-platform
+       tests' handlers to come.
 - [x] G75 `FileReader`. Found at M27, by the web-platform tests of
        `FileAPI/blob` (39 subtests). Done in gap batch A.
 - [ ] G76 HTML's `formdata` event, and the constructing entry list's

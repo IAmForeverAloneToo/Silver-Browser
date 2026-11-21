@@ -25,7 +25,7 @@ pub enum ReadError {
     HeadersTooLarge,
     /// The body is, or says it is, longer than the limit.
     BodyTooLarge,
-    /// A 101: there is no upgrade a request asked for.
+    /// A 101 to a request that asked for no upgrade.
     SwitchingProtocols,
     /// The sink the body was handed to refused the rest of it (M24.8);
     /// why is the sink's to say.
@@ -133,6 +133,27 @@ pub fn read_response_to<R: Read>(
     limits: Limits,
     sink: Option<&mut dyn BodySink>,
 ) -> Result<Response, ReadError> {
+    read_any(reader, to_head, limits, sink, false)
+}
+
+/// [`read_response`] for a request that asked to switch protocols (RFC
+/// 9110 section 7.8), as a WebSocket's opening handshake does: a 101 is
+/// returned with its head alone, the bytes after it left in `reader` for
+/// the protocol switched to. Any other final response is read whole.
+pub fn read_upgrade_response<R: Read>(
+    reader: &mut BufReader<R>,
+    limits: Limits,
+) -> Result<Response, ReadError> {
+    read_any(reader, false, limits, None, true)
+}
+
+fn read_any<R: Read>(
+    reader: &mut BufReader<R>,
+    to_head: bool,
+    limits: Limits,
+    sink: Option<&mut dyn BodySink>,
+    upgrade: bool,
+) -> Result<Response, ReadError> {
     let mut input = Input {
         reader,
         received: false,
@@ -141,6 +162,16 @@ pub fn read_response_to<R: Read>(
     let head = loop {
         let head = read_head(&mut input)?;
         match head.status {
+            101 if upgrade => {
+                return Ok(Response {
+                    persistent: false,
+                    version: head.version,
+                    status: head.status,
+                    reason: head.reason,
+                    headers: head.headers,
+                    body: Vec::new(),
+                });
+            }
             101 => return Err(ReadError::SwitchingProtocols),
             100..=199 => continue,
             _ => break head,

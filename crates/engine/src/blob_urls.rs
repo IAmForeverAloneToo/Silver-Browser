@@ -181,6 +181,16 @@ impl Fetcher for Resolving {
         }
         Ok(response)
     }
+
+    /// A WebSocket's URL is never `blob:`: the bindings refuse it.
+    fn open_socket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: crate::loader::SocketEvents,
+    ) -> Result<(net::websocket::Agreed, Box<dyn crate::loader::SocketHandle>), String> {
+        self.inner.open_socket(request, protocols, events)
+    }
 }
 
 #[cfg(test)]

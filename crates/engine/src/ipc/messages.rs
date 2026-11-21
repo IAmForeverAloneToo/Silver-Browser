@@ -173,6 +173,18 @@ wire_enum! {
         /// The `marginwidth` and `marginheight` of the iframe a frame
         /// view's documents show in, which their `body` takes (D60).
         39 => FrameMargins { view: u32, width: Option<i32>, height: Option<i32> },
+        /// A piece of a message WebSocket `id` received (G74), of at
+        /// most `MAX_CHUNK` bytes: text as its UTF-8, whole at `last`.
+        40 => SocketMessage { id: u64, binary: bool, bytes: Bytes, last: bool },
+        /// WebSocket `id`'s messages of so many payload bytes are written
+        /// to its connection.
+        41 => SocketSent { id: u64, bytes: u64 },
+        /// WebSocket `id`'s server began the closing handshake.
+        42 => SocketClosing { id: u64 },
+        /// WebSocket `id` ended: cleanly or not, the server's close code
+        /// (1005 none, 1006 none came) and reason, and whether it was
+        /// failed. The last of its messages.
+        43 => SocketClosed { id: u64, clean: bool, code: u32, reason: String, failed: bool },
     }
 }
 
@@ -387,6 +399,26 @@ wire_enum! {
             module: u32,
             kind: String,
         },
+        /// Opens WebSocket `id` (G74, the renderer's number) for frame
+        /// `frame`: `request`'s handshake, offering `protocols`. The
+        /// renderer waits for `Answer::SocketOpened`; the socket's
+        /// messages come as `ToRenderer::Socket*`.
+        36 => SocketOpen {
+            call: u64,
+            id: u64,
+            frame: u32,
+            request: Box<Request>,
+            protocols: Vec<String>,
+        },
+        /// A piece of a message for WebSocket `id` to send, of at most
+        /// `MAX_CHUNK` bytes, whole at `last`.
+        37 => SocketSend { id: u64, binary: bool, bytes: Bytes, last: bool },
+        /// WebSocket `id` starts the closing handshake: `code` 0 for
+        /// none.
+        38 => SocketClose { id: u64, code: u32, reason: String },
+        /// WebSocket `id`'s page is gone: the browser closes it with
+        /// 1001 and forgets it.
+        39 => SocketDrop { id: u64 },
     }
 }
 
@@ -445,6 +477,9 @@ wire_enum! {
         /// A dialog's answer: what `prompt()`'s field held for OK, none
         /// for Cancel (gap batch A, D43).
         10 => Prompt { answer: Option<String> },
+        /// A WebSocket's handshake (G74): the subprotocol and extensions
+        /// the server agreed to, or why it failed.
+        11 => SocketOpened { failure: Option<String>, protocol: String, extensions: String },
     }
 }
 

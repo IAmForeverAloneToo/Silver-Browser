@@ -123,6 +123,8 @@ mod webgpu_tests;
 #[cfg(test)]
 mod webgpu_work_tests;
 #[cfg(test)]
+mod websocket_tests;
+#[cfg(test)]
 mod worker_tests;
 #[cfg(test)]
 mod xhr_tests;
@@ -157,6 +159,7 @@ use std::time::SystemTime;
 use dom::{Document, NodeId};
 use encoding::Encoding;
 use net::cookies::{Api, Context, Jar};
+use net::websocket::{Agreed, SocketEvent};
 use net::{AbortHandle, Client, Delivery, NetworkError, Request, Response, Url};
 
 pub(crate) use pool::{JobId, Lost, Pool, Waker};
@@ -343,6 +346,8 @@ pub(crate) enum Fetched {
 /// document's response on its way.
 pub(crate) enum Taken {
     Arrived(Arrived),
+    /// What a page's WebSocket did (G74).
+    Socket(SocketArrived),
     /// The head of a document's response, its body to come.
     Head {
         page: PageId,
@@ -353,6 +358,69 @@ pub(crate) enum Taken {
         page: PageId,
         bytes: Vec<u8>,
     },
+}
+
+/// What a page's WebSocket did (G74), in order: its handshake's end,
+/// then its events.
+pub(crate) struct SocketArrived {
+    pub(crate) page: PageId,
+    pub(crate) id: u64,
+    pub(crate) update: SocketUpdate,
+}
+
+pub(crate) enum SocketUpdate {
+    /// The handshake's end: the server's agreement and the page's side
+    /// of the connection, or why it failed.
+    Opened(Result<(Agreed, Box<dyn SocketHandle>), String>),
+    Event(SocketEvent),
+}
+
+/// Opens a WebSocket with `client` for `request`, offering `protocols`,
+/// on a thread of its own (G74): `push` is given the handshake's end,
+/// then the connection's events, in that order, from other threads.
+pub(crate) fn open_socket_with(
+    client: Arc<dyn Fetcher>,
+    request: Request,
+    protocols: Vec<String>,
+    push: impl Fn(SocketUpdate) + Clone + Send + 'static,
+) {
+    let gate = Arc::new(Mutex::new(SocketGate::default()));
+    let events: SocketEvents = {
+        let gate = gate.clone();
+        let push = push.clone();
+        Box::new(move |event| {
+            let mut gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
+            match gate.opened {
+                true => push(SocketUpdate::Event(event)),
+                false => gate.held.push(event),
+            }
+        })
+    };
+    let failed = push.clone();
+    let opened = std::thread::Builder::new()
+        .name("websocket open".to_owned())
+        .spawn(move || {
+            let result = client.open_socket(&request, &protocols, events);
+            let mut gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
+            push(SocketUpdate::Opened(result));
+            for event in gate.held.drain(..) {
+                push(SocketUpdate::Event(event));
+            }
+            gate.opened = true;
+        });
+    if opened.is_err() {
+        failed(SocketUpdate::Opened(Err(
+            "Error in connection establishment: no thread".to_owned(),
+        )));
+    }
+}
+
+/// A WebSocket's events before its handshake's end is queued, and
+/// whether it is: they wait, to come after it.
+#[derive(Default)]
+struct SocketGate {
+    opened: bool,
+    held: Vec<SocketEvent>,
 }
 
 /// A fetch's result, with what it was for.
@@ -373,6 +441,43 @@ pub(crate) trait Fetcher: Send + Sync {
         request: &Request,
         deliver: &mut dyn FnMut(Delivery<'_>),
     ) -> Result<Response, NetworkError>;
+    /// Opens a WebSocket connection for `request` (G74), offering
+    /// `protocols`: the server's agreement and the page's side of the
+    /// connection, whose thread tells `events` what comes; or why it
+    /// failed, as the reference browser's console says it.
+    fn open_socket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: SocketEvents,
+    ) -> Result<(Agreed, Box<dyn SocketHandle>), String>;
+}
+
+/// Where a WebSocket connection's events go, from its thread.
+pub(crate) type SocketEvents = Box<dyn FnMut(SocketEvent) + Send>;
+
+/// The page's side of a WebSocket connection (G74): dropped, it closes
+/// the connection with 1001, going away.
+pub(crate) trait SocketHandle: Send {
+    fn send_text(&self, text: &str);
+    fn send_binary(&self, bytes: &[u8]);
+    /// Starts the closing handshake with `code` and `reason`, the
+    /// bindings having checked them.
+    fn close(&self, code: Option<u16>, reason: &str);
+}
+
+impl SocketHandle for net::websocket::Socket {
+    fn send_text(&self, text: &str) {
+        net::websocket::Socket::send_text(self, text);
+    }
+
+    fn send_binary(&self, bytes: &[u8]) {
+        net::websocket::Socket::send_binary(self, bytes);
+    }
+
+    fn close(&self, code: Option<u16>, reason: &str) {
+        net::websocket::Socket::close(self, code, reason);
+    }
 }
 
 impl Fetcher for Client {
@@ -386,6 +491,16 @@ impl Fetcher for Client {
         deliver: &mut dyn FnMut(Delivery<'_>),
     ) -> Result<Response, NetworkError> {
         Client::fetch_streaming(self, request, deliver)
+    }
+
+    fn open_socket(
+        &self,
+        request: &Request,
+        protocols: &[String],
+        events: SocketEvents,
+    ) -> Result<(Agreed, Box<dyn SocketHandle>), String> {
+        let (agreed, socket) = Client::open_websocket(self, request, protocols, events)?;
+        Ok((agreed, Box::new(socket)))
     }
 }
 
@@ -484,6 +599,8 @@ pub(crate) struct Network {
     preloaded: std::collections::HashSet<PreloadKey>,
     preload_counts: HashMap<PageId, usize>,
     ready: std::collections::VecDeque<Arrived>,
+    /// What the pages' WebSockets did (G74), from their threads.
+    sockets: Arc<Mutex<std::collections::VecDeque<SocketArrived>>>,
     /// The `<link rel=preload>`s a page's preloads are for, by fetch,
     /// each link once; and those settled, whether they loaded, for their
     /// `load` or `error` events.
@@ -521,6 +638,7 @@ impl Network {
             preloaded: std::collections::HashSet::new(),
             preload_counts: HashMap::new(),
             ready: std::collections::VecDeque::new(),
+            sockets: Arc::default(),
             link_preloads: HashMap::new(),
             links_seen: std::collections::HashSet::new(),
             settled_links: Vec::new(),
@@ -974,6 +1092,32 @@ impl Network {
         id
     }
 
+    /// Opens a WebSocket for `page` (G74), its number `id`: `request`'s
+    /// handshake, offering `protocols`, on a thread of its own (a
+    /// connection lasts, and the fetches' threads are few). Its end and
+    /// its events come in order as [`Taken::Socket`].
+    pub(crate) fn open_socket(
+        &mut self,
+        page: PageId,
+        id: u64,
+        mut request: Request,
+        protocols: Vec<String>,
+    ) {
+        self.apply_policies(page, &Target::Fetch, &mut request);
+        let client = self.client_for(&request);
+        let queue = self.sockets.clone();
+        let waker = self.waker();
+        open_socket_with(client, request, protocols, move |update| {
+            queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_back(SocketArrived { page, id, update });
+            if let Some(wake) = &waker {
+                wake();
+            }
+        });
+    }
+
     /// The network's quality its fetches measured: the round trip in
     /// milliseconds and the throughput in megabits a second.
     pub(crate) fn quality(&self) -> (f64, f64) {
@@ -1105,6 +1249,14 @@ impl Network {
     pub(crate) fn take(&mut self) -> Option<Taken> {
         if let Some(arrived) = self.ready.pop_front() {
             return Some(Taken::Arrived(arrived));
+        }
+        if let Some(socket) = self
+            .sockets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+        {
+            return Some(Taken::Socket(socket));
         }
         while let Some((id, result)) = self.pool.try_take() {
             let page = |flights: &HashMap<FetchId, Flight>| flights.get(&id).map(|f| f.page);
