@@ -775,6 +775,21 @@ fn a_timer_that_throws_or_runs_too_long_fails_alone() {
     );
 }
 
+/// A page's realm holds what a real app does (2026-11-21): 300 MiB, past
+/// the 256 MiB a realm had, within its 1 GiB.
+#[test]
+fn a_realm_holds_more_than_a_quarter_gibibyte() {
+    let mut realm = realm();
+    let mut host = Recorder::default();
+    realm
+        .run(
+            &script("globalThis.big = new Uint8Array(300 << 20); big[big.length - 1] = 1;"),
+            &mut host,
+        )
+        .expect("it runs");
+    assert!(realm.heap() > 300 << 20);
+}
+
 #[test]
 fn a_realm_reports_its_heap_and_collects() {
     let mut realm = realm();
@@ -1050,7 +1065,7 @@ mod agent_tests {
         assert_eq!(agent.heap_limit(), 64 << 20);
         drop(one);
         // Many: capped.
-        let many = made(20);
+        let many = made(40);
         assert_eq!(agent.heap_limit(), crate::MAX_AGENT_HEAP);
         drop(many);
     }

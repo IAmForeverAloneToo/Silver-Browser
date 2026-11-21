@@ -1480,7 +1480,8 @@ the plain data that crosses the boundary, the limits and the QuickJS-ng
 backend, 0.16.2 through `rquickjs` pinned at `=0.14.0` (D1), writing no
 `unsafe` itself; a script reaches the document only through
 `ScriptingHost`, moved into a run and back. A realm runs a classic
-script with a step budget of interrupt checks, under a 256 MiB heap and
+script with a step budget of interrupt checks, under a 1 GiB heap (256 MiB
+until 2026-11-21) and
 a 256 KiB stack, and the microtask checkpoint after it; a realm whose
 heap stays full after a failed run is dead, and the document runs no
 script again. The HTML parser is rewritten to run as bytes arrive: the

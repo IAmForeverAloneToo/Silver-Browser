@@ -12,7 +12,8 @@ webgpu:api,operation,buffers,map:remapped_for_write:*
 webgpu:api,operation,buffers,map:mappedAtCreation,mapState:*
 webgpu:api,operation,buffers,map:mapAsync,mapState:*
 webgpu:api,operation,command_buffer,copyBufferToBuffer:*
-webgpu:api,operation,compute,basic:*
+webgpu:api,operation,compute,basic:memcpy:*
+webgpu:api,operation,compute,basic:large_dispatch:*
 webgpu:api,operation,labels:*
 webgpu:api,operation,render_pass,clear_value:*
 webgpu:api,validation,buffer,create:*

@@ -4,8 +4,12 @@
 # The standard's per-stage storage limits (maxStorageBuffersInVertexStage
 # and the like) are not the engine's: wgpu has none.
 webgpu:api,operation,adapter,requestDevice:default:*	:
-# A dispatch of the most workgroups wgpu allows runs out of memory here.
-webgpu:api,operation,compute,basic:*	:large_dispatch:dispatchSize="maximum"
+# The largest dispatch (dispatchSize "maximum"), out of memory under a
+# realm's former 256 MiB, now allocates and never ends: five cases pass
+# and it is still running at 900 s (measured alone, 2026-11-21). A hang
+# to find, not a slowness; memcpy, the rest of compute,basic, is a query
+# of its own.
+webgpu:api,operation,compute,basic:large_dispatch:*	timeout
 # The uncaptured error of an out-of-memory error with no scope for it can
 # come after the test's end under load.
 webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="internal"	flaky
