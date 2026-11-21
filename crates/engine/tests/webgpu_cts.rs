@@ -280,7 +280,9 @@ fn the_webgpu_cts_subset_runs_as_expected() {
             got.remove(case);
         }
         if !hold {
-            if !outcome.done {
+            // A query expected to run past its time (`timeout`) does so
+            // on every adapter; any other must end.
+            if !outcome.done && !wanted.contains("timeout") {
                 unexpected.push(format!("{query}: did not end"));
             }
         } else if got != wanted {
