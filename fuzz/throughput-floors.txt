@@ -4,6 +4,8 @@
 # Each floor is a tenth of the target's slowest rate over three green
 # push runs (44330253582, 44339746135, 44356950760). A target, its floor in
 # runs a second, then the three rates. The CI fuzz job reads it.
+# websocket's floor is from its first push run alone (44867617804),
+# until it has three.
 animations 2.299 22.99 23.63 23.90
 audio_graph 11.699 116.99 127.21 195.57
 av1_decode 1.394 13.94 15.42 27.26
@@ -49,4 +51,5 @@ values 16.368 163.68 199.89 241.01
 wasm 0.702 7.02 8.59 9.03
 webgl_ops 4.630 46.30 49.25 49.55
 webgpu_ops 2.885 28.85 29.58 35.29
+websocket 1572.625 15726.25
 xml_parse 296.667 2966.67 3270.98 5433.30
