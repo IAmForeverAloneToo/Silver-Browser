@@ -915,7 +915,6 @@ workers/WorkerNavigator_userAgentData.http.html	Test that userAgentData is not a
 workers/constructors/Worker/DedicatedWorkerGlobalScope-members.worker.html	existence of onoffline	the reference browser's worker has no onoffline or ononline either (probe p1)
 workers/constructors/Worker/DedicatedWorkerGlobalScope-members.worker.html	existence of ononline	the reference browser's worker has no onoffline or ononline either (probe p1)
 workers/constructors/Worker/expected-self-properties.worker.html	existence of EventSource	no WebSocket or EventSource (G74)
-workers/constructors/Worker/expected-self-properties.worker.html	existence of WebSocket	no WebSocket or EventSource (G74)
 workers/constructors/Worker/same-origin.html	about_blank	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	example_invalid	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	http_post_8012	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
@@ -1060,8 +1059,6 @@ content-security-policy/connect-src/connect-src-beacon-blocked.sub.html	Expectin
 content-security-policy/connect-src/connect-src-eventsource-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
 content-security-policy/connect-src/connect-src-eventsource-blocked.sub.html	Expecting logs: ["blocked","violated-directive=connect-src"]	no WebSocket or EventSource (G74)
 content-security-policy/connect-src/connect-src-websocket-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
-content-security-policy/connect-src/connect-src-websocket-blocked.sub.html	Expecting logs: ["blocked","violated-directive=connect-src"]	no WebSocket or EventSource (G74)
-content-security-policy/connect-src/connect-src-websocket-self.sub.html	Expecting logs: ["allowed", "allowed"]	no WebSocket or EventSource (G74)
 content-security-policy/connect-src/worker-from-guid.sub.html	Expecting logs: ["violated-directive=connect-src","xhr blocked","TEST COMPLETE"]	a `blob:` worker's violations of the policy it inherits are not reported to its document (no milestone yet)
 content-security-policy/default-src/default-src-sri_hash.sub.html	matching integrity	Subresource Integrity (G43)
 content-security-policy/default-src/default-src-sri_hash.sub.html	matching integrity (case-insensitive algorithm)	Subresource Integrity (G43)
@@ -1618,8 +1615,6 @@ workers/interfaces/WorkerUtils/importScripts/blob-url.worker.html	Revoking a blo
 workers/semantics/interface-objects/001.worker.html	The PromiseRejectionEvent interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
 workers/semantics/interface-objects/001.worker.html	The EventSource interface object should be exposed.	no WebSocket or EventSource (G74)
 workers/semantics/interface-objects/001.worker.html	The BroadcastChannel interface object should be exposed.	no BroadcastChannel in a worker (G216)
-workers/semantics/interface-objects/001.worker.html	The WebSocket interface object should be exposed.	no WebSocket or EventSource (G74)
-workers/semantics/interface-objects/001.worker.html	The CloseEvent interface object should be exposed.	no WebSocket or EventSource (G74)
 workers/semantics/interface-objects/001.worker.html	The FileList interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
 workers/semantics/interface-objects/001.worker.html	The FileReaderSync interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
 workers/semantics/interface-objects/001.worker.html	The ReadableStream interface object should be exposed.	no streams (G67)

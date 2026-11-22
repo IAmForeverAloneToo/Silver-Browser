@@ -22,6 +22,7 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use crate::Url;
 
 mod h2;
+pub mod sockets;
 
 /// A request as the server read it.
 #[derive(Debug, Clone)]

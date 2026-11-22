@@ -3,13 +3,13 @@
 //! messages, the events of a connection in its order with their fields,
 //! a connection refused, and a close before the connection opens.
 
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use net::test_server::sockets::{
+    SocketListener, SocketPeer, closed_port, serve_socket, server_frame as frame,
+};
 use net::test_server::{Reply, TestServer};
-use net::websocket::accept_for;
 
 use super::tests::load_all;
 use crate::testing::*;
@@ -49,71 +49,24 @@ fn page(script: &str) -> (Tab, TestServer) {
     (tab, server)
 }
 
-/// A client's frame, unmasked: its first byte and payload.
-fn read_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
-    let mut two = [0u8; 2];
-    stream.read_exact(&mut two).expect("a frame");
-    let len = usize::from(two[1] & 0x7f);
-    assert!(len < 126, "a short frame");
-    let mut mask = [0u8; 4];
-    stream.read_exact(&mut mask).expect("its mask");
-    let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).expect("its payload");
-    for (i, b) in payload.iter_mut().enumerate() {
-        *b ^= mask[i % 4];
-    }
-    (two[0], payload)
-}
-
-fn frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x80 | opcode, payload.len() as u8];
-    out.extend_from_slice(payload);
-    out
-}
-
 /// A WebSocket server for one connection: the handshake answered with
 /// subprotocol `chat`, then `script`; its port.
-fn serve(script: impl FnOnce(TcpStream) + Send + 'static) -> (u16, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-    let port = listener.local_addr().expect("an address").port();
-    let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("a connection");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .expect("a timeout");
-        let mut head = Vec::new();
-        let mut byte = [0u8];
-        while !head.ends_with(b"\r\n\r\n") {
-            assert_eq!(stream.read(&mut byte).expect("reads"), 1);
-            head.push(byte[0]);
-        }
-        let head = String::from_utf8(head).expect("ASCII");
-        let key = head
-            .lines()
-            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
-            .expect("a key");
-        let answer = format!(
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n",
-            accept_for(key)
-        );
-        stream.write_all(answer.as_bytes()).expect("answers");
-        script(stream);
-    });
-    (port, server)
+fn serve(script: impl FnOnce(SocketPeer) + Send + 'static) -> (u16, JoinHandle<()>) {
+    serve_socket(Some("chat"), |_, peer| script(peer))
 }
 
 #[test]
 fn a_connection_fires_its_events_in_order_with_their_fields() {
-    let (port, server) = serve(|mut stream| {
-        assert_eq!(read_frame(&mut stream), (0x81, b"hello".to_vec()));
-        assert_eq!(read_frame(&mut stream), (0x82, vec![1, 2, 3]));
-        stream.write_all(&frame(0x1, b"hi")).unwrap();
-        stream.write_all(&frame(0x2, &[7, 8])).unwrap();
-        stream.write_all(&frame(0x2, &[9])).unwrap();
+    let (port, server) = serve(|mut peer| {
+        assert_eq!(peer.frame(), (0x81, b"hello".to_vec()));
+        assert_eq!(peer.frame(), (0x82, vec![1, 2, 3]));
+        peer.write(&frame(0x1, b"hi"));
+        peer.write(&frame(0x2, &[7, 8]));
+        peer.write(&frame(0x2, &[9]));
         let close = [&[0x03, 0xe8][..], b"bye"].concat();
-        stream.write_all(&frame(0x8, &close)).unwrap();
-        assert_eq!(read_frame(&mut stream), (0x88, close));
-        let _ = stream.shutdown(Shutdown::Both);
+        peer.write(&frame(0x8, &close));
+        assert_eq!(peer.frame(), (0x88, close));
+        peer.shutdown();
     });
     let script = format!(
         "const w = new WebSocket('ws://127.0.0.1:{port}/chat', ['chat', 'other']);\
@@ -188,10 +141,7 @@ fn the_constructor_and_close_check_as_the_reference_says() {
 #[test]
 fn a_refused_connection_and_a_close_before_it_opens_fail_as_the_reference_does() {
     // A port nothing listens on.
-    let port = {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-        listener.local_addr().expect("an address").port()
-    };
+    let port = closed_port();
     let script = format!(
         "const v = new WebSocket('ws://127.0.0.1:{port}/');\
          v.onerror = (e) => console.log('error', e.constructor.name, v.readyState);\
@@ -229,12 +179,12 @@ fn a_refused_connection_and_a_close_before_it_opens_fail_as_the_reference_does()
 
 #[test]
 fn a_dedicated_workers_websocket_works_as_a_windows_does() {
-    let (port, server) = serve(|mut stream| {
-        assert_eq!(read_frame(&mut stream), (0x81, b"from worker".to_vec()));
-        stream.write_all(&frame(0x1, b"to worker")).unwrap();
-        stream.write_all(&[0x88, 0x02, 0x0f, 0xa0]).unwrap();
-        let _ = read_frame(&mut stream);
-        let _ = stream.shutdown(Shutdown::Both);
+    let (port, server) = serve(|mut peer| {
+        assert_eq!(peer.frame(), (0x81, b"from worker".to_vec()));
+        peer.write(&frame(0x1, b"to worker"));
+        peer.write(&[0x88, 0x02, 0x0f, 0xa0]);
+        let _ = peer.frame();
+        peer.shutdown();
     });
     let worker = format!(
         "const w = new WebSocket('ws://127.0.0.1:{port}/', 'chat');\
@@ -321,8 +271,8 @@ fn an_insecure_websocket_of_an_https_page_throws_but_a_loopback_ones() {
 
 #[test]
 fn connect_src_refuses_a_websocket_by_its_ws_url_with_an_error_alone() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-    let port = listener.local_addr().expect("an address").port();
+    let listener = SocketListener::bind();
+    let port = listener.port();
     let page = format!(
         "<script>const seen = [];\
          document.addEventListener('securitypolicyviolation', (e) =>\
@@ -360,32 +310,19 @@ fn connect_src_refuses_a_websocket_by_its_ws_url_with_an_error_alone() {
         format!("made 3; violation {url} connect-src; error 3")
     );
     // Nothing connected: no handshake came.
-    listener.set_nonblocking(true).expect("non-blocking");
-    assert_eq!(
-        listener.accept().err().map(|e| e.kind()),
-        Some(std::io::ErrorKind::WouldBlock)
-    );
+    assert!(listener.nothing_waiting());
 }
 
 /// A server for `count` handshakes, each answered 404: each one's
 /// request target and `Origin`, sorted.
 fn origins(count: usize) -> (u16, JoinHandle<Vec<(String, String)>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-    let port = listener.local_addr().expect("an address").port();
+    let listener = SocketListener::bind();
+    let port = listener.port();
     let server = thread::spawn(move || {
         let mut seen = Vec::new();
         for _ in 0..count {
-            let (mut stream, _) = listener.accept().expect("a connection");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .expect("a timeout");
-            let mut head = Vec::new();
-            let mut byte = [0u8];
-            while !head.ends_with(b"\r\n\r\n") {
-                assert_eq!(stream.read(&mut byte).expect("reads"), 1);
-                head.push(byte[0]);
-            }
-            let head = String::from_utf8(head).expect("ASCII");
+            let mut peer = listener.accept();
+            let head = peer.head();
             let target = head.split(' ').nth(1).unwrap_or_default().to_owned();
             let origin = head
                 .lines()
@@ -393,7 +330,7 @@ fn origins(count: usize) -> (u16, JoinHandle<Vec<(String, String)>>) {
                 .unwrap_or("(none)")
                 .to_owned();
             seen.push((target, origin));
-            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+            peer.try_write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
         }
         seen.sort();
         seen
