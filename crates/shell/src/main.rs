@@ -1548,14 +1548,11 @@ mod tests {
         const CONTEXT: &str = "crates/js/src/quickjs/context.rs";
         // Web Crypto's calls into aws-lc's C library where aws-lc-rs
         // has none (G255, the lead's ruling): AES-GCM at any IV and tag
-        // length, an RSA public key's parts, checked, and RSA's
-        // verification outside aws-lc-rs's ranges; the crypto crate
-        // denies `unsafe` but in that module.
+        // length, RSA's keys (generated, parsed, checked, their parts and
+        // PKCS #1) and its signing and verification outside aws-lc-rs's
+        // ranges; the crypto crate denies `unsafe` but in that module.
         const NATIVE: &str = "crates/crypto/src/native.rs";
-        // Seven of them (an RSA key's generation and signing) are built
-        // for the tests and the fuzz targets alone until RSA's private keys
-        // are wired (G255 part 2b).
-        const NATIVE_BLOCKS: usize = 19;
+        const NATIVE_BLOCKS: usize = 27;
         let mut native_blocks = 0;
         let mut context_blocks = 0;
         let mut stack_blocks = 0;

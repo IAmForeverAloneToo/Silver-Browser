@@ -302,6 +302,8 @@ pub(crate) enum Material {
     Secret(Vec<u8>),
     /// An RSA public key: its modulus and exponent, big-endian.
     RsaPublic { n: Vec<u8>, e: Vec<u8> },
+    /// An RSA private key's parts, overwritten as they go.
+    RsaPrivate(Box<native::RsaPrivateParts>),
 }
 
 impl Drop for Material {
@@ -421,7 +423,7 @@ fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
         let key = &pool[at];
         native::rsa_sign_pkcs1(key, hash, digest.as_ref())
             .ok()
-            .map(|signature| (signature, key.public()))
+            .map(|signature| (signature, key.parts()))
     }) else {
         // The digest does not fit the key: nothing was signed.
         return;
@@ -471,6 +473,53 @@ fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
         verify(&mut keys, other),
         Ok(Outcome::Bool(false)),
         "{bits} bits, {name}: another message"
+    );
+    // The private key through the page's calls, on its signing route: the
+    // library's own bytes (PKCS #1 v1.5's signatures are deterministic),
+    // or, where the digest does not fit, the same refusal.
+    let private = run(
+        &mut keys,
+        Call::ImportKey {
+            format: "jwk".into(),
+            key_data: Value::Dict(
+                [
+                    ("kty", Value::Str("RSA".into())),
+                    ("n", member(&parts.n)),
+                    ("e", member(&parts.e)),
+                    ("d", member(&parts.d)),
+                    ("p", member(&parts.p)),
+                    ("q", member(&parts.q)),
+                    ("dp", member(&parts.dp)),
+                    ("dq", member(&parts.dq)),
+                    ("qi", member(&parts.qi)),
+                ]
+                .into_iter()
+                .map(|(n, v)| (n.to_owned(), v))
+                .collect(),
+            ),
+            algorithm: Value::Dict(vec![
+                ("name".into(), Value::Str("RSASSA-PKCS1-v1_5".into())),
+                ("hash".into(), Value::Str(name.into())),
+            ]),
+            extractable: false,
+            usages: vec![Usage::Sign],
+        },
+    );
+    let Ok(Outcome::Key(private)) = private else {
+        panic!("{bits} bits: the library's private key imports: {private:?}");
+    };
+    let signed = run(
+        &mut keys,
+        Call::Sign {
+            algorithm: Value::Str("RSASSA-PKCS1-v1_5".into()),
+            key: private.id,
+            data: message.to_vec(),
+        },
+    );
+    assert_eq!(
+        signed,
+        Ok(Outcome::Bytes(signature)),
+        "{bits} bits, {name}: the page's signature is the library's"
     );
 }
 

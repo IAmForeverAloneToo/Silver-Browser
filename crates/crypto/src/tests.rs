@@ -632,3 +632,558 @@ fn a_signature_the_library_made_always_verifies() {
         }
     }
 }
+
+fn rsa_gen(bits: u32, e: &[u8]) -> Value {
+    dict(&[
+        ("name", s("RSASSA-PKCS1-v1_5")),
+        ("modulusLength", Value::Num(f64::from(bits))),
+        ("publicExponent", Value::Bytes(e.to_vec())),
+        ("hash", s("SHA-256")),
+    ])
+}
+
+fn generate_pair(keys: &mut Keys, bits: u32, e: &[u8], hash: &str) -> (KeyInfo, KeyInfo) {
+    let mut algorithm = rsa_gen(bits, e);
+    if let Value::Dict(members) = &mut algorithm {
+        members[3].1 = s(hash);
+    }
+    match run(
+        keys,
+        Call::GenerateKey {
+            algorithm,
+            extractable: true,
+            usages: vec![Usage::Sign, Usage::Verify],
+        },
+    ) {
+        Ok(Outcome::Pair(public, private)) => (public, private),
+        other => panic!("{bits} {hash}: {other:?}"),
+    }
+}
+
+fn sign_with(keys: &mut Keys, key: u32, hash: &str, data: &[u8]) -> Result<Outcome, Error> {
+    let _ = hash;
+    run(
+        keys,
+        Call::Sign {
+            algorithm: s("RSASSA-PKCS1-v1_5"),
+            key,
+            data: data.to_vec(),
+        },
+    )
+}
+
+fn verify_with(
+    keys: &mut Keys,
+    key: u32,
+    signature: Vec<u8>,
+    data: &[u8],
+) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::Verify {
+            algorithm: s("RSASSA-PKCS1-v1_5"),
+            key,
+            signature,
+            data: data.to_vec(),
+        },
+    )
+}
+
+/// generateKey's errors in the reference's order (probed, Chrome 157):
+/// the usages' kinds, the modulus, the exponent, the generation (none
+/// under 512 bits, an OperationError), then a private key with no usage.
+#[test]
+fn rsa_generation_refuses_as_the_reference_does() {
+    let mut keys = Keys::default();
+    let generate = |keys: &mut Keys, bits, e: &[u8], usages: Vec<Usage>| {
+        run(
+            keys,
+            Call::GenerateKey {
+                algorithm: rsa_gen(bits, e),
+                extractable: true,
+                usages,
+            },
+        )
+    };
+    let e = [1, 0, 1];
+    let modulus =
+        "OperationError: The modulus length must be a multiple of 8 bits and >= 256 and <= 8192";
+    assert_eq!(
+        error(generate(
+            &mut keys,
+            1024,
+            &e,
+            vec![Usage::Sign, Usage::Encrypt]
+        )),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    assert_eq!(error(generate(&mut keys, 100, &e, vec![])), modulus);
+    for bits in [248, 1023, 8200] {
+        assert_eq!(
+            error(generate(&mut keys, bits, &e, vec![Usage::Sign])),
+            modulus,
+            "{bits}"
+        );
+    }
+    let exponent = "OperationError: The \"publicExponent\" must be either 3 or 65537";
+    assert_eq!(
+        error(generate(&mut keys, 1024, &[17], vec![Usage::Verify])),
+        exponent
+    );
+    assert_eq!(
+        error(generate(&mut keys, 1024, &[1, 0, 0, 1], vec![Usage::Sign])),
+        exponent
+    );
+    assert_eq!(
+        error(generate(&mut keys, 100, &[17], vec![Usage::Sign])),
+        modulus
+    );
+    for bits in [256, 264, 504] {
+        assert_eq!(
+            error(generate(&mut keys, bits, &e, vec![Usage::Verify])),
+            "OperationError: ",
+            "{bits}"
+        );
+    }
+    assert_eq!(
+        error(generate(&mut keys, 1024, &e, vec![Usage::Verify])),
+        "SyntaxError: Usages cannot be empty when creating a key."
+    );
+    // A pair: the public key extractable whatever was asked, each with
+    // its own usages; an exponent's leading zeros gone.
+    let Ok(Outcome::Pair(public, private)) = run(
+        &mut keys,
+        Call::GenerateKey {
+            algorithm: rsa_gen(512, &[0, 0, 3]),
+            extractable: false,
+            usages: vec![Usage::Sign],
+        },
+    ) else {
+        panic!("a pair");
+    };
+    assert_eq!(
+        (public.kind, public.extractable, public.usages.clone()),
+        (KeyType::Public, true, vec![])
+    );
+    assert_eq!(
+        (private.kind, private.extractable, private.usages.clone()),
+        (KeyType::Private, false, vec![Usage::Sign])
+    );
+    assert_eq!(
+        private.algorithm,
+        vec![
+            ("name", AlgorithmValue::Str("RSASSA-PKCS1-v1_5".into())),
+            ("hash", AlgorithmValue::Named("SHA-256".into())),
+            ("modulusLength", AlgorithmValue::Num(512)),
+            ("publicExponent", AlgorithmValue::Bytes(vec![3])),
+        ]
+    );
+    assert_eq!(public.algorithm, private.algorithm);
+}
+
+/// Signing's route: aws-lc-rs for SHA-256, SHA-384 and SHA-512 at 2048 to
+/// 8192 bits; SHA-1 and every other size, the library.
+#[test]
+fn pkcs1_signing_is_routed_by_the_safe_apis_ranges() {
+    use crate::algorithms::pkcs1_sign_route as route;
+    for hash in ["SHA-256", "SHA-384", "SHA-512"] {
+        assert!(
+            route(hash, 2047).is_none() && route(hash, 2048).is_some(),
+            "{hash} at 2048"
+        );
+        assert!(
+            route(hash, 8192).is_some() && route(hash, 8193).is_none(),
+            "{hash} at 8192"
+        );
+    }
+    assert!(route("SHA-1", 2048).is_none() && route("SHA-1", 4096).is_none());
+}
+
+/// Keys of each side of each range, generated on their route, sign on
+/// theirs and verify on the public key's: true, and a changed message
+/// false; a digest too long for the key an OperationError (the
+/// reference's, at 512 bits with SHA-384).
+#[test]
+fn generated_rsa_keys_sign_and_verify_at_every_size() {
+    let mut keys = Keys::default();
+    for (bits, e, hashes) in [
+        (512, &[3u8][..], &["SHA-1", "SHA-256"][..]),
+        (1016, &[1, 0, 1], &["SHA-1", "SHA-384", "SHA-512"]),
+        (
+            2048,
+            &[1, 0, 1],
+            &["SHA-1", "SHA-256", "SHA-384", "SHA-512"],
+        ),
+        (2048, &[3], &["SHA-256"]),
+        (2056, &[1, 0, 1], &["SHA-256", "SHA-512"]),
+    ] {
+        for hash in hashes {
+            let (public, private) = generate_pair(&mut keys, bits, e, hash);
+            let signature = bytes(sign_with(&mut keys, private.id, hash, b"sign me"));
+            // The library makes a key of the size asked rounded down to a
+            // multiple of 128 bits, and says so, as the reference does
+            // (probed: 1016 makes 896, 2040 makes 1920, 3000 makes 2944).
+            let made = bits / 128 * 128;
+            assert_eq!(signature.len() as u32 * 8, made, "{bits} {hash}");
+            assert!(
+                private
+                    .algorithm
+                    .contains(&("modulusLength", AlgorithmValue::Num(made))),
+                "{bits} {hash}"
+            );
+            assert_eq!(
+                verify_with(&mut keys, public.id, signature.clone(), b"sign me"),
+                Ok(Outcome::Bool(true)),
+                "{bits} {hash}"
+            );
+            assert_eq!(
+                verify_with(&mut keys, public.id, signature, b"sign me too"),
+                Ok(Outcome::Bool(false)),
+                "{bits} {hash} changed"
+            );
+        }
+    }
+    let (_, private) = generate_pair(&mut keys, 512, &[1, 0, 1], "SHA-384");
+    assert_eq!(
+        error(sign_with(&mut keys, private.id, "SHA-384", b"x")),
+        "OperationError: "
+    );
+}
+
+/// PKCS #1 v1.5's signatures are deterministic: inside aws-lc-rs's range
+/// its signature and the library's are the same bytes.
+#[test]
+fn the_safe_and_native_signatures_are_the_same_bytes() {
+    let key = crate::native::rsa_generate(2048, 65537).unwrap();
+    let parts = key.parts();
+    let pair = crate::algorithms::safe_key_pair_for_tests(&parts);
+    for (hash, encoding) in [
+        ("SHA-256", &aws_lc_rs::signature::RSA_PKCS1_SHA256),
+        ("SHA-512", &aws_lc_rs::signature::RSA_PKCS1_SHA512),
+    ] {
+        let mut safe = vec![0u8; pair.public_modulus_len()];
+        pair.sign(
+            encoding,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            b"same",
+            &mut safe,
+        )
+        .unwrap();
+        let digest = aws_lc_rs::digest::digest(crate::algorithms::digest_algorithm(hash), b"same");
+        let native_hash = if hash == "SHA-256" {
+            crate::native::Hash::Sha256
+        } else {
+            crate::native::Hash::Sha512
+        };
+        let native = crate::native::rsa_sign_pkcs1(&key, native_hash, digest.as_ref()).unwrap();
+        assert_eq!(safe, native, "{hash}");
+    }
+}
+
+/// Two keys too small to make through Web Crypto (made once by a script,
+/// for the wrapper's length forms): n, e, d, p, q, dp, dq, qi.
+const TINY: [[&str; 8]; 2] = [
+    // 128 bits: every length of the PKCS #8 in DER's short form.
+    [
+        "946e350f1194868dd058b00ee0ddb405",
+        "010001",
+        "4adc0e5c8c34496ba5fe54835458f25d",
+        "c506cd2515531ebb",
+        "c0dbb8ffccd32c3f",
+        "3ceae06cd1ce1457",
+        "5b69ca8eb52f8351",
+        "44b564f6f0e054d1",
+    ],
+    // 256 bits: its PKCS #1 in the one-byte long form.
+    [
+        "8aa962335b2e9ae73af9eff6928abcca955cc68af8d5bbd89f3f8997dec045dd",
+        "010001",
+        "0f40ac9dab9507d311a8b69dafe6f4f7465687d2e73593db70ba38622101ca5d",
+        "c36c94e454ad7fafef6bac95876604f3",
+        "b5a48ca691ac9e4691041563734d7def",
+        "5d8ab9f2597dfae2b20dae3c9ce4fe75",
+        "1fc55b509b344d2edc98914126decc03",
+        "63f6fb4de0825d333a600921e407fd37",
+    ],
+];
+
+fn tiny(at: usize) -> crate::native::RsaPrivateParts {
+    let [n, e, d, p, q, dp, dq, qi] = TINY[at].map(hex);
+    crate::native::RsaPrivateParts {
+        n,
+        e,
+        d,
+        p,
+        q,
+        dp,
+        dq,
+        qi,
+    }
+}
+
+/// The PKCS #8 wrapper written here (the lead's ruling of 2026-11-23):
+/// byte for byte aws-lc-rs's inside its range; outside it, read back by
+/// the library to the same parts, in each of DER's length forms.
+#[test]
+fn the_pkcs8_wrapper_is_the_safe_apis_and_reads_back() {
+    use crate::algorithms::pkcs8_wrap;
+    use crate::native::{
+        rsa_generate, rsa_private_from_parts, rsa_private_from_pkcs8, rsa_private_pkcs1,
+    };
+    for bits in [2048, 3072] {
+        let parts = rsa_generate(bits, 65537).unwrap().parts();
+        let pair = crate::algorithms::safe_key_pair_for_tests(&parts);
+        let theirs =
+            aws_lc_rs::encoding::AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&pair).unwrap();
+        let key = rsa_private_from_parts(&parts).unwrap();
+        let ours = pkcs8_wrap(&rsa_private_pkcs1(&key).unwrap());
+        assert_eq!(ours, theirs.as_ref(), "{bits} bits");
+    }
+    let mut forms = Vec::new();
+    let generated = [512, 1024, 1032, 2040].map(|bits| rsa_generate(bits, 65537).unwrap().parts());
+    for parts in [tiny(0), tiny(1)].into_iter().chain(generated) {
+        let key = rsa_private_from_parts(&parts).unwrap();
+        let wrapped = pkcs8_wrap(&rsa_private_pkcs1(&key).unwrap());
+        forms.push(wrapped[1]);
+        let back = rsa_private_from_pkcs8(&wrapped).unwrap().parts();
+        assert_eq!(
+            back,
+            parts,
+            "{} bits",
+            crate::algorithms::bit_length_for_tests(&parts.n)
+        );
+    }
+    // The outer length's forms seen: short, one byte long, two bytes long.
+    assert!(
+        forms[0] < 0x80 && forms[1] == 0x81 && forms[2] == 0x82,
+        "{forms:x?}"
+    );
+}
+
+/// A private key's PKCS #8 and JWK, as the reference has them: exported,
+/// imported again, still signing what the public key verifies; its
+/// errors the reference's.
+#[test]
+fn rsa_private_keys_export_and_import_as_the_reference_does() {
+    let mut keys = Keys::default();
+    for bits in [1024, 2048] {
+        let (public, private) = generate_pair(&mut keys, bits, &[1, 0, 1], "SHA-256");
+        let pkcs8 = bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "pkcs8".into(),
+                key: private.id,
+            },
+        ));
+        let alg = dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]);
+        let import = |keys: &mut Keys, format: &str, data: Value, usages: Vec<Usage>| {
+            run(
+                keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: data,
+                    algorithm: alg.clone(),
+                    extractable: true,
+                    usages,
+                },
+            )
+        };
+        let again = key(import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(pkcs8.clone()),
+            vec![Usage::Sign],
+        ));
+        assert_eq!(
+            (again.kind, again.algorithm.clone()),
+            (KeyType::Private, private.algorithm.clone())
+        );
+        let signature = bytes(sign_with(&mut keys, again.id, "SHA-256", b"again"));
+        assert_eq!(
+            verify_with(&mut keys, public.id, signature, b"again"),
+            Ok(Outcome::Bool(true))
+        );
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "pkcs8",
+                Value::Bytes(pkcs8.clone()),
+                vec![Usage::Verify]
+            )),
+            "SyntaxError: Cannot create a key using the specified key usages."
+        );
+        let mut trailing = pkcs8.clone();
+        trailing.push(0);
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "pkcs8",
+                Value::Bytes(trailing),
+                vec![Usage::Sign]
+            )),
+            "DataError: "
+        );
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "pkcs8",
+                Value::Bytes(vec![48, 3, 2, 1, 0]),
+                vec![Usage::Sign]
+            )),
+            "DataError: "
+        );
+        // The JWK: its members in the reference's order, and back.
+        let Ok(Outcome::Jwk(members)) = run(
+            &mut keys,
+            Call::ExportKey {
+                format: "jwk".into(),
+                key: private.id,
+            },
+        ) else {
+            panic!("a JWK");
+        };
+        let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "alg", "d", "dp", "dq", "e", "ext", "key_ops", "kty", "n", "p", "q", "qi"
+            ]
+        );
+        let as_value = |members: &[(String, JwkValue)], without: &[&str]| {
+            Value::Dict(
+                members
+                    .iter()
+                    .filter(|(n, _)| !without.contains(&n.as_str()))
+                    .map(|(n, v)| {
+                        let v = match v {
+                            JwkValue::Str(t) => Value::Str(t.clone()),
+                            JwkValue::Bool(b) => Value::Bool(*b),
+                            JwkValue::List(l) => {
+                                Value::List(l.iter().map(|t| Value::Str(t.clone())).collect())
+                            }
+                        };
+                        (n.clone(), v)
+                    })
+                    .collect(),
+            )
+        };
+        let jwk_again = key(import(
+            &mut keys,
+            "jwk",
+            as_value(&members, &[]),
+            vec![Usage::Sign],
+        ));
+        let signature = bytes(sign_with(&mut keys, jwk_again.id, "SHA-256", b"jwk"));
+        assert_eq!(
+            verify_with(&mut keys, public.id, signature, b"jwk"),
+            Ok(Outcome::Bool(true))
+        );
+        for missing in ["p", "q", "dp", "dq", "qi", "n", "e"] {
+            assert_eq!(
+                error(import(
+                    &mut keys,
+                    "jwk",
+                    as_value(&members, &[missing]),
+                    vec![Usage::Sign]
+                )),
+                format!("DataError: The required JWK member \"{missing}\" was missing")
+            );
+        }
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "jwk",
+                as_value(&members, &["p", "q", "dp", "dq", "qi"]),
+                vec![Usage::Sign]
+            )),
+            "DataError: The required JWK member \"p\" was missing"
+        );
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "jwk",
+                as_value(&members, &["d"]),
+                vec![Usage::Sign]
+            )),
+            "SyntaxError: Cannot create a key using the specified key usages."
+        );
+        let mut swapped = members.clone();
+        let q = swapped.iter().find(|(n, _)| n == "q").unwrap().1.clone();
+        swapped.iter_mut().find(|(n, _)| n == "p").unwrap().1 = q;
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "jwk",
+                as_value(&swapped, &[]),
+                vec![Usage::Sign]
+            )),
+            "DataError: "
+        );
+        // Each key exports in its own formats alone.
+        let export = |keys: &mut Keys, format: &str, id| {
+            run(
+                keys,
+                Call::ExportKey {
+                    format: format.into(),
+                    key: id,
+                },
+            )
+        };
+        let wrong = "InvalidAccessError: The key is not of the expected type";
+        assert_eq!(error(export(&mut keys, "spki", private.id)), wrong);
+        assert_eq!(error(export(&mut keys, "pkcs8", public.id)), wrong);
+        assert_eq!(
+            error(export(&mut keys, "raw", private.id)),
+            "NotSupportedError: Unsupported export key format for algorithm"
+        );
+    }
+}
+
+/// What the library refuses as an RSA private key, or fails to write, is
+/// the reference's error: an EC key's PKCS #8 (a throwaway P-256 key made
+/// for this test) a DataError; a PKCS #1 the library fails to write an
+/// OperationError. A private key's parts never print. And a generated
+/// key's exponent is the one asked for, on either route.
+#[test]
+fn rsa_private_keys_refuse_and_keep_as_they_should() {
+    let mut keys = Keys::default();
+    let ec = hex(
+        "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420cc0f467d358f58ca1313c9df3efa8c715bc6c5bce6f0c682308c1936aa71c83ba14403420004f215d866e57ee46881315dea9a3445a4d607105e54b579e7f0f21b7e58d508edf43efe7ccf33ed3fea09fe0f81c3defb7930e2a6281ec5f04961a6885560c8fb",
+    );
+    let out = run(
+        &mut keys,
+        Call::ImportKey {
+            format: "pkcs8".into(),
+            key_data: Value::Bytes(ec),
+            algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]),
+            extractable: true,
+            usages: vec![Usage::Sign],
+        },
+    );
+    assert_eq!(error(out), "DataError: ");
+    let (_, private) = generate_pair(&mut keys, 1024, &[1, 0, 1], "SHA-256");
+    let exported = crate::native::tests::failing("RsaToBytes", || {
+        run(
+            &mut keys,
+            Call::ExportKey {
+                format: "pkcs8".into(),
+                key: private.id,
+            },
+        )
+    });
+    assert_eq!(error(exported), "OperationError: ");
+    let parts = crate::native::rsa_generate(512, 3).unwrap().parts();
+    assert_eq!(format!("{parts:?}"), "RsaPrivateParts(..)");
+    assert_eq!(
+        format!("{:?}", Material::RsaPrivate(Box::new(parts))),
+        "Material(..)"
+    );
+    for (bits, e) in [(2048, vec![3u8]), (2048, vec![1, 0, 1]), (1024, vec![3])] {
+        let (public, private) = generate_pair(&mut keys, bits, &e, "SHA-256");
+        let want = ("publicExponent", AlgorithmValue::Bytes(e.clone()));
+        assert!(
+            public.algorithm.contains(&want) && private.algorithm.contains(&want),
+            "{bits} {e:?}"
+        );
+    }
+}

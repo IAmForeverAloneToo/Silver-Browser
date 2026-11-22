@@ -112,3 +112,45 @@ fn an_insecure_context_has_none_of_it() {
         ["false undefined false undefined undefined function"]
     );
 }
+
+/// An RSA key pair through a page's own calls (G255 part 2b): made at a
+/// size outside aws-lc-rs's range and inside it, each signing what its
+/// public key verifies, its private key exported and imported again;
+/// each answer what the reference gave (Chrome 157, probed 2026-11-23).
+#[test]
+fn a_page_makes_an_rsa_pair_signs_verifies_and_moves_its_keys() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const alg = {name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256'};\
+        const data = new TextEncoder().encode('pair');\
+        for (const bits of [1016, 2048]) {\
+          const pair = await s.generateKey({...alg, modulusLength: bits, publicExponent: new Uint8Array([1, 0, 1])}, true, ['sign', 'verify']);\
+          const sig = await s.sign(alg, pair.privateKey, data);\
+          const pk8 = await s.exportKey('pkcs8', pair.privateKey);\
+          const again = await s.importKey('pkcs8', pk8, alg, false, ['sign']);\
+          const sig2 = await s.sign(alg, again, data);\
+          const jwk = await s.exportKey('jwk', pair.privateKey);\
+          out.push([Object.prototype.toString.call(pair), Object.keys(pair).join(), pair.publicKey.type, pair.privateKey.type,\
+            pair.publicKey.usages.join(), pair.privateKey.usages.join(), pair.privateKey.algorithm.modulusLength, sig.byteLength,\
+            await s.verify(alg, pair.publicKey, sig, data), await s.verify(alg, pair.publicKey, sig2, data),\
+            again.extractable, Object.keys(jwk).join()].join(' '));\
+        }\
+        const err = async (f) => { try { await f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };\
+        const pair = await s.generateKey({...alg, modulusLength: 512, publicExponent: new Uint8Array([3])}, true, ['sign', 'verify']);\
+        out.push(await err(() => s.exportKey('spki', pair.privateKey)));\
+        out.push(await err(() => s.sign(alg, pair.publicKey, data)));\
+        out.push(await err(() => s.generateKey({...alg, modulusLength: 1023, publicExponent: new Uint8Array([1, 0, 1])}, true, ['sign'])));\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 5);
+    assert_eq!(
+        lines,
+        [
+            "[object Object] privateKey,publicKey public private verify sign 896 112 true true false alg,d,dp,dq,e,ext,key_ops,kty,n,p,q,qi",
+            "[object Object] privateKey,publicKey public private verify sign 2048 256 true true false alg,d,dp,dq,e,ext,key_ops,kty,n,p,q,qi",
+            "InvalidAccessError: The key is not of the expected type",
+            "InvalidAccessError: key.usages does not permit this operation",
+            "OperationError: The modulus length must be a multiple of 8 bits and >= 256 and <= 8192",
+        ]
+    );
+}

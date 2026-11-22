@@ -514,7 +514,7 @@ client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 19 blocks over aws-lc's C interface where aws-lc-rs has
+ruling), with 27 blocks over aws-lc's C interface where aws-lc-rs has
 none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
 cipher context made and freed, the cipher chosen by the key's length,
 the seal and the open, each length a script controls checked in Rust
@@ -527,13 +527,22 @@ checked by the library as it is imported (`RSA_check_key`: refused
 there, a DataError, so that no verification of it is answered false),
 and RSASSA-PKCS1-v1_5's verification of a key outside aws-lc-rs's
 ranges (`RSA_verify` on the checked key; the routing a function whose
-boundaries a test pins); and, built for the tests and the fuzz targets
-alone until RSA's private keys are wired, seven for an RSA key's
-generation and signing (`BN_new`, `BN_set_u64`, `BN_free`,
-`RSA_new`, `RSA_generate_key_ex`, `RSA_size`, `RSA_sign`), with
-which a test and the fuzz target `crypto_import` hold that a signature
-the library made, with a key of any size, verifies true on either
-route; no pointer outlives its call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
+boundaries a test pins); RSA's private keys outside aws-lc-rs's range
+(2048 to 8192 bits) or its exponent (65537): their generation
+(`BN_new`, `BN_set_u64`, `RSA_new`, `RSA_generate_key_ex`), a key made
+from its parts (`BN_bin2bn`, `RSA_new_private_key`, which checks it),
+a PKCS #8 parsed (`EVP_parse_private_key` over a `CBS` of the caller's
+bytes, nothing after it, which checks the key; `EVP_PKEY_get1_RSA`,
+null for a key of another kind), its parts read (`RSA_get0_*`), its PKCS #1
+written (`RSA_private_key_to_bytes`, the library's buffer copied,
+cleansed and freed) and wrapped in a PKCS #8 written here, never read;
+and RSASSA-PKCS1-v1_5's signing (`RSA_size`, `RSA_sign`). A private
+key is kept as its parts, overwritten as they go and never printed.
+The tests and the fuzz target `crypto_rsa_roundtrip` hold that a
+signature the library made, with a key of any size, verifies true on
+either route and is, byte for byte, what the page's own signing makes;
+`crypto_import` parses any bytes as a PKCS #8 and a private JWK. No
+pointer outlives its call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
 and allows it there alone, and the same test names and counts them.
 
 **Under it**: of the 414 registry packages `Cargo.lock` holds (every

@@ -234,9 +234,21 @@ ranges (1024 to 8192 bits, 2048 to 8192 for SHA-384), the library's
 `RSA_verify` outside them, from 512 bits to 16384 as the reference
 verifies (probed: Chrome 157 imports and verifies an openssl key of
 16384 bits); a key the library refuses is refused as it is imported.
-Next: RSA generation over the reference's range (256 to 8192 bits, a
-multiple of 8, e 3 or 65537; Chrome's own generation fails under 512),
-and RSA's private keys and their operations, routed the same way. Each C object freed by its wrapper on
+RSA's key pairs (part 2b-2): generated over the reference's range
+(256 to 8192 bits, a multiple of 8, e 3 or 65537, its errors in its
+order; none under 512 bits, an OperationError; the size made rounded
+down to a multiple of 128 bits and reported so, as Chrome does),
+aws-lc-rs's for 2048, 3072, 4096 and 8192 bits at 65537, the library's
+for the rest; private keys as PKCS #8 and JWK, imported and exported
+(the library parses every PKCS #8, aws-lc-rs's parse required too
+inside its range; outside it, the PKCS #8 written here around the
+library's PKCS #1, byte for byte aws-lc-rs's inside the range and read
+back to the same parts outside it, in each of DER's length forms); and
+RSASSA-PKCS1-v1_5's signing, aws-lc-rs's for SHA-256 to SHA-512 at 2048
+to 8192 bits, the library's for the rest (SHA-1 among them: aws-lc-rs
+signs none). Next: RSA-PSS, then RSA-OAEP (aws-lc-rs's range alone:
+under 2048 bits an OperationError, a known gap by the lead's ruling),
+then Wycheproof's RSA vectors. Each C object freed by its wrapper on
 every path, every return code checked, every script-controlled length
 checked first, the tag checked by the library.
 - The bindings a shell (`SubtleCrypto`, `CryptoKey`), `crypto.subtle` in

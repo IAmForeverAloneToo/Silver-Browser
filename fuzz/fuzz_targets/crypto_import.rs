@@ -1,9 +1,8 @@
 //! Web Crypto's key import (G255) on any bytes: as raw key data, as an
-//! SPKI, and as a JWK whose members are cut from the bytes, for each
-//! algorithm the store imports. It never panics; and a key imported
+//! SPKI, as a PKCS #8, and as a JWK whose members are cut from the bytes,
+//! for each algorithm the store imports, RSA's private keys among them. It never panics; and a key imported
 //! extractable exports, in the format it came in, to what imports again
-//! as the same key; an RSA key verifies any bytes to true or false, and a
-//! signature the library made, with a key of any size, true.
+//! as the same key; an RSA key verifies any bytes to true or false.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -17,6 +16,8 @@ const ALGORITHMS: &[(&str, Option<&str>, &[Usage])] = &[
     ("HKDF", None, &[Usage::DeriveBits]),
     ("PBKDF2", None, &[Usage::DeriveBits]),
     ("RSASSA-PKCS1-v1_5", Some("SHA-1"), &[Usage::Verify]),
+    // A private key: as PKCS #8, parsed by the library (G255 part 2b).
+    ("RSASSA-PKCS1-v1_5", Some("SHA-256"), &[Usage::Sign]),
 ];
 
 fn algorithm(name: &str, hash: Option<&str>) -> Value {
@@ -29,7 +30,9 @@ fn algorithm(name: &str, hash: Option<&str>) -> Value {
 
 /// A JWK whose members are the bytes' pieces, cut at each 0xff, as text.
 fn jwk(bytes: &[u8]) -> Value {
-    const NAMES: &[&str] = &["kty", "k", "n", "e", "alg", "use", "d"];
+    const NAMES: &[&str] = &[
+        "kty", "k", "n", "e", "alg", "use", "d", "p", "q", "dp", "dq", "qi",
+    ];
     let pieces: Vec<String> = bytes
         .split(|&b| b == 0xff)
         .map(|p| String::from_utf8_lossy(p).into_owned())
@@ -47,11 +50,8 @@ fuzz_target!(|data: &[u8]| {
     let Some((&choice, rest)) = data.split_first() else {
         return;
     };
-    // A signature the library made verifies true, whatever the key's size
-    // (G255, the lead's addition to ruling (a)).
-    crypto::fuzzing::rsa_signed_natively_verifies(choice, rest);
     let (name, hash, usages) = ALGORITHMS[usize::from(choice) % ALGORITHMS.len()];
-    let format = ["raw", "spki", "jwk"][usize::from(choice / 8) % 3];
+    let format = ["raw", "spki", "jwk", "pkcs8"][usize::from(choice / 8) % 4];
     let key_data = if format == "jwk" {
         jwk(rest)
     } else {
@@ -77,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
     // An RSA key that imports always verifies to an answer, on either of
     // its routes (G255, the lead's ruling (a)): never an error, so never
     // a refusal mistaken for a false signature or the other way round.
-    if name.starts_with("RSA") {
+    if name.starts_with("RSA") && usages.contains(&Usage::Verify) {
         let signature = data.iter().rev().take(512).copied().collect();
         let verified = crypto::run(
             &mut keys,

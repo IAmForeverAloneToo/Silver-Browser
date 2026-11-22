@@ -411,6 +411,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "crypto_rsa_roundtrip"
+path = "fuzz_targets/crypto_rsa_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "crypto_import"
 path = "fuzz_targets/crypto_import.rs"
 test = false

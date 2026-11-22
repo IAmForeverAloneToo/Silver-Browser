@@ -158,8 +158,156 @@ fn key_for<'k>(keys: &'k Keys, id: u32, name: &str, usage: Usage) -> Result<&'k 
 fn secret(key: &Key) -> &[u8] {
     match &key.material {
         Material::Secret(bytes) => bytes,
-        Material::RsaPublic { .. } => &[],
+        Material::RsaPublic { .. } | Material::RsaPrivate(_) => &[],
     }
+}
+
+/// The range of key sizes aws-lc-rs's RSA key pairs and signing take
+/// (its `KeyPair`: 2048 to 8192 bits); outside it, the library's calls.
+const SAFE_PRIVATE: std::ops::RangeInclusive<u32> = 2048..=8192;
+
+/// The hash's name as `native` names it.
+fn native_hash(hash: &str) -> native::Hash {
+    match hash {
+        "SHA-1" => native::Hash::Sha1,
+        "SHA-384" => native::Hash::Sha384,
+        "SHA-512" => native::Hash::Sha512,
+        _ => native::Hash::Sha256,
+    }
+}
+
+/// The JWK `alg` of RSASSA-PKCS1-v1_5 with `hash`.
+fn rs_alg(hash: &str) -> &'static str {
+    match hash {
+        "SHA-1" => "RS1",
+        "SHA-384" => "RS384",
+        "SHA-512" => "RS512",
+        _ => "RS256",
+    }
+}
+
+/// RSASSA-PKCS1-v1_5 signing's route for a key of `bits` bits: aws-lc-rs
+/// signs SHA-256, SHA-384 and SHA-512 at 2048 to 8192 bits (its
+/// `RSA_PKCS1_SHA*`, no SHA-1); anything else, the library.
+pub(crate) fn pkcs1_sign_route(
+    hash: &str,
+    bits: u32,
+) -> Option<&'static signature::RsaSignatureEncoding> {
+    let encoding = match hash {
+        "SHA-256" => &signature::RSA_PKCS1_SHA256,
+        "SHA-384" => &signature::RSA_PKCS1_SHA384,
+        "SHA-512" => &signature::RSA_PKCS1_SHA512,
+        _ => return None,
+    };
+    SAFE_PRIVATE.contains(&bits).then_some(encoding)
+}
+
+/// The safe API's key pair of `parts`, for the tests.
+#[cfg(test)]
+pub(crate) fn safe_key_pair_for_tests(parts: &native::RsaPrivateParts) -> rsa::KeyPair {
+    safe_key_pair(parts).unwrap()
+}
+
+/// A modulus's length in bits, for the tests.
+#[cfg(test)]
+pub(crate) fn bit_length_for_tests(n: &[u8]) -> u32 {
+    bit_length(n)
+}
+
+/// aws-lc-rs's key pair of `parts`, for a key inside its range.
+fn safe_key_pair(parts: &native::RsaPrivateParts) -> Result<rsa::KeyPair, Error> {
+    let components = rsa::KeyPairComponents {
+        public_key: rsa::PublicKeyComponents {
+            n: parts.n.as_slice(),
+            e: parts.e.as_slice(),
+        },
+        d: parts.d.as_slice(),
+        p: parts.p.as_slice(),
+        q: parts.q.as_slice(),
+        dP: parts.dp.as_slice(),
+        dQ: parts.dq.as_slice(),
+        qInv: parts.qi.as_slice(),
+    };
+    rsa::KeyPair::from_components(&components).map_err(|_| Error::data(""))
+}
+
+/// RSASSA-PKCS1-v1_5's signature of `data` with the private key `parts`,
+/// on its route.
+fn pkcs1_sign(parts: &native::RsaPrivateParts, hash: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
+    if let Some(encoding) = pkcs1_sign_route(hash, bit_length(&parts.n)) {
+        let pair = safe_key_pair(parts).map_err(|_| Error::operation(""))?;
+        let mut out = vec![0u8; pair.public_modulus_len()];
+        pair.sign(encoding, &rand::SystemRandom::new(), data, &mut out)
+            .map_err(|_| Error::operation(""))?;
+        return Ok(out);
+    }
+    let key = native::rsa_private_from_parts(parts).map_err(|_| Error::operation(""))?;
+    let digest = digest::digest(digest_algorithm(hash), data);
+    native::rsa_sign_pkcs1(&key, native_hash(hash), digest.as_ref())
+        .map_err(|_| Error::operation(""))
+}
+
+/// A PKCS #8 `PrivateKeyInfo` (RFC 5208) around a PKCS #1
+/// `RSAPrivateKey`: version 0, rsaEncryption with NULL parameters, the
+/// key as an OCTET STRING. Written here, never read (the lead's ruling of
+/// 2026-11-23): the library reads every PKCS #8 this crate takes.
+pub(crate) fn pkcs8_wrap(pkcs1: &[u8]) -> Vec<u8> {
+    const HEAD: [u8; 18] = [
+        0x02, 0x01, 0x00, // version 0
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+        0x00, // rsaEncryption, NULL
+    ];
+    let mut body = HEAD.to_vec();
+    body.push(0x04);
+    der_length(&mut body, pkcs1.len());
+    body.extend_from_slice(pkcs1);
+    let mut out = vec![0x30];
+    der_length(&mut out, body.len());
+    out.extend_from_slice(&body);
+    out
+}
+
+/// A DER length, short or long form.
+fn der_length(out: &mut Vec<u8>, len: usize) {
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let bytes: Vec<u8> = len
+            .to_be_bytes()
+            .into_iter()
+            .skip_while(|&b| b == 0)
+            .collect();
+        out.push(0x80 | bytes.len() as u8);
+        out.extend_from_slice(&bytes);
+    }
+}
+
+/// A private key's parts, by the library from a PKCS #8, aws-lc-rs's
+/// own parse required too inside its range.
+fn pkcs8_parts(der: &[u8]) -> Result<native::RsaPrivateParts, Error> {
+    let key = native::rsa_private_from_pkcs8(der).map_err(|_| Error::data(""))?;
+    let parts = key.parts();
+    if SAFE_PRIVATE.contains(&bit_length(&parts.n)) {
+        rsa::KeyPair::from_pkcs8(der).map_err(|_| Error::data(""))?;
+    }
+    Ok(parts)
+}
+
+/// A private key's PKCS #8: aws-lc-rs's inside its range, the library's
+/// PKCS #1 in the wrapper written here outside it.
+fn pkcs8_of(parts: &native::RsaPrivateParts) -> Result<Vec<u8>, Error> {
+    let failed = || Error::operation("");
+    if SAFE_PRIVATE.contains(&bit_length(&parts.n)) {
+        let pair = safe_key_pair(parts).map_err(|_| failed())?;
+        let der = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&pair).map_err(|_| failed())?;
+        return Ok(der.as_ref().to_vec());
+    }
+    let key = native::rsa_private_from_parts(parts).map_err(|_| failed())?;
+    let mut pkcs1 = native::rsa_private_pkcs1(&key).map_err(|_| failed())?;
+    let out = pkcs8_wrap(&pkcs1);
+    pkcs1.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&pkcs1);
+    Ok(out)
 }
 
 pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
@@ -191,6 +339,16 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                     let k = hmac::Key::new(hmac_algorithm(hash), secret(key));
                     Ok(Outcome::Bytes(hmac::sign(&k, &data).as_ref().to_vec()))
                 }
+                KeyAlgorithm::Rsa {
+                    name: "RSASSA-PKCS1-v1_5",
+                    hash,
+                    ..
+                } => match &key.material {
+                    Material::RsaPrivate(parts) => {
+                        Ok(Outcome::Bytes(pkcs1_sign(parts, hash, &data)?))
+                    }
+                    _ => Err(Error::operation("")),
+                },
                 _ => Err(Error::not_supported("Unsupported operation")),
             }
         }
@@ -500,8 +658,101 @@ fn generate(
             };
             Ok(Outcome::Key(keys.insert(key)))
         }
+        "RSASSA-PKCS1-v1_5" => generate_rsa(keys, alg, extractable, usages),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
+}
+
+/// An RSA key pair, in the reference's order of checks (probed): the
+/// usages' kinds, the modulus, the exponent, the generation (the
+/// reference makes no key under 512 bits: an OperationError), then a
+/// private key with no usage.
+fn generate_rsa(
+    keys: &mut Keys,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<Outcome, Error> {
+    let public_allowed = allowed(alg.name, KeyType::Public);
+    let private_allowed = allowed(alg.name, KeyType::Private);
+    if usages
+        .iter()
+        .any(|u| !public_allowed.contains(u) && !private_allowed.contains(u))
+    {
+        return Err(Error::syntax(
+            "Cannot create a key using the specified key usages.",
+        ));
+    }
+    let hash = alg.hash().unwrap_or("SHA-256");
+    let bits = alg.num("modulusLength").unwrap_or(0);
+    if !bits.is_multiple_of(8) || !(256..=8192).contains(&bits) {
+        return Err(Error::operation(
+            "The modulus length must be a multiple of 8 bits and >= 256 and <= 8192",
+        ));
+    }
+    let exponent = strip_zeros(alg.bytes("publicExponent").unwrap_or_default().to_vec());
+    let e: u64 = match exponent.as_slice() {
+        [3] => 3,
+        [1, 0, 1] => 65537,
+        _ => {
+            return Err(Error::operation(
+                "The \"publicExponent\" must be either 3 or 65537",
+            ));
+        }
+    };
+    let parts = if e == 65537 && matches!(bits, 2048 | 3072 | 4096 | 8192) {
+        let size = match bits {
+            2048 => rsa::KeySize::Rsa2048,
+            3072 => rsa::KeySize::Rsa3072,
+            4096 => rsa::KeySize::Rsa4096,
+            _ => rsa::KeySize::Rsa8192,
+        };
+        let pair = rsa::KeyPair::generate(size).map_err(|_| Error::operation(""))?;
+        let der = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&pair)
+            .map_err(|_| Error::operation(""))?;
+        native::rsa_private_from_pkcs8(der.as_ref())
+            .map_err(|_| Error::operation(""))?
+            .parts()
+    } else {
+        native::rsa_generate(bits, e)
+            .map_err(|_| Error::operation(""))?
+            .parts()
+    };
+    let public_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| public_allowed.contains(u))
+        .collect();
+    let private_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| private_allowed.contains(u))
+        .collect();
+    empty_usages(KeyType::Private, &private_usages)?;
+    let algorithm = KeyAlgorithm::Rsa {
+        name: alg.name,
+        hash,
+        modulus_length: bit_length(&parts.n),
+        public_exponent: parts.e.clone(),
+    };
+    let public = Key {
+        kind: KeyType::Public,
+        extractable: true,
+        algorithm: algorithm.clone(),
+        usages: public_usages,
+        material: Material::RsaPublic {
+            n: parts.n.clone(),
+            e: parts.e.clone(),
+        },
+    };
+    let private = Key {
+        kind: KeyType::Private,
+        extractable,
+        algorithm,
+        usages: private_usages,
+        material: Material::RsaPrivate(Box::new(parts)),
+    };
+    Ok(Outcome::Pair(keys.insert(public), keys.insert(private)))
 }
 
 fn import(
@@ -631,19 +882,18 @@ fn import(
                         native::rsa_public_parts(key.as_ref()).map_err(|_| Error::data(""))?;
                     (parts.n, parts.e)
                 }
+                "pkcs8" => {
+                    check_usages(alg.name, KeyType::Private, usages)?;
+                    let parts = pkcs8_parts(&raw()?)?;
+                    return import_private(keys, alg.name, hash, parts, extractable, usages);
+                }
                 "jwk" => {
                     let jwk = jwk()?;
-                    let want = match hash {
-                        "SHA-1" => "RS1",
-                        "SHA-384" => "RS384",
-                        "SHA-512" => "RS512",
-                        _ => "RS256",
-                    };
-                    jwk.check("RSA", Some(want), extractable, usages)?;
+                    jwk.check("RSA", Some(rs_alg(hash)), extractable, usages)?;
                     if jwk.str("d").is_some() {
-                        return Err(Error::not_supported(
-                            "RSASSA-PKCS1-v1_5: a private key's import comes later",
-                        ));
+                        check_usages(alg.name, KeyType::Private, usages)?;
+                        let parts = jwk_private_parts(&jwk)?;
+                        return import_private(keys, alg.name, hash, parts, extractable, usages);
                     }
                     let n = strip_zeros(jwk.bytes("n")?);
                     let e = strip_zeros(jwk.bytes("e")?);
@@ -685,6 +935,56 @@ fn import(
     }
 }
 
+/// A private JWK's parts, in the reference's order of its errors
+/// (probed: `n`, `e`, `d`, then `p`, `q`, `dp`, `dq`, `qi`), the library's
+/// check and, inside its range, aws-lc-rs's required of them.
+fn jwk_private_parts(jwk: &jwk::Jwk<'_>) -> Result<native::RsaPrivateParts, Error> {
+    let mut parts = native::RsaPrivateParts::default();
+    for (name, part) in [
+        ("n", &mut parts.n),
+        ("e", &mut parts.e),
+        ("d", &mut parts.d),
+        ("p", &mut parts.p),
+        ("q", &mut parts.q),
+        ("dp", &mut parts.dp),
+        ("dq", &mut parts.dq),
+        ("qi", &mut parts.qi),
+    ] {
+        *part = strip_zeros(jwk.bytes(name)?);
+    }
+    let key = native::rsa_private_from_parts(&parts).map_err(|_| Error::data(""))?;
+    if SAFE_PRIVATE.contains(&bit_length(&parts.n)) {
+        safe_key_pair(&parts)?;
+    }
+    // The library's own reading of them, leading zeros and all settled.
+    Ok(key.parts())
+}
+
+/// A private key, imported.
+fn import_private(
+    keys: &mut Keys,
+    name: &'static str,
+    hash: &'static str,
+    parts: native::RsaPrivateParts,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<KeyInfo, Error> {
+    empty_usages(KeyType::Private, usages)?;
+    let key = Key {
+        kind: KeyType::Private,
+        extractable,
+        algorithm: KeyAlgorithm::Rsa {
+            name,
+            hash,
+            modulus_length: bit_length(&parts.n),
+            public_exponent: parts.e.clone(),
+        },
+        usages: usages.to_vec(),
+        material: Material::RsaPrivate(Box::new(parts)),
+    };
+    Ok(keys.insert(key))
+}
+
 fn strip_zeros(mut bytes: Vec<u8>) -> Vec<u8> {
     let zeros = bytes.iter().take_while(|&&b| b == 0).count();
     bytes.drain(..zeros);
@@ -701,23 +1001,10 @@ fn bit_length(n: &[u8]) -> u32 {
 /// An RSA public key's PKCS #1 `RSAPublicKey` (RFC 8017 appendix A.1.1),
 /// for aws-lc-rs to read and write as SPKI: written here, never read.
 pub(crate) fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
-    fn length(out: &mut Vec<u8>, len: usize) {
-        if len < 0x80 {
-            out.push(len as u8);
-        } else {
-            let bytes: Vec<u8> = len
-                .to_be_bytes()
-                .into_iter()
-                .skip_while(|&b| b == 0)
-                .collect();
-            out.push(0x80 | bytes.len() as u8);
-            out.extend_from_slice(&bytes);
-        }
-    }
     fn integer(out: &mut Vec<u8>, value: &[u8]) {
         out.push(0x02);
         let pad = value.first().is_some_and(|&b| b & 0x80 != 0);
-        length(out, value.len() + usize::from(pad));
+        der_length(out, value.len() + usize::from(pad));
         if pad {
             out.push(0);
         }
@@ -727,7 +1014,7 @@ pub(crate) fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
     integer(&mut body, n);
     integer(&mut body, e);
     let mut out = vec![0x30];
-    length(&mut out, body.len());
+    der_length(&mut out, body.len());
     out.extend_from_slice(&body);
     out
 }
@@ -774,31 +1061,45 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             }
             _ => Err(unsupported()),
         },
+        (KeyAlgorithm::Rsa { hash, .. }, Material::RsaPrivate(parts)) => match format {
+            "pkcs8" => Ok(Outcome::Bytes(pkcs8_of(parts)?)),
+            "jwk" => Ok(Outcome::Jwk(jwk::exported(
+                vec![
+                    ("alg", JwkValue::Str(rs_alg(hash).into())),
+                    ("d", JwkValue::Str(jwk::encode(&parts.d))),
+                    ("dp", JwkValue::Str(jwk::encode(&parts.dp))),
+                    ("dq", JwkValue::Str(jwk::encode(&parts.dq))),
+                    ("e", JwkValue::Str(jwk::encode(&parts.e))),
+                    ("kty", JwkValue::Str("RSA".into())),
+                    ("n", JwkValue::Str(jwk::encode(&parts.n))),
+                    ("p", JwkValue::Str(jwk::encode(&parts.p))),
+                    ("q", JwkValue::Str(jwk::encode(&parts.q))),
+                    ("qi", JwkValue::Str(jwk::encode(&parts.qi))),
+                ],
+                key.extractable,
+                &key.usages,
+            ))),
+            "spki" => Err(Error::invalid_access("The key is not of the expected type")),
+            _ => Err(unsupported()),
+        },
         (KeyAlgorithm::Rsa { hash, .. }, Material::RsaPublic { n, e }) => match format {
+            "pkcs8" => Err(Error::invalid_access("The key is not of the expected type")),
             "spki" => {
                 let key = rsa::PublicKey::from_der(&rsa_public_key_der(n, e))
                     .map_err(|_| Error::operation(""))?;
                 let der = key.as_der().map_err(|_| Error::operation(""))?;
                 Ok(Outcome::Bytes(der.as_ref().to_vec()))
             }
-            "jwk" => {
-                let alg = match *hash {
-                    "SHA-1" => "RS1",
-                    "SHA-384" => "RS384",
-                    "SHA-512" => "RS512",
-                    _ => "RS256",
-                };
-                Ok(Outcome::Jwk(jwk::exported(
-                    vec![
-                        ("alg", JwkValue::Str(alg.into())),
-                        ("e", JwkValue::Str(jwk::encode(e))),
-                        ("kty", JwkValue::Str("RSA".into())),
-                        ("n", JwkValue::Str(jwk::encode(n))),
-                    ],
-                    key.extractable,
-                    &key.usages,
-                )))
-            }
+            "jwk" => Ok(Outcome::Jwk(jwk::exported(
+                vec![
+                    ("alg", JwkValue::Str(rs_alg(hash).into())),
+                    ("e", JwkValue::Str(jwk::encode(e))),
+                    ("kty", JwkValue::Str("RSA".into())),
+                    ("n", JwkValue::Str(jwk::encode(n))),
+                ],
+                key.extractable,
+                &key.usages,
+            ))),
             _ => Err(unsupported()),
         },
         _ => Err(unsupported()),

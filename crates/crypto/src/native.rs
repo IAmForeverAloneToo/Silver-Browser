@@ -1,19 +1,19 @@
 //! The few calls into aws-lc's C library that aws-lc-rs's safe API lacks
 //! (G255; the lead's ruling of 2026-11-23): AES-GCM with any IV and tag
-//! length the reference allows, an RSA public key's parts and check, and
-//! RSASSA-PKCS1-v1_5's verification outside aws-lc-rs's ranges; RSA's
-//! generation and private keys come next. Every unsafe call of the crate
-//! is here.
+//! length the reference allows; RSA's keys (generated, made from their
+//! parts, a PKCS #8 parsed, their parts and PKCS #1 read, each checked)
+//! and RSASSA-PKCS1-v1_5's signing and verification outside aws-lc-rs's
+//! ranges. Every unsafe call of the crate is here.
 //!
 //! The rules this module keeps: each C object is owned by a wrapper that
-//! frees it on every path (`Context`, `Rsa`, `Bignum`); every return code
+//! frees it on every path (`Context`, `Rsa`, `Bignum`, `Pkey`); a private
+//! key's parts and PKCS #1 are overwritten as they go; every return code
 //! is checked, a failure an `Err(Failed)` and never a panic across the
 //! boundary; every length a script controls is checked in Rust before
 //! the call that takes it (against `c_int`'s range, and, for an IV and a
 //! tag, against what the reference allows, so that its errors come
 //! first); a tag is checked by the library (`EVP_DecryptFinal_ex`,
-//! constant time), never by a comparison here. (`Context` and `Rsa` are
-//! its wrappers.)
+//! constant time), never by a comparison here.
 
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -380,7 +380,11 @@ fn rsa_public_key(der: &[u8]) -> Result<Rsa, Failed> {
     if rsa.is_null() {
         return Err(Failed);
     }
-    let rsa = Rsa(rsa);
+    checked(Rsa(rsa))
+}
+
+/// `rsa`, if the library's check of it (`RSA_check_key`) passes.
+fn checked(rsa: Rsa) -> Result<Rsa, Failed> {
     // SAFETY: `rsa.0` is a live key, only read.
     ok("RsaCheck", unsafe { sys::RSA_check_key(rsa.0) })?;
     Ok(rsa)
@@ -404,10 +408,8 @@ fn nid(hash: Hash) -> c_int {
 }
 
 /// A `BIGNUM` made here, freed as it goes.
-#[cfg(any(test, feature = "fuzzing"))]
 struct Bignum(*mut sys::BIGNUM);
 
-#[cfg(any(test, feature = "fuzzing"))]
 impl Drop for Bignum {
     fn drop(&mut self) {
         // SAFETY: the pointer came from `BN_new`, is not null, and is freed
@@ -416,22 +418,176 @@ impl Drop for Bignum {
     }
 }
 
-/// An RSA private key the library generated: for the tests and the fuzz
-/// targets alone until RSA's generation is wired (G255 part 2b).
-#[cfg(any(test, feature = "fuzzing"))]
+/// An RSA private key the library made, parsed or checked.
 pub(crate) struct RsaPrivate(Rsa);
 
-#[cfg(any(test, feature = "fuzzing"))]
 impl RsaPrivate {
-    /// Its public parts.
-    pub(crate) fn public(&self) -> RsaParts {
-        parts_of(&self.0)
+    /// All its parts.
+    pub(crate) fn parts(&self) -> RsaPrivateParts {
+        private_parts_of(&self.0)
     }
 }
 
-/// A new RSA key of `bits` bits (a multiple of 8, 512 to 8192) and public
-/// exponent `e` (3 or 65537), made by the library.
-#[cfg(any(test, feature = "fuzzing"))]
+/// An RSA private key's parts, big-endian, without leading zeros: what
+/// the store keeps of it (the lead's ruling, 2026-11-23), overwritten as
+/// it goes and never printed.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RsaPrivateParts {
+    pub(crate) n: Vec<u8>,
+    pub(crate) e: Vec<u8>,
+    pub(crate) d: Vec<u8>,
+    pub(crate) p: Vec<u8>,
+    pub(crate) q: Vec<u8>,
+    pub(crate) dp: Vec<u8>,
+    pub(crate) dq: Vec<u8>,
+    pub(crate) qi: Vec<u8>,
+}
+
+impl Drop for RsaPrivateParts {
+    fn drop(&mut self) {
+        for part in [
+            &mut self.d,
+            &mut self.p,
+            &mut self.q,
+            &mut self.dp,
+            &mut self.dq,
+            &mut self.qi,
+        ] {
+            part.iter_mut().for_each(|b| *b = 0);
+            std::hint::black_box(&part);
+        }
+    }
+}
+
+impl std::fmt::Debug for RsaPrivateParts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never a private part, in a log or a panic.
+        f.write_str("RsaPrivateParts(..)")
+    }
+}
+
+/// The parts of the private key `rsa` holds.
+fn private_parts_of(rsa: &Rsa) -> RsaPrivateParts {
+    let (mut n, mut e, mut d) = (ptr::null(), ptr::null(), ptr::null());
+    let (mut p, mut q) = (ptr::null(), ptr::null());
+    let (mut dp, mut dq, mut qi) = (ptr::null(), ptr::null(), ptr::null());
+    // SAFETY: `rsa.0` is a live key; the getters write borrowed pointers
+    // (or null) into the live locals given, which are read only while
+    // `rsa` lives, below.
+    unsafe {
+        sys::RSA_get0_key(rsa.0, &mut n, &mut e, &mut d);
+        sys::RSA_get0_factors(rsa.0, &mut p, &mut q);
+        sys::RSA_get0_crt_params(rsa.0, &mut dp, &mut dq, &mut qi);
+    }
+    RsaPrivateParts {
+        n: bignum_bytes(n),
+        e: bignum_bytes(e),
+        d: bignum_bytes(d),
+        p: bignum_bytes(p),
+        q: bignum_bytes(q),
+        dp: bignum_bytes(dp),
+        dq: bignum_bytes(dq),
+        qi: bignum_bytes(qi),
+    }
+}
+
+/// A number the library holds, from big-endian bytes.
+fn bignum(bytes: &[u8]) -> Result<Bignum, Failed> {
+    // SAFETY: the pointer and length are `bytes`' own; with no number
+    // given, the result is a new one or null.
+    let bn = unsafe { sys::BN_bin2bn(bytes.as_ptr(), bytes.len(), ptr::null_mut()) };
+    if bn.is_null() {
+        return Err(Failed);
+    }
+    Ok(Bignum(bn))
+}
+
+/// The private key of `parts`, made and checked by the library
+/// (`RSA_new_private_key` ends with `RSA_check_key`): `Failed` for parts
+/// that are not one key.
+pub(crate) fn rsa_private_from_parts(parts: &RsaPrivateParts) -> Result<RsaPrivate, Failed> {
+    reached();
+    let [n, e, d, p, q, dp, dq, qi] = [
+        &parts.n, &parts.e, &parts.d, &parts.p, &parts.q, &parts.dp, &parts.dq, &parts.qi,
+    ]
+    .map(|part| bignum(part));
+    let (n, e, d, p, q, dp, dq, qi) = (n?, e?, d?, p?, q?, dp?, dq?, qi?);
+    // SAFETY: each number is live; the library copies them into a new
+    // key (or returns null), which its wrapper owns at once.
+    let rsa = unsafe { sys::RSA_new_private_key(n.0, e.0, d.0, p.0, q.0, dp.0, dq.0, qi.0) };
+    if rsa.is_null() {
+        return Err(Failed);
+    }
+    Ok(RsaPrivate(Rsa(rsa)))
+}
+
+/// An `EVP_PKEY`, freed as it goes.
+struct Pkey(*mut sys::EVP_PKEY);
+
+impl Drop for Pkey {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from the library, is not null, and is
+        // freed once, here.
+        unsafe { sys::EVP_PKEY_free(self.0) };
+    }
+}
+
+/// A PKCS #8 `PrivateKeyInfo` holding an RSA key, parsed and checked by
+/// the library (its `RSA_parse_private_key` ends with `RSA_check_key`),
+/// nothing after it: `Failed` for anything else.
+pub(crate) fn rsa_private_from_pkcs8(der: &[u8]) -> Result<RsaPrivate, Failed> {
+    reached();
+    let mut cbs = sys::CBS {
+        data: der.as_ptr(),
+        len: der.len(),
+    };
+    // SAFETY: `cbs` describes `der`, which lives through the call; the
+    // result is a new key or null, owned at once by its wrapper.
+    let pkey = unsafe { sys::EVP_parse_private_key(&mut cbs) };
+    if pkey.is_null() {
+        return Err(Failed);
+    }
+    let pkey = Pkey(pkey);
+    if cbs.len != 0 {
+        return Err(Failed);
+    }
+    // SAFETY: `pkey.0` is a live key; `get1` returns a new reference to
+    // its RSA, or null for a key of another kind, which its wrapper owns
+    // and frees.
+    let rsa = unsafe { sys::EVP_PKEY_get1_RSA(pkey.0) };
+    if rsa.is_null() {
+        return Err(Failed);
+    }
+    Ok(RsaPrivate(Rsa(rsa)))
+}
+
+/// A private key's PKCS #1 `RSAPrivateKey`, written by the library: what
+/// a PKCS #8 export wraps (`algorithms::pkcs8_wrap`).
+pub(crate) fn rsa_private_pkcs1(key: &RsaPrivate) -> Result<Vec<u8>, Failed> {
+    let mut out: *mut u8 = ptr::null_mut();
+    let mut len = 0usize;
+    // SAFETY: the key is live and only read; the out-pointers are live
+    // locals the library writes a new buffer and its length into.
+    ok("RsaToBytes", unsafe {
+        sys::RSA_private_key_to_bytes(&mut out, &mut len, key.0.0)
+    })?;
+    if out.is_null() {
+        return Err(Failed);
+    }
+    // SAFETY: `out` holds the `len` bytes the library wrote; they are
+    // copied, then overwritten and freed once, here.
+    let bytes = unsafe {
+        let bytes = std::slice::from_raw_parts(out, len).to_vec();
+        sys::OPENSSL_cleanse(out.cast(), len);
+        sys::OPENSSL_free(out.cast());
+        bytes
+    };
+    Ok(bytes)
+}
+
+/// A new RSA key of `bits` bits (a multiple of 8, 512 to 8192: the
+/// reference refuses to make a smaller one) and public exponent `e` (3 or
+/// 65537), made by the library.
 pub(crate) fn rsa_generate(bits: u32, e: u64) -> Result<RsaPrivate, Failed> {
     if !(512..=8192).contains(&bits) || !bits.is_multiple_of(8) || !matches!(e, 3 | 65537) {
         return Err(Failed);
@@ -461,7 +617,6 @@ pub(crate) fn rsa_generate(bits: u32, e: u64) -> Result<RsaPrivate, Failed> {
 
 /// RSASSA-PKCS1-v1_5's signature of `digest` (by `hash`) with `key`, made
 /// by the library; `Failed` where the digest does not fit the key.
-#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn rsa_sign_pkcs1(
     key: &RsaPrivate,
     hash: Hash,
