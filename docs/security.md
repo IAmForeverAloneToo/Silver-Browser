@@ -514,7 +514,7 @@ client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 10 blocks over aws-lc's C interface where aws-lc-rs has
+ruling), with 19 blocks over aws-lc's C interface where aws-lc-rs has
 none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
 cipher context made and freed, the cipher chosen by the key's length,
 the seal and the open, each length a script controls checked in Rust
@@ -522,8 +522,18 @@ against `c_int` and the reference first, the tag checked by
 `EVP_DecryptFinal_ex`, never compared here), and an RSA public key's
 parts (the PKCS #1 key that aws-lc-rs read from an SPKI parsed by
 `RSA_public_key_from_bytes`, its modulus and exponent copied out with
-`RSA_get0_key` and `BN_bn2bin`, the key freed); no pointer outlives its
-call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
+`RSA_get0_key` and `BN_bn2bin`, the key freed), each RSA public key
+checked by the library as it is imported (`RSA_check_key`: refused
+there, a DataError, so that no verification of it is answered false),
+and RSASSA-PKCS1-v1_5's verification of a key outside aws-lc-rs's
+ranges (`RSA_verify` on the checked key; the routing a function whose
+boundaries a test pins); and, built for the tests and the fuzz targets
+alone until RSA's private keys are wired, seven for an RSA key's
+generation and signing (`BN_new`, `BN_set_u64`, `BN_free`,
+`RSA_new`, `RSA_generate_key_ex`, `RSA_size`, `RSA_sign`), with
+which a test and the fuzz target `crypto_import` hold that a signature
+the library made, with a key of any size, verifies true on either
+route; no pointer outlives its call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
 and allows it there alone, and the same test names and counts them.
 
 **Under it**: of the 414 registry packages `Cargo.lock` holds (every

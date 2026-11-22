@@ -76,7 +76,7 @@ impl KeyAlgorithm {
     }
 }
 
-fn digest_algorithm(name: &str) -> &'static digest::Algorithm {
+pub(crate) fn digest_algorithm(name: &str) -> &'static digest::Algorithm {
     match name {
         "SHA-1" => &digest::SHA1_FOR_LEGACY_USE_ONLY,
         "SHA-384" => &digest::SHA384,
@@ -202,7 +202,7 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
         } => {
             let alg = normalize("verify", &algorithm)?;
             let key = key_for(keys, key, alg.name, Usage::Verify)?;
-            Ok(Outcome::Bool(verify(key, &signature, &data)))
+            Ok(Outcome::Bool(verify(key, &signature, &data)?))
         }
         Call::GenerateKey {
             algorithm,
@@ -375,11 +375,54 @@ fn native_gcm(
     out.map(Outcome::Bytes).map_err(|_| Error::operation(""))
 }
 
-fn verify(key: &Key, signature: &[u8], data: &[u8]) -> bool {
+/// Where an RSA operation runs (the lead's ruling (a), G255): aws-lc-rs's
+/// safe API for a key inside the range its parameters take, the
+/// library's own calls (`native`) for any other.
+#[derive(Debug)]
+pub(crate) enum Route {
+    Safe(&'static signature::RsaParameters),
+    Native(native::Hash),
+}
+
+/// RSASSA-PKCS1-v1_5 verification's route for a key of `bits` bits:
+/// aws-lc-rs verifies SHA-1, SHA-256 and SHA-512 at 1024 to 8192 bits,
+/// SHA-384 at 2048 to 8192 (its `RSA_PKCS1_*` parameters); the reference
+/// verifies from 512 bits to 16384.
+pub(crate) fn pkcs1_verify_route(hash: &str, bits: u32) -> Route {
+    let (safe, native, low): (&'static signature::RsaParameters, _, u32) = match hash {
+        "SHA-1" => (
+            &signature::RSA_PKCS1_1024_8192_SHA1_FOR_LEGACY_USE_ONLY,
+            native::Hash::Sha1,
+            1024,
+        ),
+        "SHA-384" => (
+            &signature::RSA_PKCS1_2048_8192_SHA384,
+            native::Hash::Sha384,
+            2048,
+        ),
+        "SHA-512" => (
+            &signature::RSA_PKCS1_1024_8192_SHA512_FOR_LEGACY_USE_ONLY,
+            native::Hash::Sha512,
+            1024,
+        ),
+        _ => (
+            &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+            native::Hash::Sha256,
+            1024,
+        ),
+    };
+    if (low..=8192).contains(&bits) {
+        Route::Safe(safe)
+    } else {
+        Route::Native(native)
+    }
+}
+
+fn verify(key: &Key, signature: &[u8], data: &[u8]) -> Result<bool, Error> {
     match (&key.algorithm, &key.material) {
         (KeyAlgorithm::Hmac { hash, .. }, Material::Secret(bytes)) => {
             let k = hmac::Key::new(hmac_algorithm(hash), bytes);
-            hmac::verify(&k, data, signature).is_ok()
+            Ok(hmac::verify(&k, data, signature).is_ok())
         }
         (
             KeyAlgorithm::Rsa {
@@ -388,17 +431,24 @@ fn verify(key: &Key, signature: &[u8], data: &[u8]) -> bool {
                 ..
             },
             Material::RsaPublic { n, e },
-        ) => {
-            let parameters: &signature::RsaParameters = match *hash {
-                "SHA-1" => &signature::RSA_PKCS1_1024_8192_SHA1_FOR_LEGACY_USE_ONLY,
-                "SHA-384" => &signature::RSA_PKCS1_2048_8192_SHA384,
-                "SHA-512" => &signature::RSA_PKCS1_1024_8192_SHA512_FOR_LEGACY_USE_ONLY,
-                _ => &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
-            };
-            let components = signature::RsaPublicKeyComponents { n, e };
-            components.verify(parameters, data, signature).is_ok()
-        }
-        _ => false,
+        ) => match pkcs1_verify_route(hash, bit_length(n)) {
+            Route::Safe(parameters) => {
+                let components = signature::RsaPublicKeyComponents { n, e };
+                Ok(components.verify(parameters, data, signature).is_ok())
+            }
+            Route::Native(native_hash) => {
+                let digest = digest::digest(digest_algorithm(hash), data);
+                native::rsa_verify_pkcs1(
+                    &rsa_public_key_der(n, e),
+                    native_hash,
+                    digest.as_ref(),
+                    signature,
+                )
+                .map_err(|_| Error::operation(""))
+            }
+        },
+        // Nothing else verifies (the usages refuse it first).
+        _ => Err(Error::operation("")),
     }
 }
 
@@ -609,6 +659,12 @@ fn import(
             if n.is_empty() || e.is_empty() {
                 return Err(Error::data("The RSA key is not valid"));
             }
+            // A key the library refuses is refused here, so that whatever
+            // imports can be verified with (or its verification refused),
+            // never answered false for want of a key.
+            if native::rsa_public_parts(&rsa_public_key_der(&n, &e)).is_err() {
+                return Err(Error::data("The RSA key is not valid"));
+            }
             let key = Key {
                 kind: KeyType::Public,
                 extractable: true,
@@ -644,7 +700,7 @@ fn bit_length(n: &[u8]) -> u32 {
 
 /// An RSA public key's PKCS #1 `RSAPublicKey` (RFC 8017 appendix A.1.1),
 /// for aws-lc-rs to read and write as SPKI: written here, never read.
-fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
+pub(crate) fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
     fn length(out: &mut Vec<u8>, len: usize) {
         if len < 0x80 {
             out.push(len as u8);

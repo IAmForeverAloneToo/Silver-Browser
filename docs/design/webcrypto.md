@@ -228,10 +228,15 @@ Second push: `native`, the one module of calls into aws-lc's C library
 lead's conditions: AES-GCM with any IV and tag length the reference
 allows (96 and 128 bits stay aws-lc-rs's), and an RSA public key's
 parts (an SPKI read by aws-lc-rs, its PKCS #1 key by the library;
-never DER read here). Next, the lead's ruling (a): RSA generation over
-the reference's range, and RSA's operations for keys outside
-aws-lc-rs's ranges (public under 1024 bits, private under 2048), routed
-by size in one function, the safe API always inside them. Each C object freed by its wrapper on
+never DER read here). RSASSA-PKCS1-v1_5's verification is routed by
+the key's size (the lead's ruling (a)): aws-lc-rs's safe API inside its
+ranges (1024 to 8192 bits, 2048 to 8192 for SHA-384), the library's
+`RSA_verify` outside them, from 512 bits to 16384 as the reference
+verifies (probed: Chrome 157 imports and verifies an openssl key of
+16384 bits); a key the library refuses is refused as it is imported.
+Next: RSA generation over the reference's range (256 to 8192 bits, a
+multiple of 8, e 3 or 65537; Chrome's own generation fails under 512),
+and RSA's private keys and their operations, routed the same way. Each C object freed by its wrapper on
 every path, every return code checked, every script-controlled length
 checked first, the tag checked by the library.
 - The bindings a shell (`SubtleCrypto`, `CryptoKey`), `crypto.subtle` in

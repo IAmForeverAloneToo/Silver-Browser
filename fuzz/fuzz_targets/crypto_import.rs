@@ -2,7 +2,8 @@
 //! SPKI, and as a JWK whose members are cut from the bytes, for each
 //! algorithm the store imports. It never panics; and a key imported
 //! extractable exports, in the format it came in, to what imports again
-//! as the same key.
+//! as the same key; an RSA key verifies any bytes to true or false, and a
+//! signature the library made, with a key of any size, true.
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -46,6 +47,9 @@ fuzz_target!(|data: &[u8]| {
     let Some((&choice, rest)) = data.split_first() else {
         return;
     };
+    // A signature the library made verifies true, whatever the key's size
+    // (G255, the lead's addition to ruling (a)).
+    crypto::fuzzing::rsa_signed_natively_verifies(choice, rest);
     let (name, hash, usages) = ALGORITHMS[usize::from(choice) % ALGORITHMS.len()];
     let format = ["raw", "spki", "jwk"][usize::from(choice / 8) % 3];
     let key_data = if format == "jwk" {
@@ -70,6 +74,25 @@ fuzz_target!(|data: &[u8]| {
     let Ok(Outcome::Key(first)) = import(&mut keys, key_data) else {
         return;
     };
+    // An RSA key that imports always verifies to an answer, on either of
+    // its routes (G255, the lead's ruling (a)): never an error, so never
+    // a refusal mistaken for a false signature or the other way round.
+    if name.starts_with("RSA") {
+        let signature = data.iter().rev().take(512).copied().collect();
+        let verified = crypto::run(
+            &mut keys,
+            Call::Verify {
+                algorithm: algorithm(name, hash),
+                key: first.id,
+                signature,
+                data: data.to_vec(),
+            },
+        );
+        assert!(
+            matches!(verified, Ok(Outcome::Bool(_))),
+            "an imported RSA key verifies to an answer: {verified:?}"
+        );
+    }
     if !first.extractable {
         return;
     }

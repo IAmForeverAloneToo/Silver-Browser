@@ -1,8 +1,9 @@
 //! The few calls into aws-lc's C library that aws-lc-rs's safe API lacks
 //! (G255; the lead's ruling of 2026-11-23): AES-GCM with any IV and tag
-//! length the reference allows, and an RSA public key's parts; RSA's
-//! generation and operations outside aws-lc-rs's ranges come next. Every
-//! unsafe call of the crate is here.
+//! length the reference allows, an RSA public key's parts and check, and
+//! RSASSA-PKCS1-v1_5's verification outside aws-lc-rs's ranges; RSA's
+//! generation and private keys come next. Every unsafe call of the crate
+//! is here.
 //!
 //! The rules this module keeps: each C object is owned by a wrapper that
 //! frees it on every path (`Context`, `Rsa`, `Bignum`); every return code
@@ -369,9 +370,9 @@ fn parts_of(rsa: &Rsa) -> RsaParts {
     }
 }
 
-/// The parts of a PKCS #1 `RSAPublicKey` (RFC 8017 A.1.1), parsed by the
-/// library: what aws-lc-rs's `PublicKey::as_ref` gives of an SPKI.
-pub(crate) fn rsa_public_parts(der: &[u8]) -> Result<RsaParts, Failed> {
+/// A PKCS #1 `RSAPublicKey` (RFC 8017 A.1.1) parsed by the library and
+/// checked by it (`RSA_check_key`): a key it can use, or `Failed`.
+fn rsa_public_key(der: &[u8]) -> Result<Rsa, Failed> {
     reached();
     // SAFETY: the pointer and length are `der`'s own; the result is a new
     // key or null, owned at once by its wrapper.
@@ -379,11 +380,157 @@ pub(crate) fn rsa_public_parts(der: &[u8]) -> Result<RsaParts, Failed> {
     if rsa.is_null() {
         return Err(Failed);
     }
-    Ok(parts_of(&Rsa(rsa)))
+    let rsa = Rsa(rsa);
+    // SAFETY: `rsa.0` is a live key, only read.
+    ok("RsaCheck", unsafe { sys::RSA_check_key(rsa.0) })?;
+    Ok(rsa)
+}
+
+/// The parts of a PKCS #1 `RSAPublicKey`, parsed and checked by the
+/// library: what aws-lc-rs's `PublicKey::as_ref` gives of an SPKI, or a
+/// JWK's `n` and `e` encoded (a key the library refuses is `Failed`).
+pub(crate) fn rsa_public_parts(der: &[u8]) -> Result<RsaParts, Failed> {
+    Ok(parts_of(&rsa_public_key(der)?))
+}
+
+/// The library's name of a digest.
+fn nid(hash: Hash) -> c_int {
+    match hash {
+        Hash::Sha1 => sys::NID_sha1,
+        Hash::Sha256 => sys::NID_sha256,
+        Hash::Sha384 => sys::NID_sha384,
+        Hash::Sha512 => sys::NID_sha512,
+    }
+}
+
+/// A `BIGNUM` made here, freed as it goes.
+#[cfg(any(test, feature = "fuzzing"))]
+struct Bignum(*mut sys::BIGNUM);
+
+#[cfg(any(test, feature = "fuzzing"))]
+impl Drop for Bignum {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `BN_new`, is not null, and is freed
+        // once, here.
+        unsafe { sys::BN_free(self.0) };
+    }
+}
+
+/// An RSA private key the library generated: for the tests and the fuzz
+/// targets alone until RSA's generation is wired (G255 part 2b).
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) struct RsaPrivate(Rsa);
+
+#[cfg(any(test, feature = "fuzzing"))]
+impl RsaPrivate {
+    /// Its public parts.
+    pub(crate) fn public(&self) -> RsaParts {
+        parts_of(&self.0)
+    }
+}
+
+/// A new RSA key of `bits` bits (a multiple of 8, 512 to 8192) and public
+/// exponent `e` (3 or 65537), made by the library.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn rsa_generate(bits: u32, e: u64) -> Result<RsaPrivate, Failed> {
+    if !(512..=8192).contains(&bits) || !bits.is_multiple_of(8) || !matches!(e, 3 | 65537) {
+        return Err(Failed);
+    }
+    reached();
+    // SAFETY: `BN_new` takes nothing and returns a new number or null.
+    let bn = unsafe { sys::BN_new() };
+    if bn.is_null() {
+        return Err(Failed);
+    }
+    let bn = Bignum(bn);
+    // SAFETY: `bn.0` is a live number, written once.
+    ok("BnSet", unsafe { sys::BN_set_u64(bn.0, e) })?;
+    // SAFETY: `RSA_new` takes nothing and returns a new key or null.
+    let rsa = unsafe { sys::RSA_new() };
+    if rsa.is_null() {
+        return Err(Failed);
+    }
+    let rsa = Rsa(rsa);
+    // SAFETY: `rsa.0` and `bn.0` are live; `bits` was checked to be at
+    // most 8192, within `c_int`; no callback is given.
+    ok("RsaGenerate", unsafe {
+        sys::RSA_generate_key_ex(rsa.0, bits as c_int, bn.0, ptr::null_mut())
+    })?;
+    Ok(RsaPrivate(rsa))
+}
+
+/// RSASSA-PKCS1-v1_5's signature of `digest` (by `hash`) with `key`, made
+/// by the library; `Failed` where the digest does not fit the key.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn rsa_sign_pkcs1(
+    key: &RsaPrivate,
+    hash: Hash,
+    digest: &[u8],
+) -> Result<Vec<u8>, Failed> {
+    // SAFETY: `key.0.0` is a live key, only read.
+    let size = unsafe { sys::RSA_size(key.0.0) } as usize;
+    let mut out = vec![0u8; size];
+    let mut len: std::os::raw::c_uint = 0;
+    // SAFETY: the key is live; the digest pointer is valid for its
+    // length; `out` has `RSA_size` bytes, the most the call writes; `len`
+    // is a live local.
+    ok("RsaSign", unsafe {
+        sys::RSA_sign(
+            nid(hash),
+            digest.as_ptr(),
+            digest.len(),
+            out.as_mut_ptr(),
+            &mut len,
+            key.0.0,
+        )
+    })?;
+    let len = usize::try_from(len).map_err(|_| Failed)?;
+    if len > size {
+        return Err(Failed);
+    }
+    out.truncate(len);
+    Ok(out)
+}
+
+/// The digests RSASSA-PKCS1-v1_5 signs, as the library names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hash {
+    Sha1,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+/// RSASSA-PKCS1-v1_5's verification of `signature` over `digest` (the
+/// message's, by `hash`) with a key aws-lc-rs's safe API does not take:
+/// `Ok(false)` for a signature that does not verify, `Failed` for a key
+/// the library refuses (never a false verify for want of a key).
+pub(crate) fn rsa_verify_pkcs1(
+    der: &[u8],
+    hash: Hash,
+    digest: &[u8],
+    signature: &[u8],
+) -> Result<bool, Failed> {
+    let rsa = rsa_public_key(der)?;
+    let nid = nid(hash);
+    // SAFETY: `rsa.0` is a live, checked key; the digest and signature
+    // pointers are valid for the lengths given (`usize`s, the library's
+    // own type here); it writes nothing.
+    let code = unsafe {
+        sys::RSA_verify(
+            nid,
+            digest.as_ptr(),
+            digest.len(),
+            signature.as_ptr(),
+            signature.len(),
+            rsa.0,
+        )
+    };
+    Ok(code == 1)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use aws_lc_rs::aead;
     use std::cell::Cell;
@@ -396,7 +543,7 @@ mod tests {
     }
 
     /// Runs `f` with the call named `site` failing.
-    fn failing<T>(site: &'static str, f: impl FnOnce() -> T) -> T {
+    pub(crate) fn failing<T>(site: &'static str, f: impl FnOnce() -> T) -> T {
         FAIL.set(Some(site));
         let out = f();
         FAIL.set(None);
@@ -542,5 +689,13 @@ mod tests {
         let parts = rsa_public_parts(&der).unwrap();
         assert_eq!((parts.n, parts.e), (vec![0xc3], vec![3]));
         assert_eq!(rsa_public_parts(b"not a key"), Err(Failed));
+        // An even modulus the library parses but refuses as a key.
+        let even = [0x30, 0x07, 0x02, 0x02, 0x00, 0xc4, 0x02, 0x01, 0x03];
+        assert_eq!(rsa_public_parts(&even), Err(Failed));
+        assert_eq!(
+            failing("RsaCheck", || rsa_public_parts(&der)),
+            Err(Failed),
+            "the check's failure"
+        );
     }
 }

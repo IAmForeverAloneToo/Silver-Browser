@@ -383,10 +383,109 @@ pub fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
     })
 }
 
+/// The lead's addition to ruling (a): a signature the library made, with
+/// a key of any size it makes, verifies true through the page's own
+/// calls, on whichever route the key takes; its message changed, false.
+/// `choice` picks the key and the hash. Never a silent false.
+#[cfg(any(test, feature = "fuzzing"))]
+fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
+    use native::{Hash, RsaPrivate};
+    /// Each side of aws-lc-rs's ranges, both exponents.
+    const SIZES: [(u32, u64); 9] = [
+        (512, 65537),
+        (520, 3),
+        (1016, 65537),
+        (1024, 3),
+        (1032, 65537),
+        (2040, 3),
+        (2048, 65537),
+        (2056, 3),
+        (3072, 65537),
+    ];
+    const HASHES: [(&str, Hash); 4] = [
+        ("SHA-1", Hash::Sha1),
+        ("SHA-256", Hash::Sha256),
+        ("SHA-384", Hash::Sha384),
+        ("SHA-512", Hash::Sha512),
+    ];
+    thread_local! {
+        static POOL: Vec<RsaPrivate> = SIZES
+            .iter()
+            .map(|&(bits, e)| native::rsa_generate(bits, e).expect("the library makes the key"))
+            .collect();
+    }
+    let (name, hash) = HASHES[usize::from(choice) % HASHES.len()];
+    let at = usize::from(choice / 4) % SIZES.len();
+    let digest = aws_lc_rs::digest::digest(algorithms::digest_algorithm(name), message);
+    let Some((signature, parts)) = POOL.with(|pool| {
+        let key = &pool[at];
+        native::rsa_sign_pkcs1(key, hash, digest.as_ref())
+            .ok()
+            .map(|signature| (signature, key.public()))
+    }) else {
+        // The digest does not fit the key: nothing was signed.
+        return;
+    };
+    let mut keys = Keys::default();
+    let member = |b: &[u8]| Value::Str(jwk::encode(b));
+    let imported = run(
+        &mut keys,
+        Call::ImportKey {
+            format: "jwk".into(),
+            key_data: Value::Dict(vec![
+                ("kty".into(), Value::Str("RSA".into())),
+                ("n".into(), member(&parts.n)),
+                ("e".into(), member(&parts.e)),
+            ]),
+            algorithm: Value::Dict(vec![
+                ("name".into(), Value::Str("RSASSA-PKCS1-v1_5".into())),
+                ("hash".into(), Value::Str(name.into())),
+            ]),
+            extractable: true,
+            usages: vec![Usage::Verify],
+        },
+    );
+    let Ok(Outcome::Key(key)) = imported else {
+        panic!("a key the library made imports: {imported:?}");
+    };
+    let verify = |keys: &mut Keys, data: Vec<u8>| {
+        run(
+            keys,
+            Call::Verify {
+                algorithm: Value::Str("RSASSA-PKCS1-v1_5".into()),
+                key: key.id,
+                signature: signature.clone(),
+                data,
+            },
+        )
+    };
+    let bits = SIZES[at].0;
+    assert_eq!(
+        verify(&mut keys, message.to_vec()),
+        Ok(Outcome::Bool(true)),
+        "{bits} bits, {name}: the library's own signature"
+    );
+    let mut other = message.to_vec();
+    other.push(0);
+    assert_eq!(
+        verify(&mut keys, other),
+        Ok(Outcome::Bool(false)),
+        "{bits} bits, {name}: another message"
+    );
+}
+
 /// `native`'s AES-GCM, for the fuzz target that holds it to aws-lc-rs's
-/// (`fuzz_targets/crypto_gcm.rs`): in no build but the fuzz crate's.
+/// (`fuzz_targets/crypto_gcm.rs`), and the property that a signature the
+/// library made verifies: in no build but the fuzz crate's.
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing {
+    /// A signature the library made verifies true, another message false,
+    /// with keys each side of aws-lc-rs's ranges (`choice` picks the key
+    /// and the hash); it panics otherwise.
+    pub fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
+        crate::rsa_signed_natively_verifies(choice, message);
+    }
+
     /// AES-GCM's encryption through the library's own calls: the
     /// ciphertext and its tag, or `None` for what it refuses.
     pub fn gcm_seal(

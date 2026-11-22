@@ -489,3 +489,146 @@ fn base64url_round_trips_and_refuses_padding() {
     assert_eq!(jwk::decode("AQ=="), None);
     assert_eq!(jwk::decode("A"), None);
 }
+
+/// The lead's ruling (a): RSASSA-PKCS1-v1_5 verification runs on
+/// aws-lc-rs's safe API inside its ranges and on the library's own calls
+/// outside them, each side of each boundary pinned.
+#[test]
+fn pkcs1_verification_is_routed_by_the_safe_apis_ranges() {
+    use crate::algorithms::{Route, pkcs1_verify_route};
+    let safe = |hash, bits| matches!(pkcs1_verify_route(hash, bits), Route::Safe(_));
+    for hash in ["SHA-1", "SHA-256", "SHA-512"] {
+        assert!(!safe(hash, 1023) && safe(hash, 1024), "{hash} at 1024");
+        assert!(safe(hash, 8192) && !safe(hash, 8193), "{hash} at 8192");
+    }
+    assert!(
+        !safe("SHA-384", 2047) && safe("SHA-384", 2048),
+        "SHA-384 at 2048"
+    );
+    assert!(
+        safe("SHA-384", 8192) && !safe("SHA-384", 8193),
+        "SHA-384 at 8192"
+    );
+}
+
+/// Keys of 512 to 16384 bits, each side of each range (openssl's,
+/// `tests/rsa_pkcs1.txt`): imported as SPKI, a good signature verifies
+/// and a flipped one does not, on the key's route; and the library's
+/// own verification agrees wherever the safe API runs too. Never a
+/// false verify for want of a key (the reference verifies them all).
+#[test]
+fn pkcs1_verifies_at_every_size_the_reference_does() {
+    let vectors = include_str!("../tests/rsa_pkcs1.txt");
+    let mut seen = (0, 0);
+    for line in vectors.lines().filter(|l| !l.starts_with('#')) {
+        let parts: Vec<&str> = line.split(' ').collect();
+        let (bits, hash, spki, signature) = (parts[0], parts[1], hex(parts[2]), hex(parts[3]));
+        let mut keys = Keys::default();
+        let k = key(run(
+            &mut keys,
+            Call::ImportKey {
+                format: "spki".into(),
+                key_data: Value::Bytes(spki),
+                algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s(hash))]),
+                extractable: true,
+                usages: vec![Usage::Verify],
+            },
+        ));
+        let verify = |keys: &mut Keys, signature: Vec<u8>| {
+            run(
+                keys,
+                Call::Verify {
+                    algorithm: s("RSASSA-PKCS1-v1_5"),
+                    key: k.id,
+                    signature,
+                    data: b"routed by size".to_vec(),
+                },
+            )
+        };
+        assert_eq!(
+            verify(&mut keys, signature.clone()),
+            Ok(Outcome::Bool(true)),
+            "{bits} {hash}"
+        );
+        let mut flipped = signature.clone();
+        flipped[signature.len() / 2] ^= 1;
+        assert_eq!(
+            verify(&mut keys, flipped.clone()),
+            Ok(Outcome::Bool(false)),
+            "{bits} {hash} flipped"
+        );
+        assert_eq!(
+            verify(&mut keys, signature[1..].to_vec()),
+            Ok(Outcome::Bool(false)),
+            "{bits} {hash} short"
+        );
+        let bits: u32 = bits.parse().unwrap();
+        match crate::algorithms::pkcs1_verify_route(hash, bits) {
+            crate::algorithms::Route::Safe(_) => seen.0 += 1,
+            crate::algorithms::Route::Native(_) => seen.1 += 1,
+        }
+        // The library's own verification of the same key and signatures.
+        let Material::RsaPublic { n, e } = &keys.get(k.id).unwrap().material else {
+            panic!("a public key");
+        };
+        let der = crate::algorithms::rsa_public_key_der(n, e);
+        let native_hash = match hash {
+            "SHA-1" => crate::native::Hash::Sha1,
+            "SHA-256" => crate::native::Hash::Sha256,
+            "SHA-384" => crate::native::Hash::Sha384,
+            _ => crate::native::Hash::Sha512,
+        };
+        let algorithm = crate::algorithms::digest_algorithm(hash);
+        let digest = aws_lc_rs::digest::digest(algorithm, b"routed by size");
+        let native =
+            |sig: &[u8]| crate::native::rsa_verify_pkcs1(&der, native_hash, digest.as_ref(), sig);
+        assert_eq!(native(&signature), Ok(true), "{bits} {hash} native");
+        assert_eq!(native(&flipped), Ok(false), "{bits} {hash} native flipped");
+        // A key the library refuses as the native route verifies is an
+        // OperationError, never `false`.
+        if matches!(
+            crate::algorithms::pkcs1_verify_route(hash, bits),
+            crate::algorithms::Route::Native(_)
+        ) {
+            let refused =
+                crate::native::tests::failing("RsaCheck", || verify(&mut keys, signature.clone()));
+            assert_eq!(error(refused), "OperationError: ", "{bits} {hash} refused");
+        }
+    }
+    assert!(seen.0 >= 10 && seen.1 >= 10, "routes seen {seen:?}");
+}
+
+/// A key the library refuses is refused at its import (DataError), so
+/// that no verification of it is answered false: a modulus past 16384
+/// bits.
+#[test]
+fn an_rsa_key_past_the_librarys_bound_is_refused_at_import() {
+    let mut n = vec![0u8; 2049];
+    n[0] = 0x80;
+    n[2048] = 1;
+    let mut keys = Keys::default();
+    let b64 = |b: &[u8]| jwk::encode(b);
+    let out = run(
+        &mut keys,
+        Call::ImportKey {
+            format: "jwk".into(),
+            key_data: dict(&[("kty", s("RSA")), ("e", s("AQAB")), ("n", s(&b64(&n)))]),
+            algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]),
+            extractable: true,
+            usages: vec![Usage::Verify],
+        },
+    );
+    assert_eq!(error(out), "DataError: The RSA key is not valid");
+}
+
+/// The lead's addition to ruling (a), over every key and hash of the
+/// pool and a few messages: a signature the library made verifies true
+/// (and another message false) whichever route its key takes.
+#[test]
+fn a_signature_the_library_made_always_verifies() {
+    for choice in 0..36u8 {
+        for message in [&b""[..], b"routed by size", &[0xa5; 300]] {
+            rsa_signed_natively_verifies(choice, message);
+        }
+    }
+}
