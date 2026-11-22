@@ -405,3 +405,36 @@ fn one_event_past_64_mib_fails_the_connection_saying_so() {
         ]
     );
 }
+
+#[test]
+fn another_origins_stream_is_made_again_with_its_id_and_no_preflight() {
+    // The reference sends `Last-Event-ID` across origins with no
+    // preflight, whatever the ID (probed).
+    let (stream_port, stream_heads) = serve(|_, n| Answer {
+        fields: vec![("Access-Control-Allow-Origin", "*".to_owned())],
+        ..Answer::stream(vec![if n == 0 {
+            b"id: x y\nretry: 10\ndata: first\n\n"
+        } else {
+            b"data: second\n\n"
+        }])
+    });
+    let page = format!(
+        "<script>const s = new EventSource('http://127.0.0.1:{stream_port}/s');\
+         s.onmessage = (e) => {{ console.log(e.data, e.lastEventId);\
+           if (e.data === 'second') s.close(); }};</script>"
+    );
+    let (port, _heads) = serve(move |_, _| Answer::page(page.clone()));
+    let mut tab = tab_at(port);
+    let lines = logged(&mut tab, 2, Duration::from_secs(10));
+    assert_eq!(lines, vec!["first x y", "second x y"]);
+    let heads: Vec<String> = stream_heads.try_iter().collect();
+    assert!(
+        heads.iter().all(|head| head.starts_with("GET ")),
+        "{heads:?}"
+    );
+    assert!(
+        heads[1].contains("\r\nLast-Event-ID: x y\r\n"),
+        "{}",
+        heads[1]
+    );
+}

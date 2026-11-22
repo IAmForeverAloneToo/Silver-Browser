@@ -1080,6 +1080,17 @@ const NATIVES: &[(&str, Decode)] = &[
             id: a.integer(0) as u32,
         }))
     }),
+    ("sourceSettle", |a| {
+        Ok(source(crate::dom::SourceCall::Settle {
+            id: a.integer(0) as u32,
+            state: a.integer(1) as u8,
+        }))
+    }),
+    ("sourceReconnect", |a| {
+        Ok(source(crate::dom::SourceCall::Reconnect {
+            id: a.integer(0) as u32,
+        }))
+    }),
     ("sourceGet", |a| {
         Ok(source(crate::dom::SourceCall::Get {
             id: a.integer(0) as u32,

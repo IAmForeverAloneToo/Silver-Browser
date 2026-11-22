@@ -1,8 +1,10 @@
-//! An EventSource's connection (HTML section 9.2, G74): a thread of its
-//! own that fetches the stream, checks its response, parses its body as
-//! it comes and says what it said, and makes the connection again when
-//! it ends, after the reconnection time, with the last event ID; until
-//! the page closes it or the connection fails for good.
+//! An EventSource's connection (HTML section 9.2, G74): one fetch of the
+//! stream on a thread of its own, which checks its response, parses its
+//! body as it comes and says what it said, and ends saying whether the
+//! connection is to be made again, with the last event ID. The wait
+//! before it is made again is the page's (a task of the page's clock, as
+//! the reference's reconnection is a timer of its event loop), and so is
+//! the decision: `scripts::event_source` opens the next.
 //!
 //! As the reference browser does (Chrome 157, probed 2026-11-22): a
 //! response not 200, or of a type not `text/event-stream`, or of a
@@ -14,21 +16,17 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
 
 use net::event_stream::{Parser, Said};
 use net::{AbortHandle, NetworkError, Request};
 
 use super::{Delivery, Fetcher};
 
-/// The reconnection time a stream starts with.
-pub(crate) const RECONNECT: Duration = Duration::from_secs(3);
+/// The reconnection time a stream starts with, in milliseconds.
+pub(crate) const RECONNECT_MS: u64 = 3000;
 /// What the console says of an event past `event_stream::MAX_EVENT`.
 pub(crate) const TOO_LARGE: &str =
     "EventSource's event is larger than 64 MiB. Aborting the connection.";
-/// How often a wait for the reconnection looks whether the page closed
-/// the source.
-const CLOSE_CHECK: Duration = Duration::from_millis(50);
 
 /// What an EventSource's connection did, in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,16 +40,18 @@ pub(crate) enum SourceUpdate {
         data: String,
         last_event_id: String,
     },
+    /// The stream set the reconnection time, in milliseconds.
+    Retry(u64),
     /// The connection ended, or failed in a way that is not for good:
-    /// it is to be made again.
-    Reconnecting,
+    /// it is to be made again, with this last event ID.
+    Reconnecting { last_event_id: String },
     /// The connection failed for good: what the console says, if
     /// anything.
     Failed(Option<String>),
 }
 
-/// The page's hold on a connection: closing it ends the connection, and
-/// stops one to come.
+/// The page's hold on a source's connections: closing it ends the one
+/// under way, and any the page would still open.
 #[derive(Debug, Default)]
 pub(crate) struct SourceControl {
     closed: AtomicBool,
@@ -84,9 +84,11 @@ impl SourceControl {
     }
 }
 
-/// Opens an EventSource's connection with `client` for `request`, on a
-/// thread of its own: `push` is given what it does, in order, from that
-/// thread. `control` ends it.
+/// Opens one connection of an EventSource with `client` for `request`
+/// (its `Last-Event-ID` set by the caller), on a thread of its own:
+/// `push` is given what it does, in order, from that thread, its last
+/// word `Reconnecting` or `Failed`, or nothing more once `control` closed
+/// it.
 pub(crate) fn open_source_with(
     client: Arc<dyn Fetcher>,
     request: Request,
@@ -102,57 +104,42 @@ pub(crate) fn open_source_with(
     }
 }
 
-/// How one fetch of the stream ended.
+/// How the fetch of the stream ended.
 enum Ended {
-    /// To be made again.
-    Again,
+    /// To be made again, with this last event ID.
+    Again(String),
     /// For good, with what the console says.
     Failed(Option<String>),
-    /// The page closed the source.
-    Closed,
 }
 
 fn run(
     client: &dyn Fetcher,
-    request: Request,
+    mut request: Request,
     control: &SourceControl,
     push: &dyn Fn(SourceUpdate),
 ) {
-    let mut last_event_id = String::new();
-    let mut wait = RECONNECT;
-    loop {
-        let Some(abort) = control.next_attempt() else {
-            return;
-        };
-        let mut asked = request.clone();
-        asked.abort = abort.clone();
-        if !last_event_id.is_empty() {
-            asked
-                .headers
-                .set(b"Last-Event-ID", last_event_id.as_bytes());
-        }
-        let ended = fetch_once(client, &asked, &abort, &mut last_event_id, &mut wait, push);
-        let ended = if control.closed() {
-            Ended::Closed
-        } else {
-            ended
-        };
-        match ended {
-            Ended::Closed => return,
-            Ended::Failed(said) => {
-                push(SourceUpdate::Failed(said));
-                return;
-            }
-            Ended::Again => push(SourceUpdate::Reconnecting),
-        }
-        let until = Instant::now() + wait;
-        while Instant::now() < until {
-            if control.closed() {
-                return;
-            }
-            std::thread::sleep(CLOSE_CHECK.min(until - Instant::now()));
-        }
+    let Some(abort) = control.next_attempt() else {
+        return;
+    };
+    request.abort = abort.clone();
+    let ended = fetch_once(client, &request, &abort, push);
+    if control.closed() {
+        return;
     }
+    push(match ended {
+        Ended::Failed(said) => SourceUpdate::Failed(said),
+        Ended::Again(last_event_id) => SourceUpdate::Reconnecting { last_event_id },
+    });
+}
+
+/// The `Last-Event-ID` a request carries, the ID a reconnection starts
+/// with.
+fn sent_last_event_id(request: &Request) -> String {
+    request
+        .headers
+        .get(b"Last-Event-ID")
+        .map(|value| String::from_utf8_lossy(&value).into_owned())
+        .unwrap_or_default()
 }
 
 /// One fetch of the stream, its events pushed as they come.
@@ -160,11 +147,9 @@ fn fetch_once(
     client: &dyn Fetcher,
     request: &Request,
     abort: &AbortHandle,
-    last_event_id: &mut String,
-    wait: &mut Duration,
     push: &dyn Fn(SourceUpdate),
 ) -> Ended {
-    let mut parser = Parser::new(last_event_id);
+    let mut parser = Parser::new(&sent_last_event_id(request));
     // The head's verdict: whether it was good, or why not.
     let mut verdict: Option<Result<(), Option<String>>> = None;
     let mut said = Vec::new();
@@ -192,34 +177,34 @@ fn fetch_once(
                 return;
             }
             for s in said.drain(..) {
-                match s {
-                    Said::Retry(ms) => *wait = Duration::from_millis(ms),
+                push(match s {
+                    Said::Retry(ms) => SourceUpdate::Retry(ms),
                     Said::Event {
                         kind,
                         data,
                         last_event_id,
-                    } => push(SourceUpdate::Event {
+                    } => SourceUpdate::Event {
                         kind,
                         data,
                         last_event_id,
-                    }),
-                }
+                    },
+                });
             }
         }
     });
-    parser.last_event_id().clone_into(last_event_id);
+    let again = || Ended::Again(parser.last_event_id().to_owned());
     match (verdict, result) {
         (Some(Err(why)), _) => Ended::Failed(why),
         // A response whose head came with the fetch's end alone.
         (None, Ok(response)) => match check(&response) {
             Err(why) => Ended::Failed(why),
-            Ok(_) => Ended::Again,
+            Ok(_) => again(),
         },
         // No good head: a check that refused the fetch fails it for
         // good, the reference's "access check"; any other error makes
         // it again.
         (None, Err(error)) if refused(&error) => Ended::Failed(None),
-        _ => Ended::Again,
+        _ => again(),
     }
 }
 

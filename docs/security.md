@@ -298,7 +298,11 @@ font folders; a file it cannot read, it scans for.
   parses the stream itself (`net::event_stream`), each event yet to be
   dispatched within `MAX_EVENT` (64 MiB), past which the connection
   fails (`fuzz/fuzz_targets/event_stream.rs`: any bytes, whole and in
-  pieces, alike). Its fetch may last (`Request::lasting`, which the
+  pieces, alike). Its reconnection's `Last-Event-ID` is not counted
+  for a CORS preflight, as Chrome sends it, on a lasting request alone:
+  a renderer that sets both gets one header to another origin without
+  a preflight, which Chrome's EventSource already sends. Its fetch may
+  last (`Request::lasting`, which the
   link carries): no read timeout and no bound on a streamed body's
   whole. A renderer that asks it of any fetch gains nothing the bound
   kept from it: a lasting body is streamed to the renderer as it comes,

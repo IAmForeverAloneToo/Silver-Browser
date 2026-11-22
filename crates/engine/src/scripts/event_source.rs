@@ -1,9 +1,16 @@
 //! The EventSource interface's state (G74, HTML section 9.2), behind the
 //! bindings' calls and tasks so that any engine's bindings, a shell of a
-//! class, share it: the URL's check, the ready state, whether the page
-//! closed it, and which events its connection's news fires, with the
-//! reference browser's messages. A document's host and a worker's each
-//! keep one, and start the connections it asks for.
+//! class, share it: the URL's check, the ready state, which events its
+//! connection's news fires, with the reference browser's messages, and
+//! when the connection is made again. A document's host and a worker's
+//! each keep one, and start the connections it asks for.
+//!
+//! The ready state a script sees changes as each event's task runs, the
+//! task carrying the state it sets (`SourceCall::Settle`), as section
+//! 9.2.3's tasks set it; the connection's own state changes as its news
+//! comes. The wait before a reconnection is a task of the page's clock
+//! the bindings queue once the `error` that announces it has fired, the
+//! reconnection time later (`SourceCall::Reconnect`).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -11,7 +18,7 @@ use std::sync::Arc;
 use js::{Answer, DomError, SourceCall};
 use net::{Initiator, Url};
 
-use crate::loader::event_source::{SourceControl, SourceUpdate};
+use crate::loader::event_source::{RECONNECT_MS, SourceControl, SourceUpdate};
 
 const CONNECTING: u8 = 0;
 const OPEN: u8 = 1;
@@ -22,9 +29,18 @@ struct Source {
     /// Its URL, serialized.
     url: String,
     with_credentials: bool,
+    /// The connection's state, as its news came.
     state: u8,
+    /// The ready state a script sees, as the tasks ran.
+    shown: u8,
     /// The origin of its response's final URL, its messages' `origin`.
     origin: String,
+    /// The reconnection time, in milliseconds, and the last event ID a
+    /// reconnection sends.
+    retry: u64,
+    last_event_id: String,
+    /// The request each connection is made of.
+    request: net::Request,
     control: Arc<SourceControl>,
 }
 
@@ -85,7 +101,38 @@ impl Sources {
                         source.state = CLOSED;
                         self.live -= 1;
                     }
+                    source.shown = CLOSED;
                     source.control.close();
+                }
+                Ok(Answer::Nothing)
+            }
+            SourceCall::Settle { id, state } => {
+                if let Some(source) = self.sources.get_mut(&id)
+                    && source.shown != CLOSED
+                    && state <= CLOSED
+                {
+                    source.shown = state;
+                }
+                Ok(Answer::Nothing)
+            }
+            // Section 9.2.3's last task of "reestablish the connection":
+            // still connecting, the connection made again.
+            SourceCall::Reconnect { id } => {
+                if let Some(source) = self.sources.get(&id)
+                    && source.state == CONNECTING
+                    && source.shown == CONNECTING
+                {
+                    let mut request = source.request.clone();
+                    if !source.last_event_id.is_empty() {
+                        request
+                            .headers
+                            .set(b"Last-Event-ID", source.last_event_id.as_bytes());
+                    }
+                    self.wanted.push(Wanted {
+                        id,
+                        request,
+                        control: source.control.clone(),
+                    });
                 }
                 Ok(Answer::Nothing)
             }
@@ -96,7 +143,7 @@ impl Sources {
                 Ok(match name.as_str() {
                     "url" => Answer::String(source.url.clone()),
                     "withCredentials" => Answer::Bool(source.with_credentials),
-                    "readyState" => Answer::Number(f64::from(source.state)),
+                    "readyState" => Answer::Number(f64::from(source.shown)),
                     _ => Answer::Nothing,
                 })
             }
@@ -147,7 +194,11 @@ impl Sources {
                 url: shown,
                 with_credentials,
                 state: CONNECTING,
+                shown: CONNECTING,
                 origin: String::new(),
+                retry: RECONNECT_MS,
+                last_event_id: String::new(),
+                request: request.clone(),
                 control: control.clone(),
             },
         );
@@ -176,8 +227,9 @@ impl Sources {
             SourceUpdate::Opened { origin } => {
                 source.state = OPEN;
                 source.origin = origin;
-                self.task(id, r#""type":"open""#);
+                self.task(id, &format!(r#""type":"open","state":{OPEN}"#));
             }
+            SourceUpdate::Retry(ms) => source.retry = ms,
             SourceUpdate::Event {
                 kind,
                 data,
@@ -193,10 +245,16 @@ impl Sources {
                 );
                 self.task(id, &fields);
             }
-            // Section 9.2.3, "reestablish the connection".
-            SourceUpdate::Reconnecting => {
+            // Section 9.2.3, "reestablish the connection": the `error`,
+            // then, the reconnection time on, the connection again.
+            SourceUpdate::Reconnecting { last_event_id } => {
                 source.state = CONNECTING;
-                self.task(id, r#""type":"error""#);
+                source.last_event_id = last_event_id;
+                let retry = source.retry;
+                self.task(
+                    id,
+                    &format!(r#""type":"error","state":{CONNECTING},"retry":{retry}"#),
+                );
             }
             // "Fail the connection".
             SourceUpdate::Failed(said) => {
@@ -205,7 +263,10 @@ impl Sources {
                 if let Some(said) = said {
                     self.said.push(said);
                 }
-                self.task(id, r#""type":"error","last":true"#);
+                self.task(
+                    id,
+                    &format!(r#""type":"error","state":{CLOSED},"last":true"#),
+                );
             }
         }
     }
@@ -254,7 +315,7 @@ mod tests {
         assert_eq!(sources.said, vec!["why".to_owned()]);
         assert_eq!(
             Vec::from(sources.tasks.clone()),
-            vec![r#"{"id":1,"type":"error","last":true}"#.to_owned()]
+            vec![r#"{"id":1,"type":"error","state":2,"last":true}"#.to_owned()]
         );
     }
 }

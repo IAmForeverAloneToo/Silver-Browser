@@ -1332,7 +1332,7 @@ impl Client {
             hop.method.as_str().as_bytes(),
             hop.method.is_cors_safelisted(),
             request.preflight,
-            &headers::cors_unsafe_request_header_names(&hop.author),
+            &preflighted_names(request, hop),
         )
     }
 
@@ -1345,7 +1345,7 @@ impl Client {
     /// What it allowed is cached for its `Access-Control-Max-Age`.
     fn preflight(&self, request: &Request, url: &Url, hop: &Hop) -> Result<(), NetworkError> {
         let refused = |why: &str| NetworkError::Cors(format!("the preflight {why}"));
-        let names = headers::cors_unsafe_request_header_names(&hop.author);
+        let names = preflighted_names(request, hop);
         let mut author = HeaderList::new();
         author.append(b"Accept", b"*/*");
         author.append(
@@ -1955,6 +1955,20 @@ pub enum Delivery<'a> {
     Head(&'a Response),
     /// A piece of its body, its content codings removed.
     Body(&'a [u8]),
+}
+
+/// The CORS-unsafe header names of a hop's request that a preflight
+/// must allow (Fetch 4.4). An EventSource's `Last-Event-ID` (a lasting
+/// request's) is not among them: the reference adds it outside CORS's
+/// view, and never preflights it, whatever its length or bytes (Chrome
+/// 157, probed 2026-11-22; WPT `eventsource/request-credentials`).
+fn preflighted_names(request: &Request, hop: &Hop) -> Vec<Vec<u8>> {
+    if request.lasting && hop.author.get(b"Last-Event-ID").is_some() {
+        let mut author = hop.author.clone();
+        author.delete(b"Last-Event-ID");
+        return headers::cors_unsafe_request_header_names(&author);
+    }
+    headers::cors_unsafe_request_header_names(&hop.author)
 }
 
 /// A hop's response streamed to a fetch's `deliver`, unless it is a

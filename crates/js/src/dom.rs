@@ -1253,6 +1253,11 @@ pub enum SourceCall {
     Open { url: String, with_credentials: bool },
     /// `close()`.
     Close { id: u32 },
+    /// An event's task runs: the ready state it sets, before it fires.
+    Settle { id: u32, state: u8 },
+    /// The reconnection time is up: the connection made again if the
+    /// source still waits for it.
+    Reconnect { id: u32 },
     /// An attribute's value: `url`, `withCredentials` or `readyState`.
     Get { id: u32, name: String },
 }

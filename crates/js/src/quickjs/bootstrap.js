@@ -30692,6 +30692,10 @@
     if (told.last === true) {
       MapDelete(sources, told.id);
     }
+    // The ready state the task sets, as it runs.
+    if (told.state !== undefined) {
+      native.sourceSettle(told.id, told.state);
+    }
     let event;
     switch (told.type) {
       case "open":
@@ -30709,6 +30713,16 @@
         return false;
     }
     yield* firingAt(target, event);
+    // The connection made again the reconnection time on, a task of
+    // the page's clock (section 9.2.3), unless closed by then.
+    if (told.retry !== undefined) {
+      const id = told.id;
+      queueTask(() => {
+        if (MapHas(sources, id)) {
+          native.sourceReconnect(id);
+        }
+      }, told.retry);
+    }
     return false;
   }
 

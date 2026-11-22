@@ -669,7 +669,11 @@ and the jar's retrieval with 3,000 cookies kept.
   connection for good, the last two said in the console as Chrome says
   them; so does a check that refused the fetch (CORS, the policies,
   mixed content, the address spaces); any other network error, and a
-  stream's end, make it again after 3 seconds or the stream's `retry`.
+  stream's end, make it again after 3 seconds or the stream's `retry`,
+  a wait on the page's clock (a task the bindings queue once the
+  `error` has fired), its `Last-Event-ID` never preflighted across
+  origins, as Chrome sends it (probed). The ready state a script reads
+  changes as each event's task runs.
   Its fetch may last (`Request::lasting`): no read timeout and no
   bound on the body's whole, over HTTP/1.1 and HTTP/2, as Chrome has
   neither, so a stream quiet for minutes or long past 64 MiB stays one
