@@ -53,6 +53,7 @@ fn exchange(
         abort,
         body_limit: None,
         priority: None,
+        lasting: false,
     })
 }
 
@@ -336,6 +337,7 @@ fn a_streamed_response_and_a_coded_one() {
                 abort: &AbortHandle::new(),
                 body_limit: None,
                 priority: None,
+                lasting: false,
             },
             &mut collect,
         )
@@ -707,5 +709,71 @@ fn a_body_larger_than_the_send_buffer_is_sent_without_stalling_on_http2() {
         began.elapsed() < Duration::from_secs(5),
         "32 MiB took {:?}",
         began.elapsed()
+    );
+}
+
+#[test]
+fn a_lasting_stream_outlives_the_connections_read_timeout() {
+    // The clock driven: a read timeout of 300 ms stands for 60 s. The
+    // stream is quiet for three of them between its two pieces; while it
+    // may last, the connection does not time out.
+    let config = || Config {
+        read_timeout: Duration::from_millis(300),
+        limits: crate::http::Limits {
+            body_bytes: 4096,
+            ..crate::http::Limits::default()
+        },
+        ..Config::default()
+    };
+    let script = |_: &ServerRequest| {
+        Reply::Pieces(vec![
+            (Duration::ZERO, b"HTTP/1.1 200 OK\r\n\r\n".to_vec()),
+            (Duration::ZERO, vec![b'x'; 3000]),
+            (Duration::from_millis(900), vec![b'y'; 3000]),
+        ])
+    };
+    struct Collect(Vec<u8>);
+    impl ResponseStream for Collect {
+        fn head(&mut self, _: u16, _: &[u8], _: &HeaderList, _: AddressSpace) -> bool {
+            true
+        }
+        fn body(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+    }
+    let run = |lasting: bool| {
+        let (server, transport) = h2_server_with(config(), script);
+        let url = server.url("/");
+        let headers = HeaderList::new();
+        let mut collect = Collect(Vec::new());
+        let result = transport.exchange_streaming(
+            &Exchange {
+                partition: None,
+                method: "GET",
+                url: &url,
+                headers: &headers,
+                body: None,
+                initiator: None,
+                ask: None,
+                target: None,
+                abort: &AbortHandle::new(),
+                body_limit: None,
+                priority: None,
+                lasting,
+            },
+            &mut collect,
+        );
+        (collect.0.len(), result.map(|_| ()))
+    };
+    // Past the 4 KiB bound and the quiet both, whole.
+    assert_eq!(run(true), (6000, Ok(())));
+    let (len, result) = run(false);
+    assert!(len < 6000);
+    assert!(
+        matches!(
+            result,
+            Err(NetworkError::Timeout | NetworkError::BodyTooLarge | NetworkError::Http2(_))
+        ),
+        "{result:?}"
     );
 }

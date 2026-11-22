@@ -23,6 +23,9 @@ use super::{Delivery, Fetcher};
 
 /// The reconnection time a stream starts with.
 pub(crate) const RECONNECT: Duration = Duration::from_secs(3);
+/// What the console says of an event past `event_stream::MAX_EVENT`.
+pub(crate) const TOO_LARGE: &str =
+    "EventSource's event is larger than 64 MiB. Aborting the connection.";
 /// How often a wait for the reconnection looks whether the page closed
 /// the source.
 const CLOSE_CHECK: Duration = Duration::from_millis(50);
@@ -181,8 +184,10 @@ fn fetch_once(
                 return;
             }
             if parser.feed(bytes, &mut said).is_err() {
-                // An event past the bound: the connection goes, and is
-                // made again.
+                // An event past the bound fails the connection for good:
+                // made again, it would come again (the reference holds
+                // what its memory allows; docs/design/fetch.md).
+                verdict = Some(Err(Some(TOO_LARGE.to_owned())));
                 abort.abort();
                 return;
             }

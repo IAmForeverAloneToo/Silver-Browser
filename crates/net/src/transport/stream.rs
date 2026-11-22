@@ -155,12 +155,18 @@ impl Socket {
     }
 }
 
+/// How long one wait of a lasting fetch's lasts before it looks again.
+const LASTING_SLICE: Duration = Duration::from_secs(3600);
+
 /// A connection's stream, its poll, and the fetch using it, if one is.
 pub(crate) struct Stream {
     socket: Socket,
     waiter: Waiter,
     /// How long a read or write may wait for the socket.
     timeout: Duration,
+    /// Whether the fetch it is lent to may last (`Request::lasting`):
+    /// then no wait times out, the fetch's abort alone ending it.
+    lasting: bool,
     /// The abort handle of the fetch the stream is lent to, and the
     /// watch through which that abort wakes the poll.
     user: Option<(AbortHandle, Watch)>,
@@ -173,6 +179,7 @@ impl Stream {
             socket,
             waiter,
             timeout,
+            lasting: false,
             user: None,
         }
     }
@@ -189,6 +196,12 @@ impl Stream {
     /// an abort of that fetch no longer touches it.
     pub(crate) fn release(&mut self) {
         self.user = None;
+        self.lasting = false;
+    }
+
+    /// Makes the fetch it is lent to one that may last, or not.
+    pub(crate) fn set_lasting(&mut self, lasting: bool) {
+        self.lasting = lasting;
     }
 
     fn aborted(&self) -> bool {
@@ -206,7 +219,9 @@ impl Stream {
         write: bool,
         mut op: impl FnMut(&mut Socket) -> io::Result<T>,
     ) -> io::Result<T> {
-        let deadline = Instant::now() + self.timeout;
+        // A lasting fetch's waits have no deadline: each is a long slice,
+        // the abort waking it.
+        let deadline = (!self.lasting).then(|| Instant::now() + self.timeout);
         let mut waited_out = false;
         loop {
             if self.aborted() {
@@ -224,12 +239,15 @@ impl Stream {
                 other => return other,
             }
             let now = Instant::now();
-            if now >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
+            let wait = match deadline {
+                Some(deadline) if now >= deadline => {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                Some(deadline) => deadline - now,
+                None => LASTING_SLICE,
+            };
             let write = write || self.socket.tls_wants_write();
-            self.waiter
-                .wait(self.socket.tcp_mut(), deadline - now, write)?;
+            self.waiter.wait(self.socket.tcp_mut(), wait, write)?;
             waited_out = self.waiter.timed_out();
         }
     }

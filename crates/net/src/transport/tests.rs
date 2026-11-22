@@ -53,6 +53,7 @@ fn send_in(
         abort,
         body_limit: None,
         priority: None,
+        lasting: false,
     })
 }
 
@@ -410,6 +411,7 @@ fn a_server_that_takes_nothing_times_the_request_out() {
         abort: &AbortHandle::new(),
         body_limit: None,
         priority: None,
+        lasting: false,
     });
     assert_eq!(result.unwrap_err(), NetworkError::Timeout);
     assert!(
@@ -538,6 +540,7 @@ fn a_page_asks_the_user_for_a_more_private_space() {
             abort: &AbortHandle::new(),
             body_limit: None,
             priority: None,
+            lasting: false,
         })
     };
     let gate = |allow, wait| Answering {
@@ -867,6 +870,7 @@ fn a_body_larger_than_the_send_buffer_is_sent_without_stalling() {
             abort: &AbortHandle::new(),
             body_limit: None,
             priority: None,
+            lasting: false,
         })
         .unwrap();
     assert_eq!(received.response.body, (32 << 20).to_string().as_bytes());
@@ -907,4 +911,96 @@ fn an_offline_test_run_refuses_the_web_and_names_the_host() {
     get(&transport, &server.url("/")).expect("this machine");
     let named = format!("http://a.test:{}/", server.url("/").port().unwrap());
     get(&transport, &Url::parse(&named).unwrap()).expect("the test's host");
+}
+
+/// A streamed response as it came: its head's status and its body.
+#[derive(Default)]
+struct Collect(Vec<u8>, Option<u16>);
+
+impl ResponseStream for Collect {
+    fn head(&mut self, status: u16, _: &[u8], _: &HeaderList, _: AddressSpace) -> bool {
+        self.1 = Some(status);
+        true
+    }
+    fn body(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+/// A GET of `url` streamed, lasting or not: what came, and the end.
+fn streamed(
+    transport: &Transport,
+    url: &Url,
+    lasting: bool,
+) -> (Collect, Result<Received, NetworkError>) {
+    let mut collect = Collect::default();
+    let headers = HeaderList::new();
+    let result = transport.exchange_streaming(
+        &Exchange {
+            partition: None,
+            method: "GET",
+            url,
+            headers: &headers,
+            body: None,
+            initiator: None,
+            ask: None,
+            target: None,
+            abort: &AbortHandle::new(),
+            body_limit: None,
+            priority: None,
+            lasting,
+        },
+        &mut collect,
+    );
+    (collect, result)
+}
+
+/// A chunked response of three pieces of 3,000 bytes, the third `quiet`
+/// after the second.
+fn three_chunks(quiet: Duration) -> Reply {
+    let chunk = [b"BB8\r\n".as_slice(), &[b'x'; 3000], b"\r\n"].concat();
+    Reply::Pieces(vec![
+        (
+            Duration::ZERO,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec(),
+        ),
+        (Duration::ZERO, chunk.clone()),
+        (Duration::ZERO, chunk.clone()),
+        (quiet, [chunk.as_slice(), b"0\r\n\r\n"].concat()),
+    ])
+}
+
+#[test]
+fn a_lasting_stream_outlives_the_read_timeout_and_the_body_bound() {
+    // The clock driven: a read timeout of 300 ms and a bound of 4 KiB on
+    // a body stand for the 60 s and the 64 MiB a browser has.
+    let config = || Config {
+        read_timeout: Duration::from_millis(300),
+        limits: crate::http::Limits {
+            body_bytes: 4096,
+            ..crate::http::Limits::default()
+        },
+        ..Config::default()
+    };
+    // Quiet for three timeouts between two pieces.
+    let quiet = TestServer::plain(|_| three_chunks(Duration::from_millis(900)));
+    let (got, result) = streamed(&Transport::new(config()), &quiet.url("/"), true);
+    result.unwrap();
+    assert_eq!((got.1, got.0.len()), (Some(200), 9000));
+    let (got, result) = streamed(&Transport::new(config()), &quiet.url("/"), false);
+    assert!(
+        matches!(
+            result,
+            Err(NetworkError::Timeout | NetworkError::BodyTooLarge)
+        ),
+        "{result:?}"
+    );
+    assert!(got.0.len() < 9000);
+    // No quiet: past the bound alone.
+    let loud = TestServer::plain(|_| three_chunks(Duration::ZERO));
+    let (got, result) = streamed(&Transport::new(config()), &loud.url("/"), true);
+    result.unwrap();
+    assert_eq!(got.0.len(), 9000);
+    let (_, result) = streamed(&Transport::new(config()), &loud.url("/"), false);
+    assert_eq!(result.unwrap_err(), NetworkError::BodyTooLarge);
 }

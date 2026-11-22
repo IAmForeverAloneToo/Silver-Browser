@@ -42,6 +42,8 @@ struct Stream {
     bodiless: bool,
     is_head: bool,
     idempotent: bool,
+    /// Whether it may last: see `conn::Request::lasting`.
+    lasting: bool,
     /// Whether anything of the response came.
     heard: bool,
 }
@@ -162,6 +164,11 @@ impl Session {
         self.streams.is_empty()
     }
 
+    /// Whether an open stream may last, quiet as long as it likes.
+    pub(crate) fn has_lasting(&self) -> bool {
+        self.streams.values().any(|stream| stream.lasting)
+    }
+
     /// Whether the server said it goes away.
     pub(crate) fn going_away(&self) -> bool {
         self.going_away.is_some()
@@ -224,6 +231,7 @@ impl Session {
                 bodiless: false,
                 is_head: method == b"HEAD",
                 idempotent: request.idempotent,
+                lasting: request.lasting,
                 heard: false,
             },
         );

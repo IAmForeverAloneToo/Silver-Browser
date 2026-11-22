@@ -135,6 +135,9 @@ impl Sources {
         };
         request.cache = net::CacheMode::NoStore;
         request.headers.set(b"Accept", b"text/event-stream");
+        // Quiet for long, and long in all: no read timeout and no bound
+        // on its whole, its parser bounding each event.
+        request.lasting = true;
         self.next += 1;
         let id = self.next;
         let control = Arc::new(SourceControl::default());

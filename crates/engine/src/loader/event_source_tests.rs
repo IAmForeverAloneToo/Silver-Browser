@@ -353,3 +353,55 @@ fn a_dedicated_workers_event_source_works_as_a_windows_does() {
     let lines = logged(&mut tab, 2, Duration::from_secs(10));
     assert_eq!(lines, vec!["open 1", "message hi 3"]);
 }
+
+/// `bytes`, made to last the test.
+fn leaked(bytes: Vec<u8>) -> &'static [u8] {
+    Box::leak(bytes.into_boxed_slice())
+}
+
+#[test]
+fn a_stream_past_64_mib_in_all_stays_one_connection() {
+    // 66 events of a mebibyte each: more than a body's bound in all, each
+    // dispatched as it ends, on the one connection.
+    let event = leaked([b"data: ".as_slice(), &vec![b'z'; 1 << 20], b"\n\n"].concat());
+    let page = "<script>const s = new EventSource('/big'); let n = 0, total = 0;\
+        s.onmessage = (e) => { n++; total += e.data.length;\
+          if (n === 66) { console.log('done', n, total); s.close(); } };\
+        s.onerror = () => console.log('error', s.readyState, n);</script>"
+        .to_owned();
+    let (port, heads) = serve(move |path, _| match path {
+        "/page.html" => Answer::page(page.clone()),
+        _ => Answer::stream(vec![event; 66]).held(Duration::from_secs(1)),
+    });
+    let mut tab = tab_at(port);
+    let lines = logged(&mut tab, 1, Duration::from_secs(120));
+    assert_eq!(lines, vec![format!("done 66 {}", 66 << 20)]);
+    let streams = heads
+        .try_iter()
+        .filter(|head| head.starts_with("GET /big "))
+        .count();
+    assert_eq!(streams, 1, "no reconnection");
+}
+
+#[test]
+fn one_event_past_64_mib_fails_the_connection_saying_so() {
+    let huge = leaked(vec![b'z'; (64 << 20) + 1]);
+    let page = "<script>const s = new EventSource('/huge');\
+        s.onmessage = () => console.log('message');\
+        s.onerror = () => console.log('error', s.readyState);</script>"
+        .to_owned();
+    let (port, _heads) = serve(move |path, _| match path {
+        "/page.html" => Answer::page(page.clone()),
+        _ => Answer::stream(vec![b"data: ", huge, b"\n\n"]),
+    });
+    let mut tab = tab_at(port);
+    let mut lines = logged(&mut tab, 2, Duration::from_secs(120));
+    lines.sort();
+    assert_eq!(
+        lines,
+        vec![
+            super::event_source::TOO_LARGE.to_owned(),
+            "error 2".to_owned()
+        ]
+    );
+}

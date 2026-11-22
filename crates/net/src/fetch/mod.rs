@@ -333,6 +333,11 @@ pub struct Request {
     /// The most the response's body may hold, when less than the
     /// client's limit: an image's bound (M23).
     pub body_limit: Option<usize>,
+    /// Whether its body, streamed, is consumed as it comes and may last
+    /// (an event stream, G74): no read timeout and no bound on the
+    /// body's whole, as the reference has neither; its consumer bounds
+    /// what it holds. A body taken whole keeps both.
+    pub lasting: bool,
     /// The policies of the document that asked: Fetch's "should request
     /// be blocked by Content Security Policy" at each hop, by its
     /// destination's fetch directive (M24.6, M33.1), the violations
@@ -416,6 +421,7 @@ impl Request {
             initiator: None,
             abort: AbortHandle::new(),
             body_limit: None,
+            lasting: false,
             csp: None,
             nonce: String::new(),
             parser_inserted: false,
@@ -892,6 +898,7 @@ impl Client {
             abort: &request.abort,
             body_limit: request.body_limit,
             priority: None,
+            lasting: false,
         };
         let (received, upgraded) = self
             .transport
@@ -1127,6 +1134,7 @@ impl Client {
                     abort: &request.abort,
                     body_limit: request.body_limit,
                     priority: priority(request.destination),
+                    lasting: request.lasting,
                 };
                 // Set-Cookie is taken as soon as the head comes, a
                 // redirect's too: before a document's scripts run.

@@ -218,6 +218,9 @@ pub struct Exchange<'a> {
     pub body_limit: Option<usize>,
     /// Its `priority` (RFC 9218), sent over HTTP/2 (M38).
     pub priority: Option<&'a str>,
+    /// Whether its body, streamed, may last (`Request::lasting`): then
+    /// no read timeout holds, and no bound on the body's whole.
+    pub lasting: bool,
 }
 
 /// What a request asks the user with for its way into a more private
@@ -495,6 +498,12 @@ impl Transport {
         if let Some(own) = exchange.body_limit {
             limits.body_bytes = limits.body_bytes.min(own);
         }
+        // A lasting body handed over as it comes is held by its consumer,
+        // which bounds what it keeps; one taken whole keeps the bound.
+        let lasting = exchange.lasting && stream.is_some();
+        if lasting {
+            limits.body_bytes = usize::MAX;
+        }
         let (Some(host), Some(port), true) = (
             url.host(),
             url.port_or_default(),
@@ -625,6 +634,7 @@ impl Transport {
                 return Err(error);
             }
             connection.reader.get_mut().lend(exchange.abort);
+            connection.reader.get_mut().set_lasting(lasting);
             if let Some(stream) = stream.as_deref_mut() {
                 stream.protocol(http::Version::Http11);
             }
@@ -1021,6 +1031,7 @@ fn h2_request(exchange: &Exchange) -> Result<h2::Request, NetworkError> {
         fields,
         body: exchange.body.map(<[u8]>::to_vec),
         idempotent: matches!(exchange.method, "GET" | "HEAD"),
+        lasting: exchange.lasting,
     })
 }
 

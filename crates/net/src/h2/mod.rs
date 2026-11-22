@@ -43,6 +43,7 @@ pub fn fuzz_session(data: &[u8]) {
                 ],
                 body: (method == "POST").then(|| vec![7; 100_000]),
                 idempotent: method == "GET",
+                lasting: false,
             },
             sender,
         );

@@ -134,3 +134,44 @@ fn a_line_past_the_bound_is_refused() {
     assert_eq!(parser.feed(&piece, &mut out), Ok(()));
     assert_eq!(parser.feed(&piece, &mut out), Err(TooLarge));
 }
+
+#[test]
+fn one_event_past_the_bound_is_refused_but_the_stream_has_none() {
+    // Data over many lines, past the bound together.
+    let mut parser = Parser::new("");
+    let mut out = Vec::new();
+    let line = [b"data: ".as_slice(), &vec![b'a'; 1 << 20], b"\n"].concat();
+    let mut refused = false;
+    for _ in 0..=(MAX_EVENT >> 20) {
+        if parser.feed(&line, &mut out).is_err() {
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "past the bound");
+    assert!(out.is_empty());
+    // Events of a mebibyte each, more than the bound in all: each
+    // dispatched as it ends.
+    let mut parser = Parser::new("");
+    let event = [b"data: ".as_slice(), &vec![b'b'; 1 << 20], b"\n\n"].concat();
+    let mut count = 0;
+    for _ in 0..(MAX_EVENT >> 20) + 2 {
+        let mut out = Vec::new();
+        parser.feed(&event, &mut out).expect("within the bound");
+        count += out.len();
+    }
+    assert_eq!(count, (MAX_EVENT >> 20) + 2);
+}
+
+#[test]
+fn a_line_being_read_counts_with_the_data_held() {
+    // Five eighths of the bound held as data, then a line as long again
+    // not yet ended: past the bound together.
+    let mut parser = Parser::new("");
+    let mut out = Vec::new();
+    let five_eighths = MAX_EVENT / 8 * 5;
+    let held = [b"data: ".as_slice(), &vec![b'a'; five_eighths], b"\n"].concat();
+    assert_eq!(parser.feed(&held, &mut out), Ok(()));
+    let growing = [b"data: ".as_slice(), &vec![b'b'; five_eighths]].concat();
+    assert_eq!(parser.feed(&growing, &mut out), Err(TooLarge));
+}

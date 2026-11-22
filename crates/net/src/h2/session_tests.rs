@@ -47,6 +47,7 @@ fn open(session: &mut Session, token: u64, method: &str, body: Option<Vec<u8>>) 
             ],
             body,
             idempotent: method == "GET",
+            lasting: false,
         },
         sender,
     );

@@ -670,11 +670,15 @@ and the jar's retrieval with 3,000 cookies kept.
   them; so does a check that refused the fetch (CORS, the policies,
   mixed content, the address spaces); any other network error, and a
   stream's end, make it again after 3 seconds or the stream's `retry`.
-  Known deviations: the transport's 60-second read timeout and 64 MiB
-  body bound end a quiet or a long stream, which is then made again
-  with its last event ID (Chrome holds both open); an event's data or
-  a line past 32 MiB (`event_stream::MAX_EVENT`) ends the connection,
-  made again, where Chrome holds what its memory allows.
+  Its fetch may last (`Request::lasting`): no read timeout and no
+  bound on the body's whole, over HTTP/1.1 and HTTP/2, as Chrome has
+  neither, so a stream quiet for minutes or long past 64 MiB stays one
+  connection. What it holds is bounded per event instead: an event yet
+  to be dispatched (its data, type and ID and the line being read) past
+  64 MiB (`event_stream::MAX_EVENT`) fails the connection for good,
+  the console saying so, since made again it would come again. Chrome
+  holds such an event whole (probed: one of 70 MiB was dispatched); the
+  bound is the renderer's memory's, and the one difference left.
 - *Cookies on disk*, and the HTTP cache that `Request.cache` names. M28
   and M38.
 - *`Referer` and Referrer Policy*, HSTS, Upgrade-Insecure-Requests and

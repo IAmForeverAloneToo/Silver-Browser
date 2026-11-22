@@ -23,11 +23,13 @@ pub enum Said {
     Retry(u64),
 }
 
-/// The most a line, or an event's data, may hold before the stream is
-/// refused: past it, [`Parser::feed`] fails. A server is not to make a
-/// page hold more than this of one event (the reference's bound is its
+/// The most an event yet to be dispatched may hold, its data, type and
+/// ID and the line being read together: past it, [`Parser::feed`]
+/// fails. The stream as a whole has no bound, its events dispatched as
+/// they end; one event is held whole first, and a server is not to make
+/// a page hold more than this of one (the reference's bound is its
 /// memory's).
-pub const MAX_EVENT: usize = 32 * 1024 * 1024;
+pub const MAX_EVENT: usize = 64 * 1024 * 1024;
 
 /// A stream's parser: its state between pieces.
 #[derive(Debug, Default)]
@@ -51,8 +53,8 @@ pub struct Parser {
     last_event_id: String,
 }
 
-/// The stream broke a bound (a line or an event's data past
-/// [`MAX_EVENT`]).
+/// The stream broke the bound: an event yet to be dispatched past
+/// [`MAX_EVENT`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooLarge;
 
@@ -148,11 +150,17 @@ impl Parser {
     }
 
     fn push(&mut self, text: &str) -> Result<(), TooLarge> {
-        if self.line.len() + text.len() > MAX_EVENT {
+        if self.pending() + text.len() > MAX_EVENT {
             return Err(TooLarge);
         }
         self.line.push_str(text);
         Ok(())
+    }
+
+    /// What the event yet to be dispatched holds, with the line being
+    /// read.
+    fn pending(&self) -> usize {
+        self.line.len() + self.data.len() + self.kind.len() + self.id_buffer.len()
     }
 
     /// A whole line (section 9.2.6).
@@ -168,12 +176,19 @@ impl Parser {
             Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
             None => (line, ""),
         };
+        let replacing = match field {
+            "event" => self.kind.len(),
+            "id" => self.id_buffer.len(),
+            _ => 0,
+        };
+        if matches!(field, "event" | "id" | "data")
+            && self.pending() - replacing + value.len() + 1 > MAX_EVENT
+        {
+            return Err(TooLarge);
+        }
         match field {
             "event" => value.clone_into(&mut self.kind),
             "data" => {
-                if self.data.len() + value.len() + 1 > MAX_EVENT {
-                    return Err(TooLarge);
-                }
                 self.data.push_str(value);
                 self.data.push('\n');
             }

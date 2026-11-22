@@ -81,6 +81,9 @@ pub(crate) struct Request {
     /// Whether it may be sent again when the connection ends before any
     /// of its response came: a `GET` or a `HEAD`.
     pub(crate) idempotent: bool,
+    /// Whether it may last (`Request::lasting`): while such a stream is
+    /// open, the connection's read timeout does not hold.
+    pub(crate) lasting: bool,
 }
 
 enum Command {
@@ -385,7 +388,9 @@ impl Worker {
             }
         } else {
             self.idle_since = None;
-            if now.duration_since(self.last_read) >= self.settings.read_timeout {
+            if now.duration_since(self.last_read) >= self.settings.read_timeout
+                && !self.session.has_lasting()
+            {
                 return Err(Ending {
                     code: ErrorCode::CANCEL,
                     why: "timeout".to_owned(),

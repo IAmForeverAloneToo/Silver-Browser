@@ -417,3 +417,17 @@ fn a_console_entry_goes_there_and_back_whole() {
     };
     assert_eq!(entries, [entry, ConsoleEntry::default()]);
 }
+
+#[test]
+fn a_requests_lasting_flag_goes_there_and_back() {
+    // An EventSource's fetch (G74): the browser must see that it may last,
+    // or its read timeout and body bound would end the stream.
+    let url = net::Url::parse("https://a.test/events").expect("a URL");
+    let mut request = net::Request::get(url, net::Destination::Empty);
+    for lasting in [true, false] {
+        request.lasting = lasting;
+        let back = decode_all::<net::Request>(&encode(&request)).expect("a request");
+        assert_eq!(back.lasting, lasting);
+        assert_eq!(back.url, request.url);
+    }
+}

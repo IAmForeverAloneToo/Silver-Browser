@@ -295,10 +295,15 @@ font folders; a file it cannot read, it scans for.
 - **Server-sent events** (G74). An `EventSource`'s stream is a fetch
   like any other, in CORS mode, through the browser in a renderer: no
   new message, and the browser's checks of a fetch hold. The renderer
-  parses the stream itself (`net::event_stream`), each line and each
-  event's data within `MAX_EVENT` (32 MiB), past which the connection
-  ends (`fuzz/fuzz_targets/event_stream.rs`: any bytes, whole and in
-  pieces, alike).
+  parses the stream itself (`net::event_stream`), each event yet to be
+  dispatched within `MAX_EVENT` (64 MiB), past which the connection
+  fails (`fuzz/fuzz_targets/event_stream.rs`: any bytes, whole and in
+  pieces, alike). Its fetch may last (`Request::lasting`, which the
+  link carries): no read timeout and no bound on a streamed body's
+  whole. A renderer that asks it of any fetch gains nothing the bound
+  kept from it: a lasting body is streamed to the renderer as it comes,
+  never held by the browser, and a body the browser takes whole keeps
+  its bound whatever the flag says.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

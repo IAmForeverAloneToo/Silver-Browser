@@ -373,6 +373,7 @@ impl Wire for Request {
         self.client.encode(out);
         self.reserved_client.encode(out);
         self.integrity.encode(out);
+        out.bool(self.lasting);
     }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Malformed> {
         Ok(Request {
@@ -407,6 +408,7 @@ impl Wire for Request {
             client: Option::decode(input)?,
             reserved_client: Option::decode(input)?,
             integrity: String::decode(input)?,
+            lasting: input.bool()?,
         })
     }
 }
