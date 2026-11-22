@@ -22,6 +22,7 @@ pub mod csp;
 pub mod data_url;
 pub mod disposition;
 mod error;
+pub mod event_stream;
 pub mod fetch;
 pub mod h2;
 pub mod headers;

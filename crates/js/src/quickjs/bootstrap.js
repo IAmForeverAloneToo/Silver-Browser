@@ -628,7 +628,7 @@
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
     InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
     WindowClient: "service", FetchEvent: "service", FontFace: true, FontFaceSet: true,
-    CloseEvent: true, WebSocket: true,
+    CloseEvent: true, WebSocket: true, EventSource: true,
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -30619,6 +30619,99 @@
     return false;
   }
 
+  // EventSource (HTML section 9.2, G74): a shell over the host's source,
+  // which checks the URL and keeps the state. The sources whose events
+  // may still come are kept, by number, until they close.
+  const sources = new $Map();
+  const sourceIds = new $WeakMap();
+  const EVENT_SOURCE_INIT = members([], [
+    ["withCredentials", "boolean", false],
+  ], "EventSourceInit");
+
+  function sourceId(value) {
+    const id = WeakMapGet(sourceIds, value);
+    if (id === undefined) {
+      throw illegalInvocation();
+    }
+    return id;
+  }
+
+  class EventSource extends EventTarget {
+    constructor(url, eventSourceInitDict = undefined) {
+      needToConstruct(arguments.length, 1, "EventSource");
+      const href = str(url);
+      const init = dictionary(eventSourceInitDict, EVENT_SOURCE_INIT, "EventSource");
+      super();
+      const id = native.sourceOpen(href, init.withCredentials);
+      WeakMapSet(sourceIds, this, id);
+      MapSet(sources, id, this);
+    }
+  }
+  {
+    // The members in the reference's order: the attributes and handlers
+    // as it lists them, the constants, then the method.
+    const own = {
+      get url() {
+        return native.sourceGet(sourceId(this), "url");
+      },
+      get withCredentials() {
+        return native.sourceGet(sourceId(this), "withCredentials");
+      },
+      get readyState() {
+        return native.sourceGet(sourceId(this), "readyState");
+      },
+      close() {
+        const id = sourceId(this);
+        native.sourceClose(id);
+        MapDelete(sources, id);
+      },
+    };
+    const proto = EventSource.prototype;
+    const copy = (names) => {
+      for (let i = 0; i < names.length; i++) {
+        defineProperty(proto, names[i], getOwnPropertyDescriptor(own, names[i]));
+      }
+    };
+    copy(["url", "withCredentials", "readyState"]);
+    defineHandlers(proto, ["open", "message", "error"], false);
+    constants(EventSource, ["CONNECTING", 0, "OPEN", 1, "CLOSED", 2]);
+    copy(["close"]);
+  }
+  expose(EventSource, "EventSource");
+
+  // What a source's connection did, from the host (G74): the event it
+  // fires, all its fields the host's. A task queued before the page
+  // closed the source fires nothing (HTML section 9.2.4): `close()`
+  // forgets it here.
+  function* sourceTask(text) {
+    const told = JSONParse(text);
+    const target = MapGet(sources, told.id);
+    if (target === undefined) {
+      return false;
+    }
+    if (told.last === true) {
+      MapDelete(sources, told.id);
+    }
+    let event;
+    switch (told.type) {
+      case "open":
+      case "error":
+        event = new Event(told.type, made(EVENT_INIT, []));
+        break;
+      case "message":
+        event = new MessageEvent(told.kind, made(MESSAGE_INIT, [
+          "data", told.data,
+          "origin", told.origin,
+          "lastEventId", told.lastEventId,
+        ]));
+        break;
+      default:
+        return false;
+    }
+    yield* firingAt(target, event);
+    return false;
+  }
+
   // Whether `value` is a MessagePort, which M31.5's ports define.
   let isPort = function () {
     return false;
@@ -34950,6 +35043,7 @@
     idb: () => chunkInstall("idb").idbTask(),
     serviceWorker: swTask,
     socket: socketTask,
+    source: sourceTask,
     audio: (text, bytes) => chunkInstall("audio").audioTask(text, bytes),
     gpu: (text, bytes) => chunkInstall("gpu").gpuTask(text, bytes),
     media: mediaTask,

@@ -400,3 +400,10 @@ path = "fuzz_targets/websocket.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "event_stream"
+path = "fuzz_targets/event_stream.rs"
+test = false
+doc = false
+bench = false

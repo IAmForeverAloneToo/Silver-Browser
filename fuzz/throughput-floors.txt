@@ -6,6 +6,8 @@
 # runs a second, then the three rates. The CI fuzz job reads it.
 # websocket's floor is from its first push run alone (44867617804),
 # until it has three.
+# event_stream's is a tenth of a local Windows run's rate (899287 runs
+# in 121 s), until it has three push runs.
 animations 2.299 22.99 23.63 23.90
 audio_graph 11.699 116.99 127.21 195.57
 av1_decode 1.394 13.94 15.42 27.26
@@ -19,6 +21,7 @@ css_stylesheet 312.200 3122.00 3177.70 4585.92
 devtools_json 3889.936 38899.36 58378.18 60498.51
 dom_api 0.441 4.41 4.63 5.60
 encoding_decode 201.210 2012.10 2025.87 2728.15
+event_stream 743.200 7432.13
 frames 0.262 2.62 3.09 4.63
 glsl_parse 46.158 461.58 537.11 663.84
 gpu_wire 6292.392 62923.92 63139.72 77900.79

@@ -1551,6 +1551,11 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("socket")?
                     .call::<_, Value<'_>>((message.as_str(), data))
             }),
+            Task::Source(message) => self.stepped(&entries, |_, entries| {
+                entries
+                    .get::<_, Function<'_>>("source")?
+                    .call::<_, Value<'_>>((message.as_str(),))
+            }),
             Task::ServiceWorker(message) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("serviceWorker")?

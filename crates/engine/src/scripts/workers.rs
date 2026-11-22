@@ -1202,7 +1202,14 @@ pub(crate) struct WorkerHost {
     /// threads, which wake it through its pool's waker.
     sockets: super::websocket::Sockets,
     socket_news: Arc<Mutex<VecDeque<(u32, crate::loader::SocketUpdate)>>>,
+    /// Its EventSources (G74), and what their connections did, from
+    /// their threads, which wake it.
+    sources: super::event_source::Sources,
+    source_news: SourceNews,
 }
+
+/// What a worker's EventSources' connections did, by source.
+type SourceNews = Arc<Mutex<VecDeque<(u32, crate::loader::event_source::SourceUpdate)>>>;
 
 impl Default for WorkerHost {
     fn default() -> WorkerHost {
@@ -1225,6 +1232,8 @@ impl Default for WorkerHost {
             fetching: HashMap::new(),
             sockets: super::websocket::Sockets::default(),
             socket_news: Arc::default(),
+            sources: super::event_source::Sources::default(),
+            source_news: Arc::default(),
             next_job: 0,
             canvases: Canvases::default(),
             viewport: (0, 0),
@@ -1415,6 +1424,13 @@ impl ScriptingHost for WorkerHost {
                     self.say(ConsoleSource::Engine, ConsoleLevel::Error, said);
                 }
                 self.start_sockets();
+                answer
+            }
+            Call::Source(call) => {
+                let base = self.url.clone();
+                let resolve = |text: &str| base.as_ref().and_then(|base| base.join(text).ok());
+                let answer = self.sources.call(*call, &resolve, self.initiator.clone());
+                self.start_sources();
                 answer
             }
             Call::FetchNow(call) => {
@@ -1701,6 +1717,51 @@ impl WorkerHost {
         }
     }
 
+    /// Opens the EventSources' connections its scripts made (G74), held
+    /// to its policies.
+    fn start_sources(&mut self) {
+        let wanted = std::mem::take(&mut self.sources.wanted);
+        let waker = self.pool.as_ref().and_then(Pool::waker);
+        let Some(client) = self.client.clone() else {
+            // Each fails, its events at the next wake.
+            for wanted in wanted {
+                self.source_news
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_back((
+                        wanted.id,
+                        crate::loader::event_source::SourceUpdate::Failed(None),
+                    ));
+            }
+            if let Some(wake) = &waker {
+                wake();
+            }
+            return;
+        };
+        for wanted in wanted {
+            let mut request = wanted.request;
+            request.partition.clone_from(&self.partition);
+            request.csp.clone_from(&self.csp);
+            request.local_network.clone_from(&self.local_network);
+            let news = self.source_news.clone();
+            let waker = waker.clone();
+            let id = wanted.id;
+            crate::loader::event_source::open_source_with(
+                client.clone(),
+                request,
+                wanted.control,
+                move |update| {
+                    news.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push_back((id, update));
+                    if let Some(wake) = &waker {
+                        wake();
+                    }
+                },
+            );
+        }
+    }
+
     /// The answers of the worker's fetches that finished, as tasks; why
     /// one failed goes to the console. Those aborted are dropped. Its
     /// WebSockets' events come with them.
@@ -1721,6 +1782,21 @@ impl WorkerHost {
         }
         while let Some((json, bytes)) = self.sockets.tasks.pop_front() {
             tasks.push(Task::Socket(json, bytes));
+        }
+        let news: Vec<_> = self
+            .source_news
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        for (id, update) in news {
+            self.sources.arrived(id, update);
+        }
+        for said in std::mem::take(&mut self.sources.said) {
+            self.say(ConsoleSource::Network, ConsoleLevel::Error, said);
+        }
+        while let Some(json) = self.sources.tasks.pop_front() {
+            tasks.push(Task::Source(json));
         }
         while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
             let Some((id, url, _)) = self.fetching.remove(&job) else {

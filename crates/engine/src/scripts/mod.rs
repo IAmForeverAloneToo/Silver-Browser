@@ -16,6 +16,7 @@ mod canvas_tests;
 mod caret;
 mod cssom;
 mod decoding;
+pub(crate) mod event_source;
 mod fetch;
 mod host;
 mod import_map;
@@ -2411,6 +2412,7 @@ impl Scripts {
         self.after_modules(lent, outputs.thrown);
         self.start_fetches(lent, outputs.fetches, outputs.aborted);
         self.start_sockets(lent);
+        self.start_sources(lent);
         self.start_media(lent);
         self.font_changes.extend(outputs.fonts);
         if outputs.viewport.is_some() {
@@ -3044,6 +3046,49 @@ impl Scripts {
         }
     }
 
+    /// Opens the EventSources' connections the run made (G74), held to
+    /// the document's policies as they stand.
+    fn start_sources(&mut self, lent: &mut Lent<'_>) {
+        for wanted in std::mem::take(&mut self.host.event_sources.wanted) {
+            let mut request = wanted.request;
+            request.csp = Some(lent.page.csp(lent.document).clone());
+            if request.referrer_policy.is_none() {
+                request.referrer_policy = Some(lent.page.referrer_policy(lent.document));
+            }
+            lent.network.open_source(
+                lent.page.id(),
+                u64::from(wanted.id),
+                request,
+                wanted.control,
+            );
+        }
+    }
+
+    /// Takes what EventSource `id`'s connection did (G74), which came at
+    /// `now`: the events it fires, queued as tasks; what the console is
+    /// to say of it, said.
+    pub(crate) fn source_arrived(
+        &mut self,
+        id: u64,
+        update: crate::loader::event_source::SourceUpdate,
+        now: Duration,
+    ) {
+        let Ok(id) = u32::try_from(id) else {
+            return;
+        };
+        self.host.event_sources.arrived(id, update);
+        for said in std::mem::take(&mut self.host.event_sources.said) {
+            self.push(ConsoleEntry::of(
+                ConsoleSource::Network,
+                ConsoleLevel::Error,
+                cut(said),
+            ));
+        }
+        while let Some(json) = self.host.event_sources.tasks.pop_front() {
+            self.posted.push_back((now, js::Task::Source(json)));
+        }
+    }
+
     fn start_media(&mut self, lent: &mut Lent<'_>) {
         self.host.flush_gpu();
         if !self.host.media.fetch_pending() {
@@ -3203,6 +3248,7 @@ impl Scripts {
         !self.stopped
             && !self.host.workers.workers.any()
             && !self.host.sockets.any()
+            && !self.host.event_sources.any()
             && !self.host.audio.sounding()
             && !self.host.media.playing()
     }

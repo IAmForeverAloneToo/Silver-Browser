@@ -45,7 +45,7 @@ mod worker_tests;
 pub use backend::{Agent, DEFAULT_ENGINE, Engine, WeakAgent, engine};
 pub use dom::{
     Answer, Call, CanvasCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript,
-    SocketCall, WORK_PER_STEP,
+    SocketCall, SourceCall, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
 /// Sweep builds' dump of the scripts pages run (`dump-scripts`).
@@ -741,6 +741,9 @@ pub enum Task {
     /// the event to fire and its fields, all the host's), and a binary
     /// message's bytes.
     Socket(String, Vec<u8>),
+    /// What an EventSource's connection did (G74), as JSON: its number,
+    /// the event to fire and its fields, all the host's.
+    Source(String),
 }
 
 /// Where a message is delivered (M31).

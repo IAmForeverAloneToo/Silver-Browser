@@ -32,6 +32,9 @@ mod dom_tests;
 mod editing_tests;
 #[cfg(test)]
 mod essentials_tests;
+pub(crate) mod event_source;
+#[cfg(test)]
+mod event_source_tests;
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
@@ -348,6 +351,8 @@ pub(crate) enum Taken {
     Arrived(Arrived),
     /// What a page's WebSocket did (G74).
     Socket(SocketArrived),
+    /// What a page's EventSource's connection did (G74).
+    Source(SourceArrived),
     /// The head of a document's response, its body to come.
     Head {
         page: PageId,
@@ -366,6 +371,13 @@ pub(crate) struct SocketArrived {
     pub(crate) page: PageId,
     pub(crate) id: u64,
     pub(crate) update: SocketUpdate,
+}
+
+/// What a page's EventSource's connection did (G74), in order.
+pub(crate) struct SourceArrived {
+    pub(crate) page: PageId,
+    pub(crate) id: u64,
+    pub(crate) update: event_source::SourceUpdate,
 }
 
 pub(crate) enum SocketUpdate {
@@ -601,6 +613,8 @@ pub(crate) struct Network {
     ready: std::collections::VecDeque<Arrived>,
     /// What the pages' WebSockets did (G74), from their threads.
     sockets: Arc<Mutex<std::collections::VecDeque<SocketArrived>>>,
+    /// What the pages' EventSources' connections did (G74).
+    sources: Arc<Mutex<std::collections::VecDeque<SourceArrived>>>,
     /// The `<link rel=preload>`s a page's preloads are for, by fetch,
     /// each link once; and those settled, whether they loaded, for their
     /// `load` or `error` events.
@@ -639,6 +653,7 @@ impl Network {
             preload_counts: HashMap::new(),
             ready: std::collections::VecDeque::new(),
             sockets: Arc::default(),
+            sources: Arc::default(),
             link_preloads: HashMap::new(),
             links_seen: std::collections::HashSet::new(),
             settled_links: Vec::new(),
@@ -1118,6 +1133,31 @@ impl Network {
         });
     }
 
+    /// Opens an EventSource's connection for `page` (G74), its number
+    /// `id`: `request`'s stream, on a thread of its own, until `control`
+    /// closes it. What it does comes in order as [`Taken::Source`].
+    pub(crate) fn open_source(
+        &mut self,
+        page: PageId,
+        id: u64,
+        mut request: Request,
+        control: Arc<event_source::SourceControl>,
+    ) {
+        self.apply_policies(page, &Target::Fetch, &mut request);
+        let client = self.client_for(&request);
+        let queue = self.sources.clone();
+        let waker = self.waker();
+        event_source::open_source_with(client, request, control, move |update| {
+            queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_back(SourceArrived { page, id, update });
+            if let Some(wake) = &waker {
+                wake();
+            }
+        });
+    }
+
     /// The network's quality its fetches measured: the round trip in
     /// milliseconds and the throughput in megabits a second.
     pub(crate) fn quality(&self) -> (f64, f64) {
@@ -1257,6 +1297,14 @@ impl Network {
             .pop_front()
         {
             return Some(Taken::Socket(socket));
+        }
+        if let Some(source) = self
+            .sources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front()
+        {
+            return Some(Taken::Source(source));
         }
         while let Some((id, result)) = self.pool.try_take() {
             let page = |flights: &HashMap<FetchId, Flight>| flights.get(&id).map(|f| f.page);

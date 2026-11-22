@@ -517,6 +517,8 @@ pub(crate) struct DocumentHost {
     script_options: Vec<super::ScriptOptions>,
     /// Its WebSockets (G74).
     pub(crate) sockets: super::websocket::Sockets,
+    /// Its EventSources (G74).
+    pub(crate) event_sources: super::event_source::Sources,
 }
 
 /// The most sets of script fetch options a document numbers: past them
@@ -2400,6 +2402,13 @@ impl DocumentHost {
                     self.say(ConsoleLevel::Error, said);
                 }
                 answer
+            }
+            Call::Source(call) => {
+                let page = self.page.as_ref();
+                let initiator = page.and_then(|page| page.initiator());
+                let document = &self.document;
+                let resolve = |text: &str| page.and_then(|page| page.resolve_utf8(document, text));
+                self.event_sources.call(*call, &resolve, initiator)
             }
             Call::FetchNow(call) => {
                 let page = self

@@ -230,6 +230,11 @@ fn socket(call: crate::dom::SocketCall) -> Call {
     Call::Socket(Box::new(call))
 }
 
+/// An EventSource's call (G74) as the host is asked it.
+fn source(call: crate::dom::SourceCall) -> Call {
+    Call::Source(Box::new(call))
+}
+
 /// A custom element call (D70) as the host is asked it.
 fn custom(call: CustomCall) -> Call {
     Call::Custom(Box::new(call))
@@ -1060,6 +1065,25 @@ const NATIVES: &[(&str, Decode)] = &[
         Ok(socket(crate::dom::SocketCall::SetBinaryType {
             id: a.integer(0) as u32,
             value: a.string(1)?,
+        }))
+    }),
+    // An EventSource's calls (G74): its number first but for
+    // `sourceOpen`.
+    ("sourceOpen", |a| {
+        Ok(source(crate::dom::SourceCall::Open {
+            url: a.string(0)?,
+            with_credentials: a.bool(1),
+        }))
+    }),
+    ("sourceClose", |a| {
+        Ok(source(crate::dom::SourceCall::Close {
+            id: a.integer(0) as u32,
+        }))
+    }),
+    ("sourceGet", |a| {
+        Ok(source(crate::dom::SourceCall::Get {
+            id: a.integer(0) as u32,
+            name: a.string(1)?,
         }))
     }),
     ("gpu", |a| {

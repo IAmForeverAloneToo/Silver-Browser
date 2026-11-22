@@ -292,6 +292,13 @@ font folders; a file it cannot read, it scans for.
   inflated ones too, and fails the connection on any breach of RFC
   6455 (`fuzz/fuzz_targets/websocket.rs`). A renderer gone closes its
   sockets with 1001.
+- **Server-sent events** (G74). An `EventSource`'s stream is a fetch
+  like any other, in CORS mode, through the browser in a renderer: no
+  new message, and the browser's checks of a fetch hold. The renderer
+  parses the stream itself (`net::event_stream`), each line and each
+  event's data within `MAX_EVENT` (32 MiB), past which the connection
+  ends (`fuzz/fuzz_targets/event_stream.rs`: any bytes, whole and in
+  pieces, alike).
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

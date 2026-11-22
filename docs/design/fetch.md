@@ -657,7 +657,24 @@ and the jar's retrieval with 3,000 cookies kept.
   own over HTTP/1.1; the interface's state and checks in the engine
   (`scripts::websocket`), the bindings a shell over them. In a renderer
   the browser holds the socket (docs/security.md, section 4.10).
-  *Server-sent events* (`EventSource`): G74, next.
+  *Server-sent events* (`EventSource`, G74, done 2026-11-22): the
+  stream parsed by `net::event_stream` as it comes (UTF-8 decoded, a
+  byte order mark dropped, lines ended by CRLF, LF or CR even when cut
+  between pieces), fetched in CORS mode, `no-store`, with `Accept:
+  text/event-stream` and, once an ID was dispatched, `Last-Event-ID`; a
+  connection of its own on a thread of its own, the streaming fetch the
+  loader already has (in a renderer, the browser's, through the link).
+  As the reference browser does (Chrome 157, probed): a status not
+  200, a type not `text/event-stream` or a charset not UTF-8 fails the
+  connection for good, the last two said in the console as Chrome says
+  them; so does a check that refused the fetch (CORS, the policies,
+  mixed content, the address spaces); any other network error, and a
+  stream's end, make it again after 3 seconds or the stream's `retry`.
+  Known deviations: the transport's 60-second read timeout and 64 MiB
+  body bound end a quiet or a long stream, which is then made again
+  with its last event ID (Chrome holds both open); an event's data or
+  a line past 32 MiB (`event_stream::MAX_EVENT`) ends the connection,
+  made again, where Chrome holds what its memory allows.
 - *Cookies on disk*, and the HTTP cache that `Request.cache` names. M28
   and M38.
 - *`Referer` and Referrer Policy*, HSTS, Upgrade-Insecure-Requests and

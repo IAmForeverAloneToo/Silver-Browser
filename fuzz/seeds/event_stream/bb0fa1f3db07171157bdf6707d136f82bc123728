@@ -1,0 +1,13 @@
+retry: 300
+id: 1
+data: a
+data: b
+
+event: custom
+data: c
+
+: comment
+
+id
+data: d
+

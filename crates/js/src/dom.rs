@@ -1238,6 +1238,23 @@ pub enum Call {
     Custom(Box<CustomCall>),
     /// What the WebSocket bindings ask (G74): one variant for them all.
     Socket(Box<SocketCall>),
+    /// What the EventSource bindings ask (G74): one variant for them all.
+    Source(Box<SourceCall>),
+}
+
+/// An EventSource's call (G74, HTML section 9.2). The bindings are a
+/// shell: the URL's check and the state are the host's, which answers
+/// and throws as the reference browser does. Its events come as
+/// `Task::Source`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceCall {
+    /// `new EventSource(url, { withCredentials })`: the source's number,
+    /// a `Number`. `url` as given, the host resolving it.
+    Open { url: String, with_credentials: bool },
+    /// `close()`.
+    Close { id: u32 },
+    /// An attribute's value: `url`, `withCredentials` or `readyState`.
+    Get { id: u32, name: String },
 }
 
 /// A WebSocket's call (G74, WebSockets section 3). The bindings are a

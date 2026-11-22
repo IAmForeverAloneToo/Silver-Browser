@@ -6484,6 +6484,7 @@ impl Engine {
             match taken {
                 loader::Taken::Arrived(arrived) => self.arrived(arrived),
                 loader::Taken::Socket(socket) => self.socket_arrived(socket),
+                loader::Taken::Source(source) => self.source_arrived(source),
                 loader::Taken::Head { page, response } => self.document_head(page, response),
                 loader::Taken::Body { page, bytes } => self.document_body(page, &bytes),
             }
@@ -7081,6 +7082,28 @@ impl Engine {
             && incoming.id() == page
         {
             parsing.scripts.socket_arrived(id, update, now);
+        }
+    }
+
+    /// Gives a page's scripts what its EventSource's connection did
+    /// (G74); a page gone drops it, which closes the connection.
+    fn source_arrived(&mut self, source: loader::SourceArrived) {
+        let now = self.now();
+        let loader::SourceArrived { page, id, update } = source;
+        if page == self.shown.page.id() {
+            self.shown.scripts.source_arrived(id, update, now);
+        } else if let Some(Navigation {
+            incoming:
+                Incoming::Parsing {
+                    page: incoming,
+                    parsing,
+                    ..
+                },
+            ..
+        }) = &mut self.navigation
+            && incoming.id() == page
+        {
+            parsing.scripts.source_arrived(id, update, now);
         }
     }
 

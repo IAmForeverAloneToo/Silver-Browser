@@ -914,7 +914,6 @@ workers/WorkerNavigator_platform.htm	 WorkerNavigator.platform 	as the reference
 workers/WorkerNavigator_userAgentData.http.html	Test that userAgentData is not available in workers in non-secure contexts	the runner's hosts are under localhost, potentially trustworthy, so its http: page and worker are secure contexts, which have userAgentData; it sees FAIL: assert_equals: expected (undefined) undefined but got (object) [object "[object Object]", object "[object Object]", object "[object Object]"]
 workers/constructors/Worker/DedicatedWorkerGlobalScope-members.worker.html	existence of onoffline	the reference browser's worker has no onoffline or ononline either (probe p1)
 workers/constructors/Worker/DedicatedWorkerGlobalScope-members.worker.html	existence of ononline	the reference browser's worker has no onoffline or ononline either (probe p1)
-workers/constructors/Worker/expected-self-properties.worker.html	existence of EventSource	no WebSocket or EventSource (G74)
 workers/constructors/Worker/same-origin.html	about_blank	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	example_invalid	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
 workers/constructors/Worker/same-origin.html	http_post_8012	another origin's script: the reference browser throws a SecurityError from the constructor (probe p3), as this engine does, where the standard fails the fetch
@@ -1056,8 +1055,6 @@ html/webappapis/structured-clone/structured-clone-cross-realm-method.html	Date i
 html/webappapis/structured-clone/structured-clone-cross-realm-method.html	RegExp instance	a script reaching into another frame's document, globals or location, same-origin scripting across frames being M34's (G90)
 content-security-policy/font-src/font-match-allowed.sub.html	Test font loads if it matches font-src.	a font preloaded from another origin without crossorigin is a no-cors request whose answer the engine's opaque response blocking refuses, so its link hears error; not diagnosed against the reference browser further
 content-security-policy/connect-src/connect-src-beacon-blocked.sub.html	Expecting logs: ["Pass", "violated-directive=connect-src"]	no navigator.sendBeacon, which no milestone holds
-content-security-policy/connect-src/connect-src-eventsource-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
-content-security-policy/connect-src/connect-src-eventsource-blocked.sub.html	Expecting logs: ["blocked","violated-directive=connect-src"]	no WebSocket or EventSource (G74)
 content-security-policy/connect-src/connect-src-websocket-allowed.sub.html	Expecting logs: ["allowed"]	no WebSocket or EventSource (G74)
 content-security-policy/connect-src/worker-from-guid.sub.html	Expecting logs: ["violated-directive=connect-src","xhr blocked","TEST COMPLETE"]	a `blob:` worker's violations of the policy it inherits are not reported to its document (no milestone yet)
 content-security-policy/default-src/default-src-sri_hash.sub.html	matching integrity	Subresource Integrity (G43)
@@ -1613,7 +1610,6 @@ url/javascript-urls.window.html	javascript: URL containing a JavaScript string s
 workers/dedicated-worker-from-blob-url.window.html	Creating a dedicated worker from a blob URL works immediately before revoking.	either: a blob: URL resolved when the worker's script is fetched, not when it is parsed (G223): the fetch may start before the revocation or after it
 workers/interfaces/WorkerUtils/importScripts/blob-url.worker.html	Revoking a blob URL in an earlier script will not fail	a blob: URL resolved when the worker's script is fetched, not when it is parsed: revoked at once, it is gone (G223)
 workers/semantics/interface-objects/001.worker.html	The PromiseRejectionEvent interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
-workers/semantics/interface-objects/001.worker.html	The EventSource interface object should be exposed.	no WebSocket or EventSource (G74)
 workers/semantics/interface-objects/001.worker.html	The BroadcastChannel interface object should be exposed.	no BroadcastChannel in a worker (G216)
 workers/semantics/interface-objects/001.worker.html	The FileList interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
 workers/semantics/interface-objects/001.worker.html	The FileReaderSync interface object should be exposed.	a worker's global lacks FileList, FileReaderSync and PromiseRejectionEvent (G85)
