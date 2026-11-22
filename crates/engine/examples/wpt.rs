@@ -187,6 +187,9 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     // window, but for the directories of [`CANVAS_LEFT_OUT`].
     ("html/canvas/element", ""),
     ("html/canvas/offscreen", ""),
+    // Server-sent events (G74), their Python handlers written natively
+    // by the runner.
+    ("eventsource", ""),
     // Workers and messages (M31): dedicated workers, channel messaging
     // without frames, and the structured clone.
     ("workers", ""),
@@ -339,6 +342,10 @@ const HOST_HELPERS: &[(&str, &[&str])] = &[(
 /// The directories of files the testharness tests read, copied whole
 /// but for wptserve's Python handlers and templates.
 const SUPPORT_DIRECTORIES: &[&str] = &[
+    // Server-sent events' streams and pages (G74), and the scripts its
+    // dedicated workers run.
+    "eventsource/resources",
+    "eventsource/dedicated-worker",
     // The fonts tests load by their style sheets (gap batch D), those of
     // the checkout's that were fetched.
     "fonts",
@@ -675,6 +682,7 @@ fn pull(checkout: &Path) -> Result<(), String> {
         text.push('\n');
     }
     fs::write(out.join("MANIFEST"), text).map_err(|e| e.to_string())?;
+    fs::write(out.join("VENDORED"), vendored(&out, &files)?).map_err(|e| e.to_string())?;
     fs::write(
         out.join("README.md"),
         readme(&commit, &date, &counts, &left_out),
@@ -691,6 +699,32 @@ fn pull(checkout: &Path) -> Result<(), String> {
         files.len()
     );
     Ok(())
+}
+
+/// `tests/wpt/VENDORED`: each file the pull copied from the checkout
+/// verbatim, its path and the SHA-256 of its bytes, by which a commit
+/// may carry its bytes past ASCII and nothing else may (G74; the lead's
+/// ruling of 2026-11-22). A path's bytes past ASCII are percent-encoded.
+fn vendored(out: &Path, files: &BTreeSet<String>) -> Result<String, String> {
+    let mut text = String::from(
+        "# The files of the web-platform-tests subset copied verbatim from\n\
+         # upstream: path, a tab, the SHA-256 of its bytes. Written by `wpt\n\
+         # pull`; commit.sh lets a line past ASCII into these alone.\n",
+    );
+    let names = files.iter().map(String::as_str).chain(["LICENSE.md"]);
+    for file in names {
+        let bytes = fs::read(out.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let mut path = String::new();
+        for byte in file.bytes() {
+            match byte {
+                0x20..=0x7e if byte != b'%' => path.push(char::from(byte)),
+                _ => path.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        let digest = net::test_server::sha256_hex(&bytes);
+        text.push_str(&format!("{path}\t{digest}\n"));
+    }
+    Ok(text)
 }
 
 /// The checkout's commit and its date.
@@ -833,6 +867,40 @@ fn without_comments(text: &str) -> String {
     out
 }
 
+/// The Python handlers `tests/wpt.rs` writes natively, by the
+/// directory whose tests may name them (G74), and the pipes it applies:
+/// a test of such a directory naming these alone is served here.
+const NATIVE_HANDLERS: &[(&str, &[&str])] = &[(
+    "eventsource/",
+    &[
+        "resources/message.py",
+        "resources/message2.py",
+        "resources/status-error.py",
+        "resources/reconnect-fail.py",
+        "resources/status-reconnect.py",
+        "resources/last-event-id.py",
+        "resources/last-event-id2.py",
+        "resources/cors.py",
+        "resources/cors-cookie.py",
+        "/common/redirect.py",
+        "pipe=sub",
+    ],
+)];
+
+/// `text` of the test at `rel` with the natively served handlers and
+/// pipes its directory may name taken out, for [`served_here`].
+fn natively_served(rel: &str, text: &str) -> String {
+    let mut text = text.to_owned();
+    for (directory, names) in NATIVE_HANDLERS {
+        if rel.starts_with(directory) {
+            for name in *names {
+                text = text.replace(name, "native");
+            }
+        }
+    }
+    text
+}
+
 /// Fails on what only wptserve can serve: a Python handler, a pipe
 /// that shapes a response, or a page of another host than the runner's
 /// one; and on what has no global here: a worker, or a frame or a
@@ -889,7 +957,7 @@ fn take_testharness(
     } else {
         without_comments(&source)
     };
-    served_here(&text)?;
+    served_here(&natively_served(rel, &text))?;
     let workers = WORKER_DIRECTORIES.iter().any(|d| rel.starts_with(d));
     if workers {
         // A module worker made through a helper, its type a variable:
@@ -1034,7 +1102,7 @@ fn take_testharness(
         }
         let text = fs::read(checkout.join(script)).map_err(|_| format!("missing file {script}"))?;
         let text = String::from_utf8_lossy(&text);
-        served_here(&text)?;
+        served_here(&natively_served(rel, &text))?;
         if workers {
             workers_rule(&text, true)?;
         }

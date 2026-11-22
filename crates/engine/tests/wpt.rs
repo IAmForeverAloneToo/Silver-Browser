@@ -322,7 +322,7 @@ fn runner_hosts() -> net::transport::Config {
 /// The ports a template names, as wptserve's `{{ports[scheme][i]}}`: the
 /// harness's server and a second one serving the same for `http`, an
 /// `https:` one for `https`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Ports {
     http: Vec<u16>,
     https: Vec<u16>,
@@ -524,6 +524,8 @@ fn content_type(path: &str) -> &'static str {
         Some("txt") => "text/plain",
         Some("json") => "application/json",
         Some("xml") => "application/xml",
+        // wptserve's own name for the type (G74).
+        Some("event_stream") => "text/event-stream",
         _ => "application/octet-stream",
     }
 }
@@ -893,7 +895,7 @@ fn answer(root: &Path, harness: bool, request: &net::test_server::ServerRequest)
         .unwrap_or(80);
     let ports = PORTS.get().cloned().unwrap_or_else(|| Ports {
         http: vec![port],
-        https: Vec::new(),
+        ..Ports::default()
     });
     if harness && let Some(reply) = handler(file, request) {
         return reply;
@@ -956,7 +958,10 @@ fn answer(root: &Path, harness: bool, request: &net::test_server::ServerRequest)
     let Ok(mut body) = fs::read(root.join(file)) else {
         return not_found();
     };
-    if file.contains(".sub.") {
+    // A template: by its name, or by the `sub` pipe its URL asks for.
+    let sub_pipe =
+        query_value(request, "pipe").is_some_and(|pipe| pipe.split('|').any(|step| step == "sub"));
+    if file.contains(".sub.") || sub_pipe {
         body = substitute(&String::from_utf8_lossy(&body), request, port, &ports).into_bytes();
     }
     if file.ends_with(".asis") {
@@ -1000,6 +1005,9 @@ fn query_value(request: &net::test_server::ServerRequest, name: &str) -> Option<
 /// does not hold; theirs are made here from what their tests say they
 /// do.
 fn handler(file: &str, request: &net::test_server::ServerRequest) -> Option<Reply> {
+    if let Some(name) = file.strip_prefix("eventsource/resources/") {
+        return event_source_handler(name, request, &[]);
+    }
     let name = file.rsplit('/').next().unwrap_or(file);
     match name {
         // `/common/redirect.py` and its copies: `status` (302 by
@@ -1043,6 +1051,252 @@ fn handler(file: &str, request: &net::test_server::ServerRequest) -> Option<Repl
         }
         _ => None,
     }
+}
+
+/// The value of the cookie `name` the request sent, if it sent one.
+fn cookie_value(request: &net::test_server::ServerRequest, name: &str) -> Option<String> {
+    request
+        .headers
+        .iter()
+        .filter(|(field, _)| field.eq_ignore_ascii_case("Cookie"))
+        .flat_map(|(_, value)| value.split(';'))
+        .find_map(|pair| {
+            let (key, value) = pair.trim().split_once('=')?;
+            (key == name).then(|| value.to_owned())
+        })
+}
+
+/// A response of `status` with its reason, `fields` and a body, its
+/// length said.
+fn answer_with(status: u16, reason: &str, fields: &[(String, String)], body: &[u8]) -> Reply {
+    let mut bytes = format!("HTTP/1.1 {status} {reason}\r\n").into_bytes();
+    for (name, value) in fields {
+        bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    bytes.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    bytes.extend_from_slice(body);
+    Reply::Send(bytes)
+}
+
+/// The Python handlers of `eventsource/resources/` (G74), written
+/// natively from their sources, by name: `extra` are fields `cors.py`
+/// adds before it runs another. `None` for a file served as it is.
+fn event_source_handler(
+    name: &str,
+    request: &net::test_server::ServerRequest,
+    extra: &[(String, String)],
+) -> Option<Reply> {
+    let get = |key: &str| query_value(request, key);
+    let stream = |mut fields: Vec<(String, String)>| {
+        fields.insert(
+            0,
+            ("Content-Type".to_owned(), "text/event-stream".to_owned()),
+        );
+        fields.extend(extra.iter().cloned());
+        fields
+    };
+    let set_cookie =
+        |name: &str, value: &str| ("Set-Cookie".to_owned(), format!("{name}={value}; Path=/"));
+    let delete_cookie = |name: &str| {
+        (
+            "Set-Cookie".to_owned(),
+            format!("{name}=; Path=/; Max-Age=0"),
+        )
+    };
+    Some(match name {
+        // `mime`, `message`, `newline=none` and `sleep` in milliseconds.
+        "message.py" => {
+            let mime = get("mime").unwrap_or_else(|| "text/event-stream".to_owned());
+            let message = get("message").unwrap_or_else(|| "data: data".to_owned());
+            let newline = if get("newline").as_deref() == Some("none") {
+                ""
+            } else {
+                "\n\n"
+            };
+            let body = format!("{message}{newline}\n");
+            let mut fields = vec![("Content-Type".to_owned(), mime)];
+            fields.extend(extra.iter().cloned());
+            let reply = answer_with(200, "OK", &fields, body.as_bytes());
+            let sleep = get("sleep")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .unwrap_or(0);
+            match sleep {
+                0 => reply,
+                ms => Reply::After(Duration::from_millis(ms.min(10_000)), Box::new(reply)),
+            }
+        }
+        // A stream that never ends: its messages every two seconds, a
+        // minute of them here, in chunks.
+        "message2.py" => {
+            let text = "data:msg\ndata: msg\n\n:\nfalsefield:msg\n\nfalsefield:msg\nData:data\n\ndata\n\ndata:end\n\n";
+            let chunk = format!("{:X}\r\n{text}\r\n", text.len()).into_bytes();
+            let mut head = String::from("HTTP/1.1 200 OK\r\n");
+            for (name, value) in stream(vec![("Cache-Control".to_owned(), "no-cache".to_owned())]) {
+                head.push_str(&format!("{name}: {value}\r\n"));
+            }
+            head.push_str("Transfer-Encoding: chunked\r\n\r\n");
+            let mut pieces = vec![(Duration::ZERO, head.into_bytes())];
+            for i in 0..30 {
+                let wait = if i == 0 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(2)
+                };
+                pieces.push((wait, chunk.clone()));
+            }
+            pieces.push((Duration::ZERO, b"0\r\n\r\n".to_vec()));
+            Reply::Pieces(pieces)
+        }
+        // `status` (404 by default), its reason `HAHAHAHA`.
+        "status-error.py" => {
+            let status = get("status").and_then(|s| s.parse().ok()).unwrap_or(404);
+            let body: &[u8] = if matches!(status, 204 | 205) {
+                b""
+            } else {
+                b"data: data\n\n"
+            };
+            answer_with(status, "HAHAHAHA", &stream(Vec::new()), body)
+        }
+        // Opened, then reconnected, then closed with a 204, by a cookie.
+        "reconnect-fail.py" => {
+            let cookie = format!("recon_fail_{}", get("id").unwrap_or_default());
+            match cookie_value(request, &cookie).as_deref() {
+                Some("opened") => answer_with(
+                    200,
+                    "RECONNECT",
+                    &stream(vec![set_cookie(&cookie, "reconnected")]),
+                    b"data: reconnected\n\n",
+                ),
+                Some("reconnected") => answer_with(
+                    204,
+                    "NO CONTENT (CLOSE)",
+                    &stream(vec![delete_cookie(&cookie)]),
+                    b"",
+                ),
+                _ => answer_with(
+                    200,
+                    "OPEN",
+                    &stream(vec![set_cookie(&cookie, "opened")]),
+                    b"retry: 2\ndata: opened\n\n",
+                ),
+            }
+        }
+        // `status` the first time (204 by default), 200 the next.
+        "status-reconnect.py" => {
+            let status = get("status").unwrap_or_else(|| "204".to_owned());
+            let cookie = format!("request{}", get("id").unwrap_or_else(|| status.clone()));
+            if cookie_value(request, &cookie).as_deref() == Some(status.as_str()) {
+                answer_with(
+                    200,
+                    "OK",
+                    &stream(vec![delete_cookie(&cookie)]),
+                    b"data: data\n\n",
+                )
+            } else {
+                let mut body = b"retry: 2\n".to_vec();
+                if get("ok_first").is_some() {
+                    body.extend_from_slice(b"data: ok\n\n");
+                }
+                let code = status.parse().unwrap_or(204);
+                answer_with(
+                    code,
+                    "TEST",
+                    &stream(vec![set_cookie(&cookie, &status)]),
+                    &body,
+                )
+            }
+        }
+        // The request's `Last-Event-ID` sent back, or an ID to send.
+        "last-event-id.py" => {
+            let body = match request.header("Last-Event-ID").filter(|id| !id.is_empty()) {
+                Some(id) => format!("data: {id}\n\n"),
+                None => {
+                    let id = get("idvalue").unwrap_or_else(|| "\u{2026}".to_owned());
+                    format!("id: {id}\nretry: 200\ndata: hello\n\n")
+                }
+            };
+            answer_with(200, "OK", &stream(Vec::new()), body.as_bytes())
+        }
+        "last-event-id2.py" => {
+            let body: &[u8] = match get("type").and_then(|t| t.parse().ok()).unwrap_or(1) {
+                1 => b"id: 1\ndata: 1\n\ndata: 2\n\nid: 2\ndata:3\n\ndata:4\n\n",
+                2 => b"id: 1\ndata: 1\n\nid:\ndata:2\n\ndata:3\n\n",
+                3 => b"id: 1\ndata: 1\n\nid\ndata:2\n\ndata:3\n\n",
+                _ => b"data: invalid_test\n\n",
+            };
+            answer_with(200, "OK", &stream(Vec::new()), body)
+        }
+        // CORS fields, then `run`: another handler, or the redirect.
+        "cors.py" => {
+            let origin = get("origin")
+                .or_else(|| request.header("Origin").map(str::to_owned))
+                .unwrap_or_default();
+            let credentials = get("credentials").unwrap_or_else(|| "true".to_owned());
+            let cors = vec![
+                ("Access-Control-Allow-Origin".to_owned(), origin),
+                ("Access-Control-Allow-Credentials".to_owned(), credentials),
+            ];
+            match get("run").as_deref() {
+                Some("status-reconnect") => {
+                    return event_source_handler("status-reconnect.py", request, &cors);
+                }
+                Some("message") => return event_source_handler("message.py", request, &cors),
+                Some("cache-control") => {
+                    let value = request.header("Cache-Control").unwrap_or("");
+                    let mut fields = stream(Vec::new());
+                    fields.extend(cors);
+                    answer_with(200, "OK", &fields, format!("data: {value}\n\n").as_bytes())
+                }
+                Some("redirect") => {
+                    let status = get("status").and_then(|s| s.parse().ok()).unwrap_or(302);
+                    let mut fields =
+                        vec![("Location".to_owned(), get("location").unwrap_or_default())];
+                    fields.extend(cors);
+                    answer_with(status, "Redirect", &fields, b"")
+                }
+                _ => answer_with(200, "OK", &cors, b""),
+            }
+        }
+        // A cookie set, sent back, then expired, by the last event ID.
+        "cors-cookie.py" => {
+            let last = request.header("Last-Event-Id").unwrap_or("").to_owned();
+            let ident = get("ident").unwrap_or_else(|| "test".to_owned());
+            let cookie = if cookie_value(request, &ident).is_some() {
+                "COOKIE"
+            } else {
+                "NO_COOKIE"
+            };
+            let origin = get("origin")
+                .or_else(|| request.header("Origin").map(str::to_owned))
+                .unwrap_or_default();
+            let credentials = get("credentials").unwrap_or_else(|| "true".to_owned());
+            let mut fields = Vec::new();
+            if origin != "none" {
+                fields.push(("Access-Control-Allow-Origin".to_owned(), origin));
+            }
+            if credentials != "none" {
+                fields.push(("Access-Control-Allow-Credentials".to_owned(), credentials));
+            }
+            let body = match last.as_str() {
+                "" => {
+                    fields.push(("Content-Type".to_owned(), "text/event-stream".to_owned()));
+                    fields.push(set_cookie(&ident, "COOKIE"));
+                    format!("id: 1\nretry: 200\ndata: first {cookie}\n\n")
+                }
+                "1" => {
+                    fields.push(("Content-Type".to_owned(), "text/event-stream".to_owned()));
+                    fields.push(delete_cookie(&ident));
+                    format!("id: 2\ndata: second {cookie}\n\n")
+                }
+                _ => {
+                    fields.push(("Content-Type".to_owned(), "stop".to_owned()));
+                    format!("data: {last}{cookie}\n\n")
+                }
+            };
+            answer_with(200, "OK", &fields, body.as_bytes())
+        }
+        _ => return None,
+    })
 }
 
 /// The subframes of `xhr/xmlhttprequest-sync-block-defer-scripts.html`
@@ -1501,6 +1755,41 @@ fn the_python_handlers_answer_as_wptserve_does() {
     assert!(
         piped.contains("\r\nAccess-Control-Allow-Origin: *\r\n"),
         "{piped}"
+    );
+    // The EventSource handlers (G74): a status with wptserve's reason,
+    // an ID sent back, a reconnection's cookie state.
+    let error = text(handler(
+        "eventsource/resources/status-error.py",
+        &get("/eventsource/resources/status-error.py?status=204", &[]),
+    ));
+    assert!(error.starts_with("HTTP/1.1 204 HAHAHAHA\r\n"), "{error}");
+    assert!(error.ends_with("Content-Length: 0\r\n\r\n"), "{error}");
+    let echoed = text(handler(
+        "eventsource/resources/last-event-id.py",
+        &get(
+            "/eventsource/resources/last-event-id.py",
+            &[("Last-Event-ID", "7")],
+        ),
+    ));
+    assert!(echoed.ends_with("\r\n\r\ndata: 7\n\n"), "{echoed}");
+    let opened = text(handler(
+        "eventsource/resources/reconnect-fail.py",
+        &get("/eventsource/resources/reconnect-fail.py?id=9", &[]),
+    ));
+    assert!(
+        opened.contains("Set-Cookie: recon_fail_9=opened; Path=/\r\n"),
+        "{opened}"
+    );
+    let closed = text(handler(
+        "eventsource/resources/reconnect-fail.py",
+        &get(
+            "/eventsource/resources/reconnect-fail.py?id=9",
+            &[("Cookie", "recon_fail_9=reconnected")],
+        ),
+    ));
+    assert!(
+        closed.starts_with("HTTP/1.1 204 NO CONTENT (CLOSE)\r\n"),
+        "{closed}"
     );
 }
 

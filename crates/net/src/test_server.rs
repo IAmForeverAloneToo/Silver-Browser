@@ -460,6 +460,15 @@ fn fill(shared: &Shared, stream: &mut ServerStream, buffered: &mut Vec<u8>) -> i
 /// Years a certificate is valid over that cover any day a test runs.
 pub const VALID: (i32, i32) = (2000, 3000);
 
+/// `bytes`' SHA-256 digest in lowercase hex: the web-platform tests'
+/// pull records each file it vendors by it (`tests/wpt/VENDORED`, G74).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    crate::csp::digest(crate::csp::Hash::Sha256, bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// A certificate authority made for one test, and certificates it
 /// issues.
 pub struct TestAuthority {

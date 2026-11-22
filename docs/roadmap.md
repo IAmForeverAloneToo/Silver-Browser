@@ -3960,6 +3960,10 @@ Deferred from the milestones above, each with what it waits on:
 Gaps found while the G list is frozen. Each becomes work only when the
 site sweep or the dogfood sessions show a site breaking on it.
 
+- `window.stop()` is missing: a script cannot stop its document's
+  loads, nor its EventSources (WPT `xhr/open-after-stop`,
+  `eventsource/eventsource-request-cancellation`). Found by G74.
+
 - `getComputedStyle` returns a `url()` as written, not absolute, for
   inline `<style>` sheets and shadow trees' alike; Chrome resolves it
   against the sheet's base when parsing. Both paths are to be fixed
