@@ -221,10 +221,19 @@ First push (Proton's gate and its load-time steps):
   `hash` read twice), and SHA-1/256/384/512,
   AES-GCM (96-bit IVs, 128-bit tags), HMAC, HKDF, PBKDF2, and
   RSASSA-PKCS1-v1_5 public keys (JWK import, verify, JWK and SPKI
-  export), each export the reference allows. An RSA SPKI's import waits
-  for the aws-lc module (its getters; aws-lc-rs's need `ring-io`, whose
-  `untrusted` would be a second version in the tree, which cargo-deny
-  refuses).
+  export), each export the reference allows.
+
+Second push: `native`, the one module of calls into aws-lc's C library
+(aws-lc-sys, pinned `=0.45.0`, the version aws-lc-rs brings), on the
+lead's conditions: AES-GCM with any IV and tag length the reference
+allows (96 and 128 bits stay aws-lc-rs's), and an RSA public key's
+parts (an SPKI read by aws-lc-rs, its PKCS #1 key by the library;
+never DER read here). Next, the lead's ruling (a): RSA generation over
+the reference's range, and RSA's operations for keys outside
+aws-lc-rs's ranges (public under 1024 bits, private under 2048), routed
+by size in one function, the safe API always inside them. Each C object freed by its wrapper on
+every path, every return code checked, every script-controlled length
+checked first, the tag checked by the library.
 - The bindings a shell (`SubtleCrypto`, `CryptoKey`), `crypto.subtle` in
   secure contexts and workers alone; a call's promise settles in a task
   (`Task::Crypto`); a key is its number in script.

@@ -1,0 +1,546 @@
+//! The few calls into aws-lc's C library that aws-lc-rs's safe API lacks
+//! (G255; the lead's ruling of 2026-11-23): AES-GCM with any IV and tag
+//! length the reference allows, and an RSA public key's parts; RSA's
+//! generation and operations outside aws-lc-rs's ranges come next. Every
+//! unsafe call of the crate is here.
+//!
+//! The rules this module keeps: each C object is owned by a wrapper that
+//! frees it on every path (`Context`, `Rsa`, `Bignum`); every return code
+//! is checked, a failure an `Err(Failed)` and never a panic across the
+//! boundary; every length a script controls is checked in Rust before
+//! the call that takes it (against `c_int`'s range, and, for an IV and a
+//! tag, against what the reference allows, so that its errors come
+//! first); a tag is checked by the library (`EVP_DecryptFinal_ex`,
+//! constant time), never by a comparison here. (`Context` and `Rsa` are
+//! its wrappers.)
+
+#![allow(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use std::os::raw::{c_int, c_void};
+use std::ptr;
+
+use aws_lc_sys as sys;
+
+/// A call into the library failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Failed;
+
+/// A length as the library's `int`, or `Failed` past its range.
+fn c_len(len: usize) -> Result<c_int, Failed> {
+    c_int::try_from(len).map_err(|_| Failed)
+}
+
+/// An `EVP_CIPHER_CTX`, freed as it goes.
+struct Context(*mut sys::EVP_CIPHER_CTX);
+
+impl Context {
+    fn new() -> Result<Context, Failed> {
+        // SAFETY: `EVP_CIPHER_CTX_new` takes nothing and returns a new
+        // context or null; null is refused below.
+        let ctx = unsafe { sys::EVP_CIPHER_CTX_new() };
+        if ctx.is_null() {
+            return Err(Failed);
+        }
+        Ok(Context(ctx))
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `EVP_CIPHER_CTX_new`, is not null,
+        // and is freed once, here.
+        unsafe { sys::EVP_CIPHER_CTX_free(self.0) };
+    }
+}
+
+/// Whether the return code of the call named `site` says it worked (1).
+/// A test build can make any one call fail (`tests::failing`), so that
+/// each check is seen to turn a failure into `Failed`.
+fn ok(site: &'static str, code: c_int) -> Result<(), Failed> {
+    #[cfg(test)]
+    let code = if tests::FAIL.get() == Some(site) {
+        0
+    } else {
+        code
+    };
+    #[cfg(not(test))]
+    let _ = site;
+    if code == 1 { Ok(()) } else { Err(Failed) }
+}
+
+/// Counts, in a test build, each time an operation reaches the library,
+/// so that a test can say what is refused never does.
+fn reached() {
+    #[cfg(test)]
+    tests::REACHED.set(tests::REACHED.get() + 1);
+}
+
+/// The GCM cipher for a key of `len` bytes.
+fn gcm_cipher(len: usize) -> Result<*const sys::EVP_CIPHER, Failed> {
+    reached();
+    // SAFETY: each returns a pointer to a static cipher description,
+    // never null, which is not freed.
+    let cipher = unsafe {
+        match len {
+            16 => sys::EVP_aes_128_gcm(),
+            32 => sys::EVP_aes_256_gcm(),
+            _ => return Err(Failed),
+        }
+    };
+    if cipher.is_null() {
+        Err(Failed)
+    } else {
+        Ok(cipher)
+    }
+}
+
+/// AES-GCM's tag lengths, in bytes, that the reference allows (its 32,
+/// 64, 96, 104, 112, 120 and 128 bits).
+pub(crate) fn gcm_tag_allowed(bytes: usize) -> bool {
+    matches!(bytes, 4 | 8 | 12 | 13 | 14 | 15 | 16)
+}
+
+/// Checks, by their lengths, what the caller must have checked already,
+/// so that nothing out of range reaches the library.
+fn gcm_lengths(key: usize, iv: usize, aad: usize, data: usize, tag: usize) -> Result<(), Failed> {
+    if iv == 0 {
+        return Err(Failed);
+    }
+    if !gcm_tag_allowed(tag) {
+        return Err(Failed);
+    }
+    if !matches!(key, 16 | 32) {
+        return Err(Failed);
+    }
+    c_len(iv)?;
+    c_len(aad)?;
+    c_len(data)?;
+    Ok(())
+}
+
+/// AES-GCM's encryption with any IV and tag length: the ciphertext, then
+/// the tag of `tag` bytes.
+pub(crate) fn gcm_seal(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    plain: &[u8],
+    tag: usize,
+) -> Result<Vec<u8>, Failed> {
+    gcm_lengths(key.len(), iv.len(), aad.len(), plain.len(), tag)?;
+    let cipher = gcm_cipher(key.len())?;
+    let ctx = Context::new()?;
+    // GCM's output is as long as its input; the final call writes
+    // nothing, the room for a block given all the same.
+    let mut out = vec![0u8; plain.len() + 16 + tag];
+    let mut written: c_int = 0;
+    let mut last: c_int = 0;
+    // SAFETY: `ctx.0` is a live context; `cipher` a static cipher; the
+    // key, IV and AAD pointers are valid for the lengths given, which
+    // were checked against `c_int` and the cipher's key size above; `out`
+    // has room for the input and a block; the out-pointers are live
+    // `c_int`s. Every return code is checked.
+    unsafe {
+        ok(
+            "EncryptInit cipher",
+            sys::EVP_EncryptInit_ex(ctx.0, cipher, ptr::null_mut(), ptr::null(), ptr::null()),
+        )?;
+        ok(
+            "SetIvLen",
+            sys::EVP_CIPHER_CTX_ctrl(
+                ctx.0,
+                sys::EVP_CTRL_GCM_SET_IVLEN,
+                c_len(iv.len())?,
+                ptr::null_mut(),
+            ),
+        )?;
+        ok(
+            "EncryptInit key",
+            sys::EVP_EncryptInit_ex(
+                ctx.0,
+                ptr::null(),
+                ptr::null_mut(),
+                key.as_ptr(),
+                iv.as_ptr(),
+            ),
+        )?;
+        if !aad.is_empty() {
+            let mut aad_out: c_int = 0;
+            ok(
+                "EncryptUpdate aad",
+                sys::EVP_EncryptUpdate(
+                    ctx.0,
+                    ptr::null_mut(),
+                    &mut aad_out,
+                    aad.as_ptr(),
+                    c_len(aad.len())?,
+                ),
+            )?;
+        }
+        ok(
+            "EncryptUpdate",
+            sys::EVP_EncryptUpdate(
+                ctx.0,
+                out.as_mut_ptr(),
+                &mut written,
+                plain.as_ptr(),
+                c_len(plain.len())?,
+            ),
+        )?;
+        let at = usize::try_from(written).map_err(|_| Failed)?;
+        if at > plain.len() + 16 {
+            return Err(Failed);
+        }
+        ok(
+            "EncryptFinal",
+            sys::EVP_EncryptFinal_ex(ctx.0, out.as_mut_ptr().add(at), &mut last),
+        )?;
+    }
+    let len = usize::try_from(written).map_err(|_| Failed)?
+        + usize::try_from(last).map_err(|_| Failed)?;
+    if len != plain.len() {
+        return Err(Failed);
+    }
+    let mut tag_bytes = vec![0u8; tag];
+    // SAFETY: `ctx.0` is live and finished; `tag_bytes` has room for the
+    // `tag` bytes asked for, a length checked against the allowed set.
+    unsafe {
+        ok(
+            "GetTag",
+            sys::EVP_CIPHER_CTX_ctrl(
+                ctx.0,
+                sys::EVP_CTRL_GCM_GET_TAG,
+                c_len(tag)?,
+                tag_bytes.as_mut_ptr().cast::<c_void>(),
+            ),
+        )?;
+    }
+    out.truncate(len);
+    out.extend_from_slice(&tag_bytes);
+    Ok(out)
+}
+
+/// AES-GCM's decryption with any IV and tag length: `sealed` is the
+/// ciphertext and its tag of `tag` bytes. The tag is checked by the
+/// library; a wrong one is `Failed`.
+pub(crate) fn gcm_open(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    sealed: &[u8],
+    tag: usize,
+) -> Result<Vec<u8>, Failed> {
+    if sealed.len() < tag {
+        return Err(Failed);
+    }
+    let (data, tag_bytes) = sealed.split_at(sealed.len() - tag);
+    gcm_lengths(key.len(), iv.len(), aad.len(), data.len(), tag)?;
+    let cipher = gcm_cipher(key.len())?;
+    let ctx = Context::new()?;
+    let mut out = vec![0u8; data.len() + 16];
+    let mut tag_copy = tag_bytes.to_vec();
+    let mut written: c_int = 0;
+    let mut last: c_int = 0;
+    // SAFETY: as in `gcm_seal`: a live context, a static cipher, pointers
+    // valid for the checked lengths, `out` with room for the input and a
+    // block; `tag_copy` holds the `tag` bytes the library reads. Every
+    // return code is checked; `EVP_DecryptFinal_ex` checks the tag.
+    unsafe {
+        ok(
+            "DecryptInit cipher",
+            sys::EVP_DecryptInit_ex(ctx.0, cipher, ptr::null_mut(), ptr::null(), ptr::null()),
+        )?;
+        ok(
+            "SetIvLen",
+            sys::EVP_CIPHER_CTX_ctrl(
+                ctx.0,
+                sys::EVP_CTRL_GCM_SET_IVLEN,
+                c_len(iv.len())?,
+                ptr::null_mut(),
+            ),
+        )?;
+        ok(
+            "DecryptInit key",
+            sys::EVP_DecryptInit_ex(
+                ctx.0,
+                ptr::null(),
+                ptr::null_mut(),
+                key.as_ptr(),
+                iv.as_ptr(),
+            ),
+        )?;
+        if !aad.is_empty() {
+            let mut aad_out: c_int = 0;
+            ok(
+                "DecryptUpdate aad",
+                sys::EVP_DecryptUpdate(
+                    ctx.0,
+                    ptr::null_mut(),
+                    &mut aad_out,
+                    aad.as_ptr(),
+                    c_len(aad.len())?,
+                ),
+            )?;
+        }
+        ok(
+            "DecryptUpdate",
+            sys::EVP_DecryptUpdate(
+                ctx.0,
+                out.as_mut_ptr(),
+                &mut written,
+                data.as_ptr(),
+                c_len(data.len())?,
+            ),
+        )?;
+        ok(
+            "SetTag",
+            sys::EVP_CIPHER_CTX_ctrl(
+                ctx.0,
+                sys::EVP_CTRL_GCM_SET_TAG,
+                c_len(tag)?,
+                tag_copy.as_mut_ptr().cast::<c_void>(),
+            ),
+        )?;
+        let at = usize::try_from(written).map_err(|_| Failed)?;
+        if at > data.len() + 16 {
+            return Err(Failed);
+        }
+        ok(
+            "DecryptFinal",
+            sys::EVP_DecryptFinal_ex(ctx.0, out.as_mut_ptr().add(at), &mut last),
+        )?;
+    }
+    let len = usize::try_from(written).map_err(|_| Failed)?
+        + usize::try_from(last).map_err(|_| Failed)?;
+    if len != data.len() {
+        return Err(Failed);
+    }
+    out.truncate(len);
+    Ok(out)
+}
+
+/// An `RSA`, freed as it goes.
+struct Rsa(*mut sys::RSA);
+
+impl Drop for Rsa {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from the library, is not null, and is
+        // freed once, here.
+        unsafe { sys::RSA_free(self.0) };
+    }
+}
+
+/// An RSA public key's parts, big-endian, without leading zeros.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RsaParts {
+    pub(crate) n: Vec<u8>,
+    pub(crate) e: Vec<u8>,
+}
+
+/// A `BIGNUM`'s bytes; empty for none.
+fn bignum_bytes(bn: *const sys::BIGNUM) -> Vec<u8> {
+    if bn.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `bn` is a live BIGNUM the key owns, not null; the buffer is
+    // `BN_num_bytes` long, which `BN_bn2bin` fills exactly.
+    unsafe {
+        let len = sys::BN_num_bytes(bn) as usize;
+        let mut out = vec![0u8; len];
+        let wrote = sys::BN_bn2bin(bn, out.as_mut_ptr());
+        out.truncate(wrote.min(len));
+        out
+    }
+}
+
+/// The public parts of the key `rsa` holds.
+fn parts_of(rsa: &Rsa) -> RsaParts {
+    let mut n = ptr::null();
+    let mut e = ptr::null();
+    let mut d = ptr::null();
+    // SAFETY: `rsa.0` is a live key; the getter writes borrowed pointers
+    // (or null) into the live locals given, which are read only while
+    // `rsa` lives, below.
+    unsafe { sys::RSA_get0_key(rsa.0, &mut n, &mut e, &mut d) };
+    RsaParts {
+        n: bignum_bytes(n),
+        e: bignum_bytes(e),
+    }
+}
+
+/// The parts of a PKCS #1 `RSAPublicKey` (RFC 8017 A.1.1), parsed by the
+/// library: what aws-lc-rs's `PublicKey::as_ref` gives of an SPKI.
+pub(crate) fn rsa_public_parts(der: &[u8]) -> Result<RsaParts, Failed> {
+    reached();
+    // SAFETY: the pointer and length are `der`'s own; the result is a new
+    // key or null, owned at once by its wrapper.
+    let rsa = unsafe { sys::RSA_public_key_from_bytes(der.as_ptr(), der.len()) };
+    if rsa.is_null() {
+        return Err(Failed);
+    }
+    Ok(parts_of(&Rsa(rsa)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aws_lc_rs::aead;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The call whose return code a test makes a failure.
+        pub(super) static FAIL: Cell<Option<&'static str>> = const { Cell::new(None) };
+        /// How many times an operation reached the library.
+        pub(super) static REACHED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Runs `f` with the call named `site` failing.
+    fn failing<T>(site: &'static str, f: impl FnOnce() -> T) -> T {
+        FAIL.set(Some(site));
+        let out = f();
+        FAIL.set(None);
+        out
+    }
+
+    const SEAL_CALLS: [&str; 7] = [
+        "EncryptInit cipher",
+        "SetIvLen",
+        "EncryptInit key",
+        "EncryptUpdate aad",
+        "EncryptUpdate",
+        "EncryptFinal",
+        "GetTag",
+    ];
+    const OPEN_CALLS: [&str; 7] = [
+        "DecryptInit cipher",
+        "SetIvLen",
+        "DecryptInit key",
+        "DecryptUpdate aad",
+        "DecryptUpdate",
+        "SetTag",
+        "DecryptFinal",
+    ];
+
+    #[test]
+    fn a_failed_call_is_an_error_whichever_it_is() {
+        let (key, iv) = ([7u8; 16], [1u8; 8]);
+        let sealed = gcm_seal(&key, &iv, b"aad", b"some data", 12).unwrap();
+        for site in SEAL_CALLS {
+            let out = failing(site, || gcm_seal(&key, &iv, b"aad", b"some data", 12));
+            assert_eq!(out, Err(Failed), "{site} failing");
+        }
+        for site in OPEN_CALLS {
+            let out = failing(site, || gcm_open(&key, &iv, b"aad", &sealed, 12));
+            assert_eq!(out, Err(Failed), "{site} failing");
+        }
+        // And with none failing, both work.
+        assert_eq!(
+            gcm_open(&key, &iv, b"aad", &sealed, 12).unwrap(),
+            b"some data"
+        );
+    }
+
+    #[test]
+    fn nothing_out_of_range_reaches_the_library() {
+        let key = [2u8; 16];
+        REACHED.set(0);
+        assert_eq!(
+            gcm_seal(&key, b"", b"", b"x", 16),
+            Err(Failed),
+            "an empty IV"
+        );
+        assert_eq!(
+            gcm_open(&key, b"", b"", &[0; 20], 16),
+            Err(Failed),
+            "an empty IV"
+        );
+        assert_eq!(
+            gcm_seal(&key, b"iv", b"", b"x", 5),
+            Err(Failed),
+            "a 40-bit tag"
+        );
+        assert_eq!(
+            gcm_open(&key, b"iv", b"", &[0; 20], 5),
+            Err(Failed),
+            "a 40-bit tag"
+        );
+        assert_eq!(
+            gcm_seal(&[2; 24], b"iv", b"", b"x", 16),
+            Err(Failed),
+            "a 192-bit key"
+        );
+        assert_eq!(
+            gcm_open(&[2; 24], b"iv", b"", &[0; 20], 16),
+            Err(Failed),
+            "a 192-bit key"
+        );
+        assert_eq!(
+            gcm_open(&key, b"iv", b"", b"ab", 4),
+            Err(Failed),
+            "shorter than its tag"
+        );
+        assert_eq!(REACHED.get(), 0, "a refused input reached the library");
+        gcm_seal(&key, b"iv", b"", b"x", 16).unwrap();
+        assert_eq!(REACHED.get(), 1, "the counter counts");
+    }
+
+    #[test]
+    fn a_length_past_c_int_is_refused_before_any_call() {
+        let past = c_int::MAX as usize + 1;
+        assert_eq!(gcm_lengths(16, 12, 0, 0, 16), Ok(()));
+        assert_eq!(gcm_lengths(16, past, 0, 0, 16), Err(Failed), "the IV");
+        assert_eq!(gcm_lengths(16, 12, past, 0, 16), Err(Failed), "the AAD");
+        assert_eq!(gcm_lengths(16, 12, 0, past, 16), Err(Failed), "the data");
+        let max = c_int::MAX as usize;
+        assert_eq!(gcm_lengths(32, max, max, max, 4), Ok(()));
+    }
+
+    #[test]
+    fn gcm_at_96_and_128_bits_is_aws_lc_rs_s() {
+        let key = [9u8; 32];
+        let iv = [3u8; 12];
+        let plain = b"the same bytes either way";
+        let ours = gcm_seal(&key, &iv, b"aad", plain, 16).unwrap();
+        let sealing =
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &key).unwrap());
+        let mut theirs = plain.to_vec();
+        sealing
+            .seal_in_place_append_tag(
+                aead::Nonce::assume_unique_for_key(iv),
+                aead::Aad::from(b"aad"),
+                &mut theirs,
+            )
+            .unwrap();
+        assert_eq!(ours, theirs);
+        assert_eq!(gcm_open(&key, &iv, b"aad", &ours, 16).unwrap(), plain);
+    }
+
+    #[test]
+    fn gcm_takes_any_iv_and_a_short_tag_and_checks_it() {
+        let key = [1u8; 16];
+        for iv_len in [1, 8, 16, 60] {
+            for tag in [4, 12, 16] {
+                let iv = vec![5u8; iv_len];
+                let sealed = gcm_seal(&key, &iv, b"", b"hello", tag).unwrap();
+                assert_eq!(sealed.len(), 5 + tag);
+                assert_eq!(gcm_open(&key, &iv, b"", &sealed, tag).unwrap(), b"hello");
+                let mut bad = sealed.clone();
+                *bad.last_mut().unwrap() ^= 1;
+                assert_eq!(gcm_open(&key, &iv, b"", &bad, tag), Err(Failed));
+            }
+        }
+        assert_eq!(gcm_seal(&key, b"", b"", b"x", 16), Err(Failed));
+        assert_eq!(gcm_seal(&key, b"iv", b"", b"x", 5), Err(Failed));
+        assert_eq!(gcm_open(&key, b"iv", b"", b"ab", 4), Err(Failed));
+    }
+
+    #[test]
+    fn an_rsa_public_keys_parts_are_the_librarys_reading() {
+        // RSAPublicKey { n = 0x00c3 (as 0xc3), e = 3 }.
+        let der = [0x30, 0x07, 0x02, 0x02, 0x00, 0xc3, 0x02, 0x01, 0x03];
+        let parts = rsa_public_parts(&der).unwrap();
+        assert_eq!((parts.n, parts.e), (vec![0xc3], vec![3]));
+        assert_eq!(rsa_public_parts(b"not a key"), Err(Failed));
+    }
+}

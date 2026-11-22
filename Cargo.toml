@@ -143,6 +143,10 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", 
 # for G255), with the features rustls enables in it and no others (no
 # `unstable`, no FIPS build).
 aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+# The C library under it, the version aws-lc-rs brings, for the few calls
+# its safe API lacks (G255: AES-GCM's other IV and tag lengths, RSA's
+# generation and parts), in crates/crypto's one unsafe module alone.
+aws-lc-sys = { version = "=0.45.0", default-features = false, features = ["prebuilt-nasm"] }
 webpki-roots = "1"
 # gzip and deflate content codings, pure Rust over miniz_oxide.
 flate2 = "1"

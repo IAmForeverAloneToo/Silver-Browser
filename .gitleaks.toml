@@ -1,0 +1,14 @@
+# gitleaks' config, here and in CI's secrets job (the lead's ruling of
+# 2026-11-23): its default rules, and one allowlist. Wycheproof's vector
+# files hold public test keys, which the default rules take for secrets;
+# they are allowed by path alone, and the crypto crate's test
+# `every_file_here_is_upstreams` holds every file of that directory to
+# its manifest (crates/crypto/tests/wycheproof/MANIFEST), so that an
+# edited vector file or a new one fails the build.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Wycheproof's vector files, pinned by their manifest"
+paths = ['''^crates/crypto/tests/wycheproof/[a-z0-9_]+_test\.json$''']

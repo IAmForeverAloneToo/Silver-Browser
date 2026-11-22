@@ -60,7 +60,9 @@ jobs:
       # scripts' sampler, a tool built with the js-sampler feature alone
       # (crates/js/src/quickjs/sampler.rs), and a WebAssembly memory's
       # buffer read in place (crates/js/src/quickjs/wasm.rs, one block),
-      # and a realm's context's base64 intrinsic (quickjs/context.rs).
+      # and a realm's context's base64 intrinsic (quickjs/context.rs),
+      # and Web Crypto's calls into aws-lc's C library (G255,
+      # crates/crypto/src/native.rs).
       # Strings and line comments are cut first; M29's module, a crate
       # of its own built to WebAssembly, marks its exports `no_mangle`.
       - name: unsafe only in the platform module
@@ -69,6 +71,7 @@ jobs:
               | grep -v -e '^crates/shell/src/platform.rs:' -e '^crates/js/src/quickjs/bytecode.rs:' \
                   -e '^crates/js/src/stack.rs:' -e '^crates/js/src/quickjs/sampler.rs:'                   -e '^crates/js/src/quickjs/wasm.rs:' -e '^crates/js/src/quickjs/context.rs:' \
                   -e '^crates/media/src/av1.rs:' -e '^crates/engine/tests/wasm/' \
+                  -e '^crates/crypto/src/native.rs:' \
               | sed -E 's/"([^"\\]|\\.)*"//g; s#//.*##' \
               | grep -E '(^|[^[:alnum:]_-])unsafe[[:space:]]*(\{|fn|impl|trait|extern)|#\[unsafe\('; then
             echo "::error::unsafe outside crates/shell/src/platform.rs"
@@ -102,7 +105,10 @@ jobs:
   # release whose checksum is checked here (the release's own list,
   # verified when it was pinned), over every commit the clone has, on
   # every push. Its findings are printed redacted. The licensed action
-  # is not used. The pin is moved by hand, with its checksum.
+  # is not used. The pin is moved by hand, with its checksum. It reads
+  # /.gitleaks.toml: the default rules, and Wycheproof's vector files
+  # allowed by path, each held to its manifest by the crypto crate's
+  # every_file_here_is_upstreams test (G255).
   secrets:
     name: secrets (gitleaks)
     runs-on: ubuntu-latest
@@ -257,7 +263,7 @@ jobs:
       # as many as they like.
       max-parallel: ${{ github.event_name == 'schedule' && 8 || 64 }}
       matrix:
-        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input, csp, referrer, hsts, frames, cookies, storage, http_cache, wasm, canvas, clone, xml_parse, svg, ipc_decode, devtools_json, idb_keys, idb_ops, content_disposition, hpack, h2_client, preload_scan, cache_api, sw_registry, media_demux, av1_decode, audio_graph, gpu_wire, webgpu_ops, glsl_parse, webgl_ops, websocket, event_stream, crypto_import]
+        target: [html_parse, css_stylesheet, selector_parse, style_document, pipeline, mutation, encoding_decode, url_parse, mime_sniff, http_response, media_query, values, animations, image_decode, script, dom_api, input, csp, referrer, hsts, frames, cookies, storage, http_cache, wasm, canvas, clone, xml_parse, svg, ipc_decode, devtools_json, idb_keys, idb_ops, content_disposition, hpack, h2_client, preload_scan, cache_api, sw_registry, media_demux, av1_decode, audio_graph, gpu_wire, webgpu_ops, glsl_parse, webgl_ops, websocket, event_stream, crypto_import, crypto_gcm]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master

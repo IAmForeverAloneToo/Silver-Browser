@@ -6,6 +6,7 @@ use aws_lc_rs::encoding::AsDer;
 use aws_lc_rs::{aead, digest, hkdf, hmac, pbkdf2, rand, rsa, signature};
 
 use crate::jwk::{self, Jwk};
+use crate::native;
 use crate::normalize::{Normalized, normalize};
 use crate::{
     AlgorithmValue, Call, Error, JwkValue, Key, KeyInfo, KeyType, Keys, Material, Outcome, Usage,
@@ -321,13 +322,13 @@ fn crypt(
             if iv.is_empty() {
                 return Err(Error::operation(""));
             }
-            // aws-lc-rs's AEAD takes a 96-bit IV and a 128-bit tag alone
-            // (docs/design/webcrypto.md, section 2b).
-            let nonce: [u8; 12] = iv
-                .try_into()
-                .map_err(|_| Error::not_supported("AES-GCM: an IV of 96 bits alone"))?;
+            // aws-lc-rs's AEAD takes a 96-bit IV and a 128-bit tag alone;
+            // any other, the library's own GCM (`native`).
+            let Ok(nonce) = <[u8; 12]>::try_from(iv) else {
+                return native_gcm(secret(key), iv, aad, data, tag, encrypt);
+            };
             if tag != 128 {
-                return Err(Error::not_supported("AES-GCM: a tag of 128 bits alone"));
+                return native_gcm(secret(key), iv, aad, data, tag, encrypt);
             }
             let algorithm = if secret(key).len() == 16 {
                 &aead::AES_128_GCM
@@ -353,6 +354,25 @@ fn crypt(
         }
         _ => Err(Error::not_supported("Unsupported operation")),
     }
+}
+
+/// AES-GCM through the library's own calls: an IV of any length, a tag of
+/// any length the reference allows (checked already).
+fn native_gcm(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    data: &[u8],
+    tag_bits: u32,
+    encrypt: bool,
+) -> Result<Outcome, Error> {
+    let tag = tag_bits as usize / 8;
+    let out = if encrypt {
+        native::gcm_seal(key, iv, aad, data, tag)
+    } else {
+        native::gcm_open(key, iv, aad, data, tag)
+    };
+    out.map(Outcome::Bytes).map_err(|_| Error::operation(""))
 }
 
 fn verify(key: &Key, signature: &[u8], data: &[u8]) -> bool {
@@ -553,14 +573,13 @@ fn import(
         "RSASSA-PKCS1-v1_5" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
-                // An SPKI's modulus and exponent come with the aws-lc
-                // module of the next push (docs/design/webcrypto.md,
-                // section 7): aws-lc-rs's getters need its `ring-io`,
-                // whose `untrusted` would be a second version in the tree.
+                // The SPKI read by aws-lc-rs, its PKCS #1 key by the
+                // library (`native`): never DER read here.
                 "spki" => {
-                    return Err(Error::not_supported(
-                        "RSASSA-PKCS1-v1_5: an SPKI's import comes with the next push",
-                    ));
+                    let key = rsa::PublicKey::from_der(&raw()?).map_err(|_| Error::data(""))?;
+                    let parts =
+                        native::rsa_public_parts(key.as_ref()).map_err(|_| Error::data(""))?;
+                    (parts.n, parts.e)
                 }
                 "jwk" => {
                     let jwk = jwk()?;

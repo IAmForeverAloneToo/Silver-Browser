@@ -1,0 +1,8 @@
+# The files copied verbatim from C2SP/wycheproof at commit
+# 65ca494727a52944c204441c860b039e6786b99b: name, a tab, the SHA-256 of
+# its bytes there. Every file of this directory but this one and
+# README.md is named here and hashes to its line, or the crate's
+# `every_file_here_is_upstreams` test fails: gitleaks' allowlist of the
+# vector files (/.gitleaks.toml) hides nothing that was not upstream's.
+LICENSE	58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+aes_gcm_test.json	985e5ecc172e181eaf49e89508b9470dcf478002eb7e8559c707eb42dc97dfe7

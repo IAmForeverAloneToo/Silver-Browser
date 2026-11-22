@@ -1,6 +1,7 @@
 //! Web Crypto (G255, docs/design/webcrypto.md): the `SubtleCrypto`
 //! operations and the keys they work on, engine-neutral, every primitive
-//! aws-lc-rs's (no cryptography written here).
+//! aws-lc's (no cryptography written here): through aws-lc-rs's safe
+//! API, or, where it has none, the C library's own calls (`native`).
 //!
 //! A realm's keys live in its [`Keys`], by number; script holds the
 //! number alone, never a key's material, and an export or a wrap asks
@@ -10,10 +11,13 @@
 //! as [`Value`]s; [`run`] normalizes the algorithm, with the reference's
 //! errors, and does the operation.
 
-#![forbid(unsafe_code)]
+// Unsafe is denied everywhere but `native`, the one module of calls into
+// aws-lc's C library (the lead's ruling for G255).
+#![deny(unsafe_code)]
 
 mod algorithms;
 mod jwk;
+mod native;
 mod normalize;
 
 use std::collections::HashMap;
@@ -377,6 +381,34 @@ pub fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
         }
         error
     })
+}
+
+/// `native`'s AES-GCM, for the fuzz target that holds it to aws-lc-rs's
+/// (`fuzz_targets/crypto_gcm.rs`): in no build but the fuzz crate's.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing {
+    /// AES-GCM's encryption through the library's own calls: the
+    /// ciphertext and its tag, or `None` for what it refuses.
+    pub fn gcm_seal(
+        key: &[u8],
+        iv: &[u8],
+        aad: &[u8],
+        plain: &[u8],
+        tag: usize,
+    ) -> Option<Vec<u8>> {
+        crate::native::gcm_seal(key, iv, aad, plain, tag).ok()
+    }
+
+    /// Its decryption, the tag checked by the library.
+    pub fn gcm_open(
+        key: &[u8],
+        iv: &[u8],
+        aad: &[u8],
+        sealed: &[u8],
+        tag: usize,
+    ) -> Option<Vec<u8>> {
+        crate::native::gcm_open(key, iv, aad, sealed, tag).ok()
+    }
 }
 
 #[cfg(test)]

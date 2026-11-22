@@ -48,10 +48,6 @@ fuzz_target!(|data: &[u8]| {
     };
     let (name, hash, usages) = ALGORITHMS[usize::from(choice) % ALGORITHMS.len()];
     let format = ["raw", "spki", "jwk"][usize::from(choice / 8) % 3];
-    // An RSA SPKI's import comes with the next push's aws-lc module.
-    if format == "spki" && name.starts_with("RSA") {
-        return;
-    }
     let key_data = if format == "jwk" {
         jwk(rest)
     } else {

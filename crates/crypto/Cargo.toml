@@ -8,3 +8,14 @@ license.workspace = true
 # docs/design/webcrypto.md), engine-neutral, every primitive aws-lc-rs's.
 [dependencies]
 aws-lc-rs.workspace = true
+# Its C library, for `native`'s few calls (the lead's ruling, G255).
+aws-lc-sys.workspace = true
+
+[features]
+# The fuzz targets' way to `native`'s calls (`crypto::fuzzing`): off in
+# every build but theirs.
+fuzzing = []
+
+[dev-dependencies]
+# Wycheproof vectors are JSON (tests/wycheproof.rs).
+devtools.workspace = true

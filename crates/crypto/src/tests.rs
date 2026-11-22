@@ -431,9 +431,52 @@ fn protons_rs1_support_check_imports_and_exports_back() {
             key: rs1.id,
         },
     ));
-    // The DER aws-lc-rs wrote: an SPKI of rsaEncryption around the key.
-    assert_eq!(&spki[..2], &[0x30, 0x5c]);
-    assert!(spki.ends_with(&[0x02, 0x03, 0x01, 0x00, 0x01]));
+    let again = key(run(
+        &mut keys,
+        Call::ImportKey {
+            format: "spki".into(),
+            key_data: Value::Bytes(spki),
+            algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-1"))]),
+            extractable: true,
+            usages: vec![Usage::Verify],
+        },
+    ));
+    assert_eq!(again.algorithm, rs1.algorithm);
+}
+
+#[test]
+fn aes_gcm_takes_any_iv_and_tag_the_reference_allows() {
+    let mut keys = Keys::default();
+    let k = import_raw(
+        &mut keys,
+        s("AES-GCM"),
+        &[7; 32],
+        &[Usage::Encrypt, Usage::Decrypt],
+    );
+    // As the reference: a one-byte IV and a 96-bit tag.
+    let params = dict(&[
+        ("name", s("AES-GCM")),
+        ("iv", Value::Bytes(vec![1])),
+        ("tagLength", Value::Num(96.0)),
+    ]);
+    let sealed = bytes(run(
+        &mut keys,
+        Call::Encrypt {
+            algorithm: params.clone(),
+            key: k.id,
+            data: b"x".to_vec(),
+        },
+    ));
+    assert_eq!(sealed.len(), 1 + 12);
+    let opened = bytes(run(
+        &mut keys,
+        Call::Decrypt {
+            algorithm: params,
+            key: k.id,
+            data: sealed,
+        },
+    ));
+    assert_eq!(opened, b"x");
 }
 
 #[test]

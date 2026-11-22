@@ -38,7 +38,8 @@ libfuzzer-sys = "0.4"
 arbitrary = "1"
 wasm-smith = "0.228"
 canvas = { path = "../crates/canvas" }
-crypto = { path = "../crates/crypto" }
+crypto = { path = "../crates/crypto", features = ["fuzzing"] }
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 css = { path = "../crates/css" }
 devtools = { path = "../crates/devtools" }
 dom = { path = "../crates/dom" }
@@ -398,6 +399,13 @@ bench = false
 [[bin]]
 name = "websocket"
 path = "fuzz_targets/websocket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_gcm"
+path = "fuzz_targets/crypto_gcm.rs"
 test = false
 doc = false
 bench = false

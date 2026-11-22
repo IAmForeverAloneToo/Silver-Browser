@@ -311,10 +311,14 @@ font folders; a file it cannot read, it scans for.
 - **Web Crypto** (G255). A key's material lives in its realm's store
   (`crates/crypto`), in the renderer: script holds a key's number alone,
   and an export or a wrap asks the store, which checks `extractable`
-  itself. Every primitive is aws-lc-rs's, no cryptography written here,
-  no new unsafe; a secret's bytes are overwritten as its key goes.
-  `crypto.subtle` exists in secure contexts alone. The fuzz target
-  `crypto_import` feeds any bytes to every import format.
+  itself. Every primitive is aws-lc's, no cryptography written here:
+  through aws-lc-rs's safe API, or, where it has none, the C library's
+  own calls in the crate's `native` module (section 5); a secret's
+  bytes are overwritten as its key goes. `crypto.subtle` exists in
+  secure contexts alone. The fuzz target `crypto_import` feeds any
+  bytes to every import format, and `crypto_gcm` holds `native`'s
+  AES-GCM to aws-lc-rs's where both run and to its own round trip
+  where only it does.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or
@@ -509,6 +513,18 @@ entered and left, the device enumerator, the default device and its
 client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
+G255 adds the third, the crypto crate's `native` module (the lead's
+ruling), with 10 blocks over aws-lc's C interface where aws-lc-rs has
+none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
+cipher context made and freed, the cipher chosen by the key's length,
+the seal and the open, each length a script controls checked in Rust
+against `c_int` and the reference first, the tag checked by
+`EVP_DecryptFinal_ex`, never compared here), and an RSA public key's
+parts (the PKCS #1 key that aws-lc-rs read from an SPKI parsed by
+`RSA_public_key_from_bytes`, its modulus and exponent copied out with
+`RSA_get0_key` and `BN_bn2bin`, the key freed); no pointer outlives its
+call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
+and allows it there alone, and the same test names and counts them.
 
 **Under it**: of the 414 registry packages `Cargo.lock` holds (every
 platform's together, M41), 273 write `unsafe` somewhere and 141 none;
