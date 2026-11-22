@@ -1080,6 +1080,31 @@ const NATIVES: &[(&str, Decode)] = &[
             id: a.integer(0) as u32,
         }))
     }),
+    // Web Crypto's calls (G255).
+    ("cryptoMembers", |a| {
+        Ok(Call::Crypto(Box::new(crate::dom::CryptoCall::Members {
+            op: a.string(0)?,
+            name: a.string(1)?,
+        })))
+    }),
+    ("cryptoCall", |a| {
+        let mut buffers = Vec::new();
+        // Up to four buffers follow; the first missing ends them.
+        for i in 2..6 {
+            if a.value(i).is_undefined() {
+                break;
+            }
+            match a.bytes(i)? {
+                Some(bytes) => buffers.push(bytes),
+                None => break,
+            }
+        }
+        Ok(Call::Crypto(Box::new(crate::dom::CryptoCall::Run {
+            id: a.integer(0) as u32,
+            json: a.string(1)?,
+            buffers,
+        })))
+    }),
     ("sourceSettle", |a| {
         Ok(source(crate::dom::SourceCall::Settle {
             id: a.integer(0) as u32,

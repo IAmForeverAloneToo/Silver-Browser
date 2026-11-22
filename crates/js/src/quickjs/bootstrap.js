@@ -600,6 +600,7 @@
   const SECURE_ONLY = {
     __proto__: null, Cache: true, CacheStorage: true, ServiceWorker: true,
     ServiceWorkerContainer: true, ServiceWorkerRegistration: true, NavigatorUAData: true,
+    SubtleCrypto: true, CryptoKey: true,
   };
 
   // Of the interfaces the bindings make, those every worker has too
@@ -628,7 +629,7 @@
     ServiceWorkerContainer: true, ServiceWorkerGlobalScope: "service", ExtendableEvent: "service",
     InstallEvent: "service", ExtendableMessageEvent: "service", Clients: "service", Client: "service",
     WindowClient: "service", FetchEvent: "service", FontFace: true, FontFaceSet: true,
-    CloseEvent: true, WebSocket: true, EventSource: true,
+    CloseEvent: true, WebSocket: true, EventSource: true, SubtleCrypto: true, CryptoKey: true,
   };
 
   // Whether an interface `where` says so is the realm's.
@@ -33740,6 +33741,442 @@
   expose(Crypto, "Crypto");
   const crypto = new Crypto(KEY);
 
+  // ---- Web Crypto (G255, docs/design/webcrypto.md) -------------------------
+
+  // A shell over the host's key store: the host normalizes an algorithm
+  // and does the operation, with the reference's errors; a CryptoKey
+  // here holds its number and what script may know of it, never its
+  // material. The calls under way, by number, with their settlers.
+  const cryptoCalls = new $Map();
+  let nextCryptoCall = 1;
+  const keyStates = new $WeakMap();
+  const SUBTLE = "SubtleCrypto";
+  const KEY_USAGES = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits",
+    "wrapKey", "unwrapKey"];
+  const KEY_FORMATS = ["raw", "spki", "pkcs8", "jwk", "raw-public", "raw-private", "raw-seed",
+    "raw-secret"];
+  // JsonWebKey's members, in Web IDL's order, and those that are strings.
+  const JWK_MEMBERS = ["alg", "crv", "d", "dp", "dq", "e", "ext", "k", "key_ops", "kty", "n",
+    "oth", "p", "q", "qi", "use", "x", "y"];
+
+  class CryptoKey {
+    constructor(key, state) {
+      if (key !== KEY) {
+        throw illegalConstructor("CryptoKey");
+      }
+      WeakMapSet(keyStates, this, state);
+    }
+  }
+  function keyState(value) {
+    const state = WeakMapGet(keyStates, value);
+    if (state === undefined) {
+      throw illegalInvocation();
+    }
+    return state;
+  }
+  {
+    const own = {
+      get type() {
+        return keyState(this).type;
+      },
+      get extractable() {
+        return keyState(this).extractable;
+      },
+      get algorithm() {
+        return keyState(this).algorithm;
+      },
+      get usages() {
+        return keyState(this).usages;
+      },
+    };
+    // The reference's order: the attributes, then the constructor.
+    const names = ["type", "extractable", "algorithm", "usages"];
+    const proto = CryptoKey.prototype;
+    const constructor = getOwnPropertyDescriptor(proto, "constructor");
+    ReflectDeleteProperty(proto, "constructor");
+    for (let i = 0; i < names.length; i++) {
+      defineProperty(proto, names[i], getOwnPropertyDescriptor(own, names[i]));
+    }
+    defineProperty(proto, "constructor", constructor);
+  }
+  expose(CryptoKey, "CryptoKey");
+
+  // A key from the host's description: its algorithm made once, its
+  // usages once, the same objects every time they are read.
+  function keyFrom(info) {
+    const algorithm = {};
+    for (let i = 0; i < info.algorithm.length; i++) {
+      const [name, value] = info.algorithm[i];
+      if (value.n !== undefined) algorithm[name] = value.n;
+      else if (value.s !== undefined) algorithm[name] = value.s;
+      else if (value.named !== undefined) algorithm[name] = { name: value.named };
+      else if (value.b !== undefined) algorithm[name] = bytesFrom(value.b);
+    }
+    return new CryptoKey(KEY, {
+      id: info.id,
+      type: info.type,
+      extractable: info.extractable,
+      algorithm,
+      usages: ArraySlice(info.usages, 0),
+    });
+  }
+
+  // An argument as the host takes it: JSON, a buffer by its place in
+  // `buffers` (at most four a call).
+  function cryptoBytes(bytes, buffers) {
+    ArrayPush(buffers, binaryString(bytes));
+    return { $b: buffers.length - 1 };
+  }
+
+  // A member of kind `kind`, as the host's normalization takes it.
+  function cryptoMember(value, kind, op, buffers) {
+    if (value === undefined) {
+      return undefined;
+    }
+    switch (kind) {
+      case "Buffer": {
+        const bytes = bufferBytes(value);
+        return bytes === undefined ? { $o: 1 } : cryptoBytes(bytes, buffers);
+      }
+      case "BigInteger":
+        return TypedArrayTag(value) === "Uint8Array"
+          ? cryptoBytes(bufferBytes(value), buffers)
+          : { $o: 1 };
+      case "Number":
+        return { $n: String($Number(value)) };
+      case "Str":
+        return typeof value === "string" ? value : { $o: 1 };
+      case "Key": {
+        const state = WeakMapGet(keyStates, value);
+        return state === undefined ? { $o: 1 } : { $k: state.id };
+      }
+      case "Algorithm":
+        if ((typeof value === "object" && value !== null) || typeof value === "function") {
+          return cryptoAlgorithm(value, "digest", buffers);
+        }
+        return typeof value === "string" ? value : { $o: 1 };
+      default:
+        return { $o: 1 };
+    }
+  }
+
+  // An AlgorithmIdentifier as the host normalizes it: a string, or its
+  // name and the members the host says the operation reads, read in
+  // that order (the reference's), `hash` twice as the reference does.
+  function cryptoAlgorithm(value, op, buffers) {
+    if (!((typeof value === "object" && value !== null) || typeof value === "function")) {
+      return str(value);
+    }
+    const out = [];
+    const given = value.name;
+    if (given === undefined) {
+      return { $d: out };
+    }
+    const name = str(given);
+    ArrayPush(out, ["name", name]);
+    const members = native.cryptoMembers(op, name);
+    if (members === null) {
+      return { $d: out };
+    }
+    for (let i = 0; i < members.length; i++) {
+      const [member, kind] = StringSplit(members[i], " ");
+      let read = value[member];
+      if (kind === "Algorithm") {
+        read = value[member];
+      }
+      const converted = cryptoMember(read, kind, op, buffers);
+      if (converted !== undefined) {
+        ArrayPush(out, [member, converted]);
+      }
+    }
+    return { $d: out };
+  }
+
+  function cryptoUsages(value, method) {
+    const list = sequence(value, method, SUBTLE, str);
+    for (let i = 0; i < list.length; i++) {
+      if (!ArrayIncludes(KEY_USAGES, list[i])) {
+        throw new $TypeError(prefix(method, SUBTLE) + "Invalid keyUsages argument");
+      }
+    }
+    return list;
+  }
+
+  function cryptoFormat(value, method) {
+    const format = str(value);
+    if (!ArrayIncludes(KEY_FORMATS, format)) {
+      throw new $TypeError(prefix(method, SUBTLE) + "Invalid keyFormat argument: " + format);
+    }
+    return format;
+  }
+
+  function cryptoKeyArgument(value, method, position) {
+    const state = WeakMapGet(keyStates, value);
+    if (state === undefined) {
+      throw new $TypeError(
+        prefix(method, SUBTLE) + "parameter " + position + " is not of type 'CryptoKey'.",
+      );
+    }
+    return state.id;
+  }
+
+  function cryptoBuffer(value, method, position, buffers) {
+    const bytes = bufferBytes(value);
+    if (bytes === undefined) {
+      throw new $TypeError(
+        prefix(method, SUBTLE) + "parameter " + position +
+          " is not of type '(ArrayBuffer or ArrayBufferView)'.",
+      );
+    }
+    return cryptoBytes(bytes, buffers);
+  }
+
+  // A JsonWebKey dictionary's members, read in Web IDL's order.
+  function cryptoJwk(value) {
+    const out = [];
+    for (let i = 0; i < JWK_MEMBERS.length; i++) {
+      const name = JWK_MEMBERS[i];
+      const given = value[name];
+      if (given === undefined) continue;
+      if (name === "ext") ArrayPush(out, [name, !!given]);
+      else if (name === "key_ops") ArrayPush(out, [name, sequence(given, "importKey", SUBTLE, str)]);
+      else if (name !== "oth") ArrayPush(out, [name, str(given)]);
+    }
+    return { $d: out };
+  }
+
+  // Sends a call to the host: its promise, settled by its answer's task.
+  function cryptoRun(method, args, buffers) {
+    const id = nextCryptoCall++;
+    args.m = method;
+    return new $Promise((resolve, reject) => {
+      MapSet(cryptoCalls, id, { resolve, reject });
+      const call = [id, JSONStringify(args)];
+      for (let i = 0; i < buffers.length; i++) {
+        ArrayPush(call, buffers[i]);
+      }
+      ReflectApply(native.cryptoCall, native, call);
+    });
+  }
+
+  // A method's body: its arguments converted by `convert`, any failure a
+  // rejected promise, as a promise-returning method's must be.
+  function cryptoMethod(method, required, count, convert) {
+    try {
+      need(count, required, method, SUBTLE);
+      const buffers = [];
+      const args = convert(buffers);
+      return cryptoRun(method, args, buffers);
+    } catch (error) {
+      return rejected(error);
+    }
+  }
+
+  class SubtleCrypto {
+    constructor(key) {
+      if (key !== KEY) {
+        throw illegalConstructor("SubtleCrypto");
+      }
+    }
+  }
+  {
+    const isObject = (v) => (typeof v === "object" && v !== null) || typeof v === "function";
+    const own = {
+      decrypt(algorithm, key, data) {
+        return cryptoMethod("decrypt", 3, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(key, "decrypt", 2);
+          const d = cryptoBuffer(data, "decrypt", 3, buffers);
+          return { alg: cryptoAlgorithm(algorithm, "decrypt", buffers), key: k, data: d };
+        });
+      },
+      deriveBits(algorithm, baseKey, length = null) {
+        return cryptoMethod("deriveBits", 2, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(baseKey, "deriveBits", 2);
+          const bits = length === null || length === undefined ? null : $Number(length) >>> 0;
+          return { alg: cryptoAlgorithm(algorithm, "deriveBits", buffers), key: k, length: bits };
+        });
+      },
+      deriveKey(algorithm, baseKey, derivedKeyType, extractable, keyUsages) {
+        return cryptoMethod("deriveKey", 5, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(baseKey, "deriveKey", 2);
+          const usages = cryptoUsages(keyUsages, "deriveKey");
+          return {
+            alg: cryptoAlgorithm(algorithm, "deriveBits", buffers),
+            key: k,
+            derived: cryptoAlgorithm(derivedKeyType, "importKey", buffers),
+            length: cryptoAlgorithm(derivedKeyType, "get key length", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
+      },
+      digest(algorithm, data) {
+        return cryptoMethod("digest", 2, arguments.length, (buffers) => {
+          const d = bufferBytes(data);
+          if (d === undefined) {
+            throw new $TypeError(prefix("digest", SUBTLE) +
+              "The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.");
+          }
+          const slot = cryptoBytes(d, buffers);
+          return { alg: cryptoAlgorithm(algorithm, "digest", buffers), data: slot };
+        });
+      },
+      encrypt(algorithm, key, data) {
+        return cryptoMethod("encrypt", 3, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(key, "encrypt", 2);
+          const d = cryptoBuffer(data, "encrypt", 3, buffers);
+          return { alg: cryptoAlgorithm(algorithm, "encrypt", buffers), key: k, data: d };
+        });
+      },
+      exportKey(format, key) {
+        return cryptoMethod("exportKey", 2, arguments.length, () => {
+          const f = cryptoFormat(format, "exportKey");
+          return { format: f, key: cryptoKeyArgument(key, "exportKey", 2) };
+        });
+      },
+      generateKey(algorithm, extractable, keyUsages) {
+        return cryptoMethod("generateKey", 3, arguments.length, (buffers) => {
+          const usages = cryptoUsages(keyUsages, "generateKey");
+          return {
+            alg: cryptoAlgorithm(algorithm, "generateKey", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
+      },
+      importKey(format, keyData, algorithm, extractable, keyUsages) {
+        return cryptoMethod("importKey", 5, arguments.length, (buffers) => {
+          const f = cryptoFormat(format, "importKey");
+          let data;
+          const bytes = bufferBytes(keyData);
+          if (bytes !== undefined) {
+            data = cryptoBytes(bytes, buffers);
+          } else if (isObject(keyData) || keyData === undefined || keyData === null) {
+            data = cryptoJwk(isObject(keyData) ? keyData : {});
+          } else {
+            throw new $TypeError(prefix("importKey", SUBTLE) +
+              "The provided value is not of type '(ArrayBuffer or ArrayBufferView or JsonWebKey)'.");
+          }
+          const usages = cryptoUsages(keyUsages, "importKey");
+          return {
+            format: f,
+            data,
+            alg: cryptoAlgorithm(algorithm, "importKey", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
+      },
+      sign(algorithm, key, data) {
+        return cryptoMethod("sign", 3, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(key, "sign", 2);
+          const d = cryptoBuffer(data, "sign", 3, buffers);
+          return { alg: cryptoAlgorithm(algorithm, "sign", buffers), key: k, data: d };
+        });
+      },
+      unwrapKey() {
+        return rejected(new $DOMException("unwrapKey: not implemented yet", "NotSupportedError"));
+      },
+      verify(algorithm, key, signature, data) {
+        return cryptoMethod("verify", 4, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(key, "verify", 2);
+          const s = cryptoBuffer(signature, "verify", 3, buffers);
+          const d = cryptoBuffer(data, "verify", 4, buffers);
+          return {
+            alg: cryptoAlgorithm(algorithm, "verify", buffers), key: k, signature: s, data: d,
+          };
+        });
+      },
+      wrapKey() {
+        return rejected(new $DOMException("wrapKey: not implemented yet", "NotSupportedError"));
+      },
+    };
+    const names = ["decrypt", "deriveBits", "deriveKey", "digest", "encrypt", "exportKey",
+      "generateKey", "importKey", "sign", "unwrapKey", "verify", "wrapKey"];
+    const proto = SubtleCrypto.prototype;
+    const constructor = getOwnPropertyDescriptor(proto, "constructor");
+    ReflectDeleteProperty(proto, "constructor");
+    for (let i = 0; i < names.length; i++) {
+      defineProperty(proto, names[i], getOwnPropertyDescriptor(own, names[i]));
+    }
+    defineProperty(proto, "constructor", constructor);
+  }
+  expose(SubtleCrypto, "SubtleCrypto");
+  const subtle = new SubtleCrypto(KEY);
+
+  // Crypto's members in the reference's order, `subtle` a secure
+  // context's alone (probed: getRandomValues, constructor, subtle,
+  // randomUUID).
+  {
+    const proto = Crypto.prototype;
+    const take = (name) => {
+      const d = getOwnPropertyDescriptor(proto, name);
+      ReflectDeleteProperty(proto, name);
+      return d;
+    };
+    const random = take("getRandomValues");
+    const constructor = take("constructor");
+    const uuid = SECURE ? take("randomUUID") : undefined;
+    defineProperty(proto, "getRandomValues", random);
+    defineProperty(proto, "constructor", constructor);
+    if (SECURE) {
+      defineProperty(proto, "subtle", {
+        get: function subtleGetter() {
+          if (!(this instanceof Crypto)) {
+            throw illegalInvocation();
+          }
+          return subtle;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      defineProperty(proto, "randomUUID", uuid);
+    }
+  }
+
+  // A call's answer, from the host: what its promise settles with.
+  function* cryptoTask(text, data) {
+    const told = JSONParse(text);
+    const settler = MapGet(cryptoCalls, told.id);
+    if (settler === undefined) {
+      return false;
+    }
+    MapDelete(cryptoCalls, told.id);
+    if (!told.ok) {
+      settler.reject(told.name === "TypeError"
+        ? new $TypeError(told.message)
+        : new $DOMException(told.message, told.name));
+      return false;
+    }
+    let value;
+    switch (told.kind) {
+      case "bytes":
+        value = data;
+        break;
+      case "bool":
+        value = told.value;
+        break;
+      case "key":
+        value = keyFrom(told.key);
+        break;
+      case "pair":
+        value = { privateKey: keyFrom(told.privateKey), publicKey: keyFrom(told.publicKey) };
+        break;
+      case "jwk": {
+        value = {};
+        for (let i = 0; i < told.jwk.length; i++) {
+          const [name, member] = told.jwk[i];
+          value[name] = ArrayIsArray(member) ? ArraySlice(member, 0) : member;
+        }
+        break;
+      }
+      default:
+        value = undefined;
+    }
+    settler.resolve(value);
+    return false;
+  }
+
   // ---- Animation frames (HTML section 8.10, M26) ---------------------------
 
   // The callbacks a page asked to run before the next frame, by handle,
@@ -35058,6 +35495,7 @@
     serviceWorker: swTask,
     socket: socketTask,
     source: sourceTask,
+    crypto: cryptoTask,
     audio: (text, bytes) => chunkInstall("audio").audioTask(text, bytes),
     gpu: (text, bytes) => chunkInstall("gpu").gpuTask(text, bytes),
     media: mediaTask,

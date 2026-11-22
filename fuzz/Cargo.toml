@@ -38,6 +38,7 @@ libfuzzer-sys = "0.4"
 arbitrary = "1"
 wasm-smith = "0.228"
 canvas = { path = "../crates/canvas" }
+crypto = { path = "../crates/crypto" }
 css = { path = "../crates/css" }
 devtools = { path = "../crates/devtools" }
 dom = { path = "../crates/dom" }
@@ -397,6 +398,13 @@ bench = false
 [[bin]]
 name = "websocket"
 path = "fuzz_targets/websocket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_import"
+path = "fuzz_targets/crypto_import.rs"
 test = false
 doc = false
 bench = false

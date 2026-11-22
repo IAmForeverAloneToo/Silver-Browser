@@ -44,8 +44,8 @@ mod worker_tests;
 
 pub use backend::{Agent, DEFAULT_ENGINE, Engine, WeakAgent, engine};
 pub use dom::{
-    Answer, Call, CanvasCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE, NestedScript,
-    SocketCall, SourceCall, WORK_PER_STEP,
+    Answer, Call, CanvasCall, CryptoCall, CustomCall, DomError, FetchCall, Handle, MAX_HANDLE,
+    NestedScript, SocketCall, SourceCall, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
 /// Sweep builds' dump of the scripts pages run (`dump-scripts`).
@@ -744,6 +744,9 @@ pub enum Task {
     /// What an EventSource's connection did (G74), as JSON: its number,
     /// the event to fire and its fields, all the host's.
     Source(String),
+    /// A Web Crypto call's answer (G255), as JSON (its number, and what
+    /// it settles with), and the bytes of a buffer it gives.
+    Crypto(String, Vec<u8>),
 }
 
 /// Where a message is delivered (M31).

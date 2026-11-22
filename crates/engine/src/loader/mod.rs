@@ -120,6 +120,8 @@ mod validity_tests;
 #[cfg(test)]
 mod web_audio_tests;
 #[cfg(test)]
+mod webcrypto_tests;
+#[cfg(test)]
 mod webgl_tests;
 #[cfg(test)]
 mod webgpu_tests;

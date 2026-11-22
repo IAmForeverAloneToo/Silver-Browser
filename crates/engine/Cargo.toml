@@ -35,6 +35,8 @@ audio.workspace = true
 glsl.workspace = true
 media.workspace = true
 devtools.workspace = true
+# Web Crypto's operations and key stores (G255).
+crypto.workspace = true
 canvas.workspace = true
 css.workspace = true
 dom.workspace = true

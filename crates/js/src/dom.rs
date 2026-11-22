@@ -1240,6 +1240,27 @@ pub enum Call {
     Socket(Box<SocketCall>),
     /// What the EventSource bindings ask (G74): one variant for them all.
     Source(Box<SourceCall>),
+    /// What the Web Crypto bindings ask (G255): one variant for them all.
+    Crypto(Box<CryptoCall>),
+}
+
+/// A Web Crypto call (G255). The bindings are a shell: an algorithm's
+/// normalization, the operations and the keys' material are the host's,
+/// which answers with the reference's errors. Results come as
+/// `Task::Crypto`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CryptoCall {
+    /// The members the bindings read of algorithm `name` for operation
+    /// `op`, in order, as `name kind required` strings; `null` when the
+    /// name is not recognized or has no such operation.
+    Members { op: String, name: String },
+    /// A `SubtleCrypto` method's call, number `id`: its arguments as JSON,
+    /// buffers by their place in `buffers`. Its answer comes as a task.
+    Run {
+        id: u32,
+        json: String,
+        buffers: Vec<Vec<u8>>,
+    },
 }
 
 /// An EventSource's call (G74, HTML section 9.2). The bindings are a

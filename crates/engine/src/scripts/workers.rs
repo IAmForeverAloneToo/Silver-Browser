@@ -1206,6 +1206,10 @@ pub(crate) struct WorkerHost {
     /// their threads, which wake it.
     sources: super::event_source::Sources,
     source_news: SourceNews,
+    /// Its realm's Web Crypto keys (G255), and the answers its calls gave,
+    /// for the next wake.
+    crypto_keys: crypto::Keys,
+    crypto_answers: VecDeque<(String, Vec<u8>)>,
 }
 
 /// What a worker's EventSources' connections did, by source.
@@ -1234,6 +1238,8 @@ impl Default for WorkerHost {
             socket_news: Arc::default(),
             sources: super::event_source::Sources::default(),
             source_news: Arc::default(),
+            crypto_keys: crypto::Keys::default(),
+            crypto_answers: VecDeque::new(),
             next_job: 0,
             canvases: Canvases::default(),
             viewport: (0, 0),
@@ -1424,6 +1430,16 @@ impl ScriptingHost for WorkerHost {
                     self.say(ConsoleSource::Engine, ConsoleLevel::Error, said);
                 }
                 self.start_sockets();
+                answer
+            }
+            Call::Crypto(call) => {
+                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call);
+                if let Some(task) = task {
+                    self.crypto_answers.push_back(task);
+                    if let Some(wake) = self.pool.as_ref().and_then(Pool::waker) {
+                        wake();
+                    }
+                }
                 answer
             }
             Call::Source(call) => {
@@ -1797,6 +1813,9 @@ impl WorkerHost {
         }
         while let Some(json) = self.sources.tasks.pop_front() {
             tasks.push(Task::Source(json));
+        }
+        while let Some((json, bytes)) = self.crypto_answers.pop_front() {
+            tasks.push(Task::Crypto(json, bytes));
         }
         while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
             let Some((id, url, _)) = self.fetching.remove(&job) else {

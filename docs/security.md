@@ -308,6 +308,13 @@ font folders; a file it cannot read, it scans for.
   kept from it: a lasting body is streamed to the renderer as it comes,
   never held by the browser, and a body the browser takes whole keeps
   its bound whatever the flag says.
+- **Web Crypto** (G255). A key's material lives in its realm's store
+  (`crates/crypto`), in the renderer: script holds a key's number alone,
+  and an export or a wrap asks the store, which checks `extractable`
+  itself. Every primitive is aws-lc-rs's, no cryptography written here,
+  no new unsafe; a secret's bytes are overwritten as its key goes.
+  `crypto.subtle` exists in secure contexts alone. The fuzz target
+  `crypto_import` feeds any bytes to every import format.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

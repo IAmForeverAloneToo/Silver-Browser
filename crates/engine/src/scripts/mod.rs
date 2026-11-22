@@ -33,6 +33,7 @@ mod service_workers_tests;
 mod url;
 #[cfg(test)]
 mod wasm_tests;
+pub(crate) mod webcrypto;
 pub(crate) mod websocket;
 pub(crate) mod workers;
 

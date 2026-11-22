@@ -3955,6 +3955,14 @@ Deferred from the milestones above, each with what it waits on:
        the page; drawing colours without a layout is deferred
        (`docs/perf-budgets.md`).
 
+- [ ] G255 Web Crypto: `crypto.subtle`, `SubtleCrypto` and `CryptoKey`
+       over aws-lc-rs (docs/design/webcrypto.md). Taken out of the freeze
+       by the lead as a beta blocker: Proton, the user's mail, refuses a
+       browser without it, and 1Password needs it. First push: the gate
+       and Proton's load-time steps (digests, AES-GCM, HMAC, HKDF,
+       PBKDF2, RSASSA public keys); the rest of Chrome 157's algorithms,
+       wrapping, a key's structured clone, Wycheproof and WPT to come.
+
 ### Known gaps (not G items: the list is frozen)
 
 Gaps found while the G list is frozen. Each becomes work only when the

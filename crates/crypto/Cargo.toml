@@ -1,0 +1,10 @@
+[package]
+name = "crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Leaf crate: Web Crypto's operations and key store (G255,
+# docs/design/webcrypto.md), engine-neutral, every primitive aws-lc-rs's.
+[dependencies]
+aws-lc-rs.workspace = true

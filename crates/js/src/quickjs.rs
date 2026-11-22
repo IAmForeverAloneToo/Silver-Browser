@@ -1551,6 +1551,12 @@ impl<H: ScriptingHost> Realm<H> for QuickJsRealm<H> {
                     .get::<_, Function<'_>>("socket")?
                     .call::<_, Value<'_>>((message.as_str(), data))
             }),
+            Task::Crypto(message, bytes) => self.stepped(&entries, |ctx, entries| {
+                let data = rquickjs::ArrayBuffer::new(ctx.clone(), bytes.clone())?.into_value();
+                entries
+                    .get::<_, Function<'_>>("crypto")?
+                    .call::<_, Value<'_>>((message.as_str(), data))
+            }),
             Task::Source(message) => self.stepped(&entries, |_, entries| {
                 entries
                     .get::<_, Function<'_>>("source")?

@@ -517,6 +517,8 @@ pub(crate) struct DocumentHost {
     script_options: Vec<super::ScriptOptions>,
     /// Its WebSockets (G74).
     pub(crate) sockets: super::websocket::Sockets,
+    /// Its realm's Web Crypto keys (G255).
+    pub(crate) crypto_keys: crypto::Keys,
     /// Its EventSources (G74).
     pub(crate) event_sources: super::event_source::Sources,
 }
@@ -2400,6 +2402,16 @@ impl DocumentHost {
                 }
                 for said in std::mem::take(&mut self.sockets.said) {
                     self.say(ConsoleLevel::Error, said);
+                }
+                answer
+            }
+            Call::Crypto(call) => {
+                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call);
+                if let Some((json, bytes)) = task {
+                    let now = self.now();
+                    self.outputs
+                        .messages
+                        .push((now, js::Task::Crypto(json, bytes)));
                 }
                 answer
             }
