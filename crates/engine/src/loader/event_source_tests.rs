@@ -438,3 +438,24 @@ fn another_origins_stream_is_made_again_with_its_id_and_no_preflight() {
         heads[1]
     );
 }
+
+#[test]
+fn a_connection_being_made_counts_as_the_network_in_flight() {
+    // A server that takes the connection and never answers: a runner on
+    // a hand's clock must wait for it, as for a fetch (G74).
+    let silent = SocketListener::bind();
+    let port = silent.port();
+    let page = format!(
+        "<script>new EventSource('http://127.0.0.1:{port}/s');\
+         new WebSocket('ws://127.0.0.1:{port}/w');</script>"
+    );
+    let (page_port, _heads) = serve(move |_, _| Answer::page(page.clone()));
+    let mut tab = tab_at(page_port);
+    for _ in 0..20 {
+        tab.engine.poll_network();
+        tab.engine.run_tasks();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(tab.engine.fetching(), "still connecting");
+    drop(silent);
+}

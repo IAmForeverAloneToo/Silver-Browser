@@ -2976,6 +2976,12 @@ impl Scripts {
         self.host.media.loading()
     }
 
+    /// Whether a WebSocket's handshake or an EventSource's connection is
+    /// being made (G74): the network has yet to answer it.
+    pub(crate) fn connecting(&self) -> bool {
+        self.host.sockets.connecting() || self.host.event_sources.connecting()
+    }
+
     /// Whether a media element plays, its time running in real time.
     pub(crate) fn media_playing(&self) -> bool {
         !self.stopped && self.host.media.playing()

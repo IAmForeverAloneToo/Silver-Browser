@@ -106,6 +106,14 @@ impl Sockets {
         self.open > 0
     }
 
+    /// Whether a socket's handshake is under way: the network has yet to
+    /// answer it.
+    pub(crate) fn connecting(&self) -> bool {
+        self.sockets
+            .values()
+            .any(|socket| socket.state == CONNECTING)
+    }
+
     /// Answers `call`: `resolve` resolves a constructor's URL against
     /// the API base URL, as UTF-8; `blocked` says whether the policies
     /// of the document or worker refuse a `ws:` or `wss:` URL, and

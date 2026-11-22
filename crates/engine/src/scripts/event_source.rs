@@ -39,8 +39,10 @@ struct Source {
     /// reconnection sends.
     retry: u64,
     last_event_id: String,
-    /// The request each connection is made of.
+    /// The request each connection is made of, and whether one of them
+    /// is being made: asked for, and neither open nor ended yet.
     request: net::Request,
+    attempting: bool,
     control: Arc<SourceControl>,
 }
 
@@ -81,6 +83,12 @@ impl Sources {
         self.live > 0
     }
 
+    /// Whether a source's connection is being made: the network has yet
+    /// to answer it.
+    pub(crate) fn connecting(&self) -> bool {
+        self.sources.values().any(|source| source.attempting)
+    }
+
     /// Answers `call`: `resolve` resolves a constructor's URL against
     /// the API base URL, as UTF-8; `initiator` is the document or worker
     /// it is made by (none, a realm gone).
@@ -102,6 +110,7 @@ impl Sources {
                         self.live -= 1;
                     }
                     source.shown = CLOSED;
+                    source.attempting = false;
                     source.control.close();
                 }
                 Ok(Answer::Nothing)
@@ -118,10 +127,11 @@ impl Sources {
             // Section 9.2.3's last task of "reestablish the connection":
             // still connecting, the connection made again.
             SourceCall::Reconnect { id } => {
-                if let Some(source) = self.sources.get(&id)
+                if let Some(source) = self.sources.get_mut(&id)
                     && source.state == CONNECTING
                     && source.shown == CONNECTING
                 {
+                    source.attempting = true;
                     let mut request = source.request.clone();
                     if !source.last_event_id.is_empty() {
                         request
@@ -199,6 +209,7 @@ impl Sources {
                 retry: RECONNECT_MS,
                 last_event_id: String::new(),
                 request: request.clone(),
+                attempting: true,
                 control: control.clone(),
             },
         );
@@ -225,6 +236,7 @@ impl Sources {
         }
         match update {
             SourceUpdate::Opened { origin } => {
+                source.attempting = false;
                 source.state = OPEN;
                 source.origin = origin;
                 self.task(id, &format!(r#""type":"open","state":{OPEN}"#));
@@ -248,6 +260,7 @@ impl Sources {
             // Section 9.2.3, "reestablish the connection": the `error`,
             // then, the reconnection time on, the connection again.
             SourceUpdate::Reconnecting { last_event_id } => {
+                source.attempting = false;
                 source.state = CONNECTING;
                 source.last_event_id = last_event_id;
                 let retry = source.retry;
@@ -258,6 +271,7 @@ impl Sources {
             }
             // "Fail the connection".
             SourceUpdate::Failed(said) => {
+                source.attempting = false;
                 source.state = CLOSED;
                 self.live -= 1;
                 if let Some(said) = said {
