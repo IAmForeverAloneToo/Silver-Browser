@@ -154,3 +154,48 @@ fn a_page_makes_an_rsa_pair_signs_verifies_and_moves_its_keys() {
         ]
     );
 }
+
+/// wrapKey and unwrapKey through a page's own calls (G255 step 1): a key
+/// wrapped by AES-KW and as a JWK by AES-GCM, unwrapped again and used;
+/// their arguments' errors and AES-CTR's, the reference's (Chrome 157,
+/// probed 2026-11-23).
+#[test]
+fn a_page_wraps_and_unwraps_keys() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');\
+        const k16 = new Uint8Array(16).map((_, i) => i);\
+        const kw = await s.importKey('raw', k16, 'AES-KW', false, ['wrapKey', 'unwrapKey']);\
+        const hmac = {name: 'HMAC', hash: 'SHA-256'};\
+        const secret = await s.importKey('raw', new Uint8Array(32).fill(5), hmac, true, ['sign', 'verify']);\
+        const wrapped = await s.wrapKey('raw', secret, kw, 'AES-KW');\
+        out.push(hex(wrapped));\
+        const back = await s.unwrapKey('raw', wrapped, kw, 'AES-KW', hmac, false, ['sign']);\
+        out.push([back.type, back.extractable, back.usages.join(), back.algorithm.name, back.algorithm.length].join(' '));\
+        const gcm = await s.importKey('raw', k16, 'AES-GCM', false, ['wrapKey', 'unwrapKey']);\
+        const p = {name: 'AES-GCM', iv: new Uint8Array(12)};\
+        const viaJwk = await s.unwrapKey('jwk', await s.wrapKey('jwk', secret, gcm, p), gcm, p, hmac, true, ['verify']);\
+        const sig = await s.sign('HMAC', back, new Uint8Array([1]));\
+        out.push(String(await s.verify('HMAC', viaJwk, sig, new Uint8Array([1]))));\
+        const err = async (f) => { try { await f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };\
+        out.push(await err(() => s.wrapKey('raw', secret, kw)));\
+        out.push(await err(() => s.wrapKey('raw', secret, secret, 'AES-KW')));\
+        out.push(await err(() => s.unwrapKey('raw', wrapped, kw, 'AES-KW', hmac, true, ['encrypt'])));\
+        const ctr = await s.importKey('raw', k16, 'AES-CTR', false, ['encrypt']);\
+        out.push(hex(await s.encrypt({name: 'AES-CTR', counter: new Uint8Array(16).fill(9), length: 1}, ctr, new Uint8Array(20).fill(2))));\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 7);
+    assert_eq!(
+        lines,
+        [
+            "f5e7c56fcfb7fe11e79873433832d0bc0993fafc624753d4a4123705041be60f661214323ec097ee",
+            "secret false sign HMAC 256",
+            "true",
+            "TypeError: Failed to execute 'wrapKey' on 'SubtleCrypto': 4 arguments required, but only 3 present.",
+            "InvalidAccessError: key.algorithm does not match that of operation",
+            "SyntaxError: Cannot create a key using the specified key usages.",
+            "ee68613a0882e37671c9580dd2eb985661aea1fa",
+        ]
+    );
+}

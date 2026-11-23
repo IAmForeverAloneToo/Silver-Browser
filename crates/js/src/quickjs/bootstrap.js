@@ -34074,8 +34074,23 @@
           return { alg: cryptoAlgorithm(algorithm, "sign", buffers), key: k, data: d };
         });
       },
-      unwrapKey() {
-        return rejected(new $DOMException("unwrapKey: not implemented yet", "NotSupportedError"));
+      unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm,
+        extractable, keyUsages) {
+        return cryptoMethod("unwrapKey", 7, arguments.length, (buffers) => {
+          const f = cryptoFormat(format, "unwrapKey");
+          const d = cryptoBuffer(wrappedKey, "unwrapKey", 2, buffers);
+          const k = cryptoKeyArgument(unwrappingKey, "unwrapKey", 3);
+          const usages = cryptoUsages(keyUsages, "unwrapKey");
+          return {
+            format: f,
+            data: d,
+            key: k,
+            alg: cryptoAlgorithm(unwrapAlgorithm, "unwrapKey", buffers),
+            imported: cryptoAlgorithm(unwrappedKeyAlgorithm, "importKey", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
       },
       verify(algorithm, key, signature, data) {
         return cryptoMethod("verify", 4, arguments.length, (buffers) => {
@@ -34087,8 +34102,15 @@
           };
         });
       },
-      wrapKey() {
-        return rejected(new $DOMException("wrapKey: not implemented yet", "NotSupportedError"));
+      wrapKey(format, key, wrappingKey, wrapAlgorithm) {
+        return cryptoMethod("wrapKey", 4, arguments.length, (buffers) => {
+          const f = cryptoFormat(format, "wrapKey");
+          const k = cryptoKeyArgument(key, "wrapKey", 2);
+          const w = cryptoKeyArgument(wrappingKey, "wrapKey", 3);
+          return {
+            format: f, key: k, wrappingKey: w, alg: cryptoAlgorithm(wrapAlgorithm, "wrapKey", buffers),
+          };
+        });
       },
     };
     const names = ["decrypt", "deriveBits", "deriveKey", "digest", "encrypt", "exportKey",

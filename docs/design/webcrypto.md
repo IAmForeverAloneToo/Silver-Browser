@@ -268,6 +268,19 @@ key's PKCS #8 (84, byte for byte; 24 with SHA-224, which Web Crypto has
 not, left out), RSA-PSS's verification (619, salts 0, 20, 32, 48 and
 64) and RSA-OAEP's decryption with labels (177).
 
+AES-CBC, AES-CTR and AES-KW, and wrapKey and unwrapKey (step 1 of the
+lead's order of 2026-11-23), all aws-lc-rs's: CBC with PKCS #7 padding;
+CTR's counter counting and wrapping in its low `length` bits alone, as
+the specification has it, aws-lc-rs's CTR (which counts all 128) run on
+each stretch before those bits wrap, from that stretch's counter, and
+an input longer than the counter can count a DataError; AES-KW (RFC
+3394). wrapKey exports the key (a JWK as its compact text, members in
+their export order) and encrypts or wraps it; unwrapKey decrypts or
+unwraps and imports, a JWK's text read as JSON.parse reads it (devtools'
+parser, fuzzed); each algorithm's own wrapKey or unwrapKey params, or
+else its encrypt's or decrypt's, and every answer and error, byte and
+word, Chrome 157's (probed).
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`

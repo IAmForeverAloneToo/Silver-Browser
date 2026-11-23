@@ -346,6 +346,7 @@ version = "0.0.1"
 dependencies = [
  "aws-lc-rs",
  "aws-lc-sys",
+ "devtools",
 ]
 
 [[package]]

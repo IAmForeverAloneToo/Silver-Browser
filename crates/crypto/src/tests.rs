@@ -1802,3 +1802,636 @@ fn oaep_outside_the_safe_range_is_an_explicit_operation_error() {
         Ok(Outcome::Bytes(_))
     ));
 }
+
+fn aes_key(keys: &mut Keys, name: &str, raw: &[u8], usages: Vec<Usage>) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::ImportKey {
+            format: "raw".into(),
+            key_data: Value::Bytes(raw.to_vec()),
+            algorithm: s(name),
+            extractable: true,
+            usages,
+        },
+    )
+}
+
+fn hex_of(out: Result<Outcome, Error>) -> String {
+    bytes(out).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn crypt_call(
+    keys: &mut Keys,
+    encrypt: bool,
+    key: u32,
+    algorithm: Value,
+    data: Vec<u8>,
+) -> Result<Outcome, Error> {
+    if encrypt {
+        run(
+            keys,
+            Call::Encrypt {
+                algorithm,
+                key,
+                data,
+            },
+        )
+    } else {
+        run(
+            keys,
+            Call::Decrypt {
+                algorithm,
+                key,
+                data,
+            },
+        )
+    }
+}
+
+/// AES-CBC and AES-CTR as Chrome 157 encrypts (probed, aes-modes.json):
+/// its ciphertexts on fixed keys, CTR's counter wrapping in its low
+/// `length` bits, and the params' and operations' errors.
+#[test]
+fn aes_cbc_and_ctr_are_the_references() {
+    let mut keys = Keys::default();
+    let k16: Vec<u8> = (0..16).collect();
+    let k32: Vec<u8> = (0..32).collect();
+    let cbc = key(aes_key(
+        &mut keys,
+        "AES-CBC",
+        &k16,
+        vec![Usage::Encrypt, Usage::Decrypt],
+    ));
+    let cbc_iv = |iv: Vec<u8>| dict(&[("name", s("AES-CBC")), ("iv", Value::Bytes(iv))]);
+    for (len, want) in [
+        (0, "6feb2efdf86680b714d03eda40e51c01"),
+        (15, "074d3268c34064431e664c2566420f59"),
+        (
+            16,
+            "074d3268c34064431e664c2566420f59646b67faeb1a1b5e075ef731f17f97c0",
+        ),
+        (
+            17,
+            "074d3268c34064431e664c2566420f598d44336571f6be92d583ef84333310f6",
+        ),
+    ] {
+        let sealed = bytes(crypt_call(
+            &mut keys,
+            true,
+            cbc.id,
+            cbc_iv(vec![9; 16]),
+            vec![1; len],
+        ));
+        assert_eq!(
+            sealed
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            want,
+            "cbc {len}"
+        );
+        let back = bytes(crypt_call(
+            &mut keys,
+            false,
+            cbc.id,
+            cbc_iv(vec![9; 16]),
+            sealed,
+        ));
+        assert_eq!(back, vec![1; len], "cbc {len} back");
+    }
+    let cbc256 = key(aes_key(&mut keys, "AES-CBC", &k32, vec![Usage::Encrypt]));
+    assert_eq!(
+        hex_of(crypt_call(
+            &mut keys,
+            true,
+            cbc256.id,
+            cbc_iv(vec![9; 16]),
+            vec![0; 3]
+        )),
+        "546b0c69339a77cb854ad5aa72bc9534"
+    );
+    let iv_error = "OperationError: The \"iv\" has an unexpected length -- must be 16 bytes";
+    for len in [15, 17] {
+        assert_eq!(
+            error(crypt_call(
+                &mut keys,
+                true,
+                cbc.id,
+                cbc_iv(vec![0; len]),
+                vec![1]
+            )),
+            iv_error
+        );
+    }
+    assert_eq!(
+        error(crypt_call(&mut keys, true, cbc.id, s("AES-CBC"), vec![1])),
+        "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': AesCbcParams: iv: Missing required property"
+    );
+    for data in [vec![0; 16], vec![0; 15], vec![]] {
+        assert_eq!(
+            error(crypt_call(
+                &mut keys,
+                false,
+                cbc.id,
+                cbc_iv(vec![9; 16]),
+                data
+            )),
+            "OperationError: "
+        );
+    }
+    assert_eq!(
+        error(aes_key(
+            &mut keys,
+            "AES-CBC",
+            &[0; 24],
+            vec![Usage::Encrypt]
+        )),
+        "OperationError: 192-bit AES keys are not supported"
+    );
+    // CTR.
+    let ctr = key(aes_key(
+        &mut keys,
+        "AES-CTR",
+        &k16,
+        vec![Usage::Encrypt, Usage::Decrypt],
+    ));
+    let ctr_of = |counter: Vec<u8>, length: f64| {
+        dict(&[
+            ("name", s("AES-CTR")),
+            ("counter", Value::Bytes(counter)),
+            ("length", Value::Num(length)),
+        ])
+    };
+    for (length, want) in [
+        (1.0, "ee68613a0882e37671c9580dd2eb985661aea1fa"),
+        (64.0, "ee68613a0882e37671c9580dd2eb9856d3eef88c"),
+        (128.0, "ee68613a0882e37671c9580dd2eb9856d3eef88c"),
+    ] {
+        let out = crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![9; 16], length),
+            vec![2; 20],
+        );
+        assert_eq!(hex_of(out), want, "ctr {length}");
+    }
+    assert_eq!(
+        hex_of(crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![0xff; 16], 8.0),
+            vec![0; 48]
+        )),
+        "3c441f32ce07822364d7a2990e50bb1390dcf07a729615b8537aaafb90b8ec834be90bda27f92f1df1adadf588516235"
+    );
+    assert_eq!(
+        hex_of(crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![0xff; 16], 128.0),
+            vec![0; 32]
+        )),
+        "3c441f32ce07822364d7a2990e50bb13c6a13b37878f5b826f4f8162a1c8d879"
+    );
+    let sealed = bytes(crypt_call(
+        &mut keys,
+        true,
+        ctr.id,
+        ctr_of(vec![0; 16], 64.0),
+        vec![1, 2, 3],
+    ));
+    assert_eq!(
+        bytes(crypt_call(
+            &mut keys,
+            false,
+            ctr.id,
+            ctr_of(vec![0; 16], 64.0),
+            sealed
+        )),
+        [1, 2, 3]
+    );
+    assert_eq!(
+        bytes(crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![9; 16], 1.0),
+            vec![0; 32]
+        ))
+        .len(),
+        32
+    );
+    assert_eq!(
+        error(crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![9; 16], 1.0),
+            vec![0; 33]
+        )),
+        "DataError: The input is too large for the counter length."
+    );
+    for length in [0.0, 129.0] {
+        assert_eq!(
+            error(crypt_call(
+                &mut keys,
+                true,
+                ctr.id,
+                ctr_of(vec![9; 16], length),
+                vec![1]
+            )),
+            "OperationError: The \"length\" member must be >= 1 and <= 128"
+        );
+    }
+    assert_eq!(
+        error(crypt_call(
+            &mut keys,
+            true,
+            ctr.id,
+            ctr_of(vec![0; 15], 64.0),
+            vec![1]
+        )),
+        "OperationError: The \"counter\" has an unexpected length -- must be 16 bytes"
+    );
+}
+
+fn hmac_key(keys: &mut Keys, raw: &[u8], length: Option<f64>, extractable: bool) -> KeyInfo {
+    let mut alg = vec![("name", s("HMAC")), ("hash", s("SHA-256"))];
+    if let Some(l) = length {
+        alg.push(("length", Value::Num(l)));
+    }
+    key(run(
+        keys,
+        Call::ImportKey {
+            format: "raw".into(),
+            key_data: Value::Bytes(raw.to_vec()),
+            algorithm: dict(&alg),
+            extractable,
+            usages: vec![Usage::Sign, Usage::Verify],
+        },
+    ))
+}
+
+fn wrap_call(
+    keys: &mut Keys,
+    format: &str,
+    key: u32,
+    wrapping: u32,
+    algorithm: Value,
+) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::WrapKey {
+            format: format.into(),
+            key,
+            wrapping_key: wrapping,
+            algorithm,
+        },
+    )
+}
+
+fn unwrap_call(
+    keys: &mut Keys,
+    format: &str,
+    data: Vec<u8>,
+    unwrapping: u32,
+    algorithm: Value,
+    extractable: bool,
+    usages: Vec<Usage>,
+) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::UnwrapKey {
+            format: format.into(),
+            wrapped: data,
+            unwrapping_key: unwrapping,
+            algorithm,
+            unwrapped_algorithm: dict(&[("name", s("HMAC")), ("hash", s("SHA-256"))]),
+            extractable,
+            usages,
+        },
+    )
+}
+
+/// AES-KW and wrapKey/unwrapKey as Chrome 157 answers (probed,
+/// aes-modes.json and aes-modes2.json): KW's own bytes, a wrapped JWK's
+/// exact text, and the errors in the reference's order.
+#[test]
+fn aes_kw_and_wrapping_are_the_references() {
+    let mut keys = Keys::default();
+    let k16: Vec<u8> = (0..16).collect();
+    let kw = key(aes_key(
+        &mut keys,
+        "AES-KW",
+        &k16,
+        vec![Usage::WrapKey, Usage::UnwrapKey],
+    ));
+    let secret = hmac_key(&mut keys, &[5; 32], None, true);
+    let wrapped = bytes(wrap_call(&mut keys, "raw", secret.id, kw.id, s("AES-KW")));
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        "f5e7c56fcfb7fe11e79873433832d0bc0993fafc624753d4a4123705041be60f661214323ec097ee"
+    );
+    let back = key(unwrap_call(
+        &mut keys,
+        "raw",
+        wrapped.clone(),
+        kw.id,
+        s("AES-KW"),
+        true,
+        vec![Usage::Sign],
+    ));
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: back.id
+            }
+        )),
+        vec![5; 32]
+    );
+    let mut tampered = wrapped.clone();
+    tampered[3] ^= 1;
+    let out = unwrap_call(
+        &mut keys,
+        "raw",
+        tampered,
+        kw.id,
+        s("AES-KW"),
+        true,
+        vec![Usage::Sign],
+    );
+    assert_eq!(error(out), "OperationError: ");
+    let small = "OperationError: The provided data is too small";
+    for len in [16, 23] {
+        let out = unwrap_call(
+            &mut keys,
+            "raw",
+            vec![0; len],
+            kw.id,
+            s("AES-KW"),
+            true,
+            vec![Usage::Sign],
+        );
+        assert_eq!(error(out), small, "{len}");
+    }
+    let nine = hmac_key(&mut keys, &[5; 9], Some(72.0), true);
+    let eight = hmac_key(&mut keys, &[5; 8], Some(64.0), true);
+    assert_eq!(
+        error(wrap_call(&mut keys, "raw", nine.id, kw.id, s("AES-KW"))),
+        small
+    );
+    assert_eq!(
+        error(wrap_call(&mut keys, "raw", eight.id, kw.id, s("AES-KW"))),
+        small
+    );
+    assert_eq!(
+        error(wrap_call(&mut keys, "jwk", secret.id, kw.id, s("AES-KW"))),
+        "DataError: The AES-KW input data length is invalid: not a multiple of 8 bytes"
+    );
+    assert_eq!(
+        error(aes_key(&mut keys, "AES-KW", &k16, vec![Usage::Encrypt])),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::Encrypt {
+                algorithm: s("AES-KW"),
+                key: kw.id,
+                data: vec![0; 16]
+            }
+        )),
+        "NotSupportedError: Failed to execute 'encrypt' on 'SubtleCrypto': AES-KW: Unsupported operation: encrypt"
+    );
+    // A JWK through AES-GCM: its exact text, and back.
+    let usages = vec![
+        Usage::WrapKey,
+        Usage::UnwrapKey,
+        Usage::Encrypt,
+        Usage::Decrypt,
+    ];
+    let gcm = key(aes_key(&mut keys, "AES-GCM", &k16, usages));
+    let gcm_params = || dict(&[("name", s("AES-GCM")), ("iv", Value::Bytes(vec![0; 12]))]);
+    let sealed = bytes(wrap_call(&mut keys, "jwk", secret.id, gcm.id, gcm_params()));
+    let text = bytes(crypt_call(
+        &mut keys,
+        false,
+        gcm.id,
+        gcm_params(),
+        sealed.clone(),
+    ));
+    assert_eq!(
+        String::from_utf8(text).unwrap(),
+        r#"{"alg":"HS256","ext":true,"k":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU","key_ops":["sign","verify"],"kty":"oct"}"#
+    );
+    let unwrapped = key(unwrap_call(
+        &mut keys,
+        "jwk",
+        sealed,
+        gcm.id,
+        gcm_params(),
+        false,
+        vec![Usage::Sign],
+    ));
+    assert_eq!(
+        (
+            unwrapped.kind,
+            unwrapped.extractable,
+            unwrapped.usages.clone()
+        ),
+        (KeyType::Secret, false, vec![Usage::Sign])
+    );
+    // The errors, the reference's.
+    let not_extractable = hmac_key(&mut keys, &[0; 32], None, false);
+    assert_eq!(
+        error(wrap_call(
+            &mut keys,
+            "raw",
+            not_extractable.id,
+            kw.id,
+            s("AES-KW")
+        )),
+        "InvalidAccessError: key is not extractable"
+    );
+    let unwrap_only = key(aes_key(&mut keys, "AES-KW", &k16, vec![Usage::UnwrapKey]));
+    let usage = "InvalidAccessError: key.usages does not permit this operation";
+    assert_eq!(
+        error(wrap_call(
+            &mut keys,
+            "raw",
+            secret.id,
+            unwrap_only.id,
+            s("AES-KW")
+        )),
+        usage
+    );
+    assert_eq!(
+        error(wrap_call(&mut keys, "raw", secret.id, kw.id, gcm_params())),
+        "InvalidAccessError: key.algorithm does not match that of operation"
+    );
+    assert_eq!(
+        error(wrap_call(&mut keys, "spki", secret.id, kw.id, s("AES-KW"))),
+        "NotSupportedError: Unsupported export key format for algorithm"
+    );
+    assert_eq!(
+        error(wrap_call(&mut keys, "raw", secret.id, secret.id, s("HMAC"))),
+        "NotSupportedError: Failed to execute 'wrapKey' on 'SubtleCrypto': HMAC: Unsupported operation: wrapKey"
+    );
+    let not_json = "DataError: JWK input could not be parsed to a JSON dictionary";
+    for text in [&b"{not json"[..], b"[1,2]"] {
+        let junk = bytes(crypt_call(
+            &mut keys,
+            true,
+            gcm.id,
+            gcm_params(),
+            text.to_vec(),
+        ));
+        let out = unwrap_call(
+            &mut keys,
+            "jwk",
+            junk,
+            gcm.id,
+            gcm_params(),
+            true,
+            vec![Usage::Sign],
+        );
+        assert_eq!(error(out), not_json);
+    }
+    let raw_wrapped = bytes(wrap_call(&mut keys, "raw", secret.id, gcm.id, gcm_params()));
+    assert_eq!(
+        error(unwrap_call(
+            &mut keys,
+            "raw",
+            raw_wrapped.clone(),
+            gcm.id,
+            gcm_params(),
+            true,
+            vec![]
+        )),
+        "SyntaxError: Usages cannot be empty when creating a key."
+    );
+    assert_eq!(
+        error(unwrap_call(
+            &mut keys,
+            "raw",
+            raw_wrapped,
+            gcm.id,
+            gcm_params(),
+            true,
+            vec![Usage::Encrypt]
+        )),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    let wrap_only = key(aes_key(&mut keys, "AES-GCM", &k16, vec![Usage::WrapKey]));
+    let out = unwrap_call(
+        &mut keys,
+        "raw",
+        vec![0; 3],
+        wrap_only.id,
+        gcm_params(),
+        true,
+        vec![Usage::Sign],
+    );
+    assert_eq!(error(out), usage);
+    let out = unwrap_call(
+        &mut keys,
+        "raw",
+        vec![0; 48],
+        gcm.id,
+        gcm_params(),
+        true,
+        vec![Usage::Sign],
+    );
+    assert_eq!(error(out), "OperationError: ");
+    // CBC wraps a raw key padded: 32 bytes to 48.
+    let cbc = key(aes_key(&mut keys, "AES-CBC", &k16, vec![Usage::WrapKey]));
+    let cbc_params = dict(&[("name", s("AES-CBC")), ("iv", Value::Bytes(vec![9; 16]))]);
+    assert_eq!(
+        bytes(wrap_call(&mut keys, "raw", secret.id, cbc.id, cbc_params)).len(),
+        48
+    );
+    // Each AES key's JWK names its mode.
+    for (name, alg, usage) in [
+        ("AES-CBC", "A256CBC", Usage::Encrypt),
+        ("AES-CTR", "A256CTR", Usage::Encrypt),
+        ("AES-KW", "A256KW", Usage::WrapKey),
+    ] {
+        let k = key(aes_key(&mut keys, name, &[1; 32], vec![usage]));
+        let Ok(Outcome::Jwk(members)) = run(
+            &mut keys,
+            Call::ExportKey {
+                format: "jwk".into(),
+                key: k.id,
+            },
+        ) else {
+            panic!("a JWK");
+        };
+        assert_eq!(
+            members[0],
+            ("alg".to_owned(), JwkValue::Str(alg.into())),
+            "{name}"
+        );
+    }
+}
+
+/// An unwrapped JWK's text read as JSON.parse reads it, a member named
+/// twice its last; and unwrapKey's algorithms normalized before anything
+/// is decrypted (the specification's order).
+#[test]
+fn unwrapping_reads_a_jwk_as_json_does_and_normalizes_first() {
+    let mut keys = Keys::default();
+    let usages = vec![Usage::UnwrapKey, Usage::Encrypt];
+    let gcm = key(aes_key(&mut keys, "AES-GCM", &[3; 16], usages));
+    let gcm_params = || dict(&[("name", s("AES-GCM")), ("iv", Value::Bytes(vec![0; 12]))]);
+    let text = br#"{"kty":"oct","k":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","k":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU"}"#;
+    let sealed = bytes(crypt_call(
+        &mut keys,
+        true,
+        gcm.id,
+        gcm_params(),
+        text.to_vec(),
+    ));
+    let k = key(unwrap_call(
+        &mut keys,
+        "jwk",
+        sealed,
+        gcm.id,
+        gcm_params(),
+        true,
+        vec![Usage::Sign],
+    ));
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: k.id
+            }
+        )),
+        vec![5; 32]
+    );
+    let out = run(
+        &mut keys,
+        Call::UnwrapKey {
+            format: "raw".into(),
+            wrapped: vec![0; 3],
+            unwrapping_key: gcm.id,
+            algorithm: gcm_params(),
+            unwrapped_algorithm: s("AES-FOO"),
+            extractable: true,
+            usages: vec![Usage::Sign],
+        },
+    );
+    assert_eq!(
+        error(out),
+        "NotSupportedError: Failed to execute 'unwrapKey' on 'SubtleCrypto': Algorithm: Unrecognized name"
+    );
+}

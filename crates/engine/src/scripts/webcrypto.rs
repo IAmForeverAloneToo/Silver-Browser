@@ -182,6 +182,21 @@ fn call_of(args: &Json, buffers: &[Vec<u8>]) -> Option<crypto::Call> {
             format: text("format")?,
             key: key("key")?,
         },
+        "wrapKey" => Call::WrapKey {
+            format: text("format")?,
+            key: key("key")?,
+            wrapping_key: key("wrappingKey")?,
+            algorithm,
+        },
+        "unwrapKey" => Call::UnwrapKey {
+            format: text("format")?,
+            wrapped: bytes("data")?,
+            unwrapping_key: key("key")?,
+            algorithm,
+            unwrapped_algorithm: get("imported")?,
+            extractable,
+            usages: usages(),
+        },
         "deriveBits" => Call::DeriveBits {
             algorithm,
             key: key("key")?,

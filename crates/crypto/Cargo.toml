@@ -10,6 +10,9 @@ license.workspace = true
 aws-lc-rs.workspace = true
 # Its C library, for `native`'s few calls (the lead's ruling, G255).
 aws-lc-sys.workspace = true
+# Its JSON, for a wrapped JWK's text (wrapKey and unwrapKey); no
+# dependency of its own, fuzzed as `devtools_json`.
+devtools.workspace = true
 
 [features]
 # The fuzz targets' way to `native`'s calls (`crypto::fuzzing`): off in
@@ -17,5 +20,3 @@ aws-lc-sys.workspace = true
 fuzzing = []
 
 [dev-dependencies]
-# Wycheproof vectors are JSON (tests/wycheproof.rs).
-devtools.workspace = true

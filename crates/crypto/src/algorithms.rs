@@ -448,6 +448,30 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
             let key = key_for(keys, key, alg.name, Usage::Verify)?;
             Ok(Outcome::Bool(verify(key, &alg, &signature, &data)?))
         }
+        Call::WrapKey {
+            format,
+            key,
+            wrapping_key,
+            algorithm,
+        } => wrap_key(keys, &format, key, wrapping_key, &algorithm),
+        Call::UnwrapKey {
+            format,
+            wrapped,
+            unwrapping_key,
+            algorithm,
+            unwrapped_algorithm,
+            extractable,
+            usages,
+        } => unwrap_key(
+            keys,
+            format,
+            &wrapped,
+            unwrapping_key,
+            &algorithm,
+            unwrapped_algorithm,
+            extractable,
+            usage_set(&usages),
+        ),
         Call::GenerateKey {
             algorithm,
             extractable,
@@ -553,7 +577,15 @@ fn crypt(
         Usage::Decrypt
     };
     let key = key_for(keys, key, alg.name, usage)?;
+    crypt_with(key, alg, data, encrypt)
+}
+
+/// An encryption or decryption with `key`, its usages checked already
+/// (`crypt`'s, or wrapKey's and unwrapKey's own).
+fn crypt_with(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outcome, Error> {
     match alg.name {
+        "AES-CBC" => aes_cbc(secret(key), alg, data, encrypt),
+        "AES-CTR" => aes_ctr(secret(key), alg, data),
         "AES-GCM" => {
             let iv = alg.bytes("iv").unwrap_or(&[]);
             let aad = alg.bytes("additionalData").unwrap_or(&[]);
@@ -599,6 +631,253 @@ fn crypt(
         "RSA-OAEP" => oaep(key, alg, data, encrypt),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
+}
+
+/// AES's cipher of a key of `len` bytes (128 or 256 bits: the
+/// reference refuses 192).
+fn aes_cipher(len: usize) -> Result<&'static aws_lc_rs::cipher::Algorithm, Error> {
+    match len {
+        16 => Ok(&aws_lc_rs::cipher::AES_128),
+        32 => Ok(&aws_lc_rs::cipher::AES_256),
+        _ => Err(Error::operation("")),
+    }
+}
+
+/// AES-CBC with PKCS #7 padding, aws-lc-rs's; the reference's errors.
+fn aes_cbc(key: &[u8], alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outcome, Error> {
+    use aws_lc_rs::cipher::{
+        DecryptionContext, EncryptionContext, PaddedBlockDecryptingKey, PaddedBlockEncryptingKey,
+        UnboundCipherKey,
+    };
+    use aws_lc_rs::iv::FixedLength;
+    let Ok(iv) = <[u8; 16]>::try_from(alg.bytes("iv").unwrap_or(&[])) else {
+        return Err(Error::operation(
+            "The \"iv\" has an unexpected length -- must be 16 bytes",
+        ));
+    };
+    let failed = |_| Error::operation("");
+    let unbound = UnboundCipherKey::new(aes_cipher(key.len())?, key).map_err(failed)?;
+    let mut buffer = data.to_vec();
+    if encrypt {
+        let sealing = PaddedBlockEncryptingKey::cbc_pkcs7(unbound).map_err(failed)?;
+        sealing
+            .less_safe_encrypt(&mut buffer, EncryptionContext::Iv128(FixedLength::from(iv)))
+            .map_err(failed)?;
+        Ok(Outcome::Bytes(buffer))
+    } else {
+        let opening = PaddedBlockDecryptingKey::cbc_pkcs7(unbound).map_err(failed)?;
+        let plain = opening
+            .decrypt(&mut buffer, DecryptionContext::Iv128(FixedLength::from(iv)))
+            .map_err(failed)?
+            .to_vec();
+        Ok(Outcome::Bytes(plain))
+    }
+}
+
+/// AES-CTR, its counter's low `length` bits counting and wrapping, the
+/// rest fixed (the specification's, Chrome's): aws-lc-rs's CTR, which
+/// counts all 128 bits, run on each stretch before the low bits wrap,
+/// from that stretch's counter. Encryption and decryption are one.
+fn aes_ctr(key: &[u8], alg: &Normalized, data: &[u8]) -> Result<Outcome, Error> {
+    use aws_lc_rs::cipher::{EncryptingKey, EncryptionContext, UnboundCipherKey};
+    use aws_lc_rs::iv::FixedLength;
+    let Ok(counter) = <[u8; 16]>::try_from(alg.bytes("counter").unwrap_or(&[])) else {
+        return Err(Error::operation(
+            "The \"counter\" has an unexpected length -- must be 16 bytes",
+        ));
+    };
+    let length = alg.num("length").unwrap_or(0);
+    if !(1..=128).contains(&length) {
+        return Err(Error::operation(
+            "The \"length\" member must be >= 1 and <= 128",
+        ));
+    }
+    let blocks = data.len().div_ceil(16) as u128;
+    if length < 128 && blocks > 1u128 << length {
+        return Err(Error::data(
+            "The input is too large for the counter length.",
+        ));
+    }
+    let failed = |_| Error::operation("");
+    let unbound = UnboundCipherKey::new(aes_cipher(key.len())?, key).map_err(failed)?;
+    let sealing = EncryptingKey::ctr(unbound).map_err(failed)?;
+    let mask: u128 = if length == 128 {
+        u128::MAX
+    } else {
+        (1u128 << length) - 1
+    };
+    let mut counter = u128::from_be_bytes(counter);
+    let mut out = data.to_vec();
+    let mut at = 0;
+    while at < out.len() {
+        let low = counter & mask;
+        // Blocks before the low bits wrap; all that is left at 128 bits,
+        // where aws-lc-rs's own count wraps as the specification's does.
+        let room = (mask - low).checked_add(1).map_or(usize::MAX, |b| {
+            usize::try_from(b.saturating_mul(16)).unwrap_or(usize::MAX)
+        });
+        let end = out.len().min(at.saturating_add(room));
+        sealing
+            .less_safe_encrypt(
+                &mut out[at..end],
+                EncryptionContext::Iv128(FixedLength::from(counter.to_be_bytes())),
+            )
+            .map_err(failed)?;
+        let used = (end - at).div_ceil(16) as u128;
+        counter = (counter & !mask) | (low.wrapping_add(used) & mask);
+        at = end;
+    }
+    Ok(Outcome::Bytes(out))
+}
+
+/// AES-KW (RFC 3394), aws-lc-rs's: the reference's errors (probed) for
+/// what is too short, then for what is not a multiple of 8 bytes.
+fn aes_kw(key: &[u8], data: &[u8], wrap: bool) -> Result<Vec<u8>, Error> {
+    use aws_lc_rs::key_wrap::{AES_128, AES_256, AesKek, KeyWrap};
+    if data.len() < if wrap { 16 } else { 24 } {
+        return Err(Error::operation("The provided data is too small"));
+    }
+    if !data.len().is_multiple_of(8) {
+        return Err(Error::data(
+            "The AES-KW input data length is invalid: not a multiple of 8 bytes",
+        ));
+    }
+    let cipher = match key.len() {
+        16 => &AES_128,
+        32 => &AES_256,
+        _ => return Err(Error::operation("")),
+    };
+    let kek = AesKek::new(cipher, key).map_err(|_| Error::operation(""))?;
+    let mut out = vec![0u8; data.len() + 8];
+    let len = if wrap {
+        kek.wrap(data, &mut out).map(|o| o.len())
+    } else {
+        kek.unwrap(data, &mut out).map(|o| o.len())
+    }
+    .map_err(|_| Error::operation(""))?;
+    out.truncate(len);
+    Ok(out)
+}
+
+/// An exported JWK's text, as the reference wraps it (probed: compact,
+/// its members in their export order).
+fn jwk_text(members: &[(String, JwkValue)]) -> String {
+    use devtools::Json;
+    Json::object(members.iter().map(|(name, value)| {
+        let value = match value {
+            JwkValue::Str(s) => Json::String(s.clone()),
+            JwkValue::Bool(b) => Json::Bool(*b),
+            JwkValue::List(items) => {
+                Json::Array(items.iter().map(|s| Json::String(s.clone())).collect())
+            }
+        };
+        (name.as_str(), value)
+    }))
+    .write()
+}
+
+/// An unwrapped JWK's text as the dictionary importKey takes, or the
+/// reference's DataError for anything but a JSON object.
+fn jwk_value(bytes: &[u8]) -> Result<Value, Error> {
+    use devtools::Json;
+    let refused = || Error::data("JWK input could not be parsed to a JSON dictionary");
+    let text = std::str::from_utf8(bytes).map_err(|_| refused())?;
+    fn value(json: &Json) -> Value {
+        match json {
+            Json::Null => Value::Absent,
+            Json::Bool(b) => Value::Bool(*b),
+            Json::Number(n) => Value::Num(*n),
+            Json::String(s) => Value::Str(s.clone()),
+            Json::Array(items) => Value::List(items.iter().map(value).collect()),
+            Json::Object(members) => {
+                // A name given twice is its last, as JSON.parse keeps.
+                let mut out: Vec<(String, Value)> = Vec::new();
+                for (name, member) in members {
+                    out.retain(|(n, _)| n != name);
+                    out.push((name.clone(), value(member)));
+                }
+                Value::Dict(out)
+            }
+        }
+    }
+    match Json::parse(text).map_err(|_| refused())? {
+        object @ Json::Object(_) => Ok(value(&object)),
+        _ => Err(refused()),
+    }
+}
+
+/// wrapKey: the key exported in `format` (a JWK as its text) and
+/// encrypted, or wrapped by AES-KW, with the wrapping key, in the
+/// reference's order of checks.
+fn wrap_key(
+    keys: &Keys,
+    format: &str,
+    key: u32,
+    wrapping_key: u32,
+    algorithm: &Value,
+) -> Result<Outcome, Error> {
+    let alg = normalize("wrapKey", algorithm)?;
+    let wrapping = key_for(keys, wrapping_key, alg.name, Usage::WrapKey)?;
+    let key = keys.get(key)?;
+    if !key.extractable {
+        return Err(Error::invalid_access("key is not extractable"));
+    }
+    let mut bytes = match export(key, format)? {
+        Outcome::Bytes(bytes) => bytes,
+        Outcome::Jwk(members) => jwk_text(&members).into_bytes(),
+        _ => return Err(Error::operation("")),
+    };
+    let out = if alg.name == "AES-KW" {
+        aes_kw(secret(wrapping), &bytes, true).map(Outcome::Bytes)
+    } else {
+        crypt_with(wrapping, &alg, &bytes, true)
+    };
+    bytes.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&bytes);
+    out
+}
+
+/// unwrapKey: the wrapped bytes decrypted, or unwrapped by AES-KW, then
+/// imported as `format` (a JWK from its text), in the reference's order.
+#[allow(clippy::too_many_arguments)]
+fn unwrap_key(
+    keys: &mut Keys,
+    format: String,
+    wrapped: &[u8],
+    unwrapping_key: u32,
+    algorithm: &Value,
+    unwrapped_algorithm: Value,
+    extractable: bool,
+    usages: Vec<Usage>,
+) -> Result<Outcome, Error> {
+    let alg = normalize("unwrapKey", algorithm)?;
+    normalize("importKey", &unwrapped_algorithm)?;
+    let unwrapping = key_for(keys, unwrapping_key, alg.name, Usage::UnwrapKey)?;
+    let mut bytes = if alg.name == "AES-KW" {
+        aes_kw(secret(unwrapping), wrapped, false)?
+    } else {
+        match crypt_with(unwrapping, &alg, wrapped, false)? {
+            Outcome::Bytes(bytes) => bytes,
+            _ => return Err(Error::operation("")),
+        }
+    };
+    let key_data = if format == "jwk" {
+        jwk_value(&bytes)
+    } else {
+        Ok(Value::Bytes(bytes.clone()))
+    };
+    bytes.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&bytes);
+    run(
+        keys,
+        Call::ImportKey {
+            format,
+            key_data: key_data?,
+            algorithm: unwrapped_algorithm,
+            extractable,
+            usages,
+        },
+    )
 }
 
 /// An RSA public key's SPKI, aws-lc-rs's encoding of it.

@@ -249,6 +249,21 @@ pub enum Call {
         extractable: bool,
         usages: Vec<Usage>,
     },
+    WrapKey {
+        format: String,
+        key: u32,
+        wrapping_key: u32,
+        algorithm: Value,
+    },
+    UnwrapKey {
+        format: String,
+        wrapped: Vec<u8>,
+        unwrapping_key: u32,
+        algorithm: Value,
+        unwrapped_algorithm: Value,
+        extractable: bool,
+        usages: Vec<Usage>,
+    },
     ImportKey {
         format: String,
         /// The bytes, or a JWK's members.
@@ -288,6 +303,8 @@ impl Call {
             Call::GenerateKey { .. } => "generateKey",
             Call::ImportKey { .. } => "importKey",
             Call::ExportKey { .. } => "exportKey",
+            Call::WrapKey { .. } => "wrapKey",
+            Call::UnwrapKey { .. } => "unwrapKey",
             Call::DeriveBits { .. } => "deriveBits",
             Call::DeriveKey { .. } => "deriveKey",
         }

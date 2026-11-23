@@ -100,6 +100,17 @@ use MemberKind::{Algorithm, BigInteger, Buffer, Key, Str};
 /// name and members, in the reference's order; `None` when the algorithm
 /// has no such operation.
 fn dictionary(op: &str, name: &str) -> Option<(&'static str, &'static [Member])> {
+    // wrapKey and unwrapKey take an algorithm's own, or else its encrypt's
+    // and decrypt's (the specification's normalization, and Chrome's).
+    let fallback = match op {
+        "wrapKey" => "encrypt",
+        "unwrapKey" => "decrypt",
+        _ => return dictionary_of(op, name),
+    };
+    dictionary_of(op, name).or_else(|| dictionary_of(fallback, name))
+}
+
+fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member])> {
     const NONE: &[Member] = &[];
     const AEAD: &[Member] = &[
         req("iv", Buffer),
@@ -126,6 +137,8 @@ fn dictionary(op: &str, name: &str) -> Option<(&'static str, &'static [Member])>
     const RSA_IMPORT: &[Member] = &[req("hash", Algorithm)];
     const RSA_PSS: &[Member] = &[num("saltLength", UNSIGNED_LONG, true)];
     const RSA_OAEP: &[Member] = &[opt("label", Buffer)];
+    const AES_CBC: &[Member] = &[req("iv", Buffer)];
+    const AES_CTR: &[Member] = &[req("counter", Buffer), num("length", OCTET, true)];
     const EC: &[Member] = &[req("namedCurve", Str)];
     const DERIVE: &[Member] = &[req("public", Key)];
     let digest = matches!(name, "SHA-1" | "SHA-256" | "SHA-384" | "SHA-512");
@@ -141,6 +154,9 @@ fn dictionary(op: &str, name: &str) -> Option<(&'static str, &'static [Member])>
         ("importKey", "AES-GCM" | "AES-CBC" | "AES-CTR" | "AES-KW") => ("Algorithm", NONE),
         ("encrypt" | "decrypt", "AES-GCM") => ("AeadParams", AEAD),
         ("encrypt" | "decrypt", "RSA-OAEP") => ("RsaOaepParams", RSA_OAEP),
+        ("encrypt" | "decrypt", "AES-CBC") => ("AesCbcParams", AES_CBC),
+        ("encrypt" | "decrypt", "AES-CTR") => ("AesCtrParams", AES_CTR),
+        ("wrapKey" | "unwrapKey", "AES-KW") => ("Algorithm", NONE),
         ("generateKey", "HMAC") => ("HmacKeyGenParams", HMAC_GEN),
         ("importKey" | "get key length", "HMAC") => ("HmacImportParams", HMAC_GEN),
         ("sign" | "verify", "HMAC" | "RSASSA-PKCS1-v1_5") => ("Algorithm", NONE),
