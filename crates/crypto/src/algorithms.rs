@@ -1181,7 +1181,7 @@ fn import_ec(
     }
     let key = Key {
         kind,
-        extractable: kind == KeyType::Public || extractable,
+        extractable,
         algorithm: KeyAlgorithm::Ec {
             name: alg.name,
             curve: curve.name,
@@ -1635,7 +1635,7 @@ fn import_okp_key(
     }
     let key = Key {
         kind,
-        extractable: kind == KeyType::Public || extractable,
+        extractable,
         algorithm: KeyAlgorithm::Okp { name },
         usages: usages.to_vec(),
         material,
@@ -2396,7 +2396,7 @@ fn import(
             }
             let key = Key {
                 kind: KeyType::Public,
-                extractable: true,
+                extractable,
                 algorithm: KeyAlgorithm::Rsa {
                     name: alg.name,
                     hash,
@@ -2406,8 +2406,6 @@ fn import(
                 usages: usages.to_vec(),
                 material: Material::RsaPublic { n, e },
             };
-            // A public key is extractable whatever the call asked.
-            let _ = extractable;
             Ok(keys.insert(key))
         }
         _ => Err(Error::not_supported("Unsupported operation")),

@@ -3604,3 +3604,90 @@ fn every_kind_of_key_clones_through_its_record() {
     assert!(deserialize_key(&mut keys, b"\"not a record\"").is_err());
     assert!(serialize_key(&keys, 999_999).is_none());
 }
+
+/// An imported public key keeps the extractable it was asked, as the
+/// reference's does (WPT import_export, which Chrome 157 passes): EC and
+/// RSA by SPKI, EC by its raw point, Ed25519 and X25519 by their raw
+/// bytes. A generated pair's public key alone is extractable whatever
+/// was asked.
+#[test]
+fn an_imported_public_key_keeps_the_extractable_asked() {
+    let mut keys = Keys::default();
+    let export = |keys: &mut Keys, format: &str, id: u32| {
+        bytes(run(
+            keys,
+            Call::ExportKey {
+                format: format.into(),
+                key: id,
+            },
+        ))
+    };
+    let (ec, _) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-256",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    assert!(ec.extractable, "a generated pair's public key");
+    let (ed, _) = okp_pair(&mut keys, "Ed25519", vec![Usage::Sign, Usage::Verify]);
+    let (x, _) = okp_pair(&mut keys, "X25519", vec![Usage::DeriveBits]);
+    let (rsa, _) = generate_pair(&mut keys, 2048, &[1, 0, 1], "SHA-256");
+    let ec_alg = dict(&[("name", s("ECDSA")), ("namedCurve", s("P-256"))]);
+    let cases = [
+        (
+            "spki",
+            export(&mut keys, "spki", ec.id),
+            ec_alg.clone(),
+            vec![Usage::Verify],
+        ),
+        (
+            "raw",
+            export(&mut keys, "raw", ec.id),
+            ec_alg,
+            vec![Usage::Verify],
+        ),
+        (
+            "raw",
+            export(&mut keys, "raw", ed.id),
+            s("Ed25519"),
+            vec![Usage::Verify],
+        ),
+        ("raw", export(&mut keys, "raw", x.id), s("X25519"), vec![]),
+        (
+            "spki",
+            export(&mut keys, "spki", rsa.id),
+            dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]),
+            vec![Usage::Verify],
+        ),
+    ];
+    for (format, data, algorithm, usages) in cases {
+        for extractable in [false, true] {
+            let info = key(run(
+                &mut keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: Value::Bytes(data.clone()),
+                    algorithm: algorithm.clone(),
+                    extractable,
+                    usages: usages.clone(),
+                },
+            ));
+            assert_eq!(info.extractable, extractable, "{format} {algorithm:?}");
+            let out = run(
+                &mut keys,
+                Call::ExportKey {
+                    format: format.into(),
+                    key: info.id,
+                },
+            );
+            match extractable {
+                true => assert_eq!(bytes(out), data, "{format} {algorithm:?}"),
+                false => assert_eq!(
+                    error(out),
+                    "InvalidAccessError: Failed to execute 'exportKey' on 'SubtleCrypto': key is not extractable",
+                    "{format} {algorithm:?}"
+                ),
+            }
+        }
+    }
+}
