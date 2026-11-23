@@ -141,6 +141,7 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
     const AES_CTR: &[Member] = &[req("counter", Buffer), num("length", OCTET, true)];
     const EC: &[Member] = &[req("namedCurve", Str)];
     const DERIVE: &[Member] = &[req("public", Key)];
+    const ECDSA: &[Member] = &[req("hash", Algorithm)];
     let digest = matches!(name, "SHA-1" | "SHA-256" | "SHA-384" | "SHA-512");
     Some(match (op, name) {
         ("digest", _) if digest => ("Algorithm", NONE),
@@ -161,6 +162,7 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
         ("importKey" | "get key length", "HMAC") => ("HmacImportParams", HMAC_GEN),
         ("sign" | "verify", "HMAC" | "RSASSA-PKCS1-v1_5") => ("Algorithm", NONE),
         ("sign" | "verify", "RSA-PSS") => ("RsaPssParams", RSA_PSS),
+        ("sign" | "verify", "ECDSA") => ("EcdsaParams", ECDSA),
         ("importKey", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("get key length", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("deriveBits", "HKDF") => ("HkdfParams", HKDF),
@@ -221,6 +223,20 @@ impl Normalized {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, p)| p)
+    }
+
+    pub(crate) fn key(&self, name: &str) -> Option<u32> {
+        match self.get(name) {
+            Some(Param::Key(k)) => Some(*k),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn str(&self, name: &str) -> Option<&str> {
+        match self.get(name) {
+            Some(Param::Str(s)) => Some(s),
+            _ => None,
+        }
     }
 
     pub(crate) fn bytes(&self, name: &str) -> Option<&[u8]> {
@@ -313,6 +329,11 @@ fn normalize_in(op: &str, algorithm: &Value, context: &str) -> Result<Normalized
                 return Err(Error::type_error(format!("{at}Missing or not a string")));
             }
             (MemberKind::Key, Value::Key(k)) => Param::Key(*k),
+            // Absent, the reference's words for a required member (probed:
+            // EcdhKeyDeriveParams' public).
+            (MemberKind::Key, Value::Absent) => {
+                return Err(Error::type_error(format!("{at}Missing required property")));
+            }
             (MemberKind::Key, _) => {
                 return Err(Error::type_error(format!("{at}Missing or not a CryptoKey")));
             }

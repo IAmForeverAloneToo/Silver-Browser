@@ -33,6 +33,10 @@ pub(crate) enum KeyAlgorithm {
         modulus_length: u32,
         public_exponent: Vec<u8>,
     },
+    Ec {
+        name: &'static str,
+        curve: &'static str,
+    },
 }
 
 impl KeyAlgorithm {
@@ -40,7 +44,8 @@ impl KeyAlgorithm {
         match self {
             KeyAlgorithm::Aes { name, .. }
             | KeyAlgorithm::Kdf { name }
-            | KeyAlgorithm::Rsa { name, .. } => name,
+            | KeyAlgorithm::Rsa { name, .. }
+            | KeyAlgorithm::Ec { name, .. } => name,
             KeyAlgorithm::Hmac { .. } => "HMAC",
         }
     }
@@ -58,6 +63,10 @@ impl KeyAlgorithm {
                 ("hash", AlgorithmValue::Named((*hash).to_owned())),
             ],
             KeyAlgorithm::Kdf { .. } => vec![name],
+            KeyAlgorithm::Ec { curve, .. } => vec![
+                name,
+                ("namedCurve", AlgorithmValue::Str((*curve).to_owned())),
+            ],
             KeyAlgorithm::Rsa {
                 hash,
                 modulus_length,
@@ -112,6 +121,10 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
         ("HKDF" | "PBKDF2", _) => &[DeriveKey, DeriveBits],
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", KeyType::Public) => &[Verify],
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", _) => &[Sign],
+        ("ECDSA", KeyType::Public) => &[Verify],
+        ("ECDSA", _) => &[Sign],
+        ("ECDH", KeyType::Public) => &[],
+        ("ECDH", _) => &[DeriveKey, DeriveBits],
         ("RSA-OAEP", KeyType::Public) => &[Encrypt, WrapKey],
         ("RSA-OAEP", _) => &[Decrypt, UnwrapKey],
         _ => &[],
@@ -160,7 +173,10 @@ fn key_for<'k>(keys: &'k Keys, id: u32, name: &str, usage: Usage) -> Result<&'k 
 fn secret(key: &Key) -> &[u8] {
     match &key.material {
         Material::Secret(bytes) => bytes,
-        Material::RsaPublic { .. } | Material::RsaPrivate(_) => &[],
+        Material::RsaPublic { .. }
+        | Material::RsaPrivate(_)
+        | Material::EcPublic { .. }
+        | Material::EcPrivate { .. } => &[],
     }
 }
 
@@ -435,6 +451,19 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                     }
                     _ => Err(Error::operation("")),
                 },
+                KeyAlgorithm::Ec {
+                    name: "ECDSA",
+                    curve,
+                } => match &key.material {
+                    Material::EcPrivate { d, point } => Ok(Outcome::Bytes(ecdsa_sign(
+                        curve,
+                        alg.hash().unwrap_or("SHA-256"),
+                        d,
+                        point,
+                        &data,
+                    )?)),
+                    _ => Err(Error::operation("")),
+                },
                 _ => Err(Error::not_supported("Unsupported operation")),
             }
         }
@@ -505,8 +534,8 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
             length,
         } => {
             let alg = normalize("deriveBits", &algorithm)?;
-            let key = key_for(keys, key, alg.name, Usage::DeriveBits)?;
-            Ok(Outcome::Bytes(derive_bits(key, &alg, length)?))
+            let base = key_for(keys, key, alg.name, Usage::DeriveBits)?;
+            Ok(Outcome::Bytes(derive_bits(keys, base, &alg, length)?))
         }
         Call::DeriveKey {
             algorithm,
@@ -519,8 +548,8 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
             let derived_import = normalize("importKey", &derived)?;
             let length = key_length(&normalize("get key length", &derived)?)?;
             let bits = {
-                let key = key_for(keys, key, alg.name, Usage::DeriveKey)?;
-                derive_bits(key, &alg, length)?
+                let base = key_for(keys, key, alg.name, Usage::DeriveKey)?;
+                derive_bits(keys, base, &alg, length)?
             };
             let info = import(
                 keys,
@@ -880,6 +909,466 @@ fn unwrap_key(
     )
 }
 
+/// A curve Web Crypto names: its coordinates' length in bytes, and the
+/// aws-lc-rs algorithms that parse and make its keys.
+struct Curve {
+    name: &'static str,
+    coord: usize,
+    ecdh: &'static aws_lc_rs::agreement::Algorithm,
+    parse: &'static signature::EcdsaVerificationAlgorithm,
+    pair: &'static signature::EcdsaSigningAlgorithm,
+}
+
+const CURVES: [Curve; 3] = [
+    Curve {
+        name: "P-256",
+        coord: 32,
+        ecdh: &aws_lc_rs::agreement::ECDH_P256,
+        parse: &signature::ECDSA_P256_SHA256_FIXED,
+        pair: &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+    },
+    Curve {
+        name: "P-384",
+        coord: 48,
+        ecdh: &aws_lc_rs::agreement::ECDH_P384,
+        parse: &signature::ECDSA_P384_SHA384_FIXED,
+        pair: &signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+    },
+    Curve {
+        name: "P-521",
+        coord: 66,
+        ecdh: &aws_lc_rs::agreement::ECDH_P521,
+        parse: &signature::ECDSA_P521_SHA512_FIXED,
+        pair: &signature::ECDSA_P521_SHA512_FIXED_SIGNING,
+    },
+];
+
+fn curve_of(name: &str) -> &'static Curve {
+    CURVES.iter().find(|c| c.name == name).unwrap_or(&CURVES[0])
+}
+
+/// The curve an EC algorithm names, or the reference's NotSupportedError.
+fn named_curve(alg: &Normalized, context: &str) -> Result<&'static str, Error> {
+    let given = alg.str("namedCurve").unwrap_or("");
+    CURVES
+        .iter()
+        .find(|c| c.name == given)
+        .map(|c| c.name)
+        .ok_or_else(|| {
+            Error::not_supported(format!("{context}: Unrecognized namedCurve")).of_method()
+        })
+}
+
+/// The reason ECDSA with a curve and hash aws-lc-rs pairs in no way is
+/// refused: a known gap (the lead's ruling, 2026-11-23), a
+/// NotSupportedError on purpose. Proton's OpenPGP.js rethrows a DataError
+/// or an OperationError from ECDSA on P-256 and P-384 and fails the
+/// message, but falls back to its own code for any other name.
+pub(crate) const ECDSA_GAP: &str = "ECDSA with this curve and hash is not supported";
+
+/// A public key's point, uncompressed, on `curve`, from any form
+/// aws-lc-rs takes (an SPKI, or an uncompressed or compressed point),
+/// checked by it; `None` for one it refuses. The point is the end of its
+/// own SPKI's encoding of the key, the fixed-length BIT STRING it writes.
+fn ec_point(curve: &Curve, bytes: &[u8]) -> Option<Vec<u8>> {
+    let parsed = signature::ParsedPublicKey::new(curve.parse, bytes).ok()?;
+    let der = AsDer::<aws_lc_rs::encoding::PublicKeyX509Der>::as_der(&parsed).ok()?;
+    let der = der.as_ref();
+    let len = 2 * curve.coord + 1;
+    let point = der.get(der.len().checked_sub(len)?..)?;
+    (point.first() == Some(&4)).then(|| point.to_vec())
+}
+
+/// A private key's scalar and point, from the private key `pair` aws-lc-rs
+/// parsed or made.
+fn ec_parts(pair: &signature::EcdsaKeyPair) -> Option<(Vec<u8>, Vec<u8>)> {
+    use aws_lc_rs::encoding::{AsBigEndian, EcPrivateKeyBin};
+    use signature::KeyPair;
+    let d = AsBigEndian::<EcPrivateKeyBin>::as_be_bytes(&pair.private_key()).ok()?;
+    Some((d.as_ref().to_vec(), pair.public_key().as_ref().to_vec()))
+}
+
+/// The scalar `d` is `point`'s, both on `curve`: aws-lc-rs's own point of
+/// it compared. On purpose, the check `EcdsaKeyPair::
+/// from_private_key_and_public_key` makes today but does not document
+/// (the lead's ruling on key material a page gives, 2026-11-23); no test
+/// sees it while that stands, the JWK test pins the outcome.
+fn ec_pair(curve: &Curve, d: &[u8], point: &[u8]) -> Option<signature::EcdsaKeyPair> {
+    use signature::KeyPair;
+    let pair =
+        signature::EcdsaKeyPair::from_private_key_and_public_key(curve.pair, d, point).ok()?;
+    let private = aws_lc_rs::agreement::PrivateKey::from_private_key(curve.ecdh, d).ok()?;
+    let public = private.compute_public_key().ok()?;
+    (public.as_ref() == point && pair.public_key().as_ref() == point).then_some(pair)
+}
+
+fn generate_ec(
+    keys: &mut Keys,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<Outcome, Error> {
+    let curve = curve_of(named_curve(alg, "EcKeyGenParams")?);
+    let public_allowed = allowed(alg.name, KeyType::Public);
+    let private_allowed = allowed(alg.name, KeyType::Private);
+    if usages
+        .iter()
+        .any(|u| !public_allowed.contains(u) && !private_allowed.contains(u))
+    {
+        return Err(Error::syntax(
+            "Cannot create a key using the specified key usages.",
+        ));
+    }
+    let pair = signature::EcdsaKeyPair::generate(curve.pair).map_err(|_| Error::operation(""))?;
+    let (d, point) = ec_parts(&pair).ok_or_else(|| Error::operation(""))?;
+    let public_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| public_allowed.contains(u))
+        .collect();
+    let private_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| private_allowed.contains(u))
+        .collect();
+    empty_usages(KeyType::Private, &private_usages)?;
+    let algorithm = KeyAlgorithm::Ec {
+        name: alg.name,
+        curve: curve.name,
+    };
+    let public = Key {
+        kind: KeyType::Public,
+        extractable: true,
+        algorithm: algorithm.clone(),
+        usages: public_usages,
+        material: Material::EcPublic {
+            point: point.clone(),
+        },
+    };
+    let private = Key {
+        kind: KeyType::Private,
+        extractable,
+        algorithm,
+        usages: private_usages,
+        material: Material::EcPrivate { d, point },
+    };
+    Ok(Outcome::Pair(keys.insert(public), keys.insert(private)))
+}
+
+/// An EC key's import, as the reference checks it (probed): raw and SPKI
+/// public, PKCS #8 private, JWK either.
+fn import_ec(
+    keys: &mut Keys,
+    format: &str,
+    data: &Value,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<KeyInfo, Error> {
+    let curve = curve_of(named_curve(alg, "EcKeyImportParams")?);
+    let bytes = || match data {
+        Value::Bytes(bytes) => Ok(bytes.as_slice()),
+        _ => Err(Error::type_error(
+            "Key data must be a BufferSource for non-JWK formats",
+        )),
+    };
+    let other_curve =
+        || Error::data("The imported EC key specifies a different curve than requested");
+    let invalid = || Error::data("The imported EC key is invalid");
+    let (kind, material) = match format {
+        "raw" | "spki" => {
+            check_usages(alg.name, KeyType::Public, usages)?;
+            let given = bytes()?;
+            let point = match ec_point(curve, given) {
+                Some(point) => point,
+                None if format == "spki" && CURVES.iter().any(|c| ec_point(c, given).is_some()) => {
+                    return Err(other_curve());
+                }
+                None => return Err(Error::data("")),
+            };
+            (KeyType::Public, Material::EcPublic { point })
+        }
+        "pkcs8" => {
+            check_usages(alg.name, KeyType::Private, usages)?;
+            let given = bytes()?;
+            let pair = match signature::EcdsaKeyPair::from_pkcs8(curve.pair, given) {
+                Ok(pair) => pair,
+                Err(_)
+                    if CURVES
+                        .iter()
+                        .any(|c| signature::EcdsaKeyPair::from_pkcs8(c.pair, given).is_ok()) =>
+                {
+                    return Err(other_curve());
+                }
+                Err(_) => return Err(Error::data("")),
+            };
+            let (d, point) = ec_parts(&pair).ok_or_else(|| Error::data(""))?;
+            (KeyType::Private, Material::EcPrivate { d, point })
+        }
+        "jwk" => {
+            let Value::Dict(_) = data else {
+                return Err(Error::type_error(
+                    "Key data must be an object for JWK import",
+                ));
+            };
+            let jwk = jwk::Jwk(data);
+            let want = (alg.name == "ECDSA").then_some(match curve.name {
+                "P-384" => "ES384",
+                "P-521" => "ES512",
+                _ => "ES256",
+            });
+            jwk.check("EC", want, extractable, usages)?;
+            match jwk.str("crv") {
+                None => return Err(Error::data("The required JWK member \"crv\" was missing")),
+                Some(crv) if crv != curve.name => {
+                    return Err(Error::data(
+                        "The JWK's \"crv\" member specifies a different curve than requested",
+                    ));
+                }
+                Some(_) => {}
+            }
+            let private = jwk.str("d").is_some();
+            check_usages(
+                alg.name,
+                if private {
+                    KeyType::Private
+                } else {
+                    KeyType::Public
+                },
+                usages,
+            )?;
+            let x = jwk.bytes("x")?;
+            let y = jwk.bytes("y")?;
+            if x.len() != curve.coord || y.len() != curve.coord {
+                return Err(invalid());
+            }
+            let point = [&[4u8][..], &x, &y].concat();
+            let point = ec_point(curve, &point).ok_or_else(invalid)?;
+            if private {
+                let d = jwk.bytes("d")?;
+                if d.len() != curve.coord || ec_pair(curve, &d, &point).is_none() {
+                    return Err(invalid());
+                }
+                (KeyType::Private, Material::EcPrivate { d, point })
+            } else {
+                (KeyType::Public, Material::EcPublic { point })
+            }
+        }
+        _ => {
+            return Err(Error::not_supported(
+                "Unsupported import key format for algorithm",
+            ));
+        }
+    };
+    if kind == KeyType::Private {
+        empty_usages(KeyType::Private, usages)?;
+    }
+    let key = Key {
+        kind,
+        extractable: kind == KeyType::Public || extractable,
+        algorithm: KeyAlgorithm::Ec {
+            name: alg.name,
+            curve: curve.name,
+        },
+        usages: usages.to_vec(),
+        material,
+    };
+    Ok(keys.insert(key))
+}
+
+fn export_ec(key: &Key, curve: &str, material: &Material, format: &str) -> Result<Outcome, Error> {
+    let curve = curve_of(curve);
+    let wrong = || Error::invalid_access("The key is not of the expected type");
+    let point = match material {
+        Material::EcPublic { point } | Material::EcPrivate { point, .. } => point,
+        _ => return Err(Error::operation("")),
+    };
+    let private = matches!(material, Material::EcPrivate { .. });
+    match format {
+        "raw" | "spki" if private => Err(wrong()),
+        "raw" => Ok(Outcome::Bytes(point.clone())),
+        "spki" => {
+            let parsed = signature::ParsedPublicKey::new(curve.parse, point)
+                .map_err(|_| Error::operation(""))?;
+            let der = AsDer::<aws_lc_rs::encoding::PublicKeyX509Der>::as_der(&parsed)
+                .map_err(|_| Error::operation(""))?;
+            Ok(Outcome::Bytes(der.as_ref().to_vec()))
+        }
+        "pkcs8" => {
+            let Material::EcPrivate { d, .. } = material else {
+                return Err(wrong());
+            };
+            let private = aws_lc_rs::agreement::PrivateKey::from_private_key(curve.ecdh, d)
+                .map_err(|_| Error::operation(""))?;
+            let der = AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&private)
+                .map_err(|_| Error::operation(""))?;
+            Ok(Outcome::Bytes(der.as_ref().to_vec()))
+        }
+        "jwk" => {
+            let c = curve.coord;
+            let mut members = vec![
+                ("crv", JwkValue::Str(curve.name.into())),
+                ("kty", JwkValue::Str("EC".into())),
+                ("x", JwkValue::Str(jwk::encode(&point[1..1 + c]))),
+                ("y", JwkValue::Str(jwk::encode(&point[1 + c..]))),
+            ];
+            if let Material::EcPrivate { d, .. } = material {
+                members.push(("d", JwkValue::Str(jwk::encode(d))));
+            }
+            Ok(Outcome::Jwk(jwk::exported(
+                members,
+                key.extractable,
+                &key.usages,
+            )))
+        }
+        _ => Err(Error::not_supported(
+            "Unsupported export key format for algorithm",
+        )),
+    }
+}
+
+/// ECDSA's signature (r and s, each the curve's length), aws-lc-rs's for
+/// the curve and hash pairs it signs.
+fn ecdsa_sign(
+    curve: &str,
+    hash: &str,
+    d: &[u8],
+    point: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let algorithm: &'static signature::EcdsaSigningAlgorithm = match (curve, hash) {
+        ("P-256", "SHA-256") => &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        ("P-384", "SHA-384") => &signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+        ("P-521", "SHA-256") => &signature::ECDSA_P521_SHA256_FIXED_SIGNING,
+        ("P-521", "SHA-384") => &signature::ECDSA_P521_SHA384_FIXED_SIGNING,
+        ("P-521", "SHA-512") => &signature::ECDSA_P521_SHA512_FIXED_SIGNING,
+        _ => return Err(Error::not_supported(ECDSA_GAP)),
+    };
+    let pair = signature::EcdsaKeyPair::from_private_key_and_public_key(algorithm, d, point)
+        .map_err(|_| Error::operation(""))?;
+    let signature = pair
+        .sign(&rand::SystemRandom::new(), data)
+        .map_err(|_| Error::operation(""))?;
+    Ok(signature.as_ref().to_vec())
+}
+
+/// An INTEGER's DER, of a big-endian unsigned value.
+fn der_integer(out: &mut Vec<u8>, value: &[u8]) {
+    let value: &[u8] = match value.iter().position(|&b| b != 0) {
+        Some(at) => &value[at..],
+        None => &[0],
+    };
+    out.push(0x02);
+    let pad = value[0] & 0x80 != 0;
+    der_length(out, value.len() + usize::from(pad));
+    if pad {
+        out.push(0);
+    }
+    out.extend_from_slice(value);
+}
+
+/// ECDSA's verification of a signature of r and s: aws-lc-rs's, as the
+/// fixed form where it has it, as its DER (written here, never read)
+/// where it has the ASN.1 form alone; a signature of another length false.
+fn ecdsa_verify(
+    curve: &str,
+    hash: &str,
+    point: &[u8],
+    signature: &[u8],
+    data: &[u8],
+) -> Result<bool, Error> {
+    use signature::{
+        ECDSA_P256_SHA1_ASN1, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA384_ASN1,
+        ECDSA_P256_SHA512_ASN1, ECDSA_P384_SHA256_ASN1, ECDSA_P384_SHA384_FIXED,
+        ECDSA_P384_SHA512_ASN1, ECDSA_P521_SHA1_FIXED, ECDSA_P521_SHA256_FIXED,
+        ECDSA_P521_SHA384_FIXED, ECDSA_P521_SHA512_FIXED, UnparsedPublicKey,
+    };
+    let (algorithm, fixed): (&'static signature::EcdsaVerificationAlgorithm, bool) =
+        match (curve, hash) {
+            ("P-256", "SHA-256") => (&ECDSA_P256_SHA256_FIXED, true),
+            ("P-256", "SHA-1") => (&ECDSA_P256_SHA1_ASN1, false),
+            ("P-256", "SHA-384") => (&ECDSA_P256_SHA384_ASN1, false),
+            ("P-256", "SHA-512") => (&ECDSA_P256_SHA512_ASN1, false),
+            ("P-384", "SHA-384") => (&ECDSA_P384_SHA384_FIXED, true),
+            ("P-384", "SHA-256") => (&ECDSA_P384_SHA256_ASN1, false),
+            ("P-384", "SHA-512") => (&ECDSA_P384_SHA512_ASN1, false),
+            ("P-521", "SHA-1") => (&ECDSA_P521_SHA1_FIXED, true),
+            ("P-521", "SHA-256") => (&ECDSA_P521_SHA256_FIXED, true),
+            ("P-521", "SHA-384") => (&ECDSA_P521_SHA384_FIXED, true),
+            ("P-521", "SHA-512") => (&ECDSA_P521_SHA512_FIXED, true),
+            _ => return Err(Error::not_supported(ECDSA_GAP)),
+        };
+    let c = curve_of(curve).coord;
+    if signature.len() != 2 * c {
+        return Ok(false);
+    }
+    let key = UnparsedPublicKey::new(algorithm, point);
+    if fixed {
+        return Ok(key.verify(data, signature).is_ok());
+    }
+    let mut body = Vec::new();
+    der_integer(&mut body, &signature[..c]);
+    der_integer(&mut body, &signature[c..]);
+    let mut der = vec![0x30];
+    der_length(&mut der, body.len());
+    der.extend_from_slice(&body);
+    Ok(key.verify(data, &der).is_ok())
+}
+
+/// ECDH's shared secret with the `public` key, its first `length` bits
+/// (all the curve's, by default), the reference's errors in its order.
+fn ecdh_bits(
+    keys: &Keys,
+    key: &Key,
+    alg: &Normalized,
+    length: Option<u32>,
+) -> Result<Vec<u8>, Error> {
+    let (KeyAlgorithm::Ec { curve, .. }, Material::EcPrivate { d, .. }) =
+        (&key.algorithm, &key.material)
+    else {
+        return Err(Error::operation(""));
+    };
+    let public = keys.get(alg.key("public").ok_or_else(|| Error::operation(""))?)?;
+    let prefix = "The public parameter for ECDH key derivation";
+    let KeyAlgorithm::Ec {
+        name: "ECDH",
+        curve: theirs,
+    } = &public.algorithm
+    else {
+        return Err(Error::invalid_access(format!("{prefix} must be for ECDH")));
+    };
+    let Material::EcPublic { point } = &public.material else {
+        return Err(Error::invalid_access(format!(
+            "{prefix} is not a public EC key"
+        )));
+    };
+    if theirs != curve {
+        return Err(Error::invalid_access(format!(
+            "{prefix} is for a different named curve"
+        )));
+    }
+    let c = curve_of(curve);
+    let most = 8 * c.coord as u32;
+    let length = length.unwrap_or(most);
+    if length > most {
+        return Err(Error::operation(format!(
+            "Length specified for ECDH key derivation is too large. Maximum allowed is {most} bits"
+        )));
+    }
+    let private = aws_lc_rs::agreement::PrivateKey::from_private_key(c.ecdh, d)
+        .map_err(|_| Error::operation(""))?;
+    let peer = aws_lc_rs::agreement::UnparsedPublicKey::new(c.ecdh, point);
+    let mut secret =
+        aws_lc_rs::agreement::agree(&private, peer, Error::operation(""), |s| Ok(s.to_vec()))?;
+    secret.truncate(length.div_ceil(8) as usize);
+    if !length.is_multiple_of(8)
+        && let Some(last) = secret.last_mut()
+    {
+        *last &= 0xffu8 << (8 - length % 8);
+    }
+    Ok(secret)
+}
+
 /// An RSA public key's SPKI, aws-lc-rs's encoding of it.
 fn spki_of(n: &[u8], e: &[u8]) -> Result<Vec<u8>, Error> {
     let key =
@@ -889,7 +1378,8 @@ fn spki_of(n: &[u8], e: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// The reason an RSA-OAEP key outside aws-lc-rs's range is refused: a
-/// known gap (the lead's ruling, 2026-11-23), where the reference works.
+/// known gap (the lead's ruling, 2026-11-23), where the reference works;
+/// a NotSupportedError, as ECDSA's gap, for the fallbacks keyed on it.
 pub(crate) const OAEP_GAP: &str =
     "RSA-OAEP with a key under 2048 or over 8192 bits is not supported";
 
@@ -919,7 +1409,7 @@ fn oaep(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outco
     match (&key.material, encrypt) {
         (Material::RsaPublic { n, e }, true) => {
             if !SAFE_PRIVATE.contains(&bit_length(n)) {
-                return Err(Error::operation(OAEP_GAP));
+                return Err(Error::not_supported(OAEP_GAP));
             }
             let public = PublicEncryptingKey::from_der(&spki_of(n, e)?).map_err(|_| failed())?;
             let sealing = OaepPublicEncryptingKey::new(public).map_err(|_| failed())?;
@@ -933,7 +1423,7 @@ fn oaep(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outco
         }
         (Material::RsaPrivate(parts), false) => {
             if !SAFE_PRIVATE.contains(&bit_length(&parts.n)) {
-                return Err(Error::operation(OAEP_GAP));
+                return Err(Error::not_supported(OAEP_GAP));
             }
             let mut pkcs8 = pkcs8_of(parts)?;
             let private = PrivateDecryptingKey::from_pkcs8(&pkcs8).map_err(|_| failed());
@@ -1070,6 +1560,19 @@ fn verify(key: &Key, alg: &Normalized, signature: &[u8], data: &[u8]) -> Result<
                 }
             }
         }
+        (
+            KeyAlgorithm::Ec {
+                name: "ECDSA",
+                curve,
+            },
+            Material::EcPublic { point },
+        ) => ecdsa_verify(
+            curve,
+            alg.hash().unwrap_or("SHA-256"),
+            point,
+            signature,
+            data,
+        ),
         // Nothing else verifies (the usages refuse it first).
         _ => Err(Error::operation("")),
     }
@@ -1126,6 +1629,7 @@ fn generate(
         "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             generate_rsa(keys, alg, extractable, usages)
         }
+        "ECDSA" | "ECDH" => generate_ec(keys, alg, extractable, usages),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -1338,6 +1842,7 @@ fn import(
             empty_usages(KeyType::Secret, usages)?;
             Ok(keys.insert(secret_key(KeyAlgorithm::Kdf { name: alg.name }, bytes)))
         }
+        "ECDSA" | "ECDH" => import_ec(keys, format, data, alg, extractable, usages),
         "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
@@ -1533,6 +2038,10 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             }
             _ => Err(unsupported()),
         },
+        (
+            KeyAlgorithm::Ec { curve, .. },
+            material @ (Material::EcPublic { .. } | Material::EcPrivate { .. }),
+        ) => export_ec(key, curve, material, format),
         (KeyAlgorithm::Rsa { name, hash, .. }, Material::RsaPrivate(parts)) => match format {
             "pkcs8" => Ok(Outcome::Bytes(pkcs8_of(parts)?)),
             "jwk" => Ok(Outcome::Jwk(jwk::exported(
@@ -1573,7 +2082,15 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
     }
 }
 
-fn derive_bits(key: &Key, alg: &Normalized, length: Option<u32>) -> Result<Vec<u8>, Error> {
+fn derive_bits(
+    keys: &Keys,
+    key: &Key,
+    alg: &Normalized,
+    length: Option<u32>,
+) -> Result<Vec<u8>, Error> {
+    if alg.name == "ECDH" {
+        return ecdh_bits(keys, key, alg, length);
+    }
     let secret = secret(key);
     match alg.name {
         "HKDF" => {

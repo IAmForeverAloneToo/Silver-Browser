@@ -10,6 +10,11 @@ its Apache License 2.0 (`LICENSE` beside this file), at commit
 | File | From |
 | --- | --- |
 | `aes_gcm_test.json` | `testvectors_v1/aes_gcm_test.json` |
+| `ecdsa_secp256r1_sha256_p1363_test.json` | `testvectors_v1/ecdsa_secp256r1_sha256_p1363_test.json` |
+| `ecdsa_secp256r1_sha512_p1363_test.json` | `testvectors_v1/ecdsa_secp256r1_sha512_p1363_test.json` |
+| `ecdsa_secp384r1_sha512_p1363_test.json` | `testvectors_v1/ecdsa_secp384r1_sha512_p1363_test.json` |
+| `ecdsa_secp521r1_sha512_p1363_test.json` | `testvectors_v1/ecdsa_secp521r1_sha512_p1363_test.json` |
+| `ecdh_secp256r1_webcrypto_test.json` | `testvectors_v1/ecdh_secp256r1_webcrypto_test.json` |
 | `rsa_oaep_2048_sha1_mgf1sha1_test.json` | `testvectors_v1/rsa_oaep_2048_sha1_mgf1sha1_test.json` |
 | `rsa_oaep_2048_sha256_mgf1sha256_test.json` | `testvectors_v1/rsa_oaep_2048_sha256_mgf1sha256_test.json` |
 | `rsa_oaep_2048_sha384_mgf1sha384_test.json` | `testvectors_v1/rsa_oaep_2048_sha384_mgf1sha384_test.json` |

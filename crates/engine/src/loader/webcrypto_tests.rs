@@ -199,3 +199,34 @@ fn a_page_wraps_and_unwraps_keys() {
         ]
     );
 }
+
+/// ECDSA and ECDH through a page's own calls (G255 step 2): a signature
+/// verifies; both sides of ECDH derive the same bits, the `public`
+/// member a CryptoKey the bindings hand over by its number.
+#[test]
+fn a_page_signs_with_ecdsa_and_agrees_with_ecdh() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const p = await s.generateKey({name: 'ECDSA', namedCurve: 'P-384'}, false, ['sign', 'verify']);\
+        const alg = {name: 'ECDSA', hash: 'SHA-384'};\
+        const sig = await s.sign(alg, p.privateKey, new Uint8Array([1]));\
+        out.push(sig.byteLength + ' ' + await s.verify(alg, p.publicKey, sig, new Uint8Array([1])));\
+        const a = await s.generateKey({name: 'ECDH', namedCurve: 'P-256'}, false, ['deriveBits']);\
+        const b = await s.generateKey({name: 'ECDH', namedCurve: 'P-256'}, false, ['deriveBits']);\
+        const x = new Uint8Array(await s.deriveBits({name: 'ECDH', public: b.publicKey}, a.privateKey, 256));\
+        const y = new Uint8Array(await s.deriveBits({name: 'ECDH', public: a.publicKey}, b.privateKey, 256));\
+        out.push(x.length + ' ' + x.every((v, i) => v === y[i]));\
+        const err = async (f) => { try { await f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };\
+        out.push(await err(() => s.deriveBits({name: 'ECDH', public: 5}, a.privateKey, 256)));\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 3);
+    assert_eq!(
+        lines,
+        [
+            "96 true",
+            "32 true",
+            "TypeError: Failed to execute 'deriveBits' on 'SubtleCrypto': EcdhKeyDeriveParams: public: Missing or not a CryptoKey",
+        ]
+    );
+}

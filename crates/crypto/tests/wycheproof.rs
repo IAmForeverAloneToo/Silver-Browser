@@ -368,3 +368,130 @@ fn rsa_oaep_decrypt_every_vector() {
     });
     assert!(ran > 100, "ran {ran}");
 }
+
+/// A JSON object as the importKey dictionary it is.
+fn json_value(json: &Json) -> Value {
+    match json {
+        Json::Null => Value::Absent,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Number(n) => Value::Num(*n),
+        Json::String(s) => Value::Str(s.clone()),
+        Json::Array(items) => Value::List(items.iter().map(json_value).collect()),
+        Json::Object(members) => Value::Dict(
+            members
+                .iter()
+                .map(|(n, v)| (n.clone(), json_value(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// ECDSA's verification of r and s (P1363, Web Crypto's form), on both
+/// of aws-lc-rs's ways (the fixed form, and the ASN.1 form this crate
+/// writes for P-256 and P-384 with SHA-512): every valid vector true,
+/// every invalid one false, never an error.
+#[test]
+fn ecdsa_p1363_verify_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("ecdsa_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let hash = field(group, "sha");
+        let curve = match field(group.get("publicKey").unwrap(), "curve") {
+            "secp384r1" => "P-384",
+            "secp521r1" => "P-521",
+            _ => "P-256",
+        };
+        let out = run(
+            &mut keys,
+            Call::ImportKey {
+                format: "spki".into(),
+                key_data: Value::Bytes(hex(field(group, "publicKeyDer"))),
+                algorithm: dict(&[
+                    ("name", str_value("ECDSA")),
+                    ("namedCurve", str_value(curve)),
+                ]),
+                extractable: true,
+                usages: vec![Usage::Verify],
+            },
+        );
+        let Ok(Outcome::Key(key)) = out else {
+            panic!("{name} tc {id}: the key imports: {out:?}");
+        };
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: dict(&[("name", str_value("ECDSA")), ("hash", str_value(hash))]),
+                key: key.id,
+                signature: hex(field(test, "sig")),
+                data: hex(field(test, "msg")),
+            },
+        );
+        let want = field(test, "result") == "valid";
+        assert_eq!(out, Ok(Outcome::Bool(want)), "{name} tc {id}");
+    });
+    assert!(ran > 1000, "ran {ran}");
+}
+
+/// ECDH with Web Crypto's own JWKs: every valid vector's shared secret,
+/// every invalid one refused (as its key's import or its derivation),
+/// never a wrong secret.
+#[test]
+fn ecdh_webcrypto_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("ecdh_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let curve = field(group, "curve");
+        let crv = match curve {
+            "secp384r1" => "P-384",
+            "secp521r1" => "P-521",
+            _ => "P-256",
+        };
+        let import = |keys: &mut Keys, json: &Json, usages: Vec<Usage>| {
+            run(
+                keys,
+                Call::ImportKey {
+                    format: "jwk".into(),
+                    key_data: json_value(json),
+                    algorithm: dict(&[("name", str_value("ECDH")), ("namedCurve", str_value(crv))]),
+                    extractable: true,
+                    usages,
+                },
+            )
+        };
+        let public = import(&mut keys, test.get("public").unwrap(), vec![]);
+        let private = import(
+            &mut keys,
+            test.get("private").unwrap(),
+            vec![Usage::DeriveBits],
+        );
+        let valid = field(test, "result") == "valid";
+        let (Ok(Outcome::Key(public)), Ok(Outcome::Key(private))) = (&public, &private) else {
+            assert!(
+                !valid,
+                "{name} tc {id}: the keys import: {public:?} {private:?}"
+            );
+            return;
+        };
+        let out = run(
+            &mut keys,
+            Call::DeriveBits {
+                algorithm: dict(&[
+                    ("name", str_value("ECDH")),
+                    ("public", Value::Key(public.id)),
+                ]),
+                key: private.id,
+                length: None,
+            },
+        );
+        if valid {
+            assert_eq!(
+                out,
+                Ok(Outcome::Bytes(hex(field(test, "shared")))),
+                "{name} tc {id}"
+            );
+        } else {
+            assert!(out.is_err(), "{name} tc {id}: {out:?}");
+        }
+    });
+    assert!(ran > 300, "ran {ran}");
+}

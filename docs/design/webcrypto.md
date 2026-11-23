@@ -257,8 +257,9 @@ PS1 to PS512. RSA-OAEP (part 2b-4) is aws-lc-rs's alone, for a key of
 MGF1, up to k - 2 hLen - 2 bytes, and every failure an OperationError
 with no message, as Chrome 157 answers (probed); JWK `alg` RSA-OAEP and
 RSA-OAEP-256 to RSA-OAEP-512. A key outside that range is made,
-imported and exported, but encrypts and decrypts nothing: an
-OperationError saying so, a known gap by the lead's ruling (2026-11-23),
+imported and exported, but encrypts and decrypts nothing: a
+NotSupportedError saying so (the name other code's fallbacks key on, as
+ECDSA's gap below), a known gap by the lead's ruling (2026-11-23),
 where Chrome works; it reopens if a site the user uses needs it.
 Wycheproof's RSA vectors (part 2b-5, C2SP 65ca4947, pinned by the
 MANIFEST): RSASSA-PKCS1-v1_5's verification at 2048, 3072 and 4096
@@ -281,13 +282,34 @@ parser, fuzzed); each algorithm's own wrapKey or unwrapKey params, or
 else its encrypt's or decrypt's, and every answer and error, byte and
 word, Chrome 157's (probed).
 
+ECDSA and ECDH on P-256, P-384 and P-521 (step 2), aws-lc-rs's safe API
+alone: keys made, imported and exported as raw (a compressed point
+taken), SPKI, PKCS #8 and JWK (no `alg` written, ES256 to ES512 checked
+for ECDSA), each refused with Chrome's words; ECDSA's r and s verified
+in aws-lc-rs's fixed form or, where it has the ASN.1 form alone, as the
+DER this crate writes of them; ECDH's secret cut to the bits asked, its
+public parameter's errors Chrome's. ECDSA's pairs of curve and hash
+aws-lc-rs cannot sign or verify (P-256 with SHA-1, SHA-384 or SHA-512
+to sign; P-384 with SHA-1, SHA-256 or SHA-512 to sign, SHA-1 to verify;
+P-521 with SHA-1 to sign) are an explicit NotSupportedError, a known
+gap by the lead's ruling (2026-11-23). The name matters, and must not be
+"fixed": Proton's OpenPGP.js, on ECDSA with P-256 and P-384, rethrows a
+DataError or an OperationError from Web Crypto and fails the message,
+but falls back to its own implementation for any other name (its
+crypto-worker bundle read); a test pins it. Wycheproof: ECDSA's P1363 vectors at P-256 (SHA-256,
+SHA-512), P-384 (SHA-512) and P-521 (SHA-512), and ECDH's Web Crypto
+vectors at P-256.
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`
 (crypto/rsa_extra/rsa_asn1.c), each ending with `RSA_check_key`, which
 `native` repeats on purpose and no test can see while they stand, and
 `RSA_check_key`'s own `GUARD_PTR` (crypto/fipsmodule/rsa/rsa.c), which
-refuses a null key `native` refuses first, as unseen; and
+refuses a null key `native` refuses first, as unseen; aws-lc-rs's
+`EcdsaKeyPair::from_private_key_and_public_key` (src/ec/key_pair.rs),
+which refuses a scalar not the point's, undocumented, which
+`algorithms::ec_pair` repeats; and
 run the native module's sabotage again (the lead's ruling,
 2026-11-23). Each C object freed by its wrapper on
 every path, every return code checked, every script-controlled length

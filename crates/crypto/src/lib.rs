@@ -321,12 +321,16 @@ pub(crate) enum Material {
     RsaPublic { n: Vec<u8>, e: Vec<u8> },
     /// An RSA private key's parts, overwritten as they go.
     RsaPrivate(Box<native::RsaPrivateParts>),
+    /// An EC public key: its point, uncompressed (SEC 1).
+    EcPublic { point: Vec<u8> },
+    /// An EC private key: its scalar, overwritten as it goes, and point.
+    EcPrivate { d: Vec<u8>, point: Vec<u8> },
 }
 
 impl Drop for Material {
     /// A secret's bytes are overwritten as it goes.
     fn drop(&mut self) {
-        if let Material::Secret(bytes) = self {
+        if let Material::Secret(bytes) | Material::EcPrivate { d: bytes, .. } = self {
             bytes.iter_mut().for_each(|b| *b = 0);
             std::hint::black_box(&bytes);
         }

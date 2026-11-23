@@ -321,8 +321,10 @@ font folders; a file it cannot read, it scans for.
   where only it does; `crypto_rsa_roundtrip`, RSA's signatures on
   either route. A known gap (the lead's ruling, 2026-11-23): RSA-OAEP
   runs on aws-lc-rs alone, for a key of 2048 to 8192 bits; with any
-  other key it is an explicit OperationError both ways, never a wrong
-  answer, though the reference works (native OAEP would be the largest
+  other key it is an explicit NotSupportedError both ways, never a
+  wrong answer, though the reference works; and ECDSA's eight curve and
+  hash pairs aws-lc-rs cannot sign or verify are the same (the name on
+  purpose: other code's fallbacks, OpenPGP.js's among them, run for it) (native OAEP would be the largest
   addition to `native`, its label's ownership handed to the library).
   It reopens if a site the user uses needs it.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its

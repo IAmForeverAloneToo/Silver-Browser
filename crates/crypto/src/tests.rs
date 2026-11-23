@@ -1759,7 +1759,7 @@ fn oaep_encrypts_and_decrypts_as_the_reference_does() {
 
 /// The known gap (the lead's ruling, 2026-11-23): RSA-OAEP with a key
 /// outside aws-lc-rs's range, where the reference works, is an explicit
-/// OperationError both ways, never a wrong answer; the key itself is
+/// NotSupportedError both ways, never a wrong answer; the key itself is
 /// made, imported and exported as the reference makes it.
 #[test]
 fn oaep_outside_the_safe_range_is_an_explicit_operation_error() {
@@ -1772,7 +1772,7 @@ fn oaep_outside_the_safe_range_is_an_explicit_operation_error() {
     ) else {
         panic!("a 1024-bit pair");
     };
-    let gap = format!("OperationError: {}", crate::algorithms::OAEP_GAP);
+    let gap = format!("NotSupportedError: {}", crate::algorithms::OAEP_GAP);
     let encrypted = run(
         &mut keys,
         Call::Encrypt {
@@ -2434,4 +2434,596 @@ fn unwrapping_reads_a_jwk_as_json_does_and_normalizes_first() {
         error(out),
         "NotSupportedError: Failed to execute 'unwrapKey' on 'SubtleCrypto': Algorithm: Unrecognized name"
     );
+}
+
+fn ec_gen(keys: &mut Keys, name: &str, curve: &str, usages: Vec<Usage>) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::GenerateKey {
+            algorithm: dict(&[("name", s(name)), ("namedCurve", s(curve))]),
+            extractable: true,
+            usages,
+        },
+    )
+}
+
+fn ec_pair(keys: &mut Keys, name: &str, curve: &str, usages: Vec<Usage>) -> (KeyInfo, KeyInfo) {
+    match ec_gen(keys, name, curve, usages) {
+        Ok(Outcome::Pair(public, private)) => (public, private),
+        other => panic!("{name} {curve}: {other:?}"),
+    }
+}
+
+fn ec_import(
+    keys: &mut Keys,
+    format: &str,
+    data: Value,
+    name: &str,
+    curve: &str,
+    usages: Vec<Usage>,
+) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::ImportKey {
+            format: format.into(),
+            key_data: data,
+            algorithm: dict(&[("name", s(name)), ("namedCurve", s(curve))]),
+            extractable: true,
+            usages,
+        },
+    )
+}
+
+fn jwk_dict(members: &[(String, JwkValue)], without: &[&str], with: &[(&str, &str)]) -> Value {
+    let mut out: Vec<(String, Value)> = members
+        .iter()
+        .filter(|(n, _)| !without.contains(&n.as_str()))
+        .map(|(n, v)| {
+            let v = match v {
+                JwkValue::Str(t) => Value::Str(t.clone()),
+                JwkValue::Bool(b) => Value::Bool(*b),
+                JwkValue::List(l) => Value::List(l.iter().map(|t| Value::Str(t.clone())).collect()),
+            };
+            (n.clone(), v)
+        })
+        .collect();
+    for (n, v) in with {
+        out.retain(|(m, _)| m != n);
+        out.push(((*n).to_owned(), Value::Str((*v).to_owned())));
+    }
+    Value::Dict(out)
+}
+
+/// ECDSA as Chrome 157 answers (probed, ec.json): each curve's keys, their
+/// formats' lengths and JWK members (no `alg`), signatures random and the
+/// curve's length, a short one false; the curve and hash pairs aws-lc-rs
+/// signs on the safe API, the others the gap's OperationError.
+#[test]
+fn ecdsa_is_the_references() {
+    let mut keys = Keys::default();
+    let err =
+        |keys: &mut Keys, name: &str, curve: &str, usages| error(ec_gen(keys, name, curve, usages));
+    assert_eq!(
+        err(&mut keys, "ECDSA", "P-224", vec![Usage::Sign]),
+        "NotSupportedError: Failed to execute 'generateKey' on 'SubtleCrypto': EcKeyGenParams: Unrecognized namedCurve"
+    );
+    assert_eq!(
+        err(&mut keys, "ECDSA", "p-256", vec![Usage::Sign]),
+        err(&mut keys, "ECDSA", "P-224", vec![Usage::Sign])
+    );
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: s("ECDSA"),
+                extractable: true,
+                usages: vec![Usage::Sign]
+            }
+        )),
+        "TypeError: Failed to execute 'generateKey' on 'SubtleCrypto': EcKeyGenParams: namedCurve: Missing or not a string"
+    );
+    assert_eq!(
+        err(&mut keys, "ECDSA", "P-256", vec![Usage::Encrypt]),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    for (curve, hash, raw, spki, pkcs8) in [
+        ("P-256", "SHA-256", 65, 91, 138),
+        ("P-384", "SHA-384", 97, 120, 185),
+        ("P-521", "SHA-512", 133, 158, 241),
+    ] {
+        let (public, private) =
+            ec_pair(&mut keys, "ECDSA", curve, vec![Usage::Sign, Usage::Verify]);
+        assert_eq!(
+            (public.usages.clone(), private.usages.clone()),
+            (vec![Usage::Verify], vec![Usage::Sign])
+        );
+        let export = |keys: &mut Keys, format: &str, id| {
+            run(
+                keys,
+                Call::ExportKey {
+                    format: format.into(),
+                    key: id,
+                },
+            )
+        };
+        let point = bytes(export(&mut keys, "raw", public.id));
+        assert_eq!((point.len(), point[0]), (raw, 4), "{curve}");
+        assert_eq!(
+            bytes(export(&mut keys, "spki", public.id)).len(),
+            spki,
+            "{curve}"
+        );
+        let der = bytes(export(&mut keys, "pkcs8", private.id));
+        assert_eq!(der.len(), pkcs8, "{curve}");
+        let Ok(Outcome::Jwk(members)) = export(&mut keys, "jwk", private.id) else {
+            panic!("a JWK");
+        };
+        let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["crv", "d", "ext", "key_ops", "kty", "x", "y"],
+            "{curve}"
+        );
+        let params = || dict(&[("name", s("ECDSA")), ("hash", s(hash))]);
+        let sign = |keys: &mut Keys| {
+            bytes(run(
+                keys,
+                Call::Sign {
+                    algorithm: params(),
+                    key: private.id,
+                    data: vec![1],
+                },
+            ))
+        };
+        let (a, b) = (sign(&mut keys), sign(&mut keys));
+        assert_eq!(a.len(), raw - 1, "{curve}");
+        assert_ne!(a, b, "{curve}: random");
+        let verify = |keys: &mut Keys, signature: Vec<u8>, data: Vec<u8>| {
+            run(
+                keys,
+                Call::Verify {
+                    algorithm: params(),
+                    key: public.id,
+                    signature,
+                    data,
+                },
+            )
+        };
+        assert_eq!(
+            verify(&mut keys, a.clone(), vec![1]),
+            Ok(Outcome::Bool(true)),
+            "{curve}"
+        );
+        assert_eq!(
+            verify(&mut keys, a.clone(), vec![2]),
+            Ok(Outcome::Bool(false)),
+            "{curve}"
+        );
+        assert_eq!(
+            verify(&mut keys, vec![0; 10], vec![1]),
+            Ok(Outcome::Bool(false)),
+            "{curve} short"
+        );
+        // The key again, from each format, still verifying.
+        let again = key(ec_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(point.clone()),
+            "ECDSA",
+            curve,
+            vec![Usage::Verify],
+        ));
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: params(),
+                key: again.id,
+                signature: a.clone(),
+                data: vec![1],
+            },
+        );
+        assert_eq!(out, Ok(Outcome::Bool(true)), "{curve} raw again");
+        let from_pkcs8 = key(ec_import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(der),
+            "ECDSA",
+            curve,
+            vec![Usage::Sign],
+        ));
+        let from_jwk = key(ec_import(
+            &mut keys,
+            "jwk",
+            jwk_dict(&members, &[], &[]),
+            "ECDSA",
+            curve,
+            vec![Usage::Sign],
+        ));
+        for k in [from_pkcs8.id, from_jwk.id] {
+            let signature = bytes(run(
+                &mut keys,
+                Call::Sign {
+                    algorithm: params(),
+                    key: k,
+                    data: vec![3],
+                },
+            ));
+            assert_eq!(
+                verify(&mut keys, signature, vec![3]),
+                Ok(Outcome::Bool(true)),
+                "{curve} again"
+            );
+        }
+    }
+    // Cross pairs: those aws-lc-rs verifies verify; those it cannot, the gap.
+    let (public, private) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-521",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let sha1 = || dict(&[("name", s("ECDSA")), ("hash", s("SHA-1"))]);
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::Sign {
+                algorithm: sha1(),
+                key: private.id,
+                data: vec![1]
+            }
+        )),
+        format!("NotSupportedError: {}", crate::algorithms::ECDSA_GAP)
+    );
+    let out = run(
+        &mut keys,
+        Call::Verify {
+            algorithm: sha1(),
+            key: public.id,
+            signature: vec![0; 132],
+            data: vec![1],
+        },
+    );
+    assert_eq!(out, Ok(Outcome::Bool(false)));
+}
+
+/// ECDSA's import as the reference refuses it (probed): a compressed raw
+/// point taken, a changed point and another curve's refused, and the
+/// JWK's and PKCS #8's own errors.
+#[test]
+fn ec_import_refuses_as_the_reference_does() {
+    let mut keys = Keys::default();
+    let (public, private) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-256",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let point = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "raw".into(),
+            key: public.id,
+        },
+    ));
+    let mut compressed = vec![2 + (point[64] & 1)];
+    compressed.extend_from_slice(&point[1..33]);
+    let k = key(ec_import(
+        &mut keys,
+        "raw",
+        Value::Bytes(compressed),
+        "ECDSA",
+        "P-256",
+        vec![Usage::Verify],
+    ));
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: k.id
+            }
+        )),
+        point
+    );
+    let mut changed = point.clone();
+    changed[5] ^= 1;
+    assert_eq!(
+        error(ec_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(changed),
+            "ECDSA",
+            "P-256",
+            vec![Usage::Verify]
+        )),
+        "DataError: "
+    );
+    assert_eq!(
+        error(ec_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(point.clone()),
+            "ECDSA",
+            "P-384",
+            vec![Usage::Verify]
+        )),
+        "DataError: "
+    );
+    assert_eq!(
+        error(ec_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(point.clone()),
+            "ECDSA",
+            "P-256",
+            vec![Usage::Sign]
+        )),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    let Ok(Outcome::Jwk(members)) = run(
+        &mut keys,
+        Call::ExportKey {
+            format: "jwk".into(),
+            key: private.id,
+        },
+    ) else {
+        panic!("a JWK");
+    };
+    let jwk_err = |keys: &mut Keys, value: Value, curve: &str| {
+        error(ec_import(
+            keys,
+            "jwk",
+            value,
+            "ECDSA",
+            curve,
+            vec![Usage::Sign],
+        ))
+    };
+    assert_eq!(
+        jwk_err(&mut keys, jwk_dict(&members, &[], &[]), "P-384"),
+        "DataError: The JWK's \"crv\" member specifies a different curve than requested"
+    );
+    assert_eq!(
+        jwk_err(&mut keys, jwk_dict(&members, &["y"], &[]), "P-256"),
+        "DataError: The required JWK member \"y\" was missing"
+    );
+    let x = members
+        .iter()
+        .find(|(n, _)| n == "x")
+        .map(|(_, v)| v.clone())
+        .unwrap();
+    let JwkValue::Str(x) = x else { panic!("x") };
+    assert_eq!(
+        jwk_err(&mut keys, jwk_dict(&members, &[], &[("d", &x)]), "P-256"),
+        "DataError: The imported EC key is invalid"
+    );
+    assert_eq!(
+        jwk_err(
+            &mut keys,
+            jwk_dict(&members, &[], &[("alg", "ES384")]),
+            "P-256"
+        ),
+        "DataError: The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call"
+    );
+    let der = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "pkcs8".into(),
+            key: private.id,
+        },
+    ));
+    assert_eq!(
+        error(ec_import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(der.clone()),
+            "ECDSA",
+            "P-384",
+            vec![Usage::Sign]
+        )),
+        "DataError: The imported EC key specifies a different curve than requested"
+    );
+    let as_ecdh = key(ec_import(
+        &mut keys,
+        "pkcs8",
+        Value::Bytes(der),
+        "ECDH",
+        "P-256",
+        vec![Usage::DeriveBits],
+    ));
+    assert_eq!(as_ecdh.kind, KeyType::Private);
+}
+
+/// ECDH as Chrome 157 answers (probed): both sides' secret the same, its
+/// length the curve's by default, cut to the bits asked (the last byte's
+/// spare bits zero), too many an OperationError, the public parameter's
+/// errors; a key derived from it; its usages.
+#[test]
+fn ecdh_is_the_references() {
+    let mut keys = Keys::default();
+    let both = vec![Usage::DeriveBits, Usage::DeriveKey];
+    let (a_public, a) = ec_pair(&mut keys, "ECDH", "P-256", both.clone());
+    assert!(a_public.usages.is_empty());
+    assert_eq!(a.usages, [Usage::DeriveKey, Usage::DeriveBits]);
+    let (b_public, b) = ec_pair(&mut keys, "ECDH", "P-256", both.clone());
+    let (c_public, _) = ec_pair(&mut keys, "ECDH", "P-384", both.clone());
+    let (ecdsa_public, _) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-256",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let derive = |keys: &mut Keys, public: u32, private: u32, length: Option<u32>| {
+        run(
+            keys,
+            Call::DeriveBits {
+                algorithm: dict(&[("name", s("ECDH")), ("public", Value::Key(public))]),
+                key: private,
+                length,
+            },
+        )
+    };
+    let ab = bytes(derive(&mut keys, b_public.id, a.id, None));
+    assert_eq!(ab.len(), 32);
+    assert_eq!(bytes(derive(&mut keys, a_public.id, b.id, None)), ab);
+    assert_eq!(bytes(derive(&mut keys, b_public.id, a.id, Some(256))), ab);
+    let twelve = bytes(derive(&mut keys, b_public.id, a.id, Some(12)));
+    assert_eq!(twelve, [ab[0], ab[1] & 0xf0]);
+    assert!(bytes(derive(&mut keys, b_public.id, a.id, Some(0))).is_empty());
+    assert_eq!(
+        error(derive(&mut keys, b_public.id, a.id, Some(257))),
+        "OperationError: Length specified for ECDH key derivation is too large. Maximum allowed is 256 bits"
+    );
+    let prefix = "InvalidAccessError: The public parameter for ECDH key derivation";
+    assert_eq!(
+        error(derive(&mut keys, c_public.id, a.id, None)),
+        format!("{prefix} is for a different named curve")
+    );
+    assert_eq!(
+        error(derive(&mut keys, b.id, a.id, None)),
+        format!("{prefix} is not a public EC key")
+    );
+    assert_eq!(
+        error(derive(&mut keys, ecdsa_public.id, a.id, None)),
+        format!("{prefix} must be for ECDH")
+    );
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::DeriveBits {
+                algorithm: s("ECDH"),
+                key: a.id,
+                length: None
+            }
+        )),
+        "TypeError: Failed to execute 'deriveBits' on 'SubtleCrypto': EcdhKeyDeriveParams: public: Missing required property"
+    );
+    let derived = key(run(
+        &mut keys,
+        Call::DeriveKey {
+            algorithm: dict(&[("name", s("ECDH")), ("public", Value::Key(b_public.id))]),
+            key: a.id,
+            derived: dict(&[("name", s("AES-GCM")), ("length", Value::Num(128.0))]),
+            extractable: true,
+            usages: vec![Usage::Encrypt],
+        },
+    ));
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: derived.id
+            }
+        )),
+        ab[..16]
+    );
+    assert_eq!(
+        error(ec_gen(&mut keys, "ECDH", "P-256", vec![Usage::Sign])),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    let point = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "raw".into(),
+            key: a_public.id,
+        },
+    ));
+    assert_eq!(
+        error(ec_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(point.clone()),
+            "ECDH",
+            "P-256",
+            vec![Usage::DeriveBits]
+        )),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    let imported = key(ec_import(
+        &mut keys,
+        "raw",
+        Value::Bytes(point),
+        "ECDH",
+        "P-256",
+        vec![],
+    ));
+    assert!(imported.usages.is_empty());
+    for curve in ["P-384", "P-521"] {
+        let (public, private) = ec_pair(&mut keys, "ECDH", curve, both.clone());
+        let out = bytes(derive(&mut keys, public.id, private.id, None));
+        assert_eq!(out.len(), if curve == "P-384" { 48 } else { 66 }, "{curve}");
+    }
+}
+
+/// The known gaps' name is NotSupportedError, and must stay so: other
+/// code's fallbacks key on it. Proton's OpenPGP.js, on ECDSA with P-256
+/// and P-384, rethrows a DataError or an OperationError and fails the
+/// message, but falls back to its own implementation for any other name
+/// (the lead's ruling, 2026-11-23; its crypto-worker bundle read).
+#[test]
+fn the_known_gaps_are_not_supported_errors_so_fallbacks_run() {
+    let mut keys = Keys::default();
+    let name = |out: Result<Outcome, Error>| match out {
+        Err(e) => e.name,
+        other => panic!("{other:?}"),
+    };
+    let (_, p256) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-256",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let sha512 = dict(&[("name", s("ECDSA")), ("hash", s("SHA-512"))]);
+    let signed = run(
+        &mut keys,
+        Call::Sign {
+            algorithm: sha512,
+            key: p256.id,
+            data: vec![1],
+        },
+    );
+    assert_eq!(
+        name(signed),
+        "NotSupportedError",
+        "ECDSA P-256 with SHA-512, to sign"
+    );
+    let (p384, _) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-384",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let sha1 = dict(&[("name", s("ECDSA")), ("hash", s("SHA-1"))]);
+    let verified = run(
+        &mut keys,
+        Call::Verify {
+            algorithm: sha1,
+            key: p384.id,
+            signature: vec![0; 96],
+            data: vec![1],
+        },
+    );
+    assert_eq!(
+        name(verified),
+        "NotSupportedError",
+        "ECDSA P-384 with SHA-1, to verify"
+    );
+    let Ok(Outcome::Pair(public, _)) = oaep_pair(
+        &mut keys,
+        1024,
+        "SHA-256",
+        vec![Usage::Encrypt, Usage::Decrypt],
+    ) else {
+        panic!("a pair");
+    };
+    let sealed = run(
+        &mut keys,
+        Call::Encrypt {
+            algorithm: oaep(None),
+            key: public.id,
+            data: vec![1],
+        },
+    );
+    assert_eq!(name(sealed), "NotSupportedError", "RSA-OAEP at 1024 bits");
 }
