@@ -26,6 +26,13 @@ thread_local! {
 /// The inputs a context is kept for.
 const AGAIN: u32 = 32;
 
+/// The contexts an input makes again: a restore is slow (a context's
+/// pipelines; seconds each on the runners' software Vulkan), and an input
+/// of 17 ran past libFuzzer's 30 s (CI 45251957139). A restoreContext
+/// that may find the context lost (at the input's start, or after a
+/// loseContext) counts; past these, an input's are skipped.
+const RESTORES: u32 = 2;
+
 /// Reads the input a byte or a few at a time.
 struct Input<'a>(&'a [u8]);
 
@@ -258,6 +265,7 @@ fuzz_target!(|data: &[u8]| {
         if first & 2 == 2 {
             prelude(h, two);
         }
+        let (mut restores, mut lost) = (0, true);
         for _ in 0..256 {
             let Some(k) = input.small(CALLS.len()) else {
                 break;
@@ -291,6 +299,17 @@ fuzz_target!(|data: &[u8]| {
             } else {
                 None
             };
+            match name {
+                "loseContext" => lost = true,
+                "restoreContext" if lost => {
+                    if restores == RESTORES {
+                        continue;
+                    }
+                    restores += 1;
+                    lost = false;
+                }
+                _ => {}
+            }
             h.call(name, &numbers, strings, data);
         }
         // What was drawn sent, as a task's end would.
