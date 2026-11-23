@@ -522,7 +522,7 @@ client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 31 blocks over aws-lc's C interface where aws-lc-rs has
+ruling), with 33 blocks over aws-lc's C interface where aws-lc-rs has
 none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
 cipher context made and freed, the cipher chosen by the key's length,
 the seal and the open, each length a script controls checked in Rust
@@ -549,7 +549,11 @@ RSASSA-PKCS1-v1_5's signing (`RSA_size`, `RSA_sign`); and RSA-PSS's
 signing and verification (`RSA_sign_pss_mgf1`, `RSA_verify_pss_mgf1`,
 the digest's static description, the salt checked against `c_int`
 first), outside aws-lc-rs's PSS (SHA-256 to SHA-512 at 2048 to 8192
-bits, a salt as long as the digest alone). A private
+bits, a salt as long as the digest alone); and X25519's PKCS #8, which
+aws-lc-rs reads not (`EVP_parse_private_key` as RSA's, the key's kind
+checked by `EVP_PKEY_id`, its 32 bytes read by
+`EVP_PKEY_get_raw_private_key` into a buffer of that length, cleansed on
+a failure). A private
 key is kept as its parts, overwritten as they go and never printed.
 The tests and the fuzz target `crypto_rsa_roundtrip` hold that a
 signature the library made, with a key of any size, verifies true on

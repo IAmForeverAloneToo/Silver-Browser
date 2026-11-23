@@ -300,6 +300,17 @@ crypto-worker bundle read); a test pins it. Wycheproof: ECDSA's P1363 vectors at
 SHA-512), P-384 (SHA-512) and P-521 (SHA-512), and ECDH's Web Crypto
 vectors at P-256.
 
+Ed25519 and X25519 (step 3), aws-lc-rs's safe API: keys made, imported
+and exported as raw, SPKI (aws-lc-rs takes a strict 44-byte SPKI, the
+key its last 32 bytes; X25519's written here, RFC 8410's prefix), PKCS
+#8 (Ed25519's aws-lc-rs's; X25519's written here) and JWK (OKP; `alg`
+Ed25519, EdDSA taken too); Ed25519's signatures deterministic, RFC 8032's
+first vector; X25519's secret cut as ECDH's, RFC 7748's vector, a
+small-order point's all-zero secret an OperationError. aws-lc-rs reads
+no X25519 PKCS #8: the library reads it (`native`, the lead's ruling of
+2026-11-23), so that an export imports again; a test and crypto_import's
+fuzz harness hold the round trip to the same secret.
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`

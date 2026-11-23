@@ -3027,3 +3027,440 @@ fn the_known_gaps_are_not_supported_errors_so_fallbacks_run() {
     );
     assert_eq!(name(sealed), "NotSupportedError", "RSA-OAEP at 1024 bits");
 }
+
+fn okp_pair(keys: &mut Keys, name: &str, usages: Vec<Usage>) -> (KeyInfo, KeyInfo) {
+    match run(
+        keys,
+        Call::GenerateKey {
+            algorithm: s(name),
+            extractable: true,
+            usages,
+        },
+    ) {
+        Ok(Outcome::Pair(public, private)) => (public, private),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+fn okp_import(
+    keys: &mut Keys,
+    format: &str,
+    data: Value,
+    name: &str,
+    usages: Vec<Usage>,
+) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::ImportKey {
+            format: format.into(),
+            key_data: data,
+            algorithm: s(name),
+            extractable: true,
+            usages,
+        },
+    )
+}
+
+/// Ed25519 as Chrome 157 answers (probed, okp.json): RFC 8032's first
+/// vector signed from its PKCS #8; each format's bytes and JWK's members
+/// (`alg` Ed25519, EdDSA taken too); signatures deterministic, a short one
+/// false; the errors.
+#[test]
+fn ed25519_is_the_references() {
+    let mut keys = Keys::default();
+    let seed = hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+    let pkcs8 = [&hex("302e020100300506032b657004220420")[..], &seed].concat();
+    let k = key(okp_import(
+        &mut keys,
+        "pkcs8",
+        Value::Bytes(pkcs8.clone()),
+        "Ed25519",
+        vec![Usage::Sign],
+    ));
+    assert_eq!(
+        hex_of(run(
+            &mut keys,
+            Call::Sign {
+                algorithm: s("Ed25519"),
+                key: k.id,
+                data: vec![]
+            }
+        )),
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    );
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "pkcs8".into(),
+                key: k.id
+            }
+        )),
+        pkcs8
+    );
+    let (public, private) = okp_pair(&mut keys, "Ed25519", vec![Usage::Sign, Usage::Verify]);
+    assert_eq!(
+        (public.usages.clone(), private.usages.clone()),
+        (vec![Usage::Verify], vec![Usage::Sign])
+    );
+    let export = |keys: &mut Keys, format: &str, id| {
+        run(
+            keys,
+            Call::ExportKey {
+                format: format.into(),
+                key: id,
+            },
+        )
+    };
+    let raw = bytes(export(&mut keys, "raw", public.id));
+    assert_eq!(raw.len(), 32);
+    let spki = bytes(export(&mut keys, "spki", public.id));
+    assert_eq!(
+        (spki.len(), &spki[..12]),
+        (44, &hex("302a300506032b6570032100")[..])
+    );
+    assert_eq!(&spki[12..], raw.as_slice());
+    assert_eq!(bytes(export(&mut keys, "pkcs8", private.id)).len(), 48);
+    let Ok(Outcome::Jwk(members)) = export(&mut keys, "jwk", private.id) else {
+        panic!("a JWK");
+    };
+    let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["alg", "crv", "d", "ext", "key_ops", "kty", "x"]);
+    assert_eq!(members[0].1, JwkValue::Str("Ed25519".into()));
+    let wrong = "InvalidAccessError: The key is not of the expected type";
+    assert_eq!(error(export(&mut keys, "raw", private.id)), wrong);
+    let sign = |keys: &mut Keys| {
+        bytes(run(
+            keys,
+            Call::Sign {
+                algorithm: s("Ed25519"),
+                key: private.id,
+                data: vec![1],
+            },
+        ))
+    };
+    let (a, b) = (sign(&mut keys), sign(&mut keys));
+    assert_eq!((a.len(), a == b), (64, true));
+    let verify = |keys: &mut Keys, signature: Vec<u8>| {
+        run(
+            keys,
+            Call::Verify {
+                algorithm: s("Ed25519"),
+                key: public.id,
+                signature,
+                data: vec![1],
+            },
+        )
+    };
+    assert_eq!(verify(&mut keys, a.clone()), Ok(Outcome::Bool(true)));
+    assert_eq!(
+        verify(&mut keys, a[..63].to_vec()),
+        Ok(Outcome::Bool(false))
+    );
+    // Back from each format.
+    for (format, data) in [
+        ("raw", Value::Bytes(raw.clone())),
+        ("spki", Value::Bytes(spki)),
+    ] {
+        let again = key(okp_import(
+            &mut keys,
+            format,
+            data,
+            "Ed25519",
+            vec![Usage::Verify],
+        ));
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: s("Ed25519"),
+                key: again.id,
+                signature: a.clone(),
+                data: vec![1],
+            },
+        );
+        assert_eq!(out, Ok(Outcome::Bool(true)), "{format}");
+    }
+    let from_jwk = key(okp_import(
+        &mut keys,
+        "jwk",
+        jwk_dict(&members, &[], &[("alg", "EdDSA")]),
+        "Ed25519",
+        vec![Usage::Sign],
+    ));
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::Sign {
+                algorithm: s("Ed25519"),
+                key: from_jwk.id,
+                data: vec![1]
+            }
+        )),
+        a
+    );
+    // The errors.
+    let syntax = "SyntaxError: Cannot create a key using the specified key usages.";
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: s("Ed25519"),
+                extractable: true,
+                usages: vec![Usage::Encrypt]
+            }
+        )),
+        syntax
+    );
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: s("Ed25519"),
+                extractable: true,
+                usages: vec![Usage::Verify]
+            }
+        )),
+        "SyntaxError: Usages cannot be empty when creating a key."
+    );
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(vec![0; 31]),
+            "Ed25519",
+            vec![Usage::Verify]
+        )),
+        "DataError: Ed25519 key data must be 256 bits"
+    );
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "raw",
+            Value::Bytes(raw),
+            "Ed25519",
+            vec![Usage::Sign]
+        )),
+        syntax
+    );
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "jwk",
+            jwk_dict(&members, &[], &[("crv", "X25519")]),
+            "Ed25519",
+            vec![Usage::Sign]
+        )),
+        "DataError: The JWK's \"crv\" member specifies a different curve than requested"
+    );
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "jwk",
+            jwk_dict(&members, &[], &[("alg", "ES256")]),
+            "Ed25519",
+            vec![Usage::Sign]
+        )),
+        "DataError: The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call"
+    );
+    let (_, other) = okp_pair(&mut keys, "Ed25519", vec![Usage::Sign]);
+    let Ok(Outcome::Jwk(other)) = export(&mut keys, "jwk", other.id) else {
+        panic!("a JWK");
+    };
+    let JwkValue::Str(other_d) = other.iter().find(|(n, _)| n == "d").unwrap().1.clone() else {
+        panic!("d");
+    };
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "jwk",
+            jwk_dict(&members, &[], &[("d", &other_d)]),
+            "Ed25519",
+            vec![Usage::Sign]
+        )),
+        "DataError: "
+    );
+}
+
+/// X25519 as Chrome 157 answers (probed): RFC 7748's vector through JWK
+/// imports; both sides' secret the same, cut to the bits asked, past 256
+/// an error, a small-order point's all-zero secret an OperationError; the
+/// public parameter's errors; SPKI and PKCS #8 written as RFC 8410 has
+/// them, the PKCS #8 read back by the library.
+#[test]
+fn x25519_is_the_references() {
+    let mut keys = Keys::default();
+    let b64 = |h: &str| jwk::encode(&hex(h));
+    let alice = dict(&[
+        ("kty", s("OKP")),
+        ("crv", s("X25519")),
+        (
+            "x",
+            s(&b64(
+                "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+            )),
+        ),
+        (
+            "d",
+            s(&b64(
+                "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+            )),
+        ),
+    ]);
+    let bob = dict(&[
+        ("kty", s("OKP")),
+        ("crv", s("X25519")),
+        (
+            "x",
+            s(&b64(
+                "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+            )),
+        ),
+    ]);
+    let alice = key(okp_import(
+        &mut keys,
+        "jwk",
+        alice,
+        "X25519",
+        vec![Usage::DeriveBits],
+    ));
+    let bob = key(okp_import(&mut keys, "jwk", bob, "X25519", vec![]));
+    let derive = |keys: &mut Keys, public: u32, private: u32, length: Option<u32>| {
+        run(
+            keys,
+            Call::DeriveBits {
+                algorithm: dict(&[("name", s("X25519")), ("public", Value::Key(public))]),
+                key: private,
+                length,
+            },
+        )
+    };
+    assert_eq!(
+        hex_of(derive(&mut keys, bob.id, alice.id, None)),
+        "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+    );
+    let both = vec![Usage::DeriveBits, Usage::DeriveKey];
+    let (a_public, a) = okp_pair(&mut keys, "X25519", both.clone());
+    let (b_public, b) = okp_pair(&mut keys, "X25519", both);
+    assert!(a_public.usages.is_empty());
+    let ab = bytes(derive(&mut keys, b_public.id, a.id, None));
+    assert_eq!(ab.len(), 32);
+    assert_eq!(bytes(derive(&mut keys, a_public.id, b.id, None)), ab);
+    assert_eq!(
+        bytes(derive(&mut keys, b_public.id, a.id, Some(12))),
+        [ab[0], ab[1] & 0xf0]
+    );
+    assert_eq!(
+        error(derive(&mut keys, b_public.id, a.id, Some(257))),
+        "OperationError: The length provided for X25519 is too large."
+    );
+    let zero = key(okp_import(
+        &mut keys,
+        "raw",
+        Value::Bytes(vec![0; 32]),
+        "X25519",
+        vec![],
+    ));
+    assert_eq!(
+        error(derive(&mut keys, zero.id, a.id, None)),
+        "OperationError: "
+    );
+    let prefix = "InvalidAccessError: The public parameter for X25519 key derivation";
+    let (ed_public, _) = okp_pair(&mut keys, "Ed25519", vec![Usage::Sign, Usage::Verify]);
+    assert_eq!(
+        error(derive(&mut keys, ed_public.id, a.id, None)),
+        format!("{prefix} must be for X25519")
+    );
+    assert_eq!(
+        error(derive(&mut keys, b.id, a.id, None)),
+        format!("{prefix} is not a public key")
+    );
+    let export = |keys: &mut Keys, format: &str, id| {
+        run(
+            keys,
+            Call::ExportKey {
+                format: format.into(),
+                key: id,
+            },
+        )
+    };
+    let spki = bytes(export(&mut keys, "spki", a_public.id));
+    assert_eq!(
+        (spki.len(), &spki[..12]),
+        (44, &hex("302a300506032b656e032100")[..])
+    );
+    let again = key(okp_import(
+        &mut keys,
+        "spki",
+        Value::Bytes(spki),
+        "X25519",
+        vec![],
+    ));
+    assert_eq!(bytes(derive(&mut keys, again.id, b.id, None)), ab);
+    let pkcs8 = bytes(export(&mut keys, "pkcs8", a.id));
+    assert_eq!(
+        (pkcs8.len(), &pkcs8[..16]),
+        (48, &hex("302e020100300506032b656e04220420")[..])
+    );
+    // Round trip (the lead's ruling): the PKCS #8 imported again, by the
+    // library, derives the same secret.
+    let back = key(okp_import(
+        &mut keys,
+        "pkcs8",
+        Value::Bytes(pkcs8),
+        "X25519",
+        vec![Usage::DeriveBits],
+    ));
+    assert_eq!(bytes(derive(&mut keys, b_public.id, back.id, None)), ab);
+    // Another kind of key's PKCS #8, an Ed25519's, refused as X25519's.
+    let (_, ed_private) = okp_pair(&mut keys, "Ed25519", vec![Usage::Sign]);
+    let ed_pkcs8 = bytes(export(&mut keys, "pkcs8", ed_private.id));
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(ed_pkcs8),
+            "X25519",
+            vec![Usage::DeriveBits]
+        )),
+        "DataError: "
+    );
+    let mut trailing = bytes(export(&mut keys, "pkcs8", a.id));
+    trailing.push(0);
+    assert_eq!(
+        error(okp_import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(trailing),
+            "X25519",
+            vec![Usage::DeriveBits]
+        )),
+        "DataError: "
+    );
+    let good = bytes(export(&mut keys, "pkcs8", a.id));
+    let refused = crate::native::tests::failing("X25519Raw", || {
+        okp_import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(good),
+            "X25519",
+            vec![Usage::DeriveBits],
+        )
+    });
+    assert_eq!(error(refused), "DataError: ");
+    let Ok(Outcome::Jwk(members)) = export(&mut keys, "jwk", a.id) else {
+        panic!("a JWK");
+    };
+    let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["crv", "d", "ext", "key_ops", "kty", "x"]);
+    let derived = key(run(
+        &mut keys,
+        Call::DeriveKey {
+            algorithm: dict(&[("name", s("X25519")), ("public", Value::Key(b_public.id))]),
+            key: a.id,
+            derived: dict(&[("name", s("AES-GCM")), ("length", Value::Num(256.0))]),
+            extractable: true,
+            usages: vec![Usage::Encrypt],
+        },
+    ));
+    assert_eq!(bytes(export(&mut keys, "raw", derived.id)), ab);
+}

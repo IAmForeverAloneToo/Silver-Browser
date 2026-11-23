@@ -537,10 +537,8 @@ impl Drop for Pkey {
     }
 }
 
-/// A PKCS #8 `PrivateKeyInfo` holding an RSA key, parsed and checked by
-/// the library (its `RSA_parse_private_key` ends with `RSA_check_key`),
-/// nothing after it: `Failed` for anything else.
-pub(crate) fn rsa_private_from_pkcs8(der: &[u8]) -> Result<RsaPrivate, Failed> {
+/// A PKCS #8 `PrivateKeyInfo` parsed by the library, nothing after it.
+fn pkcs8_key(der: &[u8]) -> Result<Pkey, Failed> {
     reached();
     let mut cbs = sys::CBS {
         data: der.as_ptr(),
@@ -556,6 +554,36 @@ pub(crate) fn rsa_private_from_pkcs8(der: &[u8]) -> Result<RsaPrivate, Failed> {
     if cbs.len != 0 {
         return Err(Failed);
     }
+    Ok(pkey)
+}
+
+/// An X25519 private key's 32 bytes from a PKCS #8 (RFC 8410), read by
+/// the library: aws-lc-rs reads none (the lead's ruling, 2026-11-23).
+/// `Failed` for any other kind of key; the buffer cleansed on failure.
+pub(crate) fn x25519_private_from_pkcs8(der: &[u8]) -> Result<Vec<u8>, Failed> {
+    let pkey = pkcs8_key(der)?;
+    // SAFETY: `pkey.0` is a live key, only read.
+    if unsafe { sys::EVP_PKEY_id(pkey.0) } != sys::EVP_PKEY_X25519 {
+        return Err(Failed);
+    }
+    let mut out = vec![0u8; 32];
+    let mut len = out.len();
+    // SAFETY: `out` has `len` bytes, the most the call writes; `len` is a
+    // live local, written with the length the library wrote.
+    let code = unsafe { sys::EVP_PKEY_get_raw_private_key(pkey.0, out.as_mut_ptr(), &mut len) };
+    if ok("X25519Raw", code).is_err() || len != 32 {
+        out.iter_mut().for_each(|b| *b = 0);
+        std::hint::black_box(&out);
+        return Err(Failed);
+    }
+    Ok(out)
+}
+
+/// A PKCS #8 `PrivateKeyInfo` holding an RSA key, parsed and checked by
+/// the library (its `RSA_parse_private_key` ends with `RSA_check_key`),
+/// nothing after it: `Failed` for anything else.
+pub(crate) fn rsa_private_from_pkcs8(der: &[u8]) -> Result<RsaPrivate, Failed> {
+    let pkey = pkcs8_key(der)?;
     // SAFETY: `pkey.0` is a live key; `get1` returns a new reference to
     // its RSA, or null for a key of another kind, which its wrapper owns
     // and frees.

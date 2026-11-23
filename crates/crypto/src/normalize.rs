@@ -163,6 +163,8 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
         ("sign" | "verify", "HMAC" | "RSASSA-PKCS1-v1_5") => ("Algorithm", NONE),
         ("sign" | "verify", "RSA-PSS") => ("RsaPssParams", RSA_PSS),
         ("sign" | "verify", "ECDSA") => ("EcdsaParams", ECDSA),
+        ("sign" | "verify" | "generateKey" | "importKey", "Ed25519") => ("Algorithm", NONE),
+        ("generateKey" | "importKey", "X25519") => ("Algorithm", NONE),
         ("importKey", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("get key length", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("deriveBits", "HKDF") => ("HkdfParams", HKDF),

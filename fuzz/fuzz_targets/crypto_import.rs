@@ -46,12 +46,79 @@ fn jwk(bytes: &[u8]) -> Value {
     )
 }
 
+fn x25519_round_trip(bytes: &[u8]) {
+    let mut keys = Keys::default();
+    let import = |keys: &mut Keys, der: Vec<u8>| {
+        crypto::run(
+            keys,
+            Call::ImportKey {
+                format: "pkcs8".into(),
+                key_data: Value::Bytes(der),
+                algorithm: Value::Str("X25519".into()),
+                extractable: true,
+                usages: vec![Usage::DeriveBits],
+            },
+        )
+    };
+    let Ok(Outcome::Key(first)) = import(&mut keys, bytes.to_vec()) else {
+        return;
+    };
+    let exported = crypto::run(
+        &mut keys,
+        Call::ExportKey {
+            format: "pkcs8".into(),
+            key: first.id,
+        },
+    );
+    let Ok(Outcome::Bytes(der)) = exported else {
+        panic!("an X25519 key exports as PKCS #8: {exported:?}");
+    };
+    let Ok(Outcome::Key(second)) = import(&mut keys, der) else {
+        panic!("its PKCS #8 imports again");
+    };
+    let peer = crypto::run(
+        &mut keys,
+        Call::GenerateKey {
+            algorithm: Value::Str("X25519".into()),
+            extractable: true,
+            usages: vec![Usage::DeriveBits],
+        },
+    );
+    let Ok(Outcome::Pair(peer, _)) = peer else {
+        panic!("a peer");
+    };
+    let derive = |keys: &mut Keys, key: u32| {
+        crypto::run(
+            keys,
+            Call::DeriveBits {
+                algorithm: Value::Dict(vec![
+                    ("name".into(), Value::Str("X25519".into())),
+                    ("public".into(), Value::Key(peer.id)),
+                ]),
+                key,
+                length: None,
+            },
+        )
+    };
+    assert_eq!(
+        derive(&mut keys, first.id),
+        derive(&mut keys, second.id),
+        "the same secret"
+    );
+}
+
 fuzz_target!(|data: &[u8]| {
     let Some((&choice, rest)) = data.split_first() else {
         return;
     };
     let (name, hash, usages) = ALGORITHMS[usize::from(choice) % ALGORITHMS.len()];
     let format = ["raw", "spki", "jwk", "pkcs8"][usize::from(choice / 8) % 4];
+    // An X25519 PKCS #8 read by the library (G255 step 3, the lead's
+    // ruling): any bytes; one that imports exports and imports again,
+    // both deriving the same secret with a peer made here.
+    if format == "pkcs8" {
+        x25519_round_trip(rest);
+    }
     let key_data = if format == "jwk" {
         jwk(rest)
     } else {

@@ -325,12 +325,20 @@ pub(crate) enum Material {
     EcPublic { point: Vec<u8> },
     /// An EC private key: its scalar, overwritten as it goes, and point.
     EcPrivate { d: Vec<u8>, point: Vec<u8> },
+    /// An Ed25519 or X25519 public key's 32 bytes.
+    OkpPublic { x: Vec<u8> },
+    /// An Ed25519 or X25519 private key: its 32 bytes (a seed, a scalar),
+    /// overwritten as they go, and its public key's.
+    OkpPrivate { d: Vec<u8>, x: Vec<u8> },
 }
 
 impl Drop for Material {
     /// A secret's bytes are overwritten as it goes.
     fn drop(&mut self) {
-        if let Material::Secret(bytes) | Material::EcPrivate { d: bytes, .. } = self {
+        if let Material::Secret(bytes)
+        | Material::EcPrivate { d: bytes, .. }
+        | Material::OkpPrivate { d: bytes, .. } = self
+        {
             bytes.iter_mut().for_each(|b| *b = 0);
             std::hint::black_box(&bytes);
         }

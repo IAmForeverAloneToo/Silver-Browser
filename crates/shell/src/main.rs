@@ -1553,7 +1553,7 @@ mod tests {
         // verification outside aws-lc-rs's ranges; the crypto crate denies
         // `unsafe` but in that module.
         const NATIVE: &str = "crates/crypto/src/native.rs";
-        const NATIVE_BLOCKS: usize = 31;
+        const NATIVE_BLOCKS: usize = 33;
         let mut native_blocks = 0;
         let mut context_blocks = 0;
         let mut stack_blocks = 0;

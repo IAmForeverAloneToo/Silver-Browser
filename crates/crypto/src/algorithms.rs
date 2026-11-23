@@ -37,6 +37,9 @@ pub(crate) enum KeyAlgorithm {
         name: &'static str,
         curve: &'static str,
     },
+    Okp {
+        name: &'static str,
+    },
 }
 
 impl KeyAlgorithm {
@@ -45,7 +48,8 @@ impl KeyAlgorithm {
             KeyAlgorithm::Aes { name, .. }
             | KeyAlgorithm::Kdf { name }
             | KeyAlgorithm::Rsa { name, .. }
-            | KeyAlgorithm::Ec { name, .. } => name,
+            | KeyAlgorithm::Ec { name, .. }
+            | KeyAlgorithm::Okp { name } => name,
             KeyAlgorithm::Hmac { .. } => "HMAC",
         }
     }
@@ -62,7 +66,7 @@ impl KeyAlgorithm {
                 ("length", AlgorithmValue::Num(*length)),
                 ("hash", AlgorithmValue::Named((*hash).to_owned())),
             ],
-            KeyAlgorithm::Kdf { .. } => vec![name],
+            KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } => vec![name],
             KeyAlgorithm::Ec { curve, .. } => vec![
                 name,
                 ("namedCurve", AlgorithmValue::Str((*curve).to_owned())),
@@ -123,8 +127,10 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", _) => &[Sign],
         ("ECDSA", KeyType::Public) => &[Verify],
         ("ECDSA", _) => &[Sign],
-        ("ECDH", KeyType::Public) => &[],
-        ("ECDH", _) => &[DeriveKey, DeriveBits],
+        ("ECDH" | "X25519", KeyType::Public) => &[],
+        ("ECDH" | "X25519", _) => &[DeriveKey, DeriveBits],
+        ("Ed25519", KeyType::Public) => &[Verify],
+        ("Ed25519", _) => &[Sign],
         ("RSA-OAEP", KeyType::Public) => &[Encrypt, WrapKey],
         ("RSA-OAEP", _) => &[Decrypt, UnwrapKey],
         _ => &[],
@@ -176,7 +182,9 @@ fn secret(key: &Key) -> &[u8] {
         Material::RsaPublic { .. }
         | Material::RsaPrivate(_)
         | Material::EcPublic { .. }
-        | Material::EcPrivate { .. } => &[],
+        | Material::EcPrivate { .. }
+        | Material::OkpPublic { .. }
+        | Material::OkpPrivate { .. } => &[],
     }
 }
 
@@ -448,6 +456,14 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                     Material::RsaPrivate(parts) => {
                         let salt = alg.num("saltLength").unwrap_or(0);
                         Ok(Outcome::Bytes(pss_sign(parts, hash, salt, &data)?))
+                    }
+                    _ => Err(Error::operation("")),
+                },
+                KeyAlgorithm::Okp { name: "Ed25519" } => match &key.material {
+                    Material::OkpPrivate { d, x } => {
+                        let pair = signature::Ed25519KeyPair::from_seed_and_public_key(d, x)
+                            .map_err(|_| Error::operation(""))?;
+                        Ok(Outcome::Bytes(pair.sign(&data).as_ref().to_vec()))
                     }
                     _ => Err(Error::operation("")),
                 },
@@ -1369,6 +1385,365 @@ fn ecdh_bits(
     Ok(secret)
 }
 
+/// The SPKI and PKCS #8 prefixes of an X25519 key (RFC 8410), written
+/// here: aws-lc-rs encodes no X25519 key in either. Never read.
+const X25519_SPKI: [u8; 12] = [
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+];
+const X25519_PKCS8: [u8; 16] = [
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+];
+
+/// An Ed25519 or X25519 key's 32 public bytes from an SPKI aws-lc-rs takes
+/// as one, strict DER of the one length an RFC 8410 SPKI has: its last 32
+/// bytes, the BIT STRING's.
+fn okp_spki(name: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() != 44 {
+        return None;
+    }
+    let taken = if name == "Ed25519" {
+        signature::ParsedPublicKey::new(&signature::ED25519, bytes).is_ok()
+    } else {
+        let unparsed =
+            aws_lc_rs::agreement::UnparsedPublicKey::new(&aws_lc_rs::agreement::X25519, bytes);
+        aws_lc_rs::agreement::ParsedPublicKey::try_from(&unparsed).is_ok_and(|p| {
+            matches!(
+                p.format(),
+                aws_lc_rs::agreement::ParsedPublicKeyFormat::X509
+            )
+        })
+    };
+    taken.then(|| bytes[12..].to_vec())
+}
+
+/// An Ed25519 seed's public key, aws-lc-rs's.
+fn ed25519_public(d: &[u8]) -> Option<Vec<u8>> {
+    use signature::KeyPair;
+    let pair = signature::Ed25519KeyPair::from_seed_unchecked(d).ok()?;
+    Some(pair.public_key().as_ref().to_vec())
+}
+
+/// An X25519 scalar's public key, aws-lc-rs's.
+fn x25519_public(d: &[u8]) -> Option<Vec<u8>> {
+    let private =
+        aws_lc_rs::agreement::PrivateKey::from_private_key(&aws_lc_rs::agreement::X25519, d)
+            .ok()?;
+    Some(private.compute_public_key().ok()?.as_ref().to_vec())
+}
+
+fn generate_okp(
+    keys: &mut Keys,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<Outcome, Error> {
+    use aws_lc_rs::encoding::{AsBigEndian, Curve25519SeedBin};
+    let public_allowed = allowed(alg.name, KeyType::Public);
+    let private_allowed = allowed(alg.name, KeyType::Private);
+    if usages
+        .iter()
+        .any(|u| !public_allowed.contains(u) && !private_allowed.contains(u))
+    {
+        return Err(Error::syntax(
+            "Cannot create a key using the specified key usages.",
+        ));
+    }
+    let failed = || Error::operation("");
+    let (d, x) = if alg.name == "Ed25519" {
+        use signature::KeyPair;
+        let pair = signature::Ed25519KeyPair::generate().map_err(|_| failed())?;
+        let seed = pair.seed().map_err(|_| failed())?;
+        let d = AsBigEndian::<Curve25519SeedBin>::as_be_bytes(&seed).map_err(|_| failed())?;
+        (d.as_ref().to_vec(), pair.public_key().as_ref().to_vec())
+    } else {
+        let private = aws_lc_rs::agreement::PrivateKey::generate(&aws_lc_rs::agreement::X25519)
+            .map_err(|_| failed())?;
+        let d = AsBigEndian::<Curve25519SeedBin>::as_be_bytes(&private).map_err(|_| failed())?;
+        let x = private.compute_public_key().map_err(|_| failed())?;
+        (d.as_ref().to_vec(), x.as_ref().to_vec())
+    };
+    let public_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| public_allowed.contains(u))
+        .collect();
+    let private_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| private_allowed.contains(u))
+        .collect();
+    empty_usages(KeyType::Private, &private_usages)?;
+    let algorithm = KeyAlgorithm::Okp { name: alg.name };
+    let public = Key {
+        kind: KeyType::Public,
+        extractable: true,
+        algorithm: algorithm.clone(),
+        usages: public_usages,
+        material: Material::OkpPublic { x: x.clone() },
+    };
+    let private = Key {
+        kind: KeyType::Private,
+        extractable,
+        algorithm,
+        usages: private_usages,
+        material: Material::OkpPrivate { d, x },
+    };
+    Ok(Outcome::Pair(keys.insert(public), keys.insert(private)))
+}
+
+/// An Ed25519 or X25519 key's import, as the reference checks it (probed).
+fn import_okp(
+    keys: &mut Keys,
+    format: &str,
+    data: &Value,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<KeyInfo, Error> {
+    let name = alg.name;
+    let ed = name == "Ed25519";
+    let bytes = || match data {
+        Value::Bytes(bytes) => Ok(bytes.as_slice()),
+        _ => Err(Error::type_error(
+            "Key data must be a BufferSource for non-JWK formats",
+        )),
+    };
+    let public_ok =
+        |x: &[u8]| !ed || signature::ParsedPublicKey::new(&signature::ED25519, x).is_ok();
+    let (kind, material) = match format {
+        "raw" => {
+            check_usages(name, KeyType::Public, usages)?;
+            let x = bytes()?;
+            if x.len() != 32 {
+                return Err(Error::data(format!("{name} key data must be 256 bits")));
+            }
+            if !public_ok(x) {
+                return Err(Error::data(""));
+            }
+            (KeyType::Public, Material::OkpPublic { x: x.to_vec() })
+        }
+        "spki" => {
+            check_usages(name, KeyType::Public, usages)?;
+            let x = okp_spki(name, bytes()?).ok_or_else(|| Error::data(""))?;
+            (KeyType::Public, Material::OkpPublic { x })
+        }
+        "pkcs8" => {
+            check_usages(name, KeyType::Private, usages)?;
+            if !ed {
+                let d = native::x25519_private_from_pkcs8(bytes()?).map_err(|_| Error::data(""))?;
+                let x = x25519_public(&d).ok_or_else(|| Error::data(""))?;
+                return import_okp_key(
+                    keys,
+                    name,
+                    KeyType::Private,
+                    Material::OkpPrivate { d, x },
+                    extractable,
+                    usages,
+                );
+            }
+            use aws_lc_rs::encoding::{AsBigEndian, Curve25519SeedBin};
+            use signature::KeyPair;
+            let pair = signature::Ed25519KeyPair::from_pkcs8_maybe_unchecked(bytes()?)
+                .map_err(|_| Error::data(""))?;
+            let seed = pair.seed().map_err(|_| Error::data(""))?;
+            let d = AsBigEndian::<Curve25519SeedBin>::as_be_bytes(&seed)
+                .map_err(|_| Error::data(""))?;
+            let x = pair.public_key().as_ref().to_vec();
+            (
+                KeyType::Private,
+                Material::OkpPrivate {
+                    d: d.as_ref().to_vec(),
+                    x,
+                },
+            )
+        }
+        "jwk" => {
+            let Value::Dict(_) = data else {
+                return Err(Error::type_error(
+                    "Key data must be an object for JWK import",
+                ));
+            };
+            let jwk = jwk::Jwk(data);
+            jwk.check("OKP", None, extractable, usages)?;
+            // Ed25519's `alg`, if given, Ed25519 or EdDSA (probed).
+            if ed
+                && jwk
+                    .str("alg")
+                    .is_some_and(|a| a != "Ed25519" && a != "EdDSA")
+            {
+                return Err(Error::data(
+                    "The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call",
+                ));
+            }
+            match jwk.str("crv") {
+                None => return Err(Error::data("The required JWK member \"crv\" was missing")),
+                Some(crv) if crv != name => {
+                    return Err(Error::data(
+                        "The JWK's \"crv\" member specifies a different curve than requested",
+                    ));
+                }
+                Some(_) => {}
+            }
+            let private = jwk.str("d").is_some();
+            check_usages(
+                name,
+                if private {
+                    KeyType::Private
+                } else {
+                    KeyType::Public
+                },
+                usages,
+            )?;
+            let x = jwk.bytes("x")?;
+            if x.len() != 32 || !public_ok(&x) {
+                return Err(Error::data(""));
+            }
+            if private {
+                let d = jwk.bytes("d")?;
+                let public = if ed {
+                    ed25519_public(&d)
+                } else {
+                    x25519_public(&d)
+                };
+                if d.len() != 32 || public.as_deref() != Some(x.as_slice()) {
+                    return Err(Error::data(""));
+                }
+                (KeyType::Private, Material::OkpPrivate { d, x })
+            } else {
+                (KeyType::Public, Material::OkpPublic { x })
+            }
+        }
+        _ => {
+            return Err(Error::not_supported(
+                "Unsupported import key format for algorithm",
+            ));
+        }
+    };
+    import_okp_key(keys, name, kind, material, extractable, usages)
+}
+
+fn import_okp_key(
+    keys: &mut Keys,
+    name: &'static str,
+    kind: KeyType,
+    material: Material,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<KeyInfo, Error> {
+    if kind == KeyType::Private {
+        empty_usages(KeyType::Private, usages)?;
+    }
+    let key = Key {
+        kind,
+        extractable: kind == KeyType::Public || extractable,
+        algorithm: KeyAlgorithm::Okp { name },
+        usages: usages.to_vec(),
+        material,
+    };
+    Ok(keys.insert(key))
+}
+
+fn export_okp(key: &Key, name: &str, material: &Material, format: &str) -> Result<Outcome, Error> {
+    let wrong = || Error::invalid_access("The key is not of the expected type");
+    let failed = || Error::operation("");
+    let ed = name == "Ed25519";
+    let (d, x) = match material {
+        Material::OkpPublic { x } => (None, x),
+        Material::OkpPrivate { d, x } => (Some(d), x),
+        _ => return Err(failed()),
+    };
+    match format {
+        "raw" | "spki" if d.is_some() => Err(wrong()),
+        "pkcs8" if d.is_none() => Err(wrong()),
+        "raw" => Ok(Outcome::Bytes(x.clone())),
+        "spki" if ed => {
+            let parsed =
+                signature::ParsedPublicKey::new(&signature::ED25519, x).map_err(|_| failed())?;
+            let der = AsDer::<aws_lc_rs::encoding::PublicKeyX509Der>::as_der(&parsed)
+                .map_err(|_| failed())?;
+            Ok(Outcome::Bytes(der.as_ref().to_vec()))
+        }
+        "spki" => Ok(Outcome::Bytes([&X25519_SPKI[..], x].concat())),
+        "pkcs8" if ed => {
+            let pair =
+                signature::Ed25519KeyPair::from_seed_and_public_key(d.ok_or_else(failed)?, x)
+                    .map_err(|_| failed())?;
+            let der =
+                AsDer::<aws_lc_rs::encoding::Pkcs8V1Der>::as_der(&pair).map_err(|_| failed())?;
+            Ok(Outcome::Bytes(der.as_ref().to_vec()))
+        }
+        "pkcs8" => Ok(Outcome::Bytes(
+            [&X25519_PKCS8[..], d.ok_or_else(failed)?].concat(),
+        )),
+        "jwk" => {
+            let mut members = vec![
+                ("crv", JwkValue::Str(name.into())),
+                ("kty", JwkValue::Str("OKP".into())),
+                ("x", JwkValue::Str(jwk::encode(x))),
+            ];
+            if ed {
+                members.push(("alg", JwkValue::Str("Ed25519".into())));
+            }
+            if let Some(d) = d {
+                members.push(("d", JwkValue::Str(jwk::encode(d))));
+            }
+            Ok(Outcome::Jwk(jwk::exported(
+                members,
+                key.extractable,
+                &key.usages,
+            )))
+        }
+        _ => Err(Error::not_supported(
+            "Unsupported export key format for algorithm",
+        )),
+    }
+}
+
+/// X25519's shared secret with the `public` key, cut as ECDH's (an
+/// all-zero secret, from a small-order point, the library's refusal: an
+/// OperationError, as the reference's).
+fn x25519_bits(
+    keys: &Keys,
+    key: &Key,
+    alg: &Normalized,
+    length: Option<u32>,
+) -> Result<Vec<u8>, Error> {
+    let Material::OkpPrivate { d, .. } = &key.material else {
+        return Err(Error::operation(""));
+    };
+    let public = keys.get(alg.key("public").ok_or_else(|| Error::operation(""))?)?;
+    let prefix = "The public parameter for X25519 key derivation";
+    let KeyAlgorithm::Okp { name: "X25519" } = &public.algorithm else {
+        return Err(Error::invalid_access(format!(
+            "{prefix} must be for X25519"
+        )));
+    };
+    let Material::OkpPublic { x } = &public.material else {
+        return Err(Error::invalid_access(format!(
+            "{prefix} is not a public key"
+        )));
+    };
+    let length = length.unwrap_or(256);
+    if length > 256 {
+        return Err(Error::operation(
+            "The length provided for X25519 is too large.",
+        ));
+    }
+    let x25519 = &aws_lc_rs::agreement::X25519;
+    let private = aws_lc_rs::agreement::PrivateKey::from_private_key(x25519, d)
+        .map_err(|_| Error::operation(""))?;
+    let peer = aws_lc_rs::agreement::UnparsedPublicKey::new(x25519, x);
+    let mut secret =
+        aws_lc_rs::agreement::agree(&private, peer, Error::operation(""), |s| Ok(s.to_vec()))?;
+    secret.truncate(length.div_ceil(8) as usize);
+    if !length.is_multiple_of(8)
+        && let Some(last) = secret.last_mut()
+    {
+        *last &= 0xffu8 << (8 - length % 8);
+    }
+    Ok(secret)
+}
+
 /// An RSA public key's SPKI, aws-lc-rs's encoding of it.
 fn spki_of(n: &[u8], e: &[u8]) -> Result<Vec<u8>, Error> {
     let key =
@@ -1573,6 +1948,12 @@ fn verify(key: &Key, alg: &Normalized, signature: &[u8], data: &[u8]) -> Result<
             signature,
             data,
         ),
+        // A signature of another length aws-lc-rs refuses: false.
+        (KeyAlgorithm::Okp { name: "Ed25519" }, Material::OkpPublic { x }) => {
+            Ok(signature::UnparsedPublicKey::new(&signature::ED25519, x)
+                .verify(data, signature)
+                .is_ok())
+        }
         // Nothing else verifies (the usages refuse it first).
         _ => Err(Error::operation("")),
     }
@@ -1630,6 +2011,7 @@ fn generate(
             generate_rsa(keys, alg, extractable, usages)
         }
         "ECDSA" | "ECDH" => generate_ec(keys, alg, extractable, usages),
+        "Ed25519" | "X25519" => generate_okp(keys, alg, extractable, usages),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -1843,6 +2225,7 @@ fn import(
             Ok(keys.insert(secret_key(KeyAlgorithm::Kdf { name: alg.name }, bytes)))
         }
         "ECDSA" | "ECDH" => import_ec(keys, format, data, alg, extractable, usages),
+        "Ed25519" | "X25519" => import_okp(keys, format, data, alg, extractable, usages),
         "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
@@ -2039,6 +2422,10 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             _ => Err(unsupported()),
         },
         (
+            KeyAlgorithm::Okp { name },
+            material @ (Material::OkpPublic { .. } | Material::OkpPrivate { .. }),
+        ) => export_okp(key, name, material, format),
+        (
             KeyAlgorithm::Ec { curve, .. },
             material @ (Material::EcPublic { .. } | Material::EcPrivate { .. }),
         ) => export_ec(key, curve, material, format),
@@ -2090,6 +2477,9 @@ fn derive_bits(
 ) -> Result<Vec<u8>, Error> {
     if alg.name == "ECDH" {
         return ecdh_bits(keys, key, alg, length);
+    }
+    if alg.name == "X25519" {
+        return x25519_bits(keys, key, alg, length);
     }
     let secret = secret(key);
     match alg.name {
