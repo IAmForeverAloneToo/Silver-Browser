@@ -174,8 +174,9 @@ ls.clear(); ss.clear();
 step("ctor", () => { const e = new QuotaExceededError("m", { quota: 1, requested: 2 });
   return [e.name, e.message, e.code, e.quota, e.requested, Object.prototype.toString.call(e)]; });
 step("ctorDefaults", () => { const e = new QuotaExceededError(); return [e.message, e.quota, e.requested]; });
-step("negative", () => new QuotaExceededError("m", { quota: -1 }));
-step("less", () => new QuotaExceededError("m", { quota: 2, requested: 1 }));
+step("negative", () => { const e = new QuotaExceededError("m", { quota: -1 }); return [e.quota, e.requested]; });
+step("less", () => { const e = new QuotaExceededError("m", { quota: 2, requested: 1 }); return [e.quota, e.requested]; });
+step("nonFinite", () => new QuotaExceededError("m", { quota: NaN }));
 "#,
     );
     let over =
@@ -200,11 +201,12 @@ step("less", () => new QuotaExceededError("m", { quota: 2, requested: 1 }));
         "afterRemove=1".to_owned(),
         r#"ctor=["QuotaExceededError","m",22,1,2,"[object QuotaExceededError]"]"#.to_owned(),
         r#"ctorDefaults=["",null,null]"#.to_owned(),
-        "negative=threw RangeError: Failed to construct 'QuotaExceededError': \
-         The quota must not be negative."
-            .to_owned(),
-        "less=threw RangeError: Failed to construct 'QuotaExceededError': \
-         The requested amount must not be less than the quota."
+        // As the reference takes them (Chrome 157, probed: quota-iface).
+        "negative=[-1,null]".to_owned(),
+        "less=[2,1]".to_owned(),
+        "nonFinite=threw TypeError: Failed to construct 'QuotaExceededError': Failed to read \
+         the 'quota' property from 'QuotaExceededErrorOptions': The provided double value is \
+         non-finite."
             .to_owned(),
     ];
     assert_eq!(lines, expected);

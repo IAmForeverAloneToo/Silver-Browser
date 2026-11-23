@@ -16311,19 +16311,12 @@
   const quotas = new $WeakMap();
 
   class QuotaExceededError extends $DOMException {
+    // Its options taken as given, a negative quota or amount and an amount
+    // under the quota too, as the reference takes them (Chrome 157
+    // probed: quota-iface); a non-finite one is refused in converting.
     constructor(message = "", options = undefined) {
       const text = str(message);
       const given = dictionary(options, QUOTA_OPTIONS, "QuotaExceededError");
-      const where = "Failed to construct 'QuotaExceededError': ";
-      if (given.quota !== null && given.quota < 0) {
-        throw new $RangeError(where + "The quota must not be negative.");
-      }
-      if (given.requested !== null && given.requested < 0) {
-        throw new $RangeError(where + "The requested amount must not be negative.");
-      }
-      if (given.quota !== null && given.requested !== null && given.requested < given.quota) {
-        throw new $RangeError(where + "The requested amount must not be less than the quota.");
-      }
       super(text, "QuotaExceededError");
       WeakMapSet(quotas, this, given);
     }
@@ -29996,6 +29989,12 @@
       return [SET, codes];
     }
     if (DOMExceptionName !== undefined && branded(DOMExceptionName, value)) {
+      // A QuotaExceededError's quota and amount go with it (its own
+      // interface's, not a DOMException merely so named).
+      const quota = WeakMapGet(quotas, value);
+      if (quota !== undefined) {
+        return [DOM_EXCEPTION, DOMExceptionName(value), value.message, quota.quota, quota.requested];
+      }
       return [DOM_EXCEPTION, DOMExceptionName(value), value.message];
     }
     if (kind === KIND_ERROR) {
@@ -30242,8 +30241,16 @@
       }
       case DOM_EXCEPTION:
         // Made again without the stack its construction gave it, as
-        // the reference browser makes it.
-        object = new $DOMException(e[2], e[1]);
+        // the reference browser makes it; a QuotaExceededError as one.
+        if (e.length > 3) {
+          // A null quota or amount left out: given as null, it would be 0.
+          const options = {};
+          if (e[3] !== null) options.quota = e[3];
+          if (e[4] !== null) options.requested = e[4];
+          object = new QuotaExceededError(e[2], options);
+        } else {
+          object = new $DOMException(e[2], e[1]);
+        }
         ReflectDeleteProperty(object, "stack");
         break;
       case BLOB:
@@ -33730,9 +33737,11 @@
       }
       const length = TypedArrayLength(array);
       if (length > MAX_RANDOM_BYTES) {
+        // Its quota and amount asked are null, as the reference's are
+        // (WPT getRandomValues.any.js, which Chrome 157 passes).
         throw new QuotaExceededError(where + "The ArrayBufferView's byte length (" + length +
           ") exceeds the number of bytes of entropy available via this API (" +
-          MAX_RANDOM_BYTES + ").", { quota: MAX_RANDOM_BYTES, requested: length });
+          MAX_RANDOM_BYTES + ").");
       }
       if (length > 0) {
         const bytes = new $Uint8Array(TypedArrayBuffer(array), TypedArrayOffset(array), length);
@@ -33900,14 +33909,18 @@
     }
     for (let i = 0; i < members.length; i++) {
       const [member, kind] = StringSplit(members[i], " ");
-      let read = value[member];
-      if (kind === "Algorithm") {
-        read = value[member];
+      // A member is there when the dictionary has it, its own or its
+      // prototype's, whatever its value: one there as undefined is
+      // converted as any value (Chrome: "Is not a number", "Not a
+      // BufferSource"), one not there is missing.
+      if (!(member in value)) {
+        continue;
       }
-      const converted = cryptoMember(read, kind, op, buffers);
-      if (converted !== undefined) {
-        ArrayPush(out, [member, converted]);
-      }
+      const read = value[member];
+      const converted = read === undefined
+        ? (kind === "Number" ? { $n: "NaN" } : { $o: 1 })
+        : cryptoMember(read, kind, op, buffers);
+      ArrayPush(out, [member, converted]);
     }
     return { $d: out };
   }
@@ -33940,15 +33953,28 @@
     return state.id;
   }
 
-  function cryptoBuffer(value, method, position, buffers) {
-    const bytes = bufferBytes(value);
-    if (bytes === undefined) {
+  // A BufferSource argument, checked as Web IDL converts it: its bytes
+  // as they are, not yet copied. The method copies them once its
+  // algorithm is normalized, as the spec orders it: an algorithm's getter
+  // that changes or transfers them is seen (the reference's order).
+  function cryptoBuffer(value, method, position) {
+    if (!isBufferSource(value)) {
       throw new $TypeError(
         prefix(method, SUBTLE) + "parameter " + position +
           " is not of type '(ArrayBuffer or ArrayBufferView)'.",
       );
     }
-    return cryptoBytes(bytes, buffers);
+    return value;
+  }
+
+  // Whether `value` is a BufferSource, its bytes not touched.
+  function isBufferSource(value) {
+    return isBuffer(value) || (typeof value === "object" && value !== null && IsView(value));
+  }
+
+  // A BufferSource's bytes as they are now, copied for the host.
+  function cryptoCopy(value, buffers) {
+    return cryptoBytes(bufferBytes(value), buffers);
   }
 
   // A JsonWebKey dictionary's members, read in Web IDL's order.
@@ -34005,8 +34031,9 @@
       decrypt(algorithm, key, data) {
         return cryptoMethod("decrypt", 3, arguments.length, (buffers) => {
           const k = cryptoKeyArgument(key, "decrypt", 2);
-          const d = cryptoBuffer(data, "decrypt", 3, buffers);
-          return { alg: cryptoAlgorithm(algorithm, "decrypt", buffers), key: k, data: d };
+          const d = cryptoBuffer(data, "decrypt", 3);
+          const alg = cryptoAlgorithm(algorithm, "decrypt", buffers);
+          return { alg, key: k, data: cryptoCopy(d, buffers) };
         });
       },
       deriveBits(algorithm, baseKey, length = null) {
@@ -34032,20 +34059,21 @@
       },
       digest(algorithm, data) {
         return cryptoMethod("digest", 2, arguments.length, (buffers) => {
-          const d = bufferBytes(data);
-          if (d === undefined) {
+          const d = data;
+          if (!isBufferSource(d)) {
             throw new $TypeError(prefix("digest", SUBTLE) +
               "The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.");
           }
-          const slot = cryptoBytes(d, buffers);
-          return { alg: cryptoAlgorithm(algorithm, "digest", buffers), data: slot };
+          const alg = cryptoAlgorithm(algorithm, "digest", buffers);
+          return { alg, data: cryptoCopy(d, buffers) };
         });
       },
       encrypt(algorithm, key, data) {
         return cryptoMethod("encrypt", 3, arguments.length, (buffers) => {
           const k = cryptoKeyArgument(key, "encrypt", 2);
-          const d = cryptoBuffer(data, "encrypt", 3, buffers);
-          return { alg: cryptoAlgorithm(algorithm, "encrypt", buffers), key: k, data: d };
+          const d = cryptoBuffer(data, "encrypt", 3);
+          const alg = cryptoAlgorithm(algorithm, "encrypt", buffers);
+          return { alg, key: k, data: cryptoCopy(d, buffers) };
         });
       },
       exportKey(format, key) {
@@ -34068,9 +34096,9 @@
         return cryptoMethod("importKey", 5, arguments.length, (buffers) => {
           const f = cryptoFormat(format, "importKey");
           let data;
-          const bytes = bufferBytes(keyData);
+          const bytes = isBufferSource(keyData) ? keyData : undefined;
           if (bytes !== undefined) {
-            data = cryptoBytes(bytes, buffers);
+            data = bytes;
           } else if (isObject(keyData) || keyData === undefined || keyData === null) {
             data = cryptoJwk(isObject(keyData) ? keyData : {});
           } else {
@@ -34078,10 +34106,11 @@
               "The provided value is not of type '(ArrayBuffer or ArrayBufferView or JsonWebKey)'.");
           }
           const usages = cryptoUsages(keyUsages, "importKey");
+          const alg = cryptoAlgorithm(algorithm, "importKey", buffers);
           return {
             format: f,
-            data,
-            alg: cryptoAlgorithm(algorithm, "importKey", buffers),
+            data: bytes !== undefined ? cryptoCopy(bytes, buffers) : data,
+            alg,
             extractable: !!extractable,
             usages,
           };
@@ -34090,23 +34119,26 @@
       sign(algorithm, key, data) {
         return cryptoMethod("sign", 3, arguments.length, (buffers) => {
           const k = cryptoKeyArgument(key, "sign", 2);
-          const d = cryptoBuffer(data, "sign", 3, buffers);
-          return { alg: cryptoAlgorithm(algorithm, "sign", buffers), key: k, data: d };
+          const d = cryptoBuffer(data, "sign", 3);
+          const alg = cryptoAlgorithm(algorithm, "sign", buffers);
+          return { alg, key: k, data: cryptoCopy(d, buffers) };
         });
       },
       unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm,
         extractable, keyUsages) {
         return cryptoMethod("unwrapKey", 7, arguments.length, (buffers) => {
           const f = cryptoFormat(format, "unwrapKey");
-          const d = cryptoBuffer(wrappedKey, "unwrapKey", 2, buffers);
+          const d = cryptoBuffer(wrappedKey, "unwrapKey", 2);
           const k = cryptoKeyArgument(unwrappingKey, "unwrapKey", 3);
           const usages = cryptoUsages(keyUsages, "unwrapKey");
+          const alg = cryptoAlgorithm(unwrapAlgorithm, "unwrapKey", buffers);
+          const imported = cryptoAlgorithm(unwrappedKeyAlgorithm, "importKey", buffers);
           return {
             format: f,
-            data: d,
+            data: cryptoCopy(d, buffers),
             key: k,
-            alg: cryptoAlgorithm(unwrapAlgorithm, "unwrapKey", buffers),
-            imported: cryptoAlgorithm(unwrappedKeyAlgorithm, "importKey", buffers),
+            alg,
+            imported,
             extractable: !!extractable,
             usages,
           };
@@ -34115,10 +34147,11 @@
       verify(algorithm, key, signature, data) {
         return cryptoMethod("verify", 4, arguments.length, (buffers) => {
           const k = cryptoKeyArgument(key, "verify", 2);
-          const s = cryptoBuffer(signature, "verify", 3, buffers);
-          const d = cryptoBuffer(data, "verify", 4, buffers);
+          const s = cryptoBuffer(signature, "verify", 3);
+          const d = cryptoBuffer(data, "verify", 4);
+          const alg = cryptoAlgorithm(algorithm, "verify", buffers);
           return {
-            alg: cryptoAlgorithm(algorithm, "verify", buffers), key: k, signature: s, data: d,
+            alg, key: k, signature: cryptoCopy(s, buffers), data: cryptoCopy(d, buffers),
           };
         });
       },
@@ -34142,6 +34175,34 @@
       defineProperty(proto, names[i], getOwnPropertyDescriptor(own, names[i]));
     }
     defineProperty(proto, "constructor", constructor);
+    // SubtleCrypto.supports(operation, algorithm, lengthOrAdditionalAlgorithm)
+    // (Chrome 157 ships it, probed): whether the operation would take
+    // the algorithm, by the host's own checks of it. The last argument
+    // is Web IDL's (AlgorithmIdentifier or unsigned long?): null, a
+    // number (wrapping, as unsigned long does), or an algorithm, which
+    // deriveKey alone reads, as its derived key's type.
+    const statics = {
+      supports(operation, algorithm, lengthOrAdditionalAlgorithm = null) {
+        need(arguments.length, 2, "supports", SUBTLE);
+        const op = str(operation);
+        const extra = lengthOrAdditionalAlgorithm;
+        const buffers = [];
+        const as = op === "exportKey" ? "importKey" : op === "deriveKey" ? "deriveBits" : op;
+        const args = { op, alg: cryptoAlgorithm(algorithm, as, buffers) };
+        if (typeof extra === "number" || typeof extra === "boolean") {
+          args.extra = { $n: String($Number(extra) >>> 0) };
+        } else if (extra !== null && extra !== undefined && op === "deriveKey") {
+          args.derived = cryptoAlgorithm(extra, "importKey", buffers);
+          args.derivedLength = cryptoAlgorithm(extra, "get key length", buffers);
+        }
+        const call = [JSONStringify(args)];
+        for (let i = 0; i < buffers.length; i++) {
+          ArrayPush(call, buffers[i]);
+        }
+        return ReflectApply(native.cryptoSupports, native, call) === true;
+      },
+    };
+    defineProperty(SubtleCrypto, "supports", getOwnPropertyDescriptor(statics, "supports"));
   }
   expose(SubtleCrypto, "SubtleCrypto");
   const subtle = new SubtleCrypto(KEY);

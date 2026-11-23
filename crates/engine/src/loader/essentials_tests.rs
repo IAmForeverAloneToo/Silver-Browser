@@ -1021,7 +1021,7 @@ fn crypto_gives_random_values_and_uuids() {
     // host's secure generator, at most 65,536 bytes; a version 4 UUID.
     let lines = logged(
         "function tell(f) { try { console.log(f()); } catch (e) {\
-           console.log(e.name + ': ' + e.message + (e.quota ? ' ' + e.quota + ' ' + e.requested : ''));\
+           console.log(e.name + ': ' + e.message + (e.name === 'QuotaExceededError' ? ' ' + e.quota + ' ' + e.requested : ''));\
          } }\
          var a = new Uint8Array(64);\
          tell(function () { return crypto.getRandomValues(a) === a; });\
@@ -1057,7 +1057,7 @@ fn crypto_gives_random_values_and_uuids() {
             "65536",
             "QuotaExceededError: Failed to execute 'getRandomValues' on 'Crypto': The \
              ArrayBufferView's byte length (65537) exceeds the number of bytes of entropy \
-             available via this API (65536). 65536 65537",
+             available via this API (65536). null null",
             "TypeMismatchError: Failed to execute 'getRandomValues' on 'Crypto': The provided \
              ArrayBufferView is of type 'Float32', which is not an integer array type.",
             "TypeMismatchError: Failed to execute 'getRandomValues' on 'Crypto': The provided \

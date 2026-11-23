@@ -47,6 +47,22 @@ pub(crate) fn call(
             };
             (Ok(Answer::Nothing), Some(settled(id, outcome)))
         }
+        CryptoCall::Supports { json, buffers } => {
+            let yes = Json::parse(&json).is_ok_and(|args| {
+                let get = |name: &str| {
+                    args.get(name)
+                        .map_or(crypto::Value::Absent, |j| value(j, &buffers))
+                };
+                let op = args.get("op").and_then(Json::as_str).unwrap_or_default();
+                // deriveKey's derived key type as its call reads it.
+                let extra = match get("derived") {
+                    crypto::Value::Absent => get("extra"),
+                    derived => merged(derived, get("derivedLength")),
+                };
+                crypto::supports(op, &get("alg"), &extra)
+            });
+            (Ok(Answer::Bool(yes)), None)
+        }
         CryptoCall::Serialize { id } => {
             let answer =
                 crypto::serialize_key(keys, id).map_or(Answer::MaybeString(None), Answer::Bytes);

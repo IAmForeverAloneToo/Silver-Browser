@@ -1992,6 +1992,149 @@ fn equal(largest: u32, pixels: u32, fuzzy: Option<Fuzzy>) -> bool {
     }
 }
 
+/// How long in real time a page may run before the runner gives up on
+/// it, whatever it is doing: past its own waits (`LOAD`, and the harness's
+/// on the page's clock), which a page cannot pass unless one call into
+/// the engine never returns.
+const GIVE_UP: Duration = Duration::from_secs(90);
+
+/// Runs `run` on each of `items` on `threads` threads, and gives the
+/// results in the items' order. A run past `limit` of real time is given
+/// up from outside it: its result is `gave_up`'s, and its thread, which
+/// nothing can stop, is left to the process's end, a new thread taking
+/// its place. No page, however it blocks, holds the run (the lead's
+/// ruling, 2026-11-24: WebCryptoAPI's derived_bits_length asks a 512 MiB
+/// PBKDF2 derivation, synchronous in the renderer until G255 step 7).
+fn run_all<T, R>(
+    items: Vec<T>,
+    threads: usize,
+    limit: Duration,
+    run: impl Fn(&T) -> R + Send + Sync + 'static,
+    gave_up: impl Fn(&T) -> R,
+) -> Vec<R>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+{
+    struct Slots<R> {
+        results: Vec<Option<R>>,
+        started: Vec<Option<Instant>>,
+    }
+    let count = items.len();
+    let items = Arc::new(items);
+    let run = Arc::new(run);
+    let next = Arc::new(AtomicUsize::new(0));
+    let slots = Arc::new((
+        Mutex::new(Slots {
+            results: (0..count).map(|_| None).collect(),
+            started: vec![None; count],
+        }),
+        std::sync::Condvar::new(),
+    ));
+    let spawn = || {
+        let (items, run, next, slots) = (items.clone(), run.clone(), next.clone(), slots.clone());
+        // The engine's stack, which its scripts need (G253).
+        thread::Builder::new()
+            .stack_size(engine::STACK_SIZE)
+            .spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else {
+                        break;
+                    };
+                    slots.0.lock().unwrap_or_else(|e| e.into_inner()).started[i] =
+                        Some(Instant::now());
+                    let result = run(item);
+                    let mut held = slots.0.lock().unwrap_or_else(|e| e.into_inner());
+                    // A run given up keeps the result it was given.
+                    if held.results[i].is_none() {
+                        held.results[i] = Some(result);
+                    }
+                    drop(held);
+                    slots.1.notify_all();
+                }
+            })
+            .expect("a runner's thread");
+    };
+    for _ in 0..threads.max(1) {
+        spawn();
+    }
+    let mut held = slots.0.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if held.results.iter().all(Option::is_some) {
+            break;
+        }
+        for i in 0..count {
+            let late =
+                held.results[i].is_none() && held.started[i].is_some_and(|at| at.elapsed() > limit);
+            if late {
+                held.results[i] = Some(gave_up(&items[i]));
+                spawn();
+            }
+        }
+        held = slots
+            .1
+            .wait_timeout(held, Duration::from_millis(250))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+    held.results
+        .drain(..)
+        .map(|r| r.expect("every item ran"))
+        .collect()
+}
+
+/// The vendored tree served as the runner serves its testharness tests,
+/// its pages made and its results written into them the same way, for
+/// the reference browser to run the same pages and say its own results
+/// (G255 step 6: Chrome 157's on WebCryptoAPI). Run alone:
+/// `cargo test --test wpt -- --ignored --nocapture serve_for_the_reference_browser`;
+/// it says its port and serves for SILVER_WPT_SERVE_SECS (an hour).
+#[test]
+#[ignore]
+fn serve_for_the_reference_browser() {
+    let harness = serve(root(), true);
+    let _ = PORTS.set(Ports {
+        http: vec![harness.port()],
+        ..Ports::default()
+    });
+    println!("serving on {}", harness.port());
+    let secs = std::env::var("SILVER_WPT_SERVE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3600);
+    thread::sleep(Duration::from_secs(secs));
+}
+
+/// The runner gives up on a run past its limit and goes on with the
+/// rest, the run that never returns left behind.
+#[test]
+fn a_run_past_its_limit_is_given_up_and_the_rest_go_on() {
+    let items: Vec<u32> = (0..6).collect();
+    let started = Instant::now();
+    let results = run_all(
+        items,
+        2,
+        Duration::from_millis(300),
+        |&n| {
+            if n == 2 {
+                // Never returns, as a renderer's call that blocks.
+                loop {
+                    thread::park();
+                }
+            }
+            n * 10
+        },
+        |&n| 1000 + n,
+    );
+    assert_eq!(results, [0, 10, 1002, 30, 40, 50]);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
 /// What running a test gave.
 struct Outcome {
     passed: bool,
@@ -3184,8 +3327,8 @@ fn the_web_platform_tests_subset_runs_as_expected() {
             .collect(),
         Err(_) => tests,
     };
-    let server = serve(root(), false);
-    let harness = serve(root(), true);
+    let server = Arc::new(serve(root(), false));
+    let harness = Arc::new(serve(root(), true));
     // A second port of the same, a distinct origin, and the same over
     // TLS, for the templates' `{{ports[http][1]}}` and `{{ports[https][0]}}`.
     let second = serve(root(), true);
@@ -3194,33 +3337,18 @@ fn the_web_platform_tests_subset_runs_as_expected() {
         http: vec![harness.port(), second.port()],
         https: vec![secure.port()],
     });
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..tests.len()).map(|_| None).collect());
     let threads = thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(tests.len().max(1));
-    thread::scope(|scope| {
-        for _ in 0..threads {
-            // The engine's stack, which its scripts need (G253).
-            let runner = thread::Builder::new().stack_size(engine::STACK_SIZE);
-            let spawned = runner.spawn_scoped(scope, || {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(test) = tests.get(i) else {
-                        break;
-                    };
-                    let outcome = run(&server, &harness, test);
-                    results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(outcome);
-                }
-            });
-            spawned.expect("a runner's thread");
-        }
-    });
-    let results: Vec<(Test, Outcome)> = tests
-        .into_iter()
-        .zip(results.into_inner().unwrap_or_else(|e| e.into_inner()))
-        .map(|(test, outcome)| (test, outcome.expect("every test ran")))
-        .collect();
+    let limit = GIVE_UP * timeout_multiplier();
+    let outcomes = run_all(
+        tests.clone(),
+        threads,
+        limit,
+        move |test| run(&server, &harness, test),
+        move |_| Outcome::fail(format!("TIMEOUT: still running after {limit:?}; given up")),
+    );
+    let results: Vec<(Test, Outcome)> = tests.into_iter().zip(outcomes).collect();
     report(&results, &expected);
     write_results(&results);
     let mut unexpected = Vec::new();

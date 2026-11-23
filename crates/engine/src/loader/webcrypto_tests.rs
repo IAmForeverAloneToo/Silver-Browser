@@ -267,3 +267,93 @@ fn a_page_clones_crypto_keys_to_a_worker_and_through_indexeddb() {
         ]
     );
 }
+
+/// What the bindings read as the reference reads it (G255 step 6, Chrome
+/// 157 probed: undef-member, dict-int; WPT's "during call" tests): a
+/// dictionary member there as undefined is converted, one not there is
+/// missing, and an inherited one is there; a method's data is copied
+/// once its algorithm is normalized, so that an algorithm's getter that
+/// transfers or alters it is seen; and getRandomValues' QuotaExceededError
+/// has no quota or amount.
+#[test]
+fn the_bindings_read_arguments_in_the_references_order() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const t = async (f) => { try { out.push(String(await f())); } catch (e) { out.push(e.name + ': ' + e.message); } };\
+        await t(async () => (await s.generateKey({name: 'AES-GCM', length: undefined}, true, ['encrypt'])).algorithm.length);\
+        await t(async () => (await s.generateKey({name: 'AES-GCM'}, true, ['encrypt'])).algorithm.length);\
+        const inherited = Object.create({length: 128}); inherited.name = 'AES-GCM';\
+        await t(async () => (await s.generateKey(inherited, true, ['encrypt'])).algorithm.length);\
+        await t(async () => (await s.generateKey({name: 'AES-GCM', length: NaN}, true, ['encrypt'])).algorithm.length);\
+        const key = await s.generateKey({name: 'AES-GCM', length: 128}, true, ['encrypt']);\
+        await t(async () => (await s.encrypt({name: 'AES-GCM', iv: undefined}, key, new Uint8Array(1))).byteLength);\
+        const data = new Uint8Array(480);\
+        const moving = {name: 'AES-GCM', get iv() { structuredClone(data.buffer, {transfer: [data.buffer]}); return new Uint8Array(12); }};\
+        await t(async () => (await s.encrypt(moving, key, data)).byteLength);\
+        const text = new Uint8Array([1, 2, 3]);\
+        const altering = {get name() { text[0] = 9; return 'SHA-256'; }};\
+        const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');\
+        const altered = hex(await s.digest(altering, text));\
+        out.push(String(altered === hex(await s.digest('SHA-256', new Uint8Array([9, 2, 3])))));\
+        try { crypto.getRandomValues(new Uint8Array(65537)); } catch (e) { out.push([e instanceof QuotaExceededError, e.quota, e.requested].join(' ')); }\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 8);
+    assert_eq!(
+        lines,
+        [
+            "TypeError: Failed to execute 'generateKey' on 'SubtleCrypto': AesKeyGenParams: length: Is not a number",
+            "TypeError: Failed to execute 'generateKey' on 'SubtleCrypto': AesKeyGenParams: length: Missing required property",
+            "128",
+            "TypeError: Failed to execute 'generateKey' on 'SubtleCrypto': AesKeyGenParams: length: Is not a number",
+            "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': AeadParams: iv: Not a BufferSource",
+            "16",
+            "true",
+            "true  ",
+        ]
+    );
+}
+
+/// SubtleCrypto.supports as the reference has it (Chrome 157, probed:
+/// supports): a static method of two arguments; an operation's name as
+/// it is; the last argument a wrapping length, or deriveKey's derived
+/// key type; and QuotaExceededError's interface (probed: quota-iface).
+#[test]
+fn subtle_crypto_supports_and_quota_exceeded_error_are_the_references() {
+    let script = "(async () => {\
+        const S = SubtleCrypto; const out = [];\
+        const t = (f) => { try { out.push(String(f())); } catch (e) { out.push(e.name + ': ' + e.message); } };\
+        const d = Object.getOwnPropertyDescriptor(S, 'supports');\
+        t(() => [typeof S.supports, S.supports.length, S.supports.name, d.writable, d.enumerable, d.configurable, 'supports' in S.prototype].join());\
+        t(() => S.supports('digest'));\
+        const hkdf = {name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(1), info: new Uint8Array(0)};\
+        t(() => [S.supports('digest', 'sha-256'), S.supports('GENERATEKEY', 'AES-GCM'), S.supports('generateKey', {name: 'AES-GCM', length: 192}), S.supports('generateKey', {name: 'AES-GCM', length: 128.5})].join());\
+        t(() => [S.supports('deriveBits', hkdf, 256), S.supports('deriveBits', hkdf, -8), S.supports('deriveBits', hkdf, '256'), S.supports('deriveBits', hkdf), S.supports('deriveBits', hkdf, 230)].join());\
+        t(() => [S.supports('deriveKey', hkdf, {name: 'AES-GCM', length: 256}), S.supports('deriveKey', hkdf, {name: 'AES-GCM', length: 192}), S.supports('deriveKey', hkdf)].join());\
+        t(() => [S.supports('encrypt', {name: 'AES-CTR', counter: new Uint8Array(16), length: 129}), S.supports('exportKey', 'AES-GCM'), S.supports(5, 'SHA-256')].join());\
+        const Q = QuotaExceededError;\
+        t(() => [Q.length, Object.getPrototypeOf(Q) === DOMException, Object.getOwnPropertyNames(Q.prototype).join('/')].join());\
+        t(() => { const e = new Q('m', {quota: 5, requested: 2}); return [e.quota, e.requested, e.code, e instanceof DOMException].join(); });\
+        t(() => new Q('m', {quota: Infinity}));\
+        t(() => { const c = structuredClone(new Q('m', {quota: 5, requested: 7})); return [c.constructor === Q, c.message, c.quota, c.requested].join(); });\
+        t(() => { const c = structuredClone(new Q('m')); return [c.constructor === Q, c.quota, c.requested].join(); });\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 11);
+    assert_eq!(
+        lines,
+        [
+            "function,2,supports,true,true,true,false",
+            "TypeError: Failed to execute 'supports' on 'SubtleCrypto': 2 arguments required, but only 1 present.",
+            "true,false,false,true",
+            "true,true,false,false,false",
+            "true,false,false",
+            "false,true,false",
+            "0,true,quota/requested/constructor",
+            "5,2,22,true",
+            "TypeError: Failed to construct 'QuotaExceededError': Failed to read the 'quota' property from 'QuotaExceededErrorOptions': The provided double value is non-finite.",
+            "true,m,5,7",
+            "true,,",
+        ]
+    );
+}

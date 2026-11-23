@@ -416,6 +416,13 @@ pub fn deserialize_key(keys: &mut Keys, record: &[u8]) -> Result<KeyInfo, Error>
     algorithms::key_from_record(keys, record)
 }
 
+/// `SubtleCrypto.supports`: whether `operation` would take `algorithm`
+/// (and `extra`, a length or a derived key's algorithm), by the
+/// operations' own checks that need no key.
+pub fn supports(operation: &str, algorithm: &Value, extra: &Value) -> bool {
+    algorithms::supports(operation, algorithm, extra)
+}
+
 pub fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
     let method = call.method();
     algorithms::run(keys, call).map_err(|mut error| {

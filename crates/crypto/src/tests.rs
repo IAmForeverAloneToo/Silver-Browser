@@ -103,6 +103,31 @@ fn hkdf_pbkdf2_and_hmac_match_their_rfcs() {
         okm,
         hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
     );
+    // Past 255 hash lengths: refused, as a length of -8 the bindings wrap
+    // (as the reference's do) to 2^32 - 8 bits; at the most, derived.
+    let hkdf = |keys: &mut Keys, length| {
+        run(
+            keys,
+            Call::DeriveBits {
+                algorithm: dict(&[
+                    ("name", s("HKDF")),
+                    ("hash", s("SHA-256")),
+                    ("salt", Value::Bytes(vec![])),
+                    ("info", Value::Bytes(vec![])),
+                ]),
+                key: ikm.id,
+                length: Some(length),
+            },
+        )
+    };
+    for length in [255 * 256 + 8, u32::MAX - 7] {
+        assert_eq!(
+            error(hkdf(&mut keys, length)),
+            "OperationError: The length provided for HKDF is too large.",
+            "{length}"
+        );
+    }
+    assert_eq!(bytes(hkdf(&mut keys, 255 * 256)).len(), 255 * 32);
     // RFC 6070's second case.
     let password = import_raw(&mut keys, s("PBKDF2"), b"password", &[Usage::DeriveBits]);
     let dk = bytes(run(
@@ -228,6 +253,27 @@ fn errors_are_the_references() {
         ),
         "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': AeadParams: tagLength: Outside of numeric range"
     );
+    // NaN (undefined there, as the reference converts it) is not a number;
+    // the infinities are out of range (probed: dict-int, undef-member).
+    for (n, said) in [
+        (f64::NAN, "Is not a number"),
+        (f64::INFINITY, "Outside of numeric range"),
+        (f64::NEG_INFINITY, "Outside of numeric range"),
+    ] {
+        assert_eq!(
+            encrypt(
+                &mut keys,
+                dict(&[
+                    ("name", s("AES-GCM")),
+                    ("iv", Value::Bytes(vec![0; 12])),
+                    ("tagLength", Value::Num(n)),
+                ])
+            ),
+            format!(
+                "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': AeadParams: tagLength: {said}"
+            )
+        );
+    }
     assert_eq!(
         encrypt(
             &mut keys,
@@ -3603,6 +3649,470 @@ fn every_kind_of_key_clones_through_its_record() {
     assert!(deserialize_key(&mut keys, &record).is_err());
     assert!(deserialize_key(&mut keys, b"\"not a record\"").is_err());
     assert!(serialize_key(&keys, 999_999).is_none());
+}
+
+/// Step 6's fixes from WebCryptoAPI's tests, each as Chrome 157 has it on
+/// the same pages: deriveKey looks at the base key before the derived
+/// key's length; an imported public key keeps the extractable asked; a
+/// KDF key's export is refused before its extractable is looked at; and
+/// raw-public and raw-secret are raw's aliases.
+#[test]
+fn step_six_orders_and_aliases_are_the_references() {
+    let mut keys = Keys::default();
+    // A key without deriveKey asked for a 192-bit AES key: the key's
+    // refusal, not the length's.
+    let hkdf = import_raw(&mut keys, s("HKDF"), &[1; 16], &[Usage::DeriveBits]);
+    let derive = |keys: &mut Keys, length: f64| {
+        run(
+            keys,
+            Call::DeriveKey {
+                algorithm: dict(&[
+                    ("name", s("HKDF")),
+                    ("hash", s("SHA-256")),
+                    ("salt", Value::Bytes(vec![])),
+                    ("info", Value::Bytes(vec![])),
+                ]),
+                key: hkdf.id,
+                derived: dict(&[("name", s("AES-CBC")), ("length", Value::Num(length))]),
+                extractable: true,
+                usages: vec![Usage::Encrypt],
+            },
+        )
+    };
+    for length in [192.0, 128.0] {
+        assert!(
+            error(derive(&mut keys, length)).starts_with("InvalidAccessError: "),
+            "{length}"
+        );
+    }
+    let hkdf2 = import_raw(&mut keys, s("HKDF"), &[1; 16], &[Usage::DeriveKey]);
+    let derived = run(
+        &mut keys,
+        Call::DeriveKey {
+            algorithm: dict(&[
+                ("name", s("HKDF")),
+                ("hash", s("SHA-256")),
+                ("salt", Value::Bytes(vec![])),
+                ("info", Value::Bytes(vec![])),
+            ]),
+            key: hkdf2.id,
+            derived: dict(&[("name", s("AES-CBC")), ("length", Value::Num(192.0))]),
+            extractable: true,
+            usages: vec![Usage::Encrypt],
+        },
+    );
+    assert_eq!(
+        error(derived),
+        "OperationError: 192-bit AES keys are not supported"
+    );
+
+    // Public keys imported not extractable stay so; raw-public is raw.
+    let (ec_public, _) = ec_pair(
+        &mut keys,
+        "ECDSA",
+        "P-256",
+        vec![Usage::Sign, Usage::Verify],
+    );
+    let point = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "raw".into(),
+            key: ec_public.id,
+        },
+    ));
+    let (x_public, _) = okp_pair(&mut keys, "X25519", vec![Usage::DeriveBits]);
+    let x = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "raw".into(),
+            key: x_public.id,
+        },
+    ));
+    let ec_alg = dict(&[("name", s("ECDSA")), ("namedCurve", s("P-256"))]);
+    for (format, data, alg, usages) in [
+        ("raw", point.clone(), ec_alg.clone(), vec![Usage::Verify]),
+        (
+            "raw-public",
+            point.clone(),
+            ec_alg.clone(),
+            vec![Usage::Verify],
+        ),
+        ("raw", x.clone(), s("X25519"), vec![]),
+        ("raw-public", x.clone(), s("X25519"), vec![]),
+    ] {
+        for extractable in [false, true] {
+            let info = key(run(
+                &mut keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: Value::Bytes(data.clone()),
+                    algorithm: alg.clone(),
+                    extractable,
+                    usages: usages.clone(),
+                },
+            ));
+            assert_eq!(info.extractable, extractable, "{format} {alg:?}");
+            let out = run(
+                &mut keys,
+                Call::ExportKey {
+                    format: "raw-public".into(),
+                    key: info.id,
+                },
+            );
+            if extractable {
+                assert_eq!(bytes(out), data, "{format} {alg:?}: raw-public export");
+            } else {
+                assert_eq!(
+                    error(out),
+                    "InvalidAccessError: Failed to execute 'exportKey' on 'SubtleCrypto': key is not extractable"
+                );
+            }
+        }
+    }
+    let (rsa_public, _) = generate_pair(&mut keys, 2048, &[1, 0, 1], "SHA-256");
+    let spki = bytes(run(
+        &mut keys,
+        Call::ExportKey {
+            format: "spki".into(),
+            key: rsa_public.id,
+        },
+    ));
+    let rsa = key(run(
+        &mut keys,
+        Call::ImportKey {
+            format: "spki".into(),
+            key_data: Value::Bytes(spki),
+            algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]),
+            extractable: false,
+            usages: vec![Usage::Verify],
+        },
+    ));
+    assert!(!rsa.extractable);
+
+    // PBKDF2's length not a multiple of 8, in the reference's words
+    // (probed: enforce-range).
+    let password = import_raw(&mut keys, s("PBKDF2"), &[4; 8], &[Usage::DeriveBits]);
+    let pbkdf2 = dict(&[
+        ("name", s("PBKDF2")),
+        ("hash", s("SHA-256")),
+        ("salt", Value::Bytes(vec![1])),
+        ("iterations", Value::Num(1.0)),
+    ]);
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::DeriveBits {
+                algorithm: pbkdf2,
+                key: password.id,
+                length: Some(12)
+            }
+        )),
+        "OperationError: Length for PBKDF2 key derivation must be a multiple of 8 bits."
+    );
+    // A KDF key: raw-secret imports it; its export is refused as no
+    // export, before its extractable (false) is looked at.
+    let pbkdf2 = key(run(
+        &mut keys,
+        Call::ImportKey {
+            format: "raw-secret".into(),
+            key_data: Value::Bytes(vec![2; 16]),
+            algorithm: s("PBKDF2"),
+            extractable: false,
+            usages: vec![Usage::DeriveBits],
+        },
+    ));
+    for format in ["raw", "jwk", "raw-secret"] {
+        assert_eq!(
+            error(run(
+                &mut keys,
+                Call::ExportKey {
+                    format: format.into(),
+                    key: pbkdf2.id
+                }
+            )),
+            "NotSupportedError: Failed to execute 'exportKey' on 'SubtleCrypto': PBKDF2: Unsupported operation: exportKey"
+        );
+    }
+    let wrapping = key(aes_key(&mut keys, "AES-KW", &[3; 16], vec![Usage::WrapKey]));
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::WrapKey {
+                format: "raw".into(),
+                key: hkdf.id,
+                wrapping_key: wrapping.id,
+                algorithm: s("AES-KW"),
+            },
+        )),
+        "NotSupportedError: HKDF: Unsupported operation: exportKey"
+    );
+}
+
+/// `supports` says yes exactly where the operation, given a fitting key,
+/// takes the algorithm: never yes to what the operation refuses (the
+/// lead's ruling for SubtleCrypto.supports), and no only where it does.
+#[test]
+fn supports_answers_as_the_operation_does() {
+    use crate::supports;
+    let mut keys = Keys::default();
+    // generateKey: made, or refused, as supports says.
+    let rsa = |bits: f64, e: &[u8]| {
+        dict(&[
+            ("name", s("RSA-OAEP")),
+            ("modulusLength", Value::Num(bits)),
+            ("publicExponent", Value::Bytes(e.to_vec())),
+            ("hash", s("SHA-256")),
+        ])
+    };
+    let aes = |name: &str, length: f64| dict(&[("name", s(name)), ("length", Value::Num(length))]);
+    let hmac = |length: f64| {
+        dict(&[
+            ("name", s("HMAC")),
+            ("hash", s("SHA-256")),
+            ("length", Value::Num(length)),
+        ])
+    };
+    for (algorithm, usages) in [
+        (aes("AES-GCM", 128.0), vec![Usage::Encrypt]),
+        (aes("AES-GCM", 192.0), vec![Usage::Encrypt]),
+        (aes("AES-CBC", 100.0), vec![Usage::Encrypt]),
+        (hmac(0.0), vec![Usage::Sign]),
+        (hmac(7.0), vec![Usage::Sign]),
+        (
+            dict(&[("name", s("ECDSA")), ("namedCurve", s("P-384"))]),
+            vec![Usage::Sign],
+        ),
+        (s("X25519"), vec![Usage::DeriveBits]),
+        (
+            rsa(1024.0, &[1, 0, 1]),
+            vec![Usage::Encrypt, Usage::Decrypt],
+        ),
+        (rsa(256.0, &[1, 0, 1]), vec![Usage::Encrypt, Usage::Decrypt]),
+        (
+            rsa(1032.0, &[1, 0, 0]),
+            vec![Usage::Encrypt, Usage::Decrypt],
+        ),
+        (rsa(1028.0, &[3]), vec![Usage::Encrypt, Usage::Decrypt]),
+        (rsa(8200.0, &[3]), vec![Usage::Encrypt, Usage::Decrypt]),
+        (s("HKDF"), vec![Usage::DeriveBits]),
+    ] {
+        let said = supports("generateKey", &algorithm, &Value::Absent);
+        let made = run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: algorithm.clone(),
+                extractable: true,
+                usages,
+            },
+        )
+        .is_ok();
+        assert_eq!(said, made, "generateKey {algorithm:?}");
+    }
+    // encrypt and decrypt with the AES ciphers: a key of the algorithm.
+    let bytes_of = |n: usize| Value::Bytes(vec![0; n]);
+    for (name, algorithm) in [
+        (
+            "AES-CBC",
+            dict(&[("name", s("AES-CBC")), ("iv", bytes_of(16))]),
+        ),
+        (
+            "AES-CBC",
+            dict(&[("name", s("AES-CBC")), ("iv", bytes_of(10))]),
+        ),
+        (
+            "AES-CTR",
+            dict(&[
+                ("name", s("AES-CTR")),
+                ("counter", bytes_of(16)),
+                ("length", Value::Num(64.0)),
+            ]),
+        ),
+        (
+            "AES-CTR",
+            dict(&[
+                ("name", s("AES-CTR")),
+                ("counter", bytes_of(16)),
+                ("length", Value::Num(0.0)),
+            ]),
+        ),
+        (
+            "AES-CTR",
+            dict(&[
+                ("name", s("AES-CTR")),
+                ("counter", bytes_of(16)),
+                ("length", Value::Num(129.0)),
+            ]),
+        ),
+        (
+            "AES-CTR",
+            dict(&[
+                ("name", s("AES-CTR")),
+                ("counter", bytes_of(10)),
+                ("length", Value::Num(64.0)),
+            ]),
+        ),
+        (
+            "AES-GCM",
+            dict(&[("name", s("AES-GCM")), ("iv", bytes_of(12))]),
+        ),
+        (
+            "AES-GCM",
+            dict(&[
+                ("name", s("AES-GCM")),
+                ("iv", bytes_of(1)),
+                ("tagLength", Value::Num(32.0)),
+            ]),
+        ),
+        (
+            "AES-GCM",
+            dict(&[
+                ("name", s("AES-GCM")),
+                ("iv", bytes_of(12)),
+                ("tagLength", Value::Num(100.0)),
+            ]),
+        ),
+        (
+            "AES-GCM",
+            dict(&[("name", s("AES-GCM")), ("iv", bytes_of(0))]),
+        ),
+    ] {
+        let k = key(aes_key(
+            &mut keys,
+            name,
+            &[5; 32],
+            vec![Usage::Encrypt, Usage::Decrypt],
+        ));
+        let said = supports("encrypt", &algorithm, &Value::Absent);
+        let done = run(
+            &mut keys,
+            Call::Encrypt {
+                algorithm: algorithm.clone(),
+                key: k.id,
+                data: vec![1, 2, 3],
+            },
+        )
+        .is_ok();
+        assert_eq!(said, done, "encrypt {algorithm:?}");
+        assert_eq!(
+            supports("decrypt", &algorithm, &Value::Absent),
+            said,
+            "decrypt {algorithm:?}"
+        );
+    }
+    // deriveBits and deriveKey from the KDFs, and X25519's most.
+    let hkdf_key = import_raw(
+        &mut keys,
+        s("HKDF"),
+        &[1; 16],
+        &[Usage::DeriveBits, Usage::DeriveKey],
+    );
+    let pbkdf2_key = import_raw(
+        &mut keys,
+        s("PBKDF2"),
+        &[1; 16],
+        &[Usage::DeriveBits, Usage::DeriveKey],
+    );
+    let hkdf = dict(&[
+        ("name", s("HKDF")),
+        ("hash", s("SHA-256")),
+        ("salt", bytes_of(1)),
+        ("info", bytes_of(0)),
+    ]);
+    let pbkdf2 = |iterations: f64| {
+        dict(&[
+            ("name", s("PBKDF2")),
+            ("hash", s("SHA-256")),
+            ("salt", bytes_of(1)),
+            ("iterations", Value::Num(iterations)),
+        ])
+    };
+    for (base, algorithm, length) in [
+        (hkdf_key.id, hkdf.clone(), Some(256)),
+        (hkdf_key.id, hkdf.clone(), Some(0)),
+        (hkdf_key.id, hkdf.clone(), Some(230)),
+        (hkdf_key.id, hkdf.clone(), None),
+        (pbkdf2_key.id, pbkdf2(1.0), Some(128)),
+        (pbkdf2_key.id, pbkdf2(0.0), Some(128)),
+        (pbkdf2_key.id, pbkdf2(1.0), Some(12)),
+        (pbkdf2_key.id, pbkdf2(1.0), None),
+    ] {
+        let extra = length.map_or(Value::Absent, |l| Value::Num(f64::from(l)));
+        let said = supports("deriveBits", &algorithm, &extra);
+        let done = run(
+            &mut keys,
+            Call::DeriveBits {
+                algorithm: algorithm.clone(),
+                key: base,
+                length,
+            },
+        )
+        .is_ok();
+        assert_eq!(said, done, "deriveBits {algorithm:?} {length:?}");
+    }
+    let (x_public, x_private) = okp_pair(&mut keys, "X25519", vec![Usage::DeriveBits]);
+    let x = dict(&[("name", s("X25519")), ("public", Value::Key(x_public.id))]);
+    for length in [Some(256), Some(512), None] {
+        let extra = length.map_or(Value::Absent, |l| Value::Num(f64::from(l)));
+        let said = supports("deriveBits", &x, &extra);
+        let done = run(
+            &mut keys,
+            Call::DeriveBits {
+                algorithm: x.clone(),
+                key: x_private.id,
+                length,
+            },
+        )
+        .is_ok();
+        assert_eq!(said, done, "X25519 {length:?}");
+    }
+    for derived in [
+        aes("AES-GCM", 256.0),
+        aes("AES-GCM", 192.0),
+        dict(&[("name", s("HMAC")), ("hash", s("SHA-256"))]),
+        hmac(0.0),
+    ] {
+        let said = supports("deriveKey", &hkdf, &derived);
+        let usages = if derived == dict(&[("name", s("HMAC")), ("hash", s("SHA-256"))])
+            || derived == hmac(0.0)
+        {
+            vec![Usage::Sign]
+        } else {
+            vec![Usage::Encrypt]
+        };
+        let done = run(
+            &mut keys,
+            Call::DeriveKey {
+                algorithm: hkdf.clone(),
+                key: hkdf_key.id,
+                derived: derived.clone(),
+                extractable: true,
+                usages,
+            },
+        )
+        .is_ok();
+        assert_eq!(said, done, "deriveKey {derived:?}");
+    }
+    // What normalizes alone, and what is not an operation here.
+    assert!(supports("digest", &s("SHA-256"), &Value::Absent));
+    assert!(!supports("digest", &s("SHA3-256"), &Value::Absent));
+    assert!(supports("exportKey", &s("AES-GCM"), &Value::Absent));
+    assert!(supports("wrapKey", &s("AES-KW"), &Value::Absent));
+    assert!(!supports("encrypt", &s("AES-KW"), &Value::Absent));
+    assert!(!supports("deriveKey", &hkdf, &Value::Absent));
+    assert!(!supports(
+        "get key length",
+        &aes("AES-GCM", 256.0),
+        &Value::Absent
+    ));
+    assert!(!supports(
+        "GENERATEKEY",
+        &aes("AES-GCM", 256.0),
+        &Value::Absent
+    ));
+    assert!(
+        !supports("getPublicKey", &s("ECDSA"), &Value::Absent),
+        "G255 step 5"
+    );
 }
 
 /// An imported public key keeps the extractable it was asked, as the

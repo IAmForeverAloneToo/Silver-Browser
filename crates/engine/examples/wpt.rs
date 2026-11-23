@@ -190,6 +190,8 @@ const TESTHARNESS_DIRECTORIES: &[(&str, &str)] = &[
     // Server-sent events (G74), their Python handlers written natively
     // by the runner.
     ("eventsource", ""),
+    // Web Crypto (G255): the shared suite for what the store does.
+    ("WebCryptoAPI", ""),
     // Workers and messages (M31): dedicated workers, channel messaging
     // without frames, and the structured clone.
     ("workers", ""),

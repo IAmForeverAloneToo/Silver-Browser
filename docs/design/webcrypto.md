@@ -323,6 +323,32 @@ between realms in base64 as a buffer's bytes do; IndexedDB keeps it
 sealed at rest with every other record. An insecure context, which has
 no CryptoKey, refuses one with a DataCloneError.
 
+WPT's `WebCryptoAPI/` (step 6), pulled at the pinned commit with the
+other directories, and run against Chrome 157 itself: the runner's own
+server (the ignored test `serve_for_the_reference_browser`) serves the
+same pages, made and reporting as the runner makes them, to Chrome,
+whose results decide each failure's kind. What Chrome fails too is
+expected with its reason (the tentative algorithms it lacks, X448,
+Ed448, SHA-3, Argon2, AES-OCB, 192-bit AES keys, deriveBits' lengths
+wrapped by ToUint32, as Chrome's are); ChaCha20-Poly1305, ML-KEM, ML-DSA
+and the KEM methods are expected as step 5's; the rest was made as
+Chrome has it: deriveKey looks at its base key before its derived key's
+length; a method copies its data once its algorithm is normalized (an
+algorithm's getter that alters or transfers the data is seen); a
+dictionary member there as undefined is converted, NaN "Is not a
+number"; an imported public key keeps the extractable asked; a KDF's
+export is refused before its extractable is looked at; raw-public and
+raw-secret are raw's aliases; QuotaExceededError's quota and amount are
+taken as given and cloned with it, getRandomValues' null; and
+`SubtleCrypto.supports`, made of normalization and the operations' own
+checks that need no key (shared, or the AES ciphers run on a throwaway
+key), so that it never says yes to what an operation refuses (a test
+holds it to the operations). A page past 90 s of real time is given up
+by the runner from outside it, whatever it blocks on: deriveBits of
+2^32 - 8 bits of PBKDF2, which Chrome takes as long, is synchronous here
+until step 7 moves the costly operations off the renderer's main
+thread.
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`
@@ -346,9 +372,6 @@ checked first, the tag checked by the library.
   context; the fuzz target `crypto_import` (raw, SPKI and JWK, any
   bytes, an extractable key's export importing again as itself).
 
-To come: AES-CBC/CTR/KW, RSA-PSS/OAEP and RSA private keys, ECDSA, ECDH,
-Ed25519, X25519, ChaCha20-Poly1305, ML-KEM, ML-DSA, wrapKey/unwrapKey,
-a `CryptoKey`'s structured clone (postMessage, IndexedDB), Wycheproof's
-vectors and WPT's `WebCryptoAPI/`. Rulings asked: AES-GCM's other IV and
-tag lengths and RSA's other key sizes and private JWK export (section
-2b).
+To come: ChaCha20-Poly1305, ML-KEM, ML-DSA, the KEM methods and
+getPublicKey (step 5), then the costly operations off the renderer's
+main thread (step 7).

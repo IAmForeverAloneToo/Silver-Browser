@@ -562,9 +562,14 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
         } => {
             let alg = normalize("deriveBits", &algorithm)?;
             let derived_import = normalize("importKey", &derived)?;
-            let length = key_length(&normalize("get key length", &derived)?)?;
+            let derived_length = normalize("get key length", &derived)?;
             let bits = {
+                // The base key's algorithm and usage before the derived
+                // key's length, as the spec and the reference check them
+                // (WPT: a 192-bit AES key from a key without deriveKey is
+                // an InvalidAccessError).
                 let base = key_for(keys, key, alg.name, Usage::DeriveKey)?;
+                let length = key_length(&derived_length)?;
                 derive_bits(keys, base, &alg, length)?
             };
             let info = import(
@@ -864,6 +869,7 @@ fn wrap_key(
     let alg = normalize("wrapKey", algorithm)?;
     let wrapping = key_for(keys, wrapping_key, alg.name, Usage::WrapKey)?;
     let key = keys.get(key)?;
+    exportable(key)?;
     if !key.extractable {
         return Err(Error::invalid_access("key is not extractable"));
     }
@@ -1092,7 +1098,7 @@ fn import_ec(
         || Error::data("The imported EC key specifies a different curve than requested");
     let invalid = || Error::data("The imported EC key is invalid");
     let (kind, material) = match format {
-        "raw" | "spki" => {
+        "raw" | "raw-public" | "spki" => {
             check_usages(alg.name, KeyType::Public, usages)?;
             let given = bytes()?;
             let point = match ec_point(curve, given) {
@@ -1201,8 +1207,8 @@ fn export_ec(key: &Key, curve: &str, material: &Material, format: &str) -> Resul
     };
     let private = matches!(material, Material::EcPrivate { .. });
     match format {
-        "raw" | "spki" if private => Err(wrong()),
-        "raw" => Ok(Outcome::Bytes(point.clone())),
+        "raw" | "raw-public" | "spki" if private => Err(wrong()),
+        "raw" | "raw-public" => Ok(Outcome::Bytes(point.clone())),
         "spki" => {
             let parsed = signature::ParsedPublicKey::new(curve.parse, point)
                 .map_err(|_| Error::operation(""))?;
@@ -1511,7 +1517,7 @@ fn import_okp(
     let public_ok =
         |x: &[u8]| !ed || signature::ParsedPublicKey::new(&signature::ED25519, x).is_ok();
     let (kind, material) = match format {
-        "raw" => {
+        "raw" | "raw-public" => {
             check_usages(name, KeyType::Public, usages)?;
             let x = bytes()?;
             if x.len() != 32 {
@@ -1653,9 +1659,9 @@ fn export_okp(key: &Key, name: &str, material: &Material, format: &str) -> Resul
         _ => return Err(failed()),
     };
     match format {
-        "raw" | "spki" if d.is_some() => Err(wrong()),
+        "raw" | "raw-public" | "spki" if d.is_some() => Err(wrong()),
         "pkcs8" if d.is_none() => Err(wrong()),
-        "raw" => Ok(Outcome::Bytes(x.clone())),
+        "raw" | "raw-public" => Ok(Outcome::Bytes(x.clone())),
         "spki" if ed => {
             let parsed =
                 signature::ParsedPublicKey::new(&signature::ED25519, x).map_err(|_| failed())?;
@@ -2135,6 +2141,32 @@ fn generate(
     }
 }
 
+/// RSA generation's checks that need no key, the modulus then the
+/// exponent (probed order): generateKey's and `supports`'s alike.
+fn rsa_params(alg: &Normalized) -> Result<(u32, u64), Error> {
+    let bits = alg.num("modulusLength").unwrap_or(0);
+    if !bits.is_multiple_of(8) || !(256..=8192).contains(&bits) {
+        return Err(Error::operation(
+            "The modulus length must be a multiple of 8 bits and >= 256 and <= 8192",
+        ));
+    }
+    let exponent = strip_zeros(alg.bytes("publicExponent").unwrap_or_default().to_vec());
+    let e: u64 = match exponent.as_slice() {
+        [3] => 3,
+        [1, 0, 1] => 65537,
+        _ => {
+            return Err(Error::operation(
+                "The \"publicExponent\" must be either 3 or 65537",
+            ));
+        }
+    };
+    Ok((bits, e))
+}
+
+/// The least modulus the library makes a key of: a smaller one is an
+/// OperationError at generation (the reference's too, probed).
+const RSA_LEAST_GENERATED: u32 = 512;
+
 /// An RSA key pair, in the reference's order of checks (probed): the
 /// usages' kinds, the modulus, the exponent, the generation (the
 /// reference makes no key under 512 bits: an OperationError), then a
@@ -2156,22 +2188,7 @@ fn generate_rsa(
         ));
     }
     let hash = alg.hash().unwrap_or("SHA-256");
-    let bits = alg.num("modulusLength").unwrap_or(0);
-    if !bits.is_multiple_of(8) || !(256..=8192).contains(&bits) {
-        return Err(Error::operation(
-            "The modulus length must be a multiple of 8 bits and >= 256 and <= 8192",
-        ));
-    }
-    let exponent = strip_zeros(alg.bytes("publicExponent").unwrap_or_default().to_vec());
-    let e: u64 = match exponent.as_slice() {
-        [3] => 3,
-        [1, 0, 1] => 65537,
-        _ => {
-            return Err(Error::operation(
-                "The \"publicExponent\" must be either 3 or 65537",
-            ));
-        }
-    };
+    let (bits, e) = rsa_params(alg)?;
     let parts = if e == 65537 && matches!(bits, 2048 | 3072 | 4096 | 8192) {
         let size = match bits {
             2048 => rsa::KeySize::Rsa2048,
@@ -2331,7 +2348,7 @@ fn import(
         }
         "HKDF" | "PBKDF2" => {
             check_usages(alg.name, KeyType::Secret, usages)?;
-            if format != "raw" {
+            if !matches!(format, "raw" | "raw-secret") {
                 return Err(Error::not_supported(
                     "Unsupported import key format for algorithm",
                 ));
@@ -2496,7 +2513,21 @@ pub(crate) fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Whether `key`'s algorithm has an export at all: a KDF's has none, and
+/// says so before its `extractable` is looked at, as the spec orders
+/// exportKey's and wrapKey's checks (probed: "HKDF: Unsupported
+/// operation: exportKey", with the method's prefix in exportKey alone).
+fn exportable(key: &Key) -> Result<(), Error> {
+    match key.algorithm {
+        KeyAlgorithm::Kdf { name } => Err(Error::not_supported(format!(
+            "{name}: Unsupported operation: exportKey"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
+    exportable(key).map_err(Error::of_method)?;
     if !key.extractable {
         return Err(Error::invalid_access("key is not extractable").of_method());
     }
@@ -2586,6 +2617,121 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
     }
 }
 
+/// deriveBits' checks of HKDF's and PBKDF2's parameters, which need no
+/// key, in the reference's order and words (probed: enforce-range,
+/// dict-int): deriveBits' and `supports`'s alike. X25519's most, 256
+/// bits, is `supports`'s alone here: the operation looks at its keys
+/// first (`x25519_bits`).
+fn derive_params(alg: &Normalized, length: Option<u32>) -> Result<(), Error> {
+    let name = alg.name;
+    match name {
+        "HKDF" | "PBKDF2" => {
+            let length = length.ok_or_else(|| {
+                Error::operation(format!(
+                    "No length was specified for the {name} Derive Bits operation."
+                ))
+            })?;
+            if length % 8 != 0 {
+                return Err(Error::operation(match name {
+                    "HKDF" => "The length provided for HKDF is not a multiple of 8 bits.",
+                    _ => "Length for PBKDF2 key derivation must be a multiple of 8 bits.",
+                }));
+            }
+            if name == "PBKDF2" && alg.num("iterations").unwrap_or(0) == 0 {
+                return Err(Error::operation("PBKDF2 requires iterations > 0"));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `SubtleCrypto.supports(operation, algorithm, lengthOrAdditionalAlgorithm)`
+/// (Chrome 157 ships it, probed: supports): whether `algorithm` normalizes
+/// for `op` and passes the operation's own checks that need no key, the
+/// operations' code run or their checks shared, so that it never says yes
+/// to what the operation refuses. `extra` is a length (`Value::Num`), a
+/// derived key's algorithm (deriveKey's), or `Value::Absent`.
+pub(crate) fn supports(op: &str, algorithm: &Value, extra: &Value) -> bool {
+    let length = match extra {
+        Value::Num(n) => Some(*n as u32),
+        _ => None,
+    };
+    let normalized_as = match op {
+        "encrypt" | "decrypt" | "sign" | "verify" | "digest" | "generateKey" | "importKey"
+        | "deriveBits" | "wrapKey" | "unwrapKey" => op,
+        "exportKey" => "importKey",
+        "deriveKey" => "deriveBits",
+        // getPublicKey and the KEM methods: G255 step 5.
+        _ => return false,
+    };
+    let Ok(alg) = normalize(normalized_as, algorithm) else {
+        return false;
+    };
+    match op {
+        "generateKey" => match alg.name {
+            "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
+                rsa_params(&alg).is_ok_and(|(bits, _)| bits >= RSA_LEAST_GENERATED)
+            }
+            // The rest are made here as generateKey makes them, all the
+            // usages the algorithm allows asked for, and thrown away.
+            name => {
+                let mut usages: Vec<Usage> = allowed(name, KeyType::Secret).to_vec();
+                for kind in [KeyType::Public, KeyType::Private] {
+                    for usage in allowed(name, kind) {
+                        if !usages.contains(usage) {
+                            usages.push(*usage);
+                        }
+                    }
+                }
+                generate(&mut Keys::default(), &alg, false, &usages).is_ok()
+            }
+        },
+        // The AES ciphers run on a throwaway key and no data; RSA-OAEP's
+        // checks all need its key.
+        "encrypt" | "decrypt" => match alg.name {
+            "AES-CBC" | "AES-CTR" | "AES-GCM" => {
+                let key = Key {
+                    kind: KeyType::Secret,
+                    extractable: false,
+                    algorithm: KeyAlgorithm::Aes {
+                        name: alg.name,
+                        length: 128,
+                    },
+                    usages: vec![],
+                    material: Material::Secret(vec![0; 16]),
+                };
+                crypt_with(&key, &alg, &[], true).is_ok()
+            }
+            _ => true,
+        },
+        "deriveBits" => {
+            derive_params(&alg, length).is_ok()
+                && !(alg.name == "X25519" && length.is_some_and(|l| l > 256))
+        }
+        "deriveKey" => {
+            let derived_length = match extra {
+                Value::Num(_) => length,
+                Value::Str(_) | Value::Dict(_) => {
+                    let (Ok(_), Ok(by_length)) = (
+                        normalize("importKey", extra),
+                        normalize("get key length", extra),
+                    ) else {
+                        return false;
+                    };
+                    match key_length(&by_length) {
+                        Ok(length) => length,
+                        Err(_) => return false,
+                    }
+                }
+                _ => return false,
+            };
+            derive_params(&alg, derived_length).is_ok()
+        }
+        _ => true,
+    }
+}
+
 fn derive_bits(
     keys: &Keys,
     key: &Key,
@@ -2601,14 +2747,8 @@ fn derive_bits(
     let secret = secret(key);
     match alg.name {
         "HKDF" => {
-            let length = length.ok_or_else(|| {
-                Error::operation("No length was specified for the HKDF Derive Bits operation.")
-            })?;
-            if length % 8 != 0 {
-                return Err(Error::operation(
-                    "The length provided for HKDF is not a multiple of 8 bits.",
-                ));
-            }
+            derive_params(alg, length)?;
+            let length = length.unwrap_or(0);
             let algorithm = match alg.hash().unwrap_or("SHA-256") {
                 "SHA-1" => hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY,
                 "SHA-384" => hkdf::HKDF_SHA384,
@@ -2625,23 +2765,19 @@ fn derive_bits(
             let salt = hkdf::Salt::new(algorithm, alg.bytes("salt").unwrap_or(&[]));
             let prk = salt.extract(secret);
             let info = [alg.bytes("info").unwrap_or(&[])];
+            let too_large = |_| Error::operation("The length provided for HKDF is too large.");
+            // The length checked (RFC 5869's most, 255 hash lengths)
+            // before a buffer of it is made: a wrapped -8 asks 512 MiB.
+            let okm = prk.expand(&info, Len(bytes)).map_err(too_large)?;
             let mut out = vec![0u8; bytes];
-            prk.expand(&info, Len(bytes))
-                .and_then(|okm| okm.fill(&mut out))
-                .map_err(|_| Error::operation("The length provided for HKDF is too large."))?;
+            okm.fill(&mut out).map_err(too_large)?;
             Ok(out)
         }
         "PBKDF2" => {
-            let length = length.ok_or_else(|| {
-                Error::operation("No length was specified for the PBKDF2 Derive Bits operation.")
-            })?;
-            if length % 8 != 0 {
-                return Err(Error::operation(
-                    "The length provided for PBKDF2 is not a multiple of 8 bits.",
-                ));
-            }
+            derive_params(alg, length)?;
+            let length = length.unwrap_or(0);
             let iterations = std::num::NonZeroU32::new(alg.num("iterations").unwrap_or(0))
-                .ok_or_else(|| Error::operation("PBKDF2 requires iterations > 0"))?;
+                .ok_or_else(|| Error::operation(""))?;
             let algorithm = match alg.hash().unwrap_or("SHA-256") {
                 "SHA-1" => pbkdf2::PBKDF2_HMAC_SHA1,
                 "SHA-384" => pbkdf2::PBKDF2_HMAC_SHA384,

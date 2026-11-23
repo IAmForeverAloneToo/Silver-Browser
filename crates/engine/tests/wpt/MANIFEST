@@ -8417,6 +8417,205 @@ testharness	eventsource/request-cache-control.any.worker.html
 testharness	eventsource/request-credentials.window.html
 testharness	eventsource/request-redirect.window.html
 testharness	eventsource/request-status-error.window.html
+testharness	WebCryptoAPI/algorithm-discards-context.https.window.html
+testharness	WebCryptoAPI/crypto_key_cached_slots.https.any.html
+testharness	WebCryptoAPI/crypto_key_cached_slots.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/argon2.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/argon2.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve25519.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve25519.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve448.tentative.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve448.tentative.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve25519.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve25519.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve448.tentative.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve448.tentative.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/ecdh_bits.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/ecdh_bits.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/ecdh_keys.https.any.html
+testharness	WebCryptoAPI/derive_bits_keys/ecdh_keys.https.any.worker.html
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.html?1-1000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.html?1001-2000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.html?2001-3000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.html?3001-last
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.worker.html?1-1000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.worker.html?1001-2000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.worker.html?2001-3000
+testharness	WebCryptoAPI/derive_bits_keys/hkdf.https.any.worker.html?3001-last
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?1-1000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?1001-2000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?2001-3000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?3001-4000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?4001-5000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?5001-6000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?6001-7000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?7001-8000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.html?8001-last	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?1-1000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?1001-2000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?2001-3000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?3001-4000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?4001-5000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?5001-6000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?6001-7000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?7001-8000	timeout=long
+testharness	WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.worker.html?8001-last	timeout=long
+testharness	WebCryptoAPI/digest/cshake.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/digest/cshake.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/digest/digest.https.any.html	timeout=long
+testharness	WebCryptoAPI/digest/digest.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/digest/kangarootwelve.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/digest/kangarootwelve.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/digest/sha3.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/digest/sha3.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/digest/turboshake.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/digest/turboshake.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encap_decap/encap_decap_bits.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/encap_decap/encap_decap_bits.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encap_decap/encap_decap_keys.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/encap_decap/encap_decap_keys.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_cbc.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_cbc.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_ctr.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_ctr.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_gcm.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_gcm.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_gcm_256_iv.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_gcm_256_iv.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_ocb.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/aes_ocb.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/chacha20_poly1305.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/chacha20_poly1305.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/rsa_oaep.https.any.html	timeout=long
+testharness	WebCryptoAPI/encrypt_decrypt/rsa_oaep.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/export-key-error-order.https.any.html
+testharness	WebCryptoAPI/export-key-error-order.https.any.worker.html
+testharness	WebCryptoAPI/generateKey/failures_bad_algorithm.https.any.html	timeout=long
+testharness	WebCryptoAPI/generateKey/failures_bad_algorithm.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/getPublicKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/getPublicKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/getRandomValues.any.html
+testharness	WebCryptoAPI/getRandomValues.any.worker.html
+testharness	WebCryptoAPI/historical.any.html
+testharness	WebCryptoAPI/historical.any.worker.html
+testharness	WebCryptoAPI/import_export/AES-OCB_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/AES-OCB_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/Argon2_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/Argon2_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ChaCha20-Poly1305_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ChaCha20-Poly1305_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/Hybrid-KEM_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/Hybrid-KEM_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/KMAC_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/KMAC_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ML-DSA_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ML-DSA_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ML-KEM_importKey.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ML-KEM_importKey.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/crashtests/importKey-unsettled-promise.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/crashtests/importKey-unsettled-promise.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey_failures_ECDH.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey_failures_ECDH.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey_failures_ECDSA.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/ec_importKey_failures_ECDSA.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_Ed448.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_Ed448.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_X25519.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_X25519.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_X448.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_X448.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_Ed25519.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_Ed25519.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_Ed448.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_Ed448.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_X25519.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_X25519.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_X448.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/okp_importKey_failures_X448.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/raw_format_aliases.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/raw_format_aliases.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/rsa_importKey.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/rsa_importKey.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/import_export/symmetric_importKey.https.any.html	timeout=long
+testharness	WebCryptoAPI/import_export/symmetric_importKey.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/normalize-algorithm-name.https.any.html
+testharness	WebCryptoAPI/normalize-algorithm-name.https.any.worker.html
+testharness	WebCryptoAPI/randomUUID.https.any.html
+testharness	WebCryptoAPI/randomUUID.https.any.worker.html
+testharness	WebCryptoAPI/secure_context/crypto-subtle-secure-context-available.https.sub.html
+testharness	WebCryptoAPI/serialization/aes-cbc.https.any.html
+testharness	WebCryptoAPI/serialization/aes-cbc.https.any.worker.html
+testharness	WebCryptoAPI/serialization/aes-ctr.https.any.html
+testharness	WebCryptoAPI/serialization/aes-ctr.https.any.worker.html
+testharness	WebCryptoAPI/serialization/aes-gcm.https.any.html
+testharness	WebCryptoAPI/serialization/aes-gcm.https.any.worker.html
+testharness	WebCryptoAPI/serialization/aes-kw.https.any.html
+testharness	WebCryptoAPI/serialization/aes-kw.https.any.worker.html
+testharness	WebCryptoAPI/serialization/aes-ocb.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/aes-ocb.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/chacha20-poly1305.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/chacha20-poly1305.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/ecdh.https.any.html
+testharness	WebCryptoAPI/serialization/ecdh.https.any.worker.html
+testharness	WebCryptoAPI/serialization/ecdsa.https.any.html
+testharness	WebCryptoAPI/serialization/ecdsa.https.any.worker.html
+testharness	WebCryptoAPI/serialization/ed25519.https.any.html
+testharness	WebCryptoAPI/serialization/ed25519.https.any.worker.html
+testharness	WebCryptoAPI/serialization/ed448.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/ed448.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/hmac.https.any.html
+testharness	WebCryptoAPI/serialization/hmac.https.any.worker.html
+testharness	WebCryptoAPI/serialization/hybridkem.tentative.https.window.html
+testharness	WebCryptoAPI/serialization/kmac.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/kmac.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/mldsa.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/mldsa.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/mlkem.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/mlkem.tentative.https.any.worker.html
+testharness	WebCryptoAPI/serialization/rsa-oaep.https.any.html
+testharness	WebCryptoAPI/serialization/rsa-oaep.https.any.worker.html
+testharness	WebCryptoAPI/serialization/rsa-pss.https.any.html
+testharness	WebCryptoAPI/serialization/rsa-pss.https.any.worker.html
+testharness	WebCryptoAPI/serialization/rsassa-pkcs1-v1_5.https.any.html
+testharness	WebCryptoAPI/serialization/rsassa-pkcs1-v1_5.https.any.worker.html
+testharness	WebCryptoAPI/serialization/x25519.https.any.html
+testharness	WebCryptoAPI/serialization/x25519.https.any.worker.html
+testharness	WebCryptoAPI/serialization/x448.tentative.https.any.html
+testharness	WebCryptoAPI/serialization/x448.tentative.https.any.worker.html
+testharness	WebCryptoAPI/sharedarraybuffer.https.any.html
+testharness	WebCryptoAPI/sharedarraybuffer.https.any.worker.html
+testharness	WebCryptoAPI/sign_verify/ecdsa.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/ecdsa.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_curve448.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_curve448.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_small_order_points.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/eddsa_small_order_points.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/hmac.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/hmac.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/kmac.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/kmac.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/mldsa.tentative.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/mldsa.tentative.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/rsa_pkcs.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/rsa_pkcs.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/rsa_pss.https.any.html	timeout=long
+testharness	WebCryptoAPI/sign_verify/rsa_pss.https.any.worker.html	timeout=long
+testharness	WebCryptoAPI/supports-modern.tentative.https.any.html
+testharness	WebCryptoAPI/supports-modern.tentative.https.any.worker.html
+testharness	WebCryptoAPI/supports.tentative.https.any.html
+testharness	WebCryptoAPI/supports.tentative.https.any.worker.html
+testharness	WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.html	timeout=long
+testharness	WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.worker.html	timeout=long
 testharness	workers/Worker-base64.any.worker.html
 testharness	workers/Worker-call.worker.html
 testharness	workers/Worker-constructor-proto.any.worker.html

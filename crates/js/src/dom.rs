@@ -1267,6 +1267,10 @@ pub enum CryptoCall {
     /// A key made again from a record, as the key's JSON; nothing for a
     /// record that does not import.
     Deserialize { record: Vec<u8> },
+    /// `SubtleCrypto.supports`: its operation, algorithm and length or
+    /// derived key's algorithm as JSON, buffers by their place. Answered
+    /// at once, a boolean.
+    Supports { json: String, buffers: Vec<Vec<u8>> },
 }
 
 /// An EventSource's call (G74, HTML section 9.2). The bindings are a

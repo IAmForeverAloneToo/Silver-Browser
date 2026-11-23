@@ -315,6 +315,9 @@ fn normalize_in(op: &str, algorithm: &Value, context: &str) -> Result<Normalized
                     "{at}Missing or not a Uint8Array"
                 )));
             }
+            (MemberKind::Number, Value::Num(n)) if n.is_nan() => {
+                return Err(Error::type_error(format!("{at}Is not a number")));
+            }
             (MemberKind::Number, Value::Num(n)) => {
                 // Web IDL's [EnforceRange]: finite, truncated, in range.
                 let n = n.trunc();

@@ -1099,6 +1099,23 @@ const NATIVES: &[(&str, Decode)] = &[
             },
         )))
     }),
+    ("cryptoSupports", |a| {
+        let mut buffers = Vec::new();
+        // Up to four buffers follow; the first missing ends them.
+        for i in 1..5 {
+            if a.value(i).is_undefined() {
+                break;
+            }
+            match a.bytes(i)? {
+                Some(bytes) => buffers.push(bytes),
+                None => break,
+            }
+        }
+        Ok(Call::Crypto(Box::new(crate::dom::CryptoCall::Supports {
+            json: a.string(0)?,
+            buffers,
+        })))
+    }),
     ("cryptoCall", |a| {
         let mut buffers = Vec::new();
         // Up to four buffers follow; the first missing ends them.
