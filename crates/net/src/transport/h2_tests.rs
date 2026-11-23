@@ -154,22 +154,21 @@ fn a_server_without_http2_is_spoken_to_as_before() {
 
 #[test]
 fn requests_one_after_another_are_not_held_back_by_the_test_server() {
-    // M38: the server's loop wakes for a reply at once, not at a read's
-    // timeout (a 15.6 ms tick on Windows), which the benches' times
-    // would carry. Two hundred here take about a tenth of a second; held
-    // back a tick each, three.
+    // M38: the server's loop wakes for a request or a reply at once, not
+    // at a timeout (a 15.6 ms tick on Windows), which the benches' times
+    // would carry: counted, not timed (a wall clock on a loaded runner
+    // failed, CI 45268510806). A loop that waits on its timer for each
+    // reply wakes so two hundred times here; one that does not, only when
+    // the client is slower than its 50 ms idle wait between two requests.
     let (server, transport) = h2_server(|_| Reply::ok("text/plain", b"x"));
     get(&transport, &server.url("/")).unwrap();
-    let started = Instant::now();
+    let before = server.timeout_wakes();
     for _ in 0..200 {
         get(&transport, &server.url("/")).unwrap();
     }
     assert_eq!(server.connections(), 1);
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "{:?}",
-        started.elapsed()
-    );
+    let wakes = server.timeout_wakes() - before;
+    assert!(wakes < 20, "{wakes} timeout wakes in 200 requests");
 }
 
 #[test]

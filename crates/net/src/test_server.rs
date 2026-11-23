@@ -115,6 +115,9 @@ struct Shared {
     most_streams: AtomicUsize,
     /// The HTTP/2 streams the clients reset.
     resets: AtomicUsize,
+    /// The times an HTTP/2 connection's loop woke at its timeout, nothing
+    /// having come from the socket or a reply (M38).
+    timeout_wakes: AtomicUsize,
     requests: Mutex<Vec<ServerRequest>>,
     /// The connections being served, by number, so that stopping can
     /// shut them down and end the reads waiting on them.
@@ -154,6 +157,7 @@ impl TestServer {
             most_open: AtomicUsize::new(0),
             most_streams: AtomicUsize::new(0),
             resets: AtomicUsize::new(0),
+            timeout_wakes: AtomicUsize::new(0),
             requests: Mutex::new(Vec::new()),
             sockets: Mutex::new(HashMap::new()),
             stop: AtomicBool::new(false),
@@ -204,6 +208,13 @@ impl TestServer {
             "http"
         };
         Url::parse(&format!("{scheme}://127.0.0.1:{}{path}", self.port())).expect("a URL")
+    }
+
+    /// How many times an HTTP/2 connection's loop woke at its timeout
+    /// rather than for what came from the socket or a reply: a loop that
+    /// waits on a timer for each reply wakes so for each (M38).
+    pub fn timeout_wakes(&self) -> usize {
+        self.shared.timeout_wakes.load(Ordering::SeqCst)
     }
 
     /// How many connections were accepted.

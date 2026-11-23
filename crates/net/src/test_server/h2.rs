@@ -153,11 +153,15 @@ pub(super) fn serve(
         } else {
             Duration::from_millis(50)
         };
-        let first = match outgoing.recv_timeout(wait) {
-            Ok(item) => Some(item),
-            Err(RecvTimeoutError::Timeout) => None,
+        // Woken by what came, or by the timer, which is counted (M38).
+        let (first, timed_out) = match outgoing.recv_timeout(wait) {
+            Ok(item) => (Some(item), false),
+            Err(RecvTimeoutError::Timeout) => (None, true),
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         };
+        if timed_out && !wait.is_zero() {
+            shared.timeout_wakes.fetch_add(1, Ordering::SeqCst);
+        }
         let mut out = Vec::new();
         let mut chunk = [0u8; 16_384];
         let items: Vec<Out> = first
