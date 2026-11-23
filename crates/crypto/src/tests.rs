@@ -1577,3 +1577,228 @@ fn pss_verifies_openssls_signatures() {
         }
     }
 }
+
+fn oaep_pair(keys: &mut Keys, bits: u32, hash: &str, usages: Vec<Usage>) -> Result<Outcome, Error> {
+    run(
+        keys,
+        Call::GenerateKey {
+            algorithm: dict(&[
+                ("name", s("RSA-OAEP")),
+                ("modulusLength", Value::Num(f64::from(bits))),
+                ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+                ("hash", s(hash)),
+            ]),
+            extractable: true,
+            usages,
+        },
+    )
+}
+
+fn oaep(label: Option<&[u8]>) -> Value {
+    let mut members = vec![("name", s("RSA-OAEP"))];
+    if let Some(label) = label {
+        members.push(("label", Value::Bytes(label.to_vec())));
+    }
+    dict(&members)
+}
+
+/// RSA-OAEP as the reference answers (probed, Chrome 157): up to the most
+/// a key encrypts (k - 2 hLen - 2), randomly, and back; one more, a wrong
+/// or missing label, or a changed, short or made-up ciphertext an
+/// OperationError with no message; an empty label is none; its params'
+/// and usages' errors; JWK alg RSA-OAEP to RSA-OAEP-512.
+#[test]
+fn oaep_encrypts_and_decrypts_as_the_reference_does() {
+    let mut keys = Keys::default();
+    let crypt = |keys: &mut Keys, encrypt: bool, key: u32, algorithm: Value, data: Vec<u8>| {
+        let call = if encrypt {
+            Call::Encrypt {
+                algorithm,
+                key,
+                data,
+            }
+        } else {
+            Call::Decrypt {
+                algorithm,
+                key,
+                data,
+            }
+        };
+        run(keys, call)
+    };
+    for (bits, hash, hlen, alg) in [
+        (2048, "SHA-1", 20, "RSA-OAEP"),
+        (2048, "SHA-256", 32, "RSA-OAEP-256"),
+        (2048, "SHA-512", 64, "RSA-OAEP-512"),
+        (3072, "SHA-384", 48, "RSA-OAEP-384"),
+    ] {
+        let Ok(Outcome::Pair(public, private)) =
+            oaep_pair(&mut keys, bits, hash, vec![Usage::Encrypt, Usage::Decrypt])
+        else {
+            panic!("{bits} {hash}: a pair");
+        };
+        let max = bits / 8 - 2 * hlen - 2;
+        for len in [0, max] {
+            let plain = vec![7u8; len as usize];
+            let sealed = bytes(crypt(&mut keys, true, public.id, oaep(None), plain.clone()));
+            let again = bytes(crypt(&mut keys, true, public.id, oaep(None), plain.clone()));
+            assert_eq!(sealed.len() as u32, bits / 8, "{bits} {hash} {len}");
+            assert_ne!(sealed, again, "{bits} {hash} {len}: random");
+            assert_eq!(
+                bytes(crypt(&mut keys, false, private.id, oaep(None), sealed)),
+                plain,
+                "{bits} {hash} {len}"
+            );
+        }
+        let past = vec![7u8; max as usize + 1];
+        assert_eq!(
+            error(crypt(&mut keys, true, public.id, oaep(None), past)),
+            "OperationError: ",
+            "{bits} {hash}"
+        );
+        let Ok(Outcome::Jwk(members)) = run(
+            &mut keys,
+            Call::ExportKey {
+                format: "jwk".into(),
+                key: public.id,
+            },
+        ) else {
+            panic!("a JWK");
+        };
+        assert_eq!(
+            members[0],
+            ("alg".to_owned(), JwkValue::Str(alg.into())),
+            "{bits} {hash}"
+        );
+        if hash != "SHA-256" {
+            continue;
+        }
+        let label = [1u8, 2, 3];
+        let sealed = bytes(crypt(
+            &mut keys,
+            true,
+            public.id,
+            oaep(Some(&label)),
+            vec![9],
+        ));
+        assert_eq!(
+            bytes(crypt(
+                &mut keys,
+                false,
+                private.id,
+                oaep(Some(&label)),
+                sealed.clone()
+            )),
+            [9]
+        );
+        for (what, algorithm) in [
+            ("other label", oaep(Some(&[1, 2]))),
+            ("no label", oaep(None)),
+        ] {
+            assert_eq!(
+                error(crypt(
+                    &mut keys,
+                    false,
+                    private.id,
+                    algorithm,
+                    sealed.clone()
+                )),
+                "OperationError: ",
+                "{what}"
+            );
+        }
+        let mut flipped = sealed.clone();
+        flipped[5] ^= 1;
+        for (what, data) in [
+            ("flipped", flipped),
+            ("short", vec![0; 10]),
+            ("made up", vec![0; 256]),
+        ] {
+            assert_eq!(
+                error(crypt(
+                    &mut keys,
+                    false,
+                    private.id,
+                    oaep(Some(&label)),
+                    data
+                )),
+                "OperationError: ",
+                "{what}"
+            );
+        }
+        let sealed = bytes(crypt(&mut keys, true, public.id, oaep(Some(&[])), vec![5]));
+        assert_eq!(
+            bytes(crypt(&mut keys, false, private.id, oaep(None), sealed)),
+            [5],
+            "an empty label is none"
+        );
+        assert_eq!(
+            error(crypt(
+                &mut keys,
+                true,
+                public.id,
+                dict(&[("name", s("RSA-OAEP")), ("label", Value::Num(5.0))]),
+                vec![1]
+            )),
+            "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': RsaOaepParams: label: Not a BufferSource"
+        );
+        assert_eq!(
+            error(crypt(&mut keys, true, private.id, oaep(None), vec![1])),
+            "InvalidAccessError: key.usages does not permit this operation"
+        );
+    }
+    assert_eq!(
+        error(oaep_pair(&mut keys, 1024, "SHA-256", vec![Usage::Sign])),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    assert_eq!(
+        error(oaep_pair(&mut keys, 1024, "SHA-256", vec![Usage::WrapKey])),
+        "SyntaxError: Usages cannot be empty when creating a key."
+    );
+}
+
+/// The known gap (the lead's ruling, 2026-11-23): RSA-OAEP with a key
+/// outside aws-lc-rs's range, where the reference works, is an explicit
+/// OperationError both ways, never a wrong answer; the key itself is
+/// made, imported and exported as the reference makes it.
+#[test]
+fn oaep_outside_the_safe_range_is_an_explicit_operation_error() {
+    let mut keys = Keys::default();
+    let Ok(Outcome::Pair(public, private)) = oaep_pair(
+        &mut keys,
+        1024,
+        "SHA-256",
+        vec![Usage::Encrypt, Usage::Decrypt],
+    ) else {
+        panic!("a 1024-bit pair");
+    };
+    let gap = format!("OperationError: {}", crate::algorithms::OAEP_GAP);
+    let encrypted = run(
+        &mut keys,
+        Call::Encrypt {
+            algorithm: oaep(None),
+            key: public.id,
+            data: vec![1],
+        },
+    );
+    assert_eq!(error(encrypted), gap);
+    let decrypted = run(
+        &mut keys,
+        Call::Decrypt {
+            algorithm: oaep(None),
+            key: private.id,
+            data: vec![0; 128],
+        },
+    );
+    assert_eq!(error(decrypted), gap);
+    assert!(matches!(
+        run(
+            &mut keys,
+            Call::ExportKey {
+                format: "pkcs8".into(),
+                key: private.id
+            }
+        ),
+        Ok(Outcome::Bytes(_))
+    ));
+}

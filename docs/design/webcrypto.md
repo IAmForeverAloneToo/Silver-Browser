@@ -252,9 +252,15 @@ long as the digest (the one it takes), the library's for any other
 (SHA-1, a salt from 0 to the most the key holds, emLen - hLen - 2);
 past that most, an OperationError to sign and false to verify, past
 2^31 - 1 an OperationError, as Chrome 157 answers (probed); JWK `alg`
-PS1 to PS512. Next: RSA-OAEP (aws-lc-rs's range alone:
-under 2048 bits an OperationError, a known gap by the lead's ruling),
-then Wycheproof's RSA vectors.
+PS1 to PS512. RSA-OAEP (part 2b-4) is aws-lc-rs's alone, for a key of
+2048 to 8192 bits: its label given (an empty one is none), the hash's
+MGF1, up to k - 2 hLen - 2 bytes, and every failure an OperationError
+with no message, as Chrome 157 answers (probed); JWK `alg` RSA-OAEP and
+RSA-OAEP-256 to RSA-OAEP-512. A key outside that range is made,
+imported and exported, but encrypts and decrypts nothing: an
+OperationError saying so, a known gap by the lead's ruling (2026-11-23),
+where Chrome works; it reopens if a site the user uses needs it. Next:
+Wycheproof's RSA vectors.
 
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`

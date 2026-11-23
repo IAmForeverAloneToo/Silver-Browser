@@ -125,6 +125,7 @@ fn dictionary(op: &str, name: &str) -> Option<(&'static str, &'static [Member])>
     ];
     const RSA_IMPORT: &[Member] = &[req("hash", Algorithm)];
     const RSA_PSS: &[Member] = &[num("saltLength", UNSIGNED_LONG, true)];
+    const RSA_OAEP: &[Member] = &[opt("label", Buffer)];
     const EC: &[Member] = &[req("namedCurve", Str)];
     const DERIVE: &[Member] = &[req("public", Key)];
     let digest = matches!(name, "SHA-1" | "SHA-256" | "SHA-384" | "SHA-512");
@@ -139,6 +140,7 @@ fn dictionary(op: &str, name: &str) -> Option<(&'static str, &'static [Member])>
         }
         ("importKey", "AES-GCM" | "AES-CBC" | "AES-CTR" | "AES-KW") => ("Algorithm", NONE),
         ("encrypt" | "decrypt", "AES-GCM") => ("AeadParams", AEAD),
+        ("encrypt" | "decrypt", "RSA-OAEP") => ("RsaOaepParams", RSA_OAEP),
         ("generateKey", "HMAC") => ("HmacKeyGenParams", HMAC_GEN),
         ("importKey" | "get key length", "HMAC") => ("HmacImportParams", HMAC_GEN),
         ("sign" | "verify", "HMAC" | "RSASSA-PKCS1-v1_5") => ("Algorithm", NONE),

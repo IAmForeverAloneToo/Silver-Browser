@@ -318,7 +318,13 @@ font folders; a file it cannot read, it scans for.
   secure contexts alone. The fuzz target `crypto_import` feeds any
   bytes to every import format, and `crypto_gcm` holds `native`'s
   AES-GCM to aws-lc-rs's where both run and to its own round trip
-  where only it does.
+  where only it does; `crypto_rsa_roundtrip`, RSA's signatures on
+  either route. A known gap (the lead's ruling, 2026-11-23): RSA-OAEP
+  runs on aws-lc-rs alone, for a key of 2048 to 8192 bits; with any
+  other key it is an explicit OperationError both ways, never a wrong
+  answer, though the reference works (native OAEP would be the largest
+  addition to `native`, its label's ownership handed to the library).
+  It reopens if a site the user uses needs it.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

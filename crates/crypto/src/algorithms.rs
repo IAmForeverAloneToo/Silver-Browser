@@ -112,6 +112,8 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
         ("HKDF" | "PBKDF2", _) => &[DeriveKey, DeriveBits],
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", KeyType::Public) => &[Verify],
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", _) => &[Sign],
+        ("RSA-OAEP", KeyType::Public) => &[Encrypt, WrapKey],
+        ("RSA-OAEP", _) => &[Decrypt, UnwrapKey],
         _ => &[],
     }
 }
@@ -177,9 +179,13 @@ fn native_hash(hash: &str) -> native::Hash {
 }
 
 /// The JWK `alg` of RSA algorithm `name` with `hash` (probed: RS1 to
-/// RS512, PS1 to PS512).
+/// RS512, PS1 to PS512, RSA-OAEP and RSA-OAEP-256 to RSA-OAEP-512).
 fn rsa_jwk_alg(name: &str, hash: &str) -> &'static str {
     match (name, hash) {
+        ("RSA-OAEP", "SHA-1") => "RSA-OAEP",
+        ("RSA-OAEP", "SHA-384") => "RSA-OAEP-384",
+        ("RSA-OAEP", "SHA-512") => "RSA-OAEP-512",
+        ("RSA-OAEP", _) => "RSA-OAEP-256",
         ("RSA-PSS", "SHA-1") => "PS1",
         ("RSA-PSS", "SHA-384") => "PS384",
         ("RSA-PSS", "SHA-512") => "PS512",
@@ -590,7 +596,80 @@ fn crypt(
                 Ok(Outcome::Bytes(plain.to_vec()))
             }
         }
+        "RSA-OAEP" => oaep(key, alg, data, encrypt),
         _ => Err(Error::not_supported("Unsupported operation")),
+    }
+}
+
+/// An RSA public key's SPKI, aws-lc-rs's encoding of it.
+fn spki_of(n: &[u8], e: &[u8]) -> Result<Vec<u8>, Error> {
+    let key =
+        rsa::PublicKey::from_der(&rsa_public_key_der(n, e)).map_err(|_| Error::operation(""))?;
+    let der = key.as_der().map_err(|_| Error::operation(""))?;
+    Ok(der.as_ref().to_vec())
+}
+
+/// The reason an RSA-OAEP key outside aws-lc-rs's range is refused: a
+/// known gap (the lead's ruling, 2026-11-23), where the reference works.
+pub(crate) const OAEP_GAP: &str =
+    "RSA-OAEP with a key under 2048 or over 8192 bits is not supported";
+
+/// RSA-OAEP's encryption with a public key or decryption with a private
+/// one, the hash's MGF1, the label given or none (an empty one is none):
+/// aws-lc-rs's, for a key of 2048 to 8192 bits alone; any other an
+/// OperationError (a known gap). Any failure else an OperationError with
+/// no message, as the reference's.
+fn oaep(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outcome, Error> {
+    use rsa::{
+        OAEP_SHA1_MGF1SHA1, OAEP_SHA256_MGF1SHA256, OAEP_SHA384_MGF1SHA384, OAEP_SHA512_MGF1SHA512,
+        OaepPrivateDecryptingKey, OaepPublicEncryptingKey, PrivateDecryptingKey,
+        PublicEncryptingKey,
+    };
+    let KeyAlgorithm::Rsa { hash, .. } = &key.algorithm else {
+        return Err(Error::operation(""));
+    };
+    let algorithm = match *hash {
+        "SHA-1" => &OAEP_SHA1_MGF1SHA1,
+        "SHA-384" => &OAEP_SHA384_MGF1SHA384,
+        "SHA-512" => &OAEP_SHA512_MGF1SHA512,
+        _ => &OAEP_SHA256_MGF1SHA256,
+    };
+    // An empty label is none: aws-lc-rs sets none for it.
+    let label = alg.bytes("label");
+    let failed = || Error::operation("");
+    match (&key.material, encrypt) {
+        (Material::RsaPublic { n, e }, true) => {
+            if !SAFE_PRIVATE.contains(&bit_length(n)) {
+                return Err(Error::operation(OAEP_GAP));
+            }
+            let public = PublicEncryptingKey::from_der(&spki_of(n, e)?).map_err(|_| failed())?;
+            let sealing = OaepPublicEncryptingKey::new(public).map_err(|_| failed())?;
+            let mut out = vec![0u8; sealing.ciphertext_size()];
+            let written = sealing
+                .encrypt(algorithm, data, &mut out, label)
+                .map_err(|_| failed())?
+                .len();
+            out.truncate(written);
+            Ok(Outcome::Bytes(out))
+        }
+        (Material::RsaPrivate(parts), false) => {
+            if !SAFE_PRIVATE.contains(&bit_length(&parts.n)) {
+                return Err(Error::operation(OAEP_GAP));
+            }
+            let mut pkcs8 = pkcs8_of(parts)?;
+            let private = PrivateDecryptingKey::from_pkcs8(&pkcs8).map_err(|_| failed());
+            pkcs8.iter_mut().for_each(|b| *b = 0);
+            std::hint::black_box(&pkcs8);
+            let opening = OaepPrivateDecryptingKey::new(private?).map_err(|_| failed())?;
+            let mut out = vec![0u8; opening.min_output_size()];
+            let plain = opening
+                .decrypt(algorithm, data, &mut out, label)
+                .map_err(|_| failed())?
+                .to_vec();
+            out.iter_mut().for_each(|b| *b = 0);
+            Ok(Outcome::Bytes(plain))
+        }
+        _ => Err(failed()),
     }
 }
 
@@ -765,7 +844,9 @@ fn generate(
             };
             Ok(Outcome::Key(keys.insert(key)))
         }
-        "RSASSA-PKCS1-v1_5" | "RSA-PSS" => generate_rsa(keys, alg, extractable, usages),
+        "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
+            generate_rsa(keys, alg, extractable, usages)
+        }
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -978,7 +1059,7 @@ fn import(
             empty_usages(KeyType::Secret, usages)?;
             Ok(keys.insert(secret_key(KeyAlgorithm::Kdf { name: alg.name }, bytes)))
         }
-        "RSASSA-PKCS1-v1_5" | "RSA-PSS" => {
+        "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
                 // The SPKI read by aws-lc-rs, its PKCS #1 key by the
@@ -1196,12 +1277,7 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
         },
         (KeyAlgorithm::Rsa { name, hash, .. }, Material::RsaPublic { n, e }) => match format {
             "pkcs8" => Err(Error::invalid_access("The key is not of the expected type")),
-            "spki" => {
-                let key = rsa::PublicKey::from_der(&rsa_public_key_der(n, e))
-                    .map_err(|_| Error::operation(""))?;
-                let der = key.as_der().map_err(|_| Error::operation(""))?;
-                Ok(Outcome::Bytes(der.as_ref().to_vec()))
-            }
+            "spki" => Ok(Outcome::Bytes(spki_of(n, e)?)),
             "jwk" => Ok(Outcome::Jwk(jwk::exported(
                 vec![
                     ("alg", JwkValue::Str(rsa_jwk_alg(name, hash).into())),
