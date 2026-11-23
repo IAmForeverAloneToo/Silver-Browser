@@ -56,12 +56,12 @@ macro_rules! compat_platform {
 }
 
 /// The major version of the reference browser this one says it is: the
-/// installed stable Chrome it is probed against (157.0.8103.80 on
-/// 2026-11-20), moved with it. The one place every string that names the
+/// installed stable Chrome it is probed against (158.0.8127.37 on
+/// 2026-11-24; 157.0.8103.80 before), moved with it. The one place every string that names the
 /// version takes it from, so that they agree.
 macro_rules! chrome_major {
     () => {
-        "157"
+        "158"
     };
 }
 
@@ -70,7 +70,7 @@ pub const CHROME_MAJOR: &str = chrome_major!();
 
 /// The reference's full version, which the client hints' full version
 /// list and `uaFullVersion` give: of [`CHROME_MAJOR`].
-pub const CHROME_FULL: &str = concat!(chrome_major!(), ".0.8103.80");
+pub const CHROME_FULL: &str = concat!(chrome_major!(), ".0.8127.37");
 
 /// The `User-Agent` requests send unless the user asks otherwise: exactly
 /// the reduced string the reference browser on the same system sends

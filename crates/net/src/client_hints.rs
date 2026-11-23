@@ -4,7 +4,8 @@
 //! as Brave names itself: a GREASE brand, "Silver" and "Chromium", in the
 //! order and the GREASE form Chromium derives from its major version
 //! (`components/embedder_support/user_agent_utils.cc`; probed against
-//! Chrome 157: "Not-A.Brand" 99, the browser's brand, "Chromium").
+//! Chrome 158: "Chromium", "Not.A/Brand" 24, the browser's brand; 157:
+//! "Not-A.Brand" 99, the browser's brand, "Chromium").
 
 use crate::fetch::{CHROME_FULL, CHROME_MAJOR};
 
@@ -137,6 +138,24 @@ mod tests {
 
     #[test]
     fn the_brands_are_chromiums_for_the_major_version() {
+        // Chrome 158 (probed 2026-11-24): "Chromium", "Not.A/Brand" 24, its
+        // brand; full versions 158.0.8127.37 and the GREASE's 24.0.0.0.
+        assert_eq!(
+            brands_for(158, false),
+            [
+                ("Chromium".to_owned(), "158".to_owned()),
+                ("Not.A/Brand".to_owned(), "24".to_owned()),
+                (BRAND.to_owned(), "158".to_owned()),
+            ]
+        );
+        assert_eq!(
+            brands(true),
+            [
+                ("Chromium".to_owned(), "158.0.8127.37".to_owned()),
+                ("Not.A/Brand".to_owned(), "24.0.0.0".to_owned()),
+                (BRAND.to_owned(), "158.0.8127.37".to_owned()),
+            ]
+        );
         // Chrome 157 (probed): "Not-A.Brand" 99, its brand, "Chromium".
         assert_eq!(
             brands_for(157, false),
@@ -161,7 +180,7 @@ mod tests {
         assert_eq!(
             sec_ch_ua(),
             format!(
-                "\"Not-A.Brand\";v=\"99\", \"{BRAND}\";v=\"{CHROME_MAJOR}\", \"Chromium\";v=\"{CHROME_MAJOR}\""
+                "\"Chromium\";v=\"{CHROME_MAJOR}\", \"Not.A/Brand\";v=\"24\", \"{BRAND}\";v=\"{CHROME_MAJOR}\""
             )
         );
     }
