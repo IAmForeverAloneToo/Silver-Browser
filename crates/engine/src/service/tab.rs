@@ -82,6 +82,49 @@ struct Segment {
     entries: Vec<Url>,
     index: usize,
     state: ViewState,
+    /// A navigation or restore the tab sent its view that the view has
+    /// not yet said it took. A new view's engine says it loaded its
+    /// initial `about:blank`, and may say so before it takes the
+    /// navigation (CI's runners): that is not the load the tab asked for.
+    asked: bool,
+    /// The load its view last said, whatever the tab shows.
+    view_load: LoadState,
+}
+
+impl Segment {
+    /// Takes the state its view said: whole, but for the load of one from
+    /// before the view took what it was asked, which is left as it was.
+    fn said(&mut self, state: ViewState) {
+        let blank = state
+            .url
+            .as_ref()
+            .is_none_or(|url| url.as_str() == "about:blank");
+        let early = self.asked && blank && state.load != LoadState::Loading;
+        let load = self.state.load.clone();
+        self.view_load = state.load.clone();
+        self.state = state;
+        if early {
+            self.state.load = load;
+        } else {
+            self.asked = false;
+        }
+    }
+
+    /// What it was asked is given up (a stop): its load is its view's,
+    /// which may say nothing more if it never took the navigation.
+    fn gave_up(&mut self) {
+        if std::mem::take(&mut self.asked) {
+            self.state.load = self.view_load.clone();
+        }
+    }
+}
+
+/// Whether a view sent a navigation to `url` is to be heard taking it
+/// before its state is the tab's load: not for an `about:` or
+/// `javascript:` URL, which may be taken without a load said, and whose
+/// state may be the initial `about:blank`'s.
+fn asks(url: &Url) -> bool {
+    !matches!(url.scheme(), "about" | "javascript")
 }
 
 /// A frame root's view: the frame the browser numbers so, and what its
@@ -876,6 +919,8 @@ impl RemoteTab {
             entries: Vec::new(),
             index: 0,
             state: ViewState::default(),
+            asked: false,
+            view_load: LoadState::Loading,
         });
         self.current = self.segments.len() - 1;
         self.shown_now();
@@ -931,6 +976,8 @@ impl RemoteTab {
             segment.view = view;
             segment.frame = frame;
             segment.state.load = LoadState::Loading;
+            segment.asked = segment.entries.get(segment.index).is_some_and(asks);
+            segment.view_load = LoadState::Loading;
             let renderer = &self.renderers[&number].renderer;
             let _ = renderer.send(&ToRenderer::CreateView {
                 view,
@@ -1354,7 +1401,7 @@ impl RemoteTab {
         match message {
             ToBrowser::State { state, .. } => match segment {
                 Some(index) => {
-                    self.segments[index].state = *state;
+                    self.segments[index].said(*state);
                     if shown {
                         self.undecodable = undecodable(self.state());
                     }
@@ -2129,6 +2176,7 @@ impl View for RemoteTab {
         }
         if let Some(segment) = self.segments.get_mut(self.current) {
             segment.state.load = LoadState::Loading;
+            segment.asked = asks(&url);
         }
         self.send(|view| ToRenderer::Navigate { view, url });
     }
@@ -2184,6 +2232,9 @@ impl View for RemoteTab {
 
     fn stop(&mut self) {
         self.dismiss_dialogs();
+        if let Some(segment) = self.segments.get_mut(self.current) {
+            segment.gave_up();
+        }
         self.send(|view| ToRenderer::Stop { view });
     }
 
@@ -2729,6 +2780,57 @@ impl View for RemoteTab {
 #[cfg(test)]
 mod frame_view_tests {
     use super::*;
+
+    #[test]
+    fn a_new_views_first_state_is_not_the_load_its_tab_asked_for() {
+        let mut segment = Segment {
+            renderer: Some(1),
+            view: 1,
+            frame: 1,
+            lock: Lock::Internal,
+            entries: Vec::new(),
+            index: 0,
+            state: ViewState::default(),
+            asked: true,
+            view_load: LoadState::Loading,
+        };
+        // Said before the navigation was taken: the initial blank loaded.
+        segment.said(state("about:blank", LoadState::Loaded));
+        assert_eq!(segment.state.load, LoadState::Loading);
+        assert!(segment.asked);
+        segment.said(state_none(LoadState::Loaded));
+        assert_eq!(segment.state.load, LoadState::Loading);
+        segment.said(state("about:blank", LoadState::Loading));
+        assert!(!segment.asked, "taken");
+        // A load stopped before its document came: the blank loaded.
+        segment.said(state("about:blank", LoadState::Loaded));
+        assert_eq!(segment.state.load, LoadState::Loaded);
+        // Stopped before the view took it: the load its view last said.
+        segment.asked = true;
+        segment.state.load = LoadState::Loading;
+        segment.said(state("about:blank", LoadState::Loaded));
+        assert_eq!(segment.state.load, LoadState::Loading);
+        segment.gave_up();
+        assert_eq!(segment.state.load, LoadState::Loaded);
+        assert!(!segment.asked);
+        // A URL is the navigation's whatever its load.
+        segment.asked = true;
+        segment.said(state("http://b.test/", LoadState::Loaded));
+        assert_eq!(segment.state.load, LoadState::Loaded);
+        assert!(!segment.asked);
+        // Nothing is waited for of an about: or javascript: URL.
+        for url in ["about:blank", "about:srcdoc", "javascript:void(0)"] {
+            assert!(!asks(&Url::parse(url).expect("a URL")), "{url}");
+        }
+        assert!(asks(&Url::parse("http://b.test/").expect("a URL")));
+    }
+
+    fn state_none(load: LoadState) -> ViewState {
+        ViewState {
+            load,
+            ..ViewState::default()
+        }
+    }
 
     fn state(url: &str, load: LoadState) -> ViewState {
         ViewState {

@@ -900,6 +900,114 @@ fn a_renderers_reload_may_bypass_the_cache() {
     assert_eq!(last.header("Cache-Control"), Some("no-cache"));
 }
 
+/// A launcher whose renderer, a real one, is given nothing after its
+/// view until it has said that view's state: its empty first entry,
+/// loaded, before the navigation the tab sent (the race CI's runners
+/// met). A notice follows that state, so a tab that has the notice has
+/// taken it; the rest goes once `release` hears.
+struct Early {
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl Launcher for Early {
+    fn launch(&self, _: u32) -> std::io::Result<Launched> {
+        use std::sync::mpsc;
+        let release = self
+            .release
+            .lock()
+            .expect("one renderer")
+            .take()
+            .expect("one renderer");
+        let ((browser_in, browser_out), (mut down_in, up_out)) = ipc::duplex();
+        let ((mut from_renderer, to_renderer), (renderer_in, renderer_out)) = ipc::duplex();
+        let breakers = [browser_out.breaker(), up_out.breaker()];
+        thread::spawn(move || crate::renderer::run_with(renderer_in, renderer_out, Some(fonts())));
+        let (said, heard) = mpsc::channel();
+        thread::spawn(move || {
+            let down = ipc::Sender::<ToRenderer>::new(to_renderer);
+            let mut held = Some((heard, release));
+            while let Ok(Some(message)) = ipc::read_message::<ToRenderer>(&mut down_in) {
+                let view = matches!(message, ToRenderer::CreateView { .. });
+                let _ = down.send(&message);
+                if view && let Some((heard, release)) = held.take() {
+                    let _ = heard.recv_timeout(WAIT);
+                    let _ = release.recv_timeout(WAIT);
+                }
+            }
+        });
+        thread::spawn(move || {
+            let up = ipc::Sender::<ToBrowser>::new(up_out);
+            let mut said = Some(said);
+            while let Ok(Some(message)) = ipc::read_message::<ToBrowser>(&mut from_renderer) {
+                let state = match &message {
+                    ToBrowser::State { view, .. } => Some(*view),
+                    _ => None,
+                };
+                let _ = up.send(&message);
+                if let Some(view) = state
+                    && let Some(said) = said.take()
+                {
+                    let _ = up.send(&ToBrowser::Notice {
+                        view,
+                        text: "said".into(),
+                    });
+                    let _ = said.send(());
+                }
+            }
+        });
+        Ok(Launched {
+            from_renderer: Box::new(browser_in),
+            to_renderer: Box::new(browser_out),
+            log: None,
+            process: Box::new(Broken(breakers)),
+        })
+    }
+}
+
+#[test]
+fn a_new_views_state_before_its_navigation_is_not_the_tabs_load() {
+    // Main's CI 45201820834: the tab took the empty entry's load for the
+    // page's, and a reload asked then reloaded nothing.
+    let server = serve("<title>t</title>");
+    let (go, release) = std::sync::mpsc::channel();
+    let launcher = Early {
+        release: std::sync::Mutex::new(Some(release)),
+    };
+    let mut remote = RemoteTab::new(Arc::new(launcher), fonts());
+    remote.set_viewport(SIZE.0, SIZE.1);
+    remote.navigate(server.url("/"));
+    settle(&mut remote, |tab| tab.take_notice().is_some());
+    assert_eq!(remote.load_state(), &LoadState::Loading);
+    go.send(()).expect("the renderer waits");
+    settle(&mut remote, |tab| *tab.load_state() == LoadState::Loaded);
+    View::reload_bypassing_cache(&mut remote);
+    settle(&mut remote, |_| {
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.target == "/")
+            .count()
+            == 2
+    });
+}
+
+#[test]
+fn a_new_views_load_stopped_before_it_took_the_navigation_is_over() {
+    // Its view may say nothing more: it said its blank loaded already.
+    let server = serve("<title>t</title>");
+    let (go, release) = std::sync::mpsc::channel();
+    let launcher = Early {
+        release: std::sync::Mutex::new(Some(release)),
+    };
+    let mut remote = RemoteTab::new(Arc::new(launcher), fonts());
+    remote.set_viewport(SIZE.0, SIZE.1);
+    remote.navigate(server.url("/"));
+    settle(&mut remote, |tab| tab.take_notice().is_some());
+    remote.stop();
+    go.send(()).expect("the renderer waits");
+    settle(&mut remote, |tab| *tab.load_state() == LoadState::Loaded);
+}
+
 #[test]
 fn a_websocket_goes_through_the_browser_with_its_cookies_and_messages_in_pieces() {
     // Past the link's piece both ways (`MAX_CHUNK`).
