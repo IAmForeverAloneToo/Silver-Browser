@@ -10,6 +10,24 @@ its Apache License 2.0 (`LICENSE` beside this file), at commit
 | File | From |
 | --- | --- |
 | `aes_gcm_test.json` | `testvectors_v1/aes_gcm_test.json` |
+| `rsa_oaep_2048_sha1_mgf1sha1_test.json` | `testvectors_v1/rsa_oaep_2048_sha1_mgf1sha1_test.json` |
+| `rsa_oaep_2048_sha256_mgf1sha256_test.json` | `testvectors_v1/rsa_oaep_2048_sha256_mgf1sha256_test.json` |
+| `rsa_oaep_2048_sha384_mgf1sha384_test.json` | `testvectors_v1/rsa_oaep_2048_sha384_mgf1sha384_test.json` |
+| `rsa_oaep_2048_sha512_mgf1sha512_test.json` | `testvectors_v1/rsa_oaep_2048_sha512_mgf1sha512_test.json` |
+| `rsa_oaep_3072_sha256_mgf1sha256_test.json` | `testvectors_v1/rsa_oaep_3072_sha256_mgf1sha256_test.json` |
+| `rsa_pkcs1_1024_sig_gen_test.json` | `testvectors_v1/rsa_pkcs1_1024_sig_gen_test.json` |
+| `rsa_pkcs1_1536_sig_gen_test.json` | `testvectors_v1/rsa_pkcs1_1536_sig_gen_test.json` |
+| `rsa_pkcs1_2048_sig_gen_test.json` | `testvectors_v1/rsa_pkcs1_2048_sig_gen_test.json` |
+| `rsa_pss_2048_sha1_mgf1_20_test.json` | `testvectors_v1/rsa_pss_2048_sha1_mgf1_20_test.json` |
+| `rsa_pss_2048_sha256_mgf1_0_test.json` | `testvectors_v1/rsa_pss_2048_sha256_mgf1_0_test.json` |
+| `rsa_pss_2048_sha256_mgf1_32_test.json` | `testvectors_v1/rsa_pss_2048_sha256_mgf1_32_test.json` |
+| `rsa_pss_2048_sha384_mgf1_48_test.json` | `testvectors_v1/rsa_pss_2048_sha384_mgf1_48_test.json` |
+| `rsa_pss_4096_sha512_mgf1_64_test.json` | `testvectors_v1/rsa_pss_4096_sha512_mgf1_64_test.json` |
+| `rsa_signature_2048_sha256_test.json` | `testvectors_v1/rsa_signature_2048_sha256_test.json` |
+| `rsa_signature_2048_sha384_test.json` | `testvectors_v1/rsa_signature_2048_sha384_test.json` |
+| `rsa_signature_2048_sha512_test.json` | `testvectors_v1/rsa_signature_2048_sha512_test.json` |
+| `rsa_signature_3072_sha256_test.json` | `testvectors_v1/rsa_signature_3072_sha256_test.json` |
+| `rsa_signature_4096_sha512_test.json` | `testvectors_v1/rsa_signature_4096_sha512_test.json` |
 | `LICENSE` | `LICENSE` |
 
 Their SHA-256s are in `MANIFEST`, which a test holds every file here to

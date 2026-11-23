@@ -259,8 +259,14 @@ with no message, as Chrome 157 answers (probed); JWK `alg` RSA-OAEP and
 RSA-OAEP-256 to RSA-OAEP-512. A key outside that range is made,
 imported and exported, but encrypts and decrypts nothing: an
 OperationError saying so, a known gap by the lead's ruling (2026-11-23),
-where Chrome works; it reopens if a site the user uses needs it. Next:
-Wycheproof's RSA vectors.
+where Chrome works; it reopens if a site the user uses needs it.
+Wycheproof's RSA vectors (part 2b-5, C2SP 65ca4947, pinned by the
+MANIFEST): RSASSA-PKCS1-v1_5's verification at 2048, 3072 and 4096
+bits (1,294 vectors: every valid one true, every invalid one false,
+never an error), its signing at 1024, 1536 and 2048 bits from each
+key's PKCS #8 (84, byte for byte; 24 with SHA-224, which Web Crypto has
+not, left out), RSA-PSS's verification (619, salts 0, 20, 32, 48 and
+64) and RSA-OAEP's decryption with labels (177).
 
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`

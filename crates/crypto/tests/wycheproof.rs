@@ -137,3 +137,234 @@ fn aes_gcm_every_vector() {
     }
     assert!(ran > 150, "ran {ran}");
 }
+
+fn str_value(text: &str) -> Value {
+    Value::Str(text.into())
+}
+
+fn dict(members: &[(&str, Value)]) -> Value {
+    Value::Dict(
+        members
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), v.clone()))
+            .collect(),
+    )
+}
+
+/// An RSA key of `format` (`spki` or `pkcs8`) for `name` with `hash`.
+fn rsa_key(
+    keys: &mut Keys,
+    format: &str,
+    der: Vec<u8>,
+    name: &str,
+    hash: &str,
+    usage: Usage,
+) -> Option<u32> {
+    let out = run(
+        keys,
+        Call::ImportKey {
+            format: format.into(),
+            key_data: Value::Bytes(der),
+            algorithm: dict(&[("name", str_value(name)), ("hash", str_value(hash))]),
+            extractable: false,
+            usages: vec![usage],
+        },
+    );
+    match out {
+        Ok(Outcome::Key(k)) => Some(k.id),
+        _ => None,
+    }
+}
+
+/// Each test of each group of the vector files whose names start with
+/// `prefix`: the file, the group and the test.
+fn each(prefix: &str, mut f: impl FnMut(&str, &Json, &Json)) -> usize {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wycheproof");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.starts_with(prefix) && n.ends_with("_test.json"))
+        .collect();
+    names.sort();
+    let mut ran = 0;
+    for name in &names {
+        let file = vectors(name);
+        for group in file.get("testGroups").and_then(Json::as_array).unwrap() {
+            for test in group.get("tests").and_then(Json::as_array).unwrap() {
+                f(name, group, test);
+                ran += 1;
+            }
+        }
+    }
+    assert!(!names.is_empty(), "no {prefix} files");
+    ran
+}
+
+/// RSASSA-PKCS1-v1_5's verification (G255 part 2b): every valid vector
+/// true, every invalid one false (never an error: a bad signature is no
+/// reason to refuse), an acceptable one either.
+#[test]
+fn rsa_pkcs1_verify_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("rsa_signature_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let hash = field(group, "sha");
+        let key = rsa_key(
+            &mut keys,
+            "spki",
+            hex(field(group, "publicKeyDer")),
+            "RSASSA-PKCS1-v1_5",
+            hash,
+            Usage::Verify,
+        )
+        .unwrap_or_else(|| panic!("{name} tc {id}: the key imports"));
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: str_value("RSASSA-PKCS1-v1_5"),
+                key,
+                signature: hex(field(test, "sig")),
+                data: hex(field(test, "msg")),
+            },
+        );
+        match field(test, "result") {
+            "valid" => assert_eq!(out, Ok(Outcome::Bool(true)), "{name} tc {id}"),
+            "invalid" => assert_eq!(out, Ok(Outcome::Bool(false)), "{name} tc {id}"),
+            _ => assert!(
+                matches!(out, Ok(Outcome::Bool(_))),
+                "{name} tc {id}: {out:?}"
+            ),
+        }
+    });
+    assert!(ran > 1000, "ran {ran}");
+}
+
+/// RSASSA-PKCS1-v1_5's signing: the private key's PKCS #8 imported, the
+/// signature the vector's, byte for byte (it is deterministic), at 1024
+/// and 1536 bits (the library's route) and 2048 (aws-lc-rs's).
+#[test]
+fn rsa_pkcs1_sign_every_vector() {
+    let mut keys = Keys::default();
+    let mut skipped = 0;
+    let ran = each("rsa_pkcs1_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let hash = field(group, "sha");
+        // SHA-224 and the like, which Web Crypto has none of.
+        if !matches!(hash, "SHA-1" | "SHA-256" | "SHA-384" | "SHA-512") {
+            skipped += 1;
+            return;
+        }
+        let key = rsa_key(
+            &mut keys,
+            "pkcs8",
+            hex(field(group, "privateKeyPkcs8")),
+            "RSASSA-PKCS1-v1_5",
+            hash,
+            Usage::Sign,
+        )
+        .unwrap_or_else(|| panic!("{name} tc {id}: the key imports"));
+        let out = run(
+            &mut keys,
+            Call::Sign {
+                algorithm: str_value("RSASSA-PKCS1-v1_5"),
+                key,
+                data: hex(field(test, "msg")),
+            },
+        );
+        assert_eq!(
+            out,
+            Ok(Outcome::Bytes(hex(field(test, "sig")))),
+            "{name} tc {id}"
+        );
+    });
+    assert!(ran - skipped > 50, "ran {ran}, skipped {skipped}");
+}
+
+/// RSA-PSS's verification, at the group's salt, MGF1 with the hash: every
+/// valid vector true, every invalid one false.
+#[test]
+fn rsa_pss_verify_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("rsa_pss_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let hash = field(group, "sha");
+        assert_eq!(
+            field(group, "mgfSha"),
+            hash,
+            "{name}: MGF1 with the hash alone"
+        );
+        let salt = group.get("sLen").and_then(Json::as_u64).unwrap();
+        let key = rsa_key(
+            &mut keys,
+            "spki",
+            hex(field(group, "publicKeyDer")),
+            "RSA-PSS",
+            hash,
+            Usage::Verify,
+        )
+        .unwrap_or_else(|| panic!("{name} tc {id}: the key imports"));
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: dict(&[
+                    ("name", str_value("RSA-PSS")),
+                    ("saltLength", Value::Num(salt as f64)),
+                ]),
+                key,
+                signature: hex(field(test, "sig")),
+                data: hex(field(test, "msg")),
+            },
+        );
+        let want = field(test, "result") == "valid";
+        assert_eq!(out, Ok(Outcome::Bool(want)), "{name} tc {id}");
+    });
+    assert!(ran > 300, "ran {ran}");
+}
+
+/// RSA-OAEP's decryption (aws-lc-rs's, 2048 and 3072 bits), with each
+/// vector's label: a valid one its message, an invalid one an
+/// OperationError.
+#[test]
+fn rsa_oaep_decrypt_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("rsa_oaep_", |name, group, test| {
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let hash = field(group, "sha");
+        assert_eq!(
+            field(group, "mgfSha"),
+            hash,
+            "{name}: MGF1 with the hash alone"
+        );
+        let key = rsa_key(
+            &mut keys,
+            "pkcs8",
+            hex(field(group, "privateKeyPkcs8")),
+            "RSA-OAEP",
+            hash,
+            Usage::Decrypt,
+        )
+        .unwrap_or_else(|| panic!("{name} tc {id}: the key imports"));
+        let out = run(
+            &mut keys,
+            Call::Decrypt {
+                algorithm: dict(&[
+                    ("name", str_value("RSA-OAEP")),
+                    ("label", Value::Bytes(hex(field(test, "label")))),
+                ]),
+                key,
+                data: hex(field(test, "ct")),
+            },
+        );
+        if field(test, "result") == "valid" {
+            assert_eq!(
+                out,
+                Ok(Outcome::Bytes(hex(field(test, "msg")))),
+                "{name} tc {id}"
+            );
+        } else {
+            let refused = matches!(&out, Err(e) if e.name == "OperationError");
+            assert!(refused, "{name} tc {id}: {out:?}");
+        }
+    });
+    assert!(ran > 100, "ran {ran}");
+}
