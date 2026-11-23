@@ -176,14 +176,83 @@ fn native_hash(hash: &str) -> native::Hash {
     }
 }
 
-/// The JWK `alg` of RSASSA-PKCS1-v1_5 with `hash`.
-fn rs_alg(hash: &str) -> &'static str {
-    match hash {
-        "SHA-1" => "RS1",
-        "SHA-384" => "RS384",
-        "SHA-512" => "RS512",
+/// The JWK `alg` of RSA algorithm `name` with `hash` (probed: RS1 to
+/// RS512, PS1 to PS512).
+fn rsa_jwk_alg(name: &str, hash: &str) -> &'static str {
+    match (name, hash) {
+        ("RSA-PSS", "SHA-1") => "PS1",
+        ("RSA-PSS", "SHA-384") => "PS384",
+        ("RSA-PSS", "SHA-512") => "PS512",
+        ("RSA-PSS", _) => "PS256",
+        (_, "SHA-1") => "RS1",
+        (_, "SHA-384") => "RS384",
+        (_, "SHA-512") => "RS512",
         _ => "RS256",
     }
+}
+
+/// A digest's length in bytes.
+fn digest_len(hash: &str) -> u32 {
+    match hash {
+        "SHA-1" => 20,
+        "SHA-384" => 48,
+        "SHA-512" => 64,
+        _ => 32,
+    }
+}
+
+/// RSA-PSS's route for a key of `bits` bits and a salt of `salt` bytes:
+/// aws-lc-rs signs and verifies SHA-256, SHA-384 and SHA-512 at 2048 to
+/// 8192 bits with a salt as long as the digest alone (its `RSA_PSS_*`,
+/// `RSA_PSS_SALTLEN_DIGEST`); anything else, the library.
+pub(crate) fn pss_route(
+    hash: &str,
+    bits: u32,
+    salt: u32,
+) -> Option<(
+    &'static signature::RsaSignatureEncoding,
+    &'static signature::RsaParameters,
+)> {
+    let pair: (
+        &'static signature::RsaSignatureEncoding,
+        &'static signature::RsaParameters,
+    ) = match hash {
+        "SHA-256" => (
+            &signature::RSA_PSS_SHA256,
+            &signature::RSA_PSS_2048_8192_SHA256,
+        ),
+        "SHA-384" => (
+            &signature::RSA_PSS_SHA384,
+            &signature::RSA_PSS_2048_8192_SHA384,
+        ),
+        "SHA-512" => (
+            &signature::RSA_PSS_SHA512,
+            &signature::RSA_PSS_2048_8192_SHA512,
+        ),
+        _ => return None,
+    };
+    (SAFE_PRIVATE.contains(&bits) && salt == digest_len(hash)).then_some(pair)
+}
+
+/// RSA-PSS's signature of `data` with the private key `parts` and a salt
+/// of `salt` bytes, on its route.
+fn pss_sign(
+    parts: &native::RsaPrivateParts,
+    hash: &str,
+    salt: u32,
+    data: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if let Some((encoding, _)) = pss_route(hash, bit_length(&parts.n), salt) {
+        let pair = safe_key_pair(parts).map_err(|_| Error::operation(""))?;
+        let mut out = vec![0u8; pair.public_modulus_len()];
+        pair.sign(encoding, &rand::SystemRandom::new(), data, &mut out)
+            .map_err(|_| Error::operation(""))?;
+        return Ok(out);
+    }
+    let key = native::rsa_private_from_parts(parts).map_err(|_| Error::operation(""))?;
+    let digest = digest::digest(digest_algorithm(hash), data);
+    native::rsa_sign_pss(&key, native_hash(hash), digest.as_ref(), salt)
+        .map_err(|_| Error::operation(""))
 }
 
 /// RSASSA-PKCS1-v1_5 signing's route for a key of `bits` bits: aws-lc-rs
@@ -349,6 +418,17 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                     }
                     _ => Err(Error::operation("")),
                 },
+                KeyAlgorithm::Rsa {
+                    name: "RSA-PSS",
+                    hash,
+                    ..
+                } => match &key.material {
+                    Material::RsaPrivate(parts) => {
+                        let salt = alg.num("saltLength").unwrap_or(0);
+                        Ok(Outcome::Bytes(pss_sign(parts, hash, salt, &data)?))
+                    }
+                    _ => Err(Error::operation("")),
+                },
                 _ => Err(Error::not_supported("Unsupported operation")),
             }
         }
@@ -360,7 +440,7 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
         } => {
             let alg = normalize("verify", &algorithm)?;
             let key = key_for(keys, key, alg.name, Usage::Verify)?;
-            Ok(Outcome::Bool(verify(key, &signature, &data)?))
+            Ok(Outcome::Bool(verify(key, &alg, &signature, &data)?))
         }
         Call::GenerateKey {
             algorithm,
@@ -576,7 +656,7 @@ pub(crate) fn pkcs1_verify_route(hash: &str, bits: u32) -> Route {
     }
 }
 
-fn verify(key: &Key, signature: &[u8], data: &[u8]) -> Result<bool, Error> {
+fn verify(key: &Key, alg: &Normalized, signature: &[u8], data: &[u8]) -> Result<bool, Error> {
     match (&key.algorithm, &key.material) {
         (KeyAlgorithm::Hmac { hash, .. }, Material::Secret(bytes)) => {
             let k = hmac::Key::new(hmac_algorithm(hash), bytes);
@@ -605,6 +685,33 @@ fn verify(key: &Key, signature: &[u8], data: &[u8]) -> Result<bool, Error> {
                 .map_err(|_| Error::operation(""))
             }
         },
+        (
+            KeyAlgorithm::Rsa {
+                name: "RSA-PSS",
+                hash,
+                ..
+            },
+            Material::RsaPublic { n, e },
+        ) => {
+            let salt = alg.num("saltLength").unwrap_or(0);
+            match pss_route(hash, bit_length(n), salt) {
+                Some((_, parameters)) => {
+                    let components = signature::RsaPublicKeyComponents { n, e };
+                    Ok(components.verify(parameters, data, signature).is_ok())
+                }
+                None => {
+                    let digest = digest::digest(digest_algorithm(hash), data);
+                    native::rsa_verify_pss(
+                        &rsa_public_key_der(n, e),
+                        native_hash(hash),
+                        digest.as_ref(),
+                        salt,
+                        signature,
+                    )
+                    .map_err(|_| Error::operation(""))
+                }
+            }
+        }
         // Nothing else verifies (the usages refuse it first).
         _ => Err(Error::operation("")),
     }
@@ -658,7 +765,7 @@ fn generate(
             };
             Ok(Outcome::Key(keys.insert(key)))
         }
-        "RSASSA-PKCS1-v1_5" => generate_rsa(keys, alg, extractable, usages),
+        "RSASSA-PKCS1-v1_5" | "RSA-PSS" => generate_rsa(keys, alg, extractable, usages),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -871,7 +978,7 @@ fn import(
             empty_usages(KeyType::Secret, usages)?;
             Ok(keys.insert(secret_key(KeyAlgorithm::Kdf { name: alg.name }, bytes)))
         }
-        "RSASSA-PKCS1-v1_5" => {
+        "RSASSA-PKCS1-v1_5" | "RSA-PSS" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
                 // The SPKI read by aws-lc-rs, its PKCS #1 key by the
@@ -889,7 +996,12 @@ fn import(
                 }
                 "jwk" => {
                     let jwk = jwk()?;
-                    jwk.check("RSA", Some(rs_alg(hash)), extractable, usages)?;
+                    jwk.check(
+                        "RSA",
+                        Some(rsa_jwk_alg(alg.name, hash)),
+                        extractable,
+                        usages,
+                    )?;
                     if jwk.str("d").is_some() {
                         check_usages(alg.name, KeyType::Private, usages)?;
                         let parts = jwk_private_parts(&jwk)?;
@@ -991,7 +1103,7 @@ fn strip_zeros(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-fn bit_length(n: &[u8]) -> u32 {
+pub(crate) fn bit_length(n: &[u8]) -> u32 {
     match n.first() {
         Some(&first) => (n.len() as u32 - 1) * 8 + (8 - first.leading_zeros()),
         None => 0,
@@ -1061,11 +1173,11 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             }
             _ => Err(unsupported()),
         },
-        (KeyAlgorithm::Rsa { hash, .. }, Material::RsaPrivate(parts)) => match format {
+        (KeyAlgorithm::Rsa { name, hash, .. }, Material::RsaPrivate(parts)) => match format {
             "pkcs8" => Ok(Outcome::Bytes(pkcs8_of(parts)?)),
             "jwk" => Ok(Outcome::Jwk(jwk::exported(
                 vec![
-                    ("alg", JwkValue::Str(rs_alg(hash).into())),
+                    ("alg", JwkValue::Str(rsa_jwk_alg(name, hash).into())),
                     ("d", JwkValue::Str(jwk::encode(&parts.d))),
                     ("dp", JwkValue::Str(jwk::encode(&parts.dp))),
                     ("dq", JwkValue::Str(jwk::encode(&parts.dq))),
@@ -1082,7 +1194,7 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             "spki" => Err(Error::invalid_access("The key is not of the expected type")),
             _ => Err(unsupported()),
         },
-        (KeyAlgorithm::Rsa { hash, .. }, Material::RsaPublic { n, e }) => match format {
+        (KeyAlgorithm::Rsa { name, hash, .. }, Material::RsaPublic { n, e }) => match format {
             "pkcs8" => Err(Error::invalid_access("The key is not of the expected type")),
             "spki" => {
                 let key = rsa::PublicKey::from_der(&rsa_public_key_der(n, e))
@@ -1092,7 +1204,7 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             }
             "jwk" => Ok(Outcome::Jwk(jwk::exported(
                 vec![
-                    ("alg", JwkValue::Str(rs_alg(hash).into())),
+                    ("alg", JwkValue::Str(rsa_jwk_alg(name, hash).into())),
                     ("e", JwkValue::Str(jwk::encode(e))),
                     ("kty", JwkValue::Str("RSA".into())),
                     ("n", JwkValue::Str(jwk::encode(n))),

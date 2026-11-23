@@ -1549,10 +1549,11 @@ mod tests {
         // Web Crypto's calls into aws-lc's C library where aws-lc-rs
         // has none (G255, the lead's ruling): AES-GCM at any IV and tag
         // length, RSA's keys (generated, parsed, checked, their parts and
-        // PKCS #1) and its signing and verification outside aws-lc-rs's
-        // ranges; the crypto crate denies `unsafe` but in that module.
+        // PKCS #1) and RSASSA-PKCS1-v1_5's and RSA-PSS's signing and
+        // verification outside aws-lc-rs's ranges; the crypto crate denies
+        // `unsafe` but in that module.
         const NATIVE: &str = "crates/crypto/src/native.rs";
-        const NATIVE_BLOCKS: usize = 27;
+        const NATIVE_BLOCKS: usize = 31;
         let mut native_blocks = 0;
         let mut context_blocks = 0;
         let mut stack_blocks = 0;

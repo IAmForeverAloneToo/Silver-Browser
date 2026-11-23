@@ -1187,3 +1187,393 @@ fn rsa_private_keys_refuse_and_keep_as_they_should() {
         );
     }
 }
+
+/// A PKCS #1 `RSAPrivateKey` of any parts, consistent or not, written
+/// here for the tests alone (the library writes none it would refuse).
+fn pkcs1_of(parts: &crate::native::RsaPrivateParts) -> Vec<u8> {
+    fn length(out: &mut Vec<u8>, len: usize) {
+        if len < 0x80 {
+            out.push(len as u8);
+        } else {
+            let bytes: Vec<u8> = len
+                .to_be_bytes()
+                .into_iter()
+                .skip_while(|&b| b == 0)
+                .collect();
+            out.push(0x80 | bytes.len() as u8);
+            out.extend_from_slice(&bytes);
+        }
+    }
+    let mut body = vec![0x02, 0x01, 0x00];
+    for part in [
+        &parts.n, &parts.e, &parts.d, &parts.p, &parts.q, &parts.dp, &parts.dq, &parts.qi,
+    ] {
+        body.push(0x02);
+        let pad = part.first().is_some_and(|&b| b & 0x80 != 0);
+        length(&mut body, part.len() + usize::from(pad));
+        if pad {
+            body.push(0);
+        }
+        body.extend_from_slice(part);
+    }
+    let mut out = vec![0x30];
+    length(&mut out, body.len());
+    out.extend_from_slice(&body);
+    out
+}
+
+/// An inconsistent private key (a wrong `d`, a CRT part off by one) is
+/// refused with a DataError through both import paths, inside aws-lc-rs's
+/// range and outside it: whichever check refuses it, aws-lc's own or the
+/// one `native` repeats (the lead's ruling, 2026-11-23).
+#[test]
+fn an_inconsistent_rsa_private_key_is_refused_both_ways() {
+    let mut keys = Keys::default();
+    for bits in [1024, 2048] {
+        let good = crate::native::rsa_generate(bits, 65537).unwrap().parts();
+        let mut wrong_d = good.clone();
+        *wrong_d.d.last_mut().unwrap() ^= 2;
+        let mut wrong_dp = good.clone();
+        *wrong_dp.dp.last_mut().unwrap() ^= 1;
+        let mut wrong_qi = good.clone();
+        *wrong_qi.qi.last_mut().unwrap() ^= 1;
+        let alg = dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s("SHA-256"))]);
+        for (label, parts) in [
+            ("d", &wrong_d),
+            ("dp", &wrong_dp),
+            ("qi", &wrong_qi),
+            ("good", &good),
+        ] {
+            let pkcs8 = crate::algorithms::pkcs8_wrap(&pkcs1_of(parts));
+            let b64 = |b: &[u8]| s(&jwk::encode(b));
+            let jwk = dict(&[
+                ("kty", s("RSA")),
+                ("n", b64(&parts.n)),
+                ("e", b64(&parts.e)),
+                ("d", b64(&parts.d)),
+                ("p", b64(&parts.p)),
+                ("q", b64(&parts.q)),
+                ("dp", b64(&parts.dp)),
+                ("dq", b64(&parts.dq)),
+                ("qi", b64(&parts.qi)),
+            ]);
+            for (format, data) in [("pkcs8", Value::Bytes(pkcs8)), ("jwk", jwk)] {
+                let out = run(
+                    &mut keys,
+                    Call::ImportKey {
+                        format: format.into(),
+                        key_data: data,
+                        algorithm: alg.clone(),
+                        extractable: true,
+                        usages: vec![Usage::Sign],
+                    },
+                );
+                if label == "good" {
+                    assert!(
+                        matches!(out, Ok(Outcome::Key(_))),
+                        "{bits} {format}: the good key"
+                    );
+                } else {
+                    assert_eq!(
+                        error(out),
+                        "DataError: ",
+                        "{bits} {format}: a wrong {label}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn pss(salt: f64) -> Value {
+    dict(&[("name", s("RSA-PSS")), ("saltLength", Value::Num(salt))])
+}
+
+fn pss_pair(keys: &mut Keys, bits: u32, hash: &str) -> (KeyInfo, KeyInfo) {
+    let algorithm = dict(&[
+        ("name", s("RSA-PSS")),
+        ("modulusLength", Value::Num(f64::from(bits))),
+        ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+        ("hash", s(hash)),
+    ]);
+    match run(
+        keys,
+        Call::GenerateKey {
+            algorithm,
+            extractable: true,
+            usages: vec![Usage::Sign, Usage::Verify],
+        },
+    ) {
+        Ok(Outcome::Pair(public, private)) => (public, private),
+        other => panic!("{bits} {hash}: {other:?}"),
+    }
+}
+
+/// RSA-PSS's route: aws-lc-rs for SHA-256/384/512 at 2048 to 8192 bits
+/// with a salt as long as the digest; every other hash, size or salt,
+/// the library.
+#[test]
+fn pss_is_routed_by_hash_size_and_salt() {
+    use crate::algorithms::pss_route as route;
+    for (hash, len) in [("SHA-256", 32), ("SHA-384", 48), ("SHA-512", 64)] {
+        assert!(route(hash, 2048, len).is_some(), "{hash}");
+        assert!(
+            route(hash, 2047, len).is_none() && route(hash, 8193, len).is_none(),
+            "{hash} size"
+        );
+        assert!(route(hash, 8192, len).is_some(), "{hash} at 8192");
+        assert!(
+            route(hash, 2048, len - 1).is_none() && route(hash, 2048, len + 1).is_none(),
+            "{hash} salt"
+        );
+        assert!(route(hash, 2048, 0).is_none(), "{hash} salt 0");
+    }
+    assert!(route("SHA-1", 2048, 20).is_none());
+}
+
+/// RSA-PSS at each size, hash and salt the reference probed (Chrome 157):
+/// up to the most a key holds (emLen - hLen - 2) signs and verifies, and
+/// randomly but at salt 0; one more is an OperationError to sign and
+/// false to verify; a salt past 2^31 - 1 an OperationError; a signature
+/// with another salt, or too short, false.
+#[test]
+fn pss_signs_and_verifies_as_the_reference_does() {
+    let mut keys = Keys::default();
+    let data = b"pss".to_vec();
+    for (bits, hash, hlen) in [
+        (512, "SHA-1", 20),
+        (512, "SHA-256", 32),
+        (1024, "SHA-512", 64),
+        (2048, "SHA-1", 20),
+        (2048, "SHA-256", 32),
+        (3072, "SHA-384", 48),
+    ] {
+        let (public, private) = pss_pair(&mut keys, bits, hash);
+        let max = (bits - 1).div_ceil(8) - hlen - 2;
+        let sign = |keys: &mut Keys, salt: u32| {
+            run(
+                keys,
+                Call::Sign {
+                    algorithm: pss(f64::from(salt)),
+                    key: private.id,
+                    data: data.clone(),
+                },
+            )
+        };
+        let verify = |keys: &mut Keys, salt: f64, signature: Vec<u8>| {
+            run(
+                keys,
+                Call::Verify {
+                    algorithm: pss(salt),
+                    key: public.id,
+                    signature,
+                    data: data.clone(),
+                },
+            )
+        };
+        for salt in [0, hlen, max] {
+            if salt > max {
+                continue;
+            }
+            let signature = bytes(sign(&mut keys, salt));
+            assert_eq!(signature.len() as u32 * 8, bits, "{bits} {hash} {salt}");
+            let label = format!("{bits} {hash} salt {salt}");
+            assert_eq!(
+                verify(&mut keys, f64::from(salt), signature.clone()),
+                Ok(Outcome::Bool(true)),
+                "{label}"
+            );
+            let other = if salt == 0 { 1 } else { salt - 1 };
+            assert_eq!(
+                verify(&mut keys, f64::from(other), signature.clone()),
+                Ok(Outcome::Bool(false)),
+                "{label} other"
+            );
+            assert_eq!(
+                verify(&mut keys, f64::from(max + 1), signature.clone()),
+                Ok(Outcome::Bool(false)),
+                "{label} past max"
+            );
+            assert_eq!(
+                verify(&mut keys, f64::from(salt), signature[1..].to_vec()),
+                Ok(Outcome::Bool(false)),
+                "{label} short"
+            );
+            let again = bytes(sign(&mut keys, salt));
+            assert_eq!(
+                again == signature,
+                salt == 0,
+                "{label}: random but at salt 0"
+            );
+        }
+        assert_eq!(
+            error(sign(&mut keys, max + 1)),
+            "OperationError: ",
+            "{bits} {hash} past max"
+        );
+        let signature = bytes(sign(&mut keys, 0));
+        assert_eq!(
+            error(verify(&mut keys, 4_294_967_295.0, signature)),
+            "OperationError: ",
+            "{bits} {hash} huge"
+        );
+    }
+    // The params' own errors, the reference's words.
+    let (_, private) = pss_pair(&mut keys, 1024, "SHA-256");
+    let sign = |keys: &mut Keys, algorithm| {
+        run(
+            keys,
+            Call::Sign {
+                algorithm,
+                key: private.id,
+                data: data.clone(),
+            },
+        )
+    };
+    let prefix =
+        "TypeError: Failed to execute 'sign' on 'SubtleCrypto': RsaPssParams: saltLength: ";
+    assert_eq!(
+        error(sign(&mut keys, dict(&[("name", s("RSA-PSS"))]))),
+        format!("{prefix}Missing required property")
+    );
+    assert_eq!(
+        error(sign(&mut keys, pss(-1.0))),
+        format!("{prefix}Outside of numeric range")
+    );
+    assert_eq!(
+        error(sign(&mut keys, pss(4_294_967_296.0))),
+        format!("{prefix}Outside of numeric range")
+    );
+    assert_eq!(
+        error(sign(&mut keys, s("RSASSA-PKCS1-v1_5"))),
+        "InvalidAccessError: key.algorithm does not match that of operation"
+    );
+}
+
+/// Where both routes run, each verifies the other's signature: the safe
+/// API's at a salt as long as the digest, the library's of the same key.
+#[test]
+fn pss_safe_and_native_signatures_verify_each_other() {
+    let key = crate::native::rsa_generate(2048, 65537).unwrap();
+    let parts = key.parts();
+    let pair = crate::algorithms::safe_key_pair_for_tests(&parts);
+    let der = crate::algorithms::rsa_public_key_der(&parts.n, &parts.e);
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, b"both");
+    let mut safe = vec![0u8; pair.public_modulus_len()];
+    pair.sign(
+        &aws_lc_rs::signature::RSA_PSS_SHA256,
+        &aws_lc_rs::rand::SystemRandom::new(),
+        b"both",
+        &mut safe,
+    )
+    .unwrap();
+    let hash = crate::native::Hash::Sha256;
+    assert_eq!(
+        crate::native::rsa_verify_pss(&der, hash, digest.as_ref(), 32, &safe),
+        Ok(true)
+    );
+    let native = crate::native::rsa_sign_pss(&key, hash, digest.as_ref(), 32).unwrap();
+    let components = aws_lc_rs::signature::RsaPublicKeyComponents {
+        n: parts.n.as_slice(),
+        e: parts.e.as_slice(),
+    };
+    assert!(
+        components
+            .verify(
+                &aws_lc_rs::signature::RSA_PSS_2048_8192_SHA256,
+                b"both",
+                &native
+            )
+            .is_ok()
+    );
+}
+
+/// An RSA-PSS key's JWK names PS1 to PS512, and refuses to be imported
+/// as RSASSA-PKCS1-v1_5's.
+#[test]
+fn a_pss_keys_jwk_is_its_own() {
+    let mut keys = Keys::default();
+    for (hash, want) in [
+        ("SHA-1", "PS1"),
+        ("SHA-256", "PS256"),
+        ("SHA-384", "PS384"),
+        ("SHA-512", "PS512"),
+    ] {
+        let (public, _) = pss_pair(&mut keys, 1024, hash);
+        let Ok(Outcome::Jwk(members)) = run(
+            &mut keys,
+            Call::ExportKey {
+                format: "jwk".into(),
+                key: public.id,
+            },
+        ) else {
+            panic!("a JWK");
+        };
+        assert_eq!(members[0], ("alg".to_owned(), JwkValue::Str(want.into())));
+        let as_value = Value::Dict(
+            members
+                .iter()
+                .map(|(n, v)| {
+                    let v = match v {
+                        JwkValue::Str(t) => Value::Str(t.clone()),
+                        JwkValue::Bool(b) => Value::Bool(*b),
+                        JwkValue::List(l) => {
+                            Value::List(l.iter().map(|t| Value::Str(t.clone())).collect())
+                        }
+                    };
+                    (n.clone(), v)
+                })
+                .collect(),
+        );
+        let out = run(
+            &mut keys,
+            Call::ImportKey {
+                format: "jwk".into(),
+                key_data: as_value,
+                algorithm: dict(&[("name", s("RSASSA-PKCS1-v1_5")), ("hash", s(hash))]),
+                extractable: true,
+                usages: vec![Usage::Verify],
+            },
+        );
+        assert_eq!(
+            error(out),
+            "DataError: The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call"
+        );
+    }
+}
+
+/// openssl's RSA-PSS signatures (`tests/rsa_pss.txt`), each hash, salt
+/// and size on each route, verify true through the page's calls, and a
+/// changed message false: the library's digest and MGF1 are the hash's.
+#[test]
+fn pss_verifies_openssls_signatures() {
+    let vectors = include_str!("../tests/rsa_pss.txt");
+    for line in vectors.lines().filter(|l| !l.starts_with('#')) {
+        let parts: Vec<&str> = line.split(' ').collect();
+        let (bits, hash, salt) = (parts[0], parts[1], parts[2].parse::<f64>().unwrap());
+        let (spki, signature) = (hex(parts[3]), hex(parts[4]));
+        let mut keys = Keys::default();
+        let k = key(run(
+            &mut keys,
+            Call::ImportKey {
+                format: "spki".into(),
+                key_data: Value::Bytes(spki),
+                algorithm: dict(&[("name", s("RSA-PSS")), ("hash", s(hash))]),
+                extractable: true,
+                usages: vec![Usage::Verify],
+            },
+        ));
+        for (data, want) in [(&b"pss by openssl"[..], true), (b"pss by openssl!", false)] {
+            let out = run(
+                &mut keys,
+                Call::Verify {
+                    algorithm: pss(salt),
+                    key: k.id,
+                    signature: signature.clone(),
+                    data: data.to_vec(),
+                },
+            );
+            assert_eq!(out, Ok(Outcome::Bool(want)), "{bits} {hash} salt {salt}");
+        }
+    }
+}

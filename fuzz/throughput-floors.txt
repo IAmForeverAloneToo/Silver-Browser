@@ -12,7 +12,7 @@
 # (45053330136, 45070765140; 2b-1's push run signed on each input and
 # is not counted).
 # crypto_rsa_roundtrip's is a tenth of a local Windows run's rate
-# (107115 runs in 121 s), until its push runs come.
+# (40756 runs in 121 s, RSA-PSS included), until its push runs come.
 # crypto_gcm's is a tenth of a local Windows run's rate (16785022 runs
 # in 121 s), until its push runs come.
 animations 2.299 22.99 23.63 23.90
@@ -25,7 +25,7 @@ content_disposition 1660.202 16602.02 22483.03 25831.07
 cookies 8.691 86.91 108.88 109.50
 crypto_gcm 13871.919 138719.19
 crypto_import 3415.757 34157.57 49713.44 38897.41
-crypto_rsa_roundtrip 88.525 885.25
+crypto_rsa_roundtrip 33.683 336.83
 csp 419.325 4193.25 5387.95 6829.69
 css_stylesheet 312.200 3122.00 3177.70 4585.92
 devtools_json 3889.936 38899.36 58378.18 60498.51

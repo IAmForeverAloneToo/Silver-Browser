@@ -246,9 +246,25 @@ library's PKCS #1, byte for byte aws-lc-rs's inside the range and read
 back to the same parts outside it, in each of DER's length forms); and
 RSASSA-PKCS1-v1_5's signing, aws-lc-rs's for SHA-256 to SHA-512 at 2048
 to 8192 bits, the library's for the rest (SHA-1 among them: aws-lc-rs
-signs none). Next: RSA-PSS, then RSA-OAEP (aws-lc-rs's range alone:
+signs none). RSA-PSS (part 2b-3), routed by hash, size and salt:
+aws-lc-rs's for SHA-256 to SHA-512 at 2048 to 8192 bits with a salt as
+long as the digest (the one it takes), the library's for any other
+(SHA-1, a salt from 0 to the most the key holds, emLen - hLen - 2);
+past that most, an OperationError to sign and false to verify, past
+2^31 - 1 an OperationError, as Chrome 157 answers (probed); JWK `alg`
+PS1 to PS512. Next: RSA-OAEP (aws-lc-rs's range alone:
 under 2048 bits an OperationError, a known gap by the lead's ruling),
-then Wycheproof's RSA vectors. Each C object freed by its wrapper on
+then Wycheproof's RSA vectors.
+
+On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
+again the spots `native` leans on, `RSA_new_private_key`
+(crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`
+(crypto/rsa_extra/rsa_asn1.c), each ending with `RSA_check_key`, which
+`native` repeats on purpose and no test can see while they stand, and
+`RSA_check_key`'s own `GUARD_PTR` (crypto/fipsmodule/rsa/rsa.c), which
+refuses a null key `native` refuses first, as unseen; and
+run the native module's sabotage again (the lead's ruling,
+2026-11-23). Each C object freed by its wrapper on
 every path, every return code checked, every script-controlled length
 checked first, the tag checked by the library.
 - The bindings a shell (`SubtleCrypto`, `CryptoKey`), `crypto.subtle` in

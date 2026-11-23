@@ -514,7 +514,7 @@ client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 27 blocks over aws-lc's C interface where aws-lc-rs has
+ruling), with 31 blocks over aws-lc's C interface where aws-lc-rs has
 none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
 cipher context made and freed, the cipher chosen by the key's length,
 the seal and the open, each length a script controls checked in Rust
@@ -530,13 +530,18 @@ ranges (`RSA_verify` on the checked key; the routing a function whose
 boundaries a test pins); RSA's private keys outside aws-lc-rs's range
 (2048 to 8192 bits) or its exponent (65537): their generation
 (`BN_new`, `BN_set_u64`, `RSA_new`, `RSA_generate_key_ex`), a key made
-from its parts (`BN_bin2bn`, `RSA_new_private_key`, which checks it),
-a PKCS #8 parsed (`EVP_parse_private_key` over a `CBS` of the caller's
-bytes, nothing after it, which checks the key; `EVP_PKEY_get1_RSA`,
-null for a key of another kind), its parts read (`RSA_get0_*`), its PKCS #1
+from its parts (`BN_bin2bn`, `RSA_new_private_key`), a PKCS #8
+parsed (`EVP_parse_private_key` over a `CBS` of the caller's bytes,
+nothing after it; `EVP_PKEY_get1_RSA`, null for a key of another
+kind), each checked by `RSA_check_key` again on purpose though aws-lc
+checks it too, its parts read (`RSA_get0_*`), its PKCS #1
 written (`RSA_private_key_to_bytes`, the library's buffer copied,
 cleansed and freed) and wrapped in a PKCS #8 written here, never read;
-and RSASSA-PKCS1-v1_5's signing (`RSA_size`, `RSA_sign`). A private
+RSASSA-PKCS1-v1_5's signing (`RSA_size`, `RSA_sign`); and RSA-PSS's
+signing and verification (`RSA_sign_pss_mgf1`, `RSA_verify_pss_mgf1`,
+the digest's static description, the salt checked against `c_int`
+first), outside aws-lc-rs's PSS (SHA-256 to SHA-512 at 2048 to 8192
+bits, a salt as long as the digest alone). A private
 key is kept as its parts, overwritten as they go and never printed.
 The tests and the fuzz target `crypto_rsa_roundtrip` hold that a
 signature the library made, with a key of any size, verifies true on

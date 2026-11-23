@@ -521,6 +521,104 @@ fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
         Ok(Outcome::Bytes(signature)),
         "{bits} bits, {name}: the page's signature is the library's"
     );
+    // RSA-PSS with the same key and hash (G255 part 2b-3), a salt the
+    // input picks up to the most the key holds: the library's signature
+    // verifies true through the page, another salt false, and the page's
+    // own (random) signature true.
+    let bits = algorithms::bit_length(&parts.n);
+    let (em, hlen) = (bits.div_ceil(8), digest.as_ref().len() as u32);
+    let em = if bits % 8 == 1 { em - 1 } else { em };
+    let Some(max) = em.checked_sub(hlen + 2) else {
+        return;
+    };
+    let salt = message.len() as u32 % (max + 1);
+    let signature = POOL
+        .with(|pool| native::rsa_sign_pss(&pool[at], hash, digest.as_ref(), salt))
+        .unwrap_or_else(|_| panic!("{bits} bits, {name}: salt {salt} of {max} signs"));
+    let pss = |salt: u32| {
+        Value::Dict(vec![
+            ("name".into(), Value::Str("RSA-PSS".into())),
+            ("saltLength".into(), Value::Num(f64::from(salt))),
+        ])
+    };
+    let import = |keys: &mut Keys, private: bool| {
+        let mut members = vec![
+            ("kty", Value::Str("RSA".into())),
+            ("n", member(&parts.n)),
+            ("e", member(&parts.e)),
+        ];
+        if private {
+            members.extend([
+                ("d", member(&parts.d)),
+                ("p", member(&parts.p)),
+                ("q", member(&parts.q)),
+                ("dp", member(&parts.dp)),
+                ("dq", member(&parts.dq)),
+                ("qi", member(&parts.qi)),
+            ]);
+        }
+        let out = run(
+            keys,
+            Call::ImportKey {
+                format: "jwk".into(),
+                key_data: Value::Dict(
+                    members
+                        .into_iter()
+                        .map(|(n, v)| (n.to_owned(), v))
+                        .collect(),
+                ),
+                algorithm: Value::Dict(vec![
+                    ("name".into(), Value::Str("RSA-PSS".into())),
+                    ("hash".into(), Value::Str(name.into())),
+                ]),
+                extractable: false,
+                usages: vec![if private { Usage::Sign } else { Usage::Verify }],
+            },
+        );
+        match out {
+            Ok(Outcome::Key(key)) => key.id,
+            other => panic!("{bits} bits: the library's key imports for RSA-PSS: {other:?}"),
+        }
+    };
+    let (public, private) = (import(&mut keys, false), import(&mut keys, true));
+    let verify = |keys: &mut Keys, salt: u32, signature: Vec<u8>| {
+        run(
+            keys,
+            Call::Verify {
+                algorithm: pss(salt),
+                key: public,
+                signature,
+                data: message.to_vec(),
+            },
+        )
+    };
+    let label = format!("{bits} bits, {name}, salt {salt} of {max}");
+    assert_eq!(
+        verify(&mut keys, salt, signature.clone()),
+        Ok(Outcome::Bool(true)),
+        "{label}: the library's RSA-PSS signature"
+    );
+    assert_eq!(
+        verify(&mut keys, salt + 1, signature),
+        Ok(Outcome::Bool(false)),
+        "{label}: another salt"
+    );
+    let signed = run(
+        &mut keys,
+        Call::Sign {
+            algorithm: pss(salt),
+            key: private,
+            data: message.to_vec(),
+        },
+    );
+    let Ok(Outcome::Bytes(signed)) = signed else {
+        panic!("{label}: the page signs: {signed:?}");
+    };
+    assert_eq!(
+        verify(&mut keys, salt, signed),
+        Ok(Outcome::Bool(true)),
+        "{label}: the page's RSA-PSS signature"
+    );
 }
 
 /// `native`'s AES-GCM, for the fuzz target that holds it to aws-lc-rs's

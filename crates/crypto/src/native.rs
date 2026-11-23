@@ -2,8 +2,8 @@
 //! (G255; the lead's ruling of 2026-11-23): AES-GCM with any IV and tag
 //! length the reference allows; RSA's keys (generated, made from their
 //! parts, a PKCS #8 parsed, their parts and PKCS #1 read, each checked)
-//! and RSASSA-PKCS1-v1_5's signing and verification outside aws-lc-rs's
-//! ranges. Every unsafe call of the crate is here.
+//! and RSASSA-PKCS1-v1_5's and RSA-PSS's signing and verification outside
+//! aws-lc-rs's ranges. Every unsafe call of the crate is here.
 //!
 //! The rules this module keeps: each C object is owned by a wrapper that
 //! frees it on every path (`Context`, `Rsa`, `Bignum`, `Pkey`); a private
@@ -518,7 +518,12 @@ pub(crate) fn rsa_private_from_parts(parts: &RsaPrivateParts) -> Result<RsaPriva
     if rsa.is_null() {
         return Err(Failed);
     }
-    Ok(RsaPrivate(Rsa(rsa)))
+    // On purpose, the check aws-lc already makes (`RSA_new_private_key` in
+    // crypto/fipsmodule/rsa/rsa.c ends with `RSA_check_key`): key material
+    // a page gives crosses here, and that is a detail of a dependency we
+    // will upgrade (the lead's ruling, 2026-11-23). No test can see it
+    // while aws-lc's own check stands; a test pins the outcome.
+    Ok(RsaPrivate(checked(Rsa(rsa))?))
 }
 
 /// An `EVP_PKEY`, freed as it goes.
@@ -555,10 +560,15 @@ pub(crate) fn rsa_private_from_pkcs8(der: &[u8]) -> Result<RsaPrivate, Failed> {
     // its RSA, or null for a key of another kind, which its wrapper owns
     // and frees.
     let rsa = unsafe { sys::EVP_PKEY_get1_RSA(pkey.0) };
+    // Never a null key past here; no test can see this while the check
+    // below refuses one too (aws-lc's `RSA_check_key` begins with
+    // `GUARD_PTR`), but that is the dependency's, not ours.
     if rsa.is_null() {
         return Err(Failed);
     }
-    Ok(RsaPrivate(Rsa(rsa)))
+    // On purpose, the check aws-lc already makes (`RSA_parse_private_key`
+    // in crypto/rsa_extra/rsa_asn1.c ends with `RSA_check_key`), as above.
+    Ok(RsaPrivate(checked(Rsa(rsa))?))
 }
 
 /// A private key's PKCS #1 `RSAPrivateKey`, written by the library: what
@@ -645,6 +655,90 @@ pub(crate) fn rsa_sign_pkcs1(
     }
     out.truncate(len);
     Ok(out)
+}
+
+/// The library's description of a digest, a static one.
+fn md(hash: Hash) -> *const sys::EVP_MD {
+    // SAFETY: each takes nothing and returns a pointer to a static digest
+    // description, never freed.
+    unsafe {
+        match hash {
+            Hash::Sha1 => sys::EVP_sha1(),
+            Hash::Sha256 => sys::EVP_sha256(),
+            Hash::Sha384 => sys::EVP_sha384(),
+            Hash::Sha512 => sys::EVP_sha512(),
+        }
+    }
+}
+
+/// RSA-PSS's signature of `digest` (by `hash`, MGF1 with it too) with
+/// `key` and a salt of `salt` bytes, made by the library; `Failed` for a
+/// salt the key cannot hold or past `c_int`.
+pub(crate) fn rsa_sign_pss(
+    key: &RsaPrivate,
+    hash: Hash,
+    digest: &[u8],
+    salt: u32,
+) -> Result<Vec<u8>, Failed> {
+    let salt = c_int::try_from(salt).map_err(|_| Failed)?;
+    let md = md(hash);
+    // SAFETY: `key.0.0` is a live key, only read.
+    let size = unsafe { sys::RSA_size(key.0.0) } as usize;
+    let mut out = vec![0u8; size];
+    let mut len = 0usize;
+    // SAFETY: the key is live; `out` has `size` bytes, the most given; the
+    // digest pointer is valid for its length; `md` is static; `len` is a
+    // live local.
+    ok("RsaSignPss", unsafe {
+        sys::RSA_sign_pss_mgf1(
+            key.0.0,
+            &mut len,
+            out.as_mut_ptr(),
+            size,
+            digest.as_ptr(),
+            digest.len(),
+            md,
+            md,
+            salt,
+        )
+    })?;
+    if len > size {
+        return Err(Failed);
+    }
+    out.truncate(len);
+    Ok(out)
+}
+
+/// RSA-PSS's verification, as `rsa_verify_pkcs1`'s: `Ok(false)` for a
+/// signature that does not verify (a salt past what the key holds among
+/// them, as the reference answers), `Failed` for a key the library
+/// refuses or a salt past `c_int`.
+pub(crate) fn rsa_verify_pss(
+    der: &[u8],
+    hash: Hash,
+    digest: &[u8],
+    salt: u32,
+    signature: &[u8],
+) -> Result<bool, Failed> {
+    let salt = c_int::try_from(salt).map_err(|_| Failed)?;
+    let rsa = rsa_public_key(der)?;
+    let md = md(hash);
+    // SAFETY: `rsa.0` is a live, checked key; the digest and signature
+    // pointers are valid for their lengths; `md` is static; it writes
+    // nothing.
+    let code = unsafe {
+        sys::RSA_verify_pss_mgf1(
+            rsa.0,
+            digest.as_ptr(),
+            digest.len(),
+            md,
+            md,
+            salt,
+            signature.as_ptr(),
+            signature.len(),
+        )
+    };
+    Ok(code == 1)
 }
 
 /// The digests RSASSA-PKCS1-v1_5 signs, as the library names them.

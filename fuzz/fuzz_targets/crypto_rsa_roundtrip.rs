@@ -2,7 +2,9 @@
 //! the lead's addition to ruling (a)): a signature the library made, of
 //! any message, under the hash the input picks, verifies true through
 //! Web Crypto's own calls on whichever route the key takes, and another
-//! message false. Never a silent false. Kept apart from crypto_import so
+//! message false; RSASSA-PKCS1-v1_5's the page's own byte for byte, and
+//! RSA-PSS's at a salt the input picks, another salt false. Never a
+//! silent false. Kept apart from crypto_import so
 //! that the import parsers keep their throughput.
 
 #![no_main]
