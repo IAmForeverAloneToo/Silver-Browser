@@ -29707,6 +29707,7 @@
   const PORT = 20;
   const OFFSCREEN_CANVAS = 21;
   const IMAGE_BITMAP_PIXELS = 22;
+  const CRYPTO_KEY = 23;
 
   // What `native.cloneKind` says of an object: what no script can tell.
   const KIND_FUNCTION = 1;
@@ -30087,6 +30088,16 @@
     if (p !== undefined) {
       return [POINT, iface, ArraySlice(p, 0)];
     }
+    // A CryptoKey (G255): the store's record of it, the import that makes
+    // it again, kept in the record alone, never a script's.
+    const keyState = WeakMapGet(keyStates, value);
+    if (keyState !== undefined) {
+      const record = native.cryptoSerialize(keyState.id);
+      if (typeof record !== "object" || record === null) {
+        throw dataCloneError(where, "A CryptoKey could not be cloned.");
+      }
+      return [CRYPTO_KEY, new $Uint8Array(record)];
+    }
     const t = WeakMapGet(canvasTargets, value);
     if (t !== undefined && t.kind === 5) {
       if (t.closed) {
@@ -30251,6 +30262,15 @@
       case IMAGE_BITMAP:
         object = bitmapMade(e[1]);
         break;
+      case CRYPTO_KEY: {
+        // A CryptoKey is a secure context's alone.
+        const text = SECURE ? native.cryptoDeserialize(binaryString(e[1])) : null;
+        if (typeof text !== "string") {
+          throw new $DOMException("A CryptoKey could not be deserialized.", "DataCloneError");
+        }
+        object = keyFrom(JSONParse(text));
+        break;
+      }
       case IMAGE_BITMAP_PIXELS:
         object = chunkInstall("canvas").makeBitmap(native.canvasData("bitmapFrom", e[3], e[1], e[2], e[4] ? 1 : 0));
         break;
@@ -30291,7 +30311,7 @@
   }
 
   // The kinds of entry whose bytes cross as base64, and where they are.
-  const BYTES_AT = new $Map([[BUFFER, 1], [BLOB, 1], [FILE, 1], [IMAGE_DATA, 3]]);
+  const BYTES_AT = new $Map([[BUFFER, 1], [BLOB, 1], [FILE, 1], [IMAGE_DATA, 3], [CRYPTO_KEY, 1]]);
 
   // A record as the string another realm takes: its JSON, bytes in
   // base64.

@@ -3464,3 +3464,143 @@ fn x25519_is_the_references() {
     ));
     assert_eq!(bytes(export(&mut keys, "raw", derived.id)), ab);
 }
+
+/// A key's structured clone (step 4): every kind of key the store keeps,
+/// extractable or not, made again from its record with the same type,
+/// algorithm, extractable and usages, and the same material (a secret's
+/// HMAC the same, a pair's signature verifying); a record changed or of
+/// another kind refused.
+#[test]
+fn every_kind_of_key_clones_through_its_record() {
+    use crate::{deserialize_key, serialize_key};
+    let mut keys = Keys::default();
+    let again = |keys: &mut Keys, info: &KeyInfo| {
+        let record = serialize_key(keys, info.id).expect("a record");
+        let copy = deserialize_key(keys, &record).expect("the key again");
+        assert_eq!(
+            (
+                copy.kind,
+                copy.extractable,
+                copy.algorithm.clone(),
+                copy.usages.clone()
+            ),
+            (
+                info.kind,
+                info.extractable,
+                info.algorithm.clone(),
+                info.usages.clone()
+            )
+        );
+        copy
+    };
+    // Secrets: AES, HMAC (a length past a byte's), HKDF.
+    let aes = key(aes_key(
+        &mut keys,
+        "AES-GCM",
+        &[7; 16],
+        vec![Usage::Encrypt, Usage::Decrypt],
+    ));
+    again(&mut keys, &aes);
+    let hmac = hmac_key(&mut keys, &[5; 9], Some(72.0), false);
+    let copy = again(&mut keys, &hmac);
+    let sign = |keys: &mut Keys, id| {
+        bytes(run(
+            keys,
+            Call::Sign {
+                algorithm: s("HMAC"),
+                key: id,
+                data: vec![1],
+            },
+        ))
+    };
+    assert_eq!(sign(&mut keys, copy.id), sign(&mut keys, hmac.id));
+    let hkdf = key(run(
+        &mut keys,
+        Call::ImportKey {
+            format: "raw".into(),
+            key_data: Value::Bytes(vec![1; 32]),
+            algorithm: s("HKDF"),
+            extractable: false,
+            usages: vec![Usage::DeriveBits],
+        },
+    ));
+    again(&mut keys, &hkdf);
+    // Pairs: each private key, not extractable, signs what its public
+    // key's clone verifies.
+    let pairs = [
+        (
+            "RSASSA-PKCS1-v1_5",
+            dict(&[
+                ("name", s("RSASSA-PKCS1-v1_5")),
+                ("modulusLength", Value::Num(1024.0)),
+                ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+                ("hash", s("SHA-256")),
+            ]),
+            s("RSASSA-PKCS1-v1_5"),
+        ),
+        (
+            "ECDSA",
+            dict(&[("name", s("ECDSA")), ("namedCurve", s("P-384"))]),
+            dict(&[("name", s("ECDSA")), ("hash", s("SHA-384"))]),
+        ),
+        ("Ed25519", s("Ed25519"), s("Ed25519")),
+    ];
+    for (name, generate, params) in pairs {
+        let Ok(Outcome::Pair(public, private)) = run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: generate,
+                extractable: false,
+                usages: vec![Usage::Sign, Usage::Verify],
+            },
+        ) else {
+            panic!("{name}: a pair");
+        };
+        let (public2, private2) = (again(&mut keys, &public), again(&mut keys, &private));
+        let signature = bytes(run(
+            &mut keys,
+            Call::Sign {
+                algorithm: params.clone(),
+                key: private2.id,
+                data: vec![9],
+            },
+        ));
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: params,
+                key: public2.id,
+                signature,
+                data: vec![9],
+            },
+        );
+        assert_eq!(out, Ok(Outcome::Bool(true)), "{name}");
+        assert_eq!(
+            error(run(
+                &mut keys,
+                Call::ExportKey {
+                    format: "pkcs8".into(),
+                    key: private2.id
+                }
+            )),
+            "InvalidAccessError: Failed to execute 'exportKey' on 'SubtleCrypto': key is not extractable",
+            "{name}: still not extractable"
+        );
+    }
+    let (x_public, x_private) = okp_pair(&mut keys, "X25519", vec![Usage::DeriveBits]);
+    again(&mut keys, &x_public);
+    again(&mut keys, &x_private);
+    let (e_public, e_private) = ec_pair(&mut keys, "ECDH", "P-256", vec![Usage::DeriveBits]);
+    again(&mut keys, &e_public);
+    again(&mut keys, &e_private);
+    // A record changed, or not a record, is refused.
+    let mut record = serialize_key(&keys, aes.id).unwrap();
+    let text = String::from_utf8(record.clone())
+        .unwrap()
+        .replace("\"AES-GCM\"", "\"AES-FOO\"");
+    assert!(deserialize_key(&mut keys, text.as_bytes()).is_err());
+    record.truncate(record.len() / 2);
+    assert!(deserialize_key(&mut keys, &record).is_err());
+    assert!(deserialize_key(&mut keys, b"\"not a record\"").is_err());
+    assert!(serialize_key(&keys, 999_999).is_none());
+}

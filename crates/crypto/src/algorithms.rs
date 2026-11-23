@@ -1744,6 +1744,125 @@ fn x25519_bits(
     Ok(secret)
 }
 
+/// A key's record for a structured clone: JSON of its import's format,
+/// bytes (base64url), algorithm, extractable and usages.
+pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
+    use devtools::Json;
+    let format = match &key.material {
+        Material::Secret(_) => "raw",
+        Material::RsaPublic { .. } | Material::EcPublic { .. } | Material::OkpPublic { .. } => {
+            "spki"
+        }
+        Material::RsaPrivate(_) | Material::EcPrivate { .. } | Material::OkpPrivate { .. } => {
+            "pkcs8"
+        }
+    };
+    // A secret's bytes as they are (a KDF's no export gives); any other
+    // key's export, whatever its `extractable`.
+    let mut bytes = match &key.material {
+        Material::Secret(bytes) => bytes.clone(),
+        _ => {
+            let mut whole = key.clone();
+            whole.extractable = true;
+            match export(&whole, format).ok()? {
+                Outcome::Bytes(bytes) => bytes,
+                _ => return None,
+            }
+        }
+    };
+    let name = Json::String(key.algorithm.name().to_owned());
+    let algorithm = match &key.algorithm {
+        KeyAlgorithm::Hmac { hash, length } => Json::object([
+            ("name", name),
+            ("hash", Json::String((*hash).to_owned())),
+            ("length", Json::Number(f64::from(*length))),
+        ]),
+        KeyAlgorithm::Rsa { hash, .. } => {
+            Json::object([("name", name), ("hash", Json::String((*hash).to_owned()))])
+        }
+        KeyAlgorithm::Ec { curve, .. } => Json::object([
+            ("name", name),
+            ("namedCurve", Json::String((*curve).to_owned())),
+        ]),
+        KeyAlgorithm::Aes { .. } | KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } => {
+            Json::object([("name", name)])
+        }
+    };
+    let record = Json::object([
+        ("f", Json::String(format.to_owned())),
+        ("d", Json::String(jwk::encode(&bytes))),
+        ("a", algorithm),
+        ("e", Json::Bool(key.extractable)),
+        (
+            "u",
+            Json::Array(
+                key.usages
+                    .iter()
+                    .map(|u| Json::String(u.name().to_owned()))
+                    .collect(),
+            ),
+        ),
+    ])
+    .write();
+    bytes.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&bytes);
+    Some(record.into_bytes())
+}
+
+/// A key made again from its record, by importKey and every check of its.
+pub(crate) fn key_from_record(keys: &mut Keys, record: &[u8]) -> Result<KeyInfo, Error> {
+    use devtools::Json;
+    let refused = || Error::data("The CryptoKey could not be deserialized");
+    let text = std::str::from_utf8(record).map_err(|_| refused())?;
+    let json = Json::parse(text).map_err(|_| refused())?;
+    let text_of = |name: &str| json.get(name).and_then(Json::as_str).ok_or_else(refused);
+    let format = text_of("f")?;
+    if !matches!(format, "raw" | "spki" | "pkcs8") {
+        return Err(refused());
+    }
+    let mut data = jwk::decode(text_of("d")?).ok_or_else(refused)?;
+    let Some(Json::Object(members)) = json.get("a") else {
+        return Err(refused());
+    };
+    let algorithm = Value::Dict(
+        members
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    Json::String(s) => Value::Str(s.clone()),
+                    Json::Number(n) => Value::Num(*n),
+                    _ => Value::Other,
+                };
+                (name.clone(), value)
+            })
+            .collect(),
+    );
+    let extractable = json.get("e").and_then(Json::as_bool).ok_or_else(refused)?;
+    let usages: Vec<Usage> = json
+        .get("u")
+        .and_then(Json::as_array)
+        .ok_or_else(refused)?
+        .iter()
+        .map(|u| u.as_str().and_then(Usage::parse).ok_or_else(refused))
+        .collect::<Result<_, _>>()?;
+    let out = run(
+        keys,
+        Call::ImportKey {
+            format: format.to_owned(),
+            key_data: Value::Bytes(data.clone()),
+            algorithm,
+            extractable,
+            usages,
+        },
+    );
+    data.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&data);
+    match out {
+        Ok(Outcome::Key(info)) => Ok(info),
+        _ => Err(refused()),
+    }
+}
+
 /// An RSA public key's SPKI, aws-lc-rs's encoding of it.
 fn spki_of(n: &[u8], e: &[u8]) -> Result<Vec<u8>, Error> {
     let key =

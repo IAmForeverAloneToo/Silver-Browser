@@ -230,3 +230,40 @@ fn a_page_signs_with_ecdsa_and_agrees_with_ecdh() {
         ]
     );
 }
+
+/// A CryptoKey's structured clone through a page (G255 step 4): by
+/// structuredClone, to a worker and back by postMessage (the worker
+/// signing with the key it was sent), and through IndexedDB; each copy a
+/// new CryptoKey with the same type, algorithm, extractable and usages,
+/// and still not extractable where the key was not.
+#[test]
+fn a_page_clones_crypto_keys_to_a_worker_and_through_indexeddb() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const pair = await s.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, false, ['sign', 'verify']);\
+        const alg = {name: 'ECDSA', hash: 'SHA-256'};\
+        const copy = structuredClone(pair.privateKey);\
+        out.push([copy !== pair.privateKey, copy instanceof CryptoKey, copy.type, copy.extractable, copy.usages.join(), copy.algorithm.namedCurve].join(' '));\
+        const code = \"onmessage = async (e) => { const sig = await crypto.subtle.sign({name: 'ECDSA', hash: 'SHA-256'}, e.data, new Uint8Array([7])); postMessage([sig, e.data]); };\";\
+        const w = new Worker(URL.createObjectURL(new Blob([code], {type: 'text/javascript'})));\
+        const [sig, back] = await new Promise((resolve) => { w.onmessage = (e) => resolve(e.data); w.postMessage(pair.privateKey); });\
+        out.push(await s.verify(alg, pair.publicKey, sig, new Uint8Array([7])) + ' ' + back.type + ' ' + back.extractable);\
+        const db = await new Promise((resolve, reject) => { const r = indexedDB.open('keys', 1); r.onupgradeneeded = () => r.result.createObjectStore('k'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });\
+        await new Promise((resolve) => { const tx = db.transaction('k', 'readwrite'); tx.objectStore('k').put({key: pair.privateKey}, 1); tx.oncomplete = resolve; });\
+        const stored = await new Promise((resolve) => { const r = db.transaction('k').objectStore('k').get(1); r.onsuccess = () => resolve(r.result.key); });\
+        const sig2 = await s.sign(alg, stored, new Uint8Array([8]));\
+        out.push(await s.verify(alg, pair.publicKey, sig2, new Uint8Array([8])) + ' ' + stored.extractable);\
+        try { await s.exportKey('pkcs8', stored); out.push('exported'); } catch (e) { out.push(e.name); }\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 4);
+    assert_eq!(
+        lines,
+        [
+            "true true private false sign P-256",
+            "true private false",
+            "true false",
+            "InvalidAccessError",
+        ]
+    );
+}

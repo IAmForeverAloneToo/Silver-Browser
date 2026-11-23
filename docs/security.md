@@ -326,7 +326,11 @@ font folders; a file it cannot read, it scans for.
   hash pairs aws-lc-rs cannot sign or verify are the same (the name on
   purpose: other code's fallbacks, OpenPGP.js's among them, run for it) (native OAEP would be the largest
   addition to `native`, its label's ownership handed to the library).
-  It reopens if a site the user uses needs it.
+  It reopens if a site the user uses needs it. A key's structured clone
+  (postMessage, IndexedDB) carries its material, whatever its
+  `extractable`, in the clone record alone, which no script reaches; the
+  receiving store makes it again by an import, every check run on bytes
+  another renderer or the disk gave, and IndexedDB seals it at rest.
 - **Media** (M40, D37). A renderer opens no audio device: it sends its
   mixed sound to the browser in blocks (`ToBrowser::Audio`), each
   checked to be whole stereo frames within `MAX_AUDIO_BLOCK_FRAMES`, or

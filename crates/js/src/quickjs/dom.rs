@@ -1087,6 +1087,18 @@ const NATIVES: &[(&str, Decode)] = &[
             name: a.string(1)?,
         })))
     }),
+    ("cryptoSerialize", |a| {
+        Ok(Call::Crypto(Box::new(crate::dom::CryptoCall::Serialize {
+            id: a.integer(0) as u32,
+        })))
+    }),
+    ("cryptoDeserialize", |a| {
+        Ok(Call::Crypto(Box::new(
+            crate::dom::CryptoCall::Deserialize {
+                record: a.bytes(0)?.unwrap_or_default(),
+            },
+        )))
+    }),
     ("cryptoCall", |a| {
         let mut buffers = Vec::new();
         // Up to four buffers follow; the first missing ends them.

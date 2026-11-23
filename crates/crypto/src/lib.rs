@@ -401,6 +401,21 @@ impl Keys {
 }
 
 /// Runs `call` against `keys`, with the reference browser's errors.
+/// A key's structured serialization (step 4): the import that makes it
+/// again, as JSON text's bytes, its material in the format it imports
+/// from whatever its `extractable`. `None` for a key not in the store.
+/// The record is the bindings' alone, never a script's.
+pub fn serialize_key(keys: &Keys, id: u32) -> Option<Vec<u8>> {
+    algorithms::key_record(keys.get(id).ok()?)
+}
+
+/// A key's structured deserialization: the record's import run, every
+/// check of an import's made again (it may come from another renderer or
+/// from the disk); a record that does not import an `Error`.
+pub fn deserialize_key(keys: &mut Keys, record: &[u8]) -> Result<KeyInfo, Error> {
+    algorithms::key_from_record(keys, record)
+}
+
 pub fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
     let method = call.method();
     algorithms::run(keys, call).map_err(|mut error| {

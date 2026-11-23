@@ -1261,6 +1261,12 @@ pub enum CryptoCall {
         json: String,
         buffers: Vec<Vec<u8>>,
     },
+    /// Key `id`'s structured serialization, as bytes; nothing for a key
+    /// the store has not.
+    Serialize { id: u32 },
+    /// A key made again from a record, as the key's JSON; nothing for a
+    /// record that does not import.
+    Deserialize { record: Vec<u8> },
 }
 
 /// An EventSource's call (G74, HTML section 9.2). The bindings are a

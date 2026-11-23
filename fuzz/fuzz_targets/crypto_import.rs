@@ -111,6 +111,9 @@ fuzz_target!(|data: &[u8]| {
     let Some((&choice, rest)) = data.split_first() else {
         return;
     };
+    // A CryptoKey's clone record from another renderer or the disk (G255
+    // step 4): any bytes read as one, never a panic.
+    let _ = crypto::deserialize_key(&mut Keys::default(), data);
     let (name, hash, usages) = ALGORITHMS[usize::from(choice) % ALGORITHMS.len()];
     let format = ["raw", "spki", "jwk", "pkcs8"][usize::from(choice / 8) % 4];
     // An X25519 PKCS #8 read by the library (G255 step 3, the lead's

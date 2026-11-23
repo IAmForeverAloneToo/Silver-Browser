@@ -47,6 +47,18 @@ pub(crate) fn call(
             };
             (Ok(Answer::Nothing), Some(settled(id, outcome)))
         }
+        CryptoCall::Serialize { id } => {
+            let answer =
+                crypto::serialize_key(keys, id).map_or(Answer::MaybeString(None), Answer::Bytes);
+            (Ok(answer), None)
+        }
+        CryptoCall::Deserialize { record } => {
+            let answer = match crypto::deserialize_key(keys, &record) {
+                Ok(info) => Answer::MaybeString(Some(key_json(&info))),
+                Err(_) => Answer::MaybeString(None),
+            };
+            (Ok(answer), None)
+        }
     }
 }
 

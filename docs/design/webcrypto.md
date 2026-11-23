@@ -311,6 +311,18 @@ no X25519 PKCS #8: the library reads it (`native`, the lead's ruling of
 2026-11-23), so that an export imports again; a test and crypto_import's
 fuzz harness hold the round trip to the same secret.
 
+A CryptoKey's structured clone (step 4): structuredClone, postMessage
+to a window, a worker or a port, and IndexedDB. The store writes a key's
+record as the import that makes it again (its format, bytes, algorithm,
+extractable and usages, its material exported whatever its
+`extractable`), held in the clone record alone, never a script's; the
+receiving realm's store makes the key again through importKey, every
+check of an import's run on bytes another renderer or the disk gave
+(crypto_import's harness reads any bytes as a record). A record crosses
+between realms in base64 as a buffer's bytes do; IndexedDB keeps it
+sealed at rest with every other record. An insecure context, which has
+no CryptoKey, refuses one with a DataCloneError.
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`
