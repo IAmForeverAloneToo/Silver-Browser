@@ -3027,18 +3027,66 @@ mod tests {
     use super::*;
     use crate::SoftwareBackend;
 
+    /// The GPU tests' turn. On Linux, whose runners draw on Mesa's
+    /// software Vulkan, the tests' process died of a signal with no test
+    /// named when they made and used devices side by side (2026-11-20,
+    /// CI 45236775964), and passed one at a time: there they take turns.
+    /// `SILVER_RENDER_GPU_PARALLEL` set lets them run side by side, as
+    /// CI's diagnostic step does to catch the crash's backtrace.
+    static TURN: Mutex<()> = Mutex::new(());
+
+    /// A test's GPU backend, holding the test's turn until it is dropped.
+    struct Held {
+        gpu: GpuBackend,
+        // After the backend: the turn ends once its device is gone.
+        _turn: Option<std::sync::MutexGuard<'static, ()>>,
+    }
+
+    impl std::ops::Deref for Held {
+        type Target = GpuBackend;
+        fn deref(&self) -> &GpuBackend {
+            &self.gpu
+        }
+    }
+
+    impl std::ops::DerefMut for Held {
+        fn deref_mut(&mut self) -> &mut GpuBackend {
+            &mut self.gpu
+        }
+    }
+
+    /// Whether the GPU tests take turns here.
+    fn in_turn() -> bool {
+        cfg!(target_os = "linux") && std::env::var_os("SILVER_RENDER_GPU_PARALLEL").is_none()
+    }
+
     /// Both backends over the bundled test font, or `None` where there
     /// is no adapter, which the test then says.
-    fn backends() -> Option<(SoftwareBackend, GpuBackend)> {
+    fn backends() -> Option<(SoftwareBackend, Held)> {
         let fonts = FontCollection::from_bytes(text::TEST_FONT.to_vec(), 0)
             .expect("the bundled font parses");
+        let turn = in_turn().then(|| TURN.lock().unwrap_or_else(PoisonError::into_inner));
         match GpuBackend::with_fonts(fonts.clone()) {
-            Ok(gpu) => Some((SoftwareBackend::with_fonts(fonts), gpu)),
+            Ok(gpu) => Some((
+                SoftwareBackend::with_fonts(fonts),
+                Held { gpu, _turn: turn },
+            )),
             Err(e) => {
                 println!("no GPU adapter ({e}): the GPU tests are skipped here");
                 None
             }
         }
+    }
+
+    #[test]
+    fn a_gpu_test_holds_its_turn_while_its_backend_lives() {
+        let Some((_, gpu)) = backends() else {
+            return;
+        };
+        // Held: no other test's backend is made meanwhile, where they
+        // take turns.
+        assert_eq!(TURN.try_lock().is_err(), in_turn());
+        drop(gpu);
     }
 
     fn rect(x: f32, y: f32, w: f32, h: f32, color: Rgba8) -> DisplayItem {
@@ -3720,7 +3768,7 @@ mod tests {
                 DisplayItem::PopGroup,
             ],
         };
-        for backend in [&mut software as &mut dyn RenderBackend, &mut gpu] {
+        for backend in [&mut software as &mut dyn RenderBackend, &mut *gpu] {
             let on = backend.backend();
             backend.rasterize(&list, 100, 100);
             assert_eq!(backend.layers().len(), 1, "{on}");
