@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const show = (v) => v instanceof ArrayBuffer ? 'bytes ' + v.byteLength + ' ' + Array.from(new Uint8Array(v).slice(0, 8), (x) => x.toString(16).padStart(2, '0')).join('')
+    : v instanceof CryptoKey ? 'key ' + v.type + ' ' + JSON.stringify(v.algorithm) + ' ' + v.extractable + ' ' + v.usages.join('/')
+    : typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
+  const t = async (label, f) => { try { out.push(label + ' -> ' + show(await f())); } catch (e) { out.push(label + ' -> ' + e.name + ': ' + e.message); } };
+  const N = 'ChaCha20-Poly1305';
+  const k32 = new Uint8Array(32).map((_, i) => i);
+  await t('generate', () => s.generateKey(N, true, ['encrypt', 'decrypt']));
+  await t('generate dict', () => s.generateKey({name: N}, true, ['encrypt']));
+  await t('generate length 256', () => s.generateKey({name: N, length: 256}, true, ['encrypt']));
+  await t('generate usages none', () => s.generateKey(N, true, []));
+  await t('generate usage sign', () => s.generateKey(N, true, ['sign']));
+  await t('generate wrapKey', () => s.generateKey(N, true, ['wrapKey', 'unwrapKey']));
+  for (const f of ['raw', 'raw-secret', 'jwk', 'spki', 'pkcs8']) {
+    await t('import ' + f + ' 32', () => s.importKey(f, f === 'jwk' ? {kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8'} : k32, N, true, ['encrypt']));
+  }
+  await t('import raw-secret 16', () => s.importKey('raw-secret', new Uint8Array(16), N, true, ['encrypt']));
+  await t('import raw-secret 33', () => s.importKey('raw-secret', new Uint8Array(33), N, true, ['encrypt']));
+  await t('import jwk alg C20P', () => s.importKey('jwk', {kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', alg: 'C20P'}, N, true, ['encrypt']));
+  await t('import jwk alg A256GCM', () => s.importKey('jwk', {kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', alg: 'A256GCM'}, N, true, ['encrypt']));
+  await t('import jwk short', () => s.importKey('jwk', {kty: 'oct', k: 'AAEC'}, N, true, ['encrypt']));
+  await t('import jwk use sig', () => s.importKey('jwk', {kty: 'oct', k: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', use: 'sig'}, N, true, ['encrypt']));
+  const key = await s.importKey('raw-secret', k32, N, true, ['encrypt', 'decrypt']);
+  await t('export raw', () => s.exportKey('raw', key));
+  await t('export raw-secret', () => s.exportKey('raw-secret', key));
+  await t('export jwk', () => s.exportKey('jwk', key));
+  const iv = new Uint8Array(12).fill(7);
+  const ct = await s.encrypt({name: N, iv}, key, new Uint8Array([1, 2, 3]));
+  out.push('ct ' + show(ct));
+  await t('encrypt aad', () => s.encrypt({name: N, iv, additionalData: new Uint8Array([9])}, key, new Uint8Array([1, 2, 3])));
+  await t('encrypt tag 128', () => s.encrypt({name: N, iv, tagLength: 128}, key, new Uint8Array(1)));
+  await t('encrypt tag 96', () => s.encrypt({name: N, iv, tagLength: 96}, key, new Uint8Array(1)));
+  await t('encrypt iv 0', () => s.encrypt({name: N, iv: new Uint8Array(0)}, key, new Uint8Array(1)));
+  await t('encrypt iv 16', () => s.encrypt({name: N, iv: new Uint8Array(16)}, key, new Uint8Array(1)));
+  await t('encrypt no iv', () => s.encrypt({name: N}, key, new Uint8Array(1)));
+  await t('decrypt', () => s.decrypt({name: N, iv}, key, ct));
+  await t('decrypt bad tag', () => { const b = new Uint8Array(ct); b[b.length - 1] ^= 1; return s.decrypt({name: N, iv}, key, b); });
+  await t('decrypt short', () => s.decrypt({name: N, iv}, key, new Uint8Array(15)));
+  await t('decrypt tag 64', () => s.decrypt({name: N, iv, tagLength: 64}, key, ct));
+  await t('wrapKey jwk', async () => { const w = await s.importKey('raw-secret', k32, N, false, ['wrapKey', 'unwrapKey']); return s.wrapKey('raw', await s.generateKey({name: 'AES-GCM', length: 128}, true, ['encrypt']), w, {name: N, iv}); });
+  await t('deriveKey to C20P', async () => { const h = await s.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveKey']); return s.deriveKey({name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0)}, h, N, true, ['encrypt']); });
+  await t('deriveKey to C20P length', async () => { const h = await s.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveKey']); return s.deriveKey({name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0)}, h, {name: N, length: 128}, true, ['encrypt']); });
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

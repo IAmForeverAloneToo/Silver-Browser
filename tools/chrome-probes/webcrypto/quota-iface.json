@@ -1,0 +1,29 @@
+{
+ "version": "Chrome/158.0.8127.37",
+ "result": [
+  "typeof -> function",
+  "length -> 0",
+  "name -> QuotaExceededError",
+  "proto chain -> true",
+  "prototype chain -> true",
+  "own props -> quota,requested,constructor",
+  "own static -> length,name,prototype",
+  "desc quota -> function,undefined,true,true",
+  "tag -> [object QuotaExceededError]",
+  "plain -> QuotaExceededError||22|||true|true",
+  "with -> m|5|7",
+  "quota only -> 5|",
+  "neg quota -> QuotaExceededError: m",
+  "neg requested -> QuotaExceededError: m",
+  "requested < quota -> QuotaExceededError: m",
+  "NaN quota -> TypeError: Failed to construct 'QuotaExceededError': Failed to read the 'quota' property from 'QuotaExceededErrorOptions': The provided double value is non-finite.",
+  "Infinity quota -> TypeError: Failed to construct 'QuotaExceededError': Failed to read the 'quota' property from 'QuotaExceededErrorOptions': The provided double value is non-finite.",
+  "string quota -> 5",
+  "call -> TypeError: Failed to construct 'QuotaExceededError': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+  "getter on DOMException -> TypeError: Illegal invocation",
+  "DOMException QuotaExceededError code -> 22",
+  "structuredClone -> QuotaExceededError|QuotaExceededError|m|5|7",
+  "localStorage quota -> QuotaExceededError|QuotaExceededError|||Failed to execute 'setItem' on 'Storage': Setting the value of 'x' exceeded the quota."
+ ],
+ "console": []
+}

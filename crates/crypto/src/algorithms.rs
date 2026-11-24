@@ -40,6 +40,8 @@ pub(crate) enum KeyAlgorithm {
     Okp {
         name: &'static str,
     },
+    /// ChaCha20-Poly1305's: a 256-bit key, its algorithm its name alone.
+    Chacha,
 }
 
 impl KeyAlgorithm {
@@ -51,6 +53,7 @@ impl KeyAlgorithm {
             | KeyAlgorithm::Ec { name, .. }
             | KeyAlgorithm::Okp { name } => name,
             KeyAlgorithm::Hmac { .. } => "HMAC",
+            KeyAlgorithm::Chacha => CHACHA,
         }
     }
 
@@ -66,7 +69,9 @@ impl KeyAlgorithm {
                 ("length", AlgorithmValue::Num(*length)),
                 ("hash", AlgorithmValue::Named((*hash).to_owned())),
             ],
-            KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } => vec![name],
+            KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } | KeyAlgorithm::Chacha => {
+                vec![name]
+            }
             KeyAlgorithm::Ec { curve, .. } => vec![
                 name,
                 ("namedCurve", AlgorithmValue::Str((*curve).to_owned())),
@@ -88,6 +93,9 @@ impl KeyAlgorithm {
         }
     }
 }
+
+/// ChaCha20-Poly1305's name.
+pub(crate) const CHACHA: &str = "ChaCha20-Poly1305";
 
 pub(crate) fn digest_algorithm(name: &str) -> &'static digest::Algorithm {
     match name {
@@ -121,6 +129,7 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
     match (name, kind) {
         ("AES-GCM" | "AES-CBC" | "AES-CTR", _) => &[Encrypt, Decrypt, WrapKey, UnwrapKey],
         ("AES-KW", _) => &[WrapKey, UnwrapKey],
+        (CHACHA, _) => &[Encrypt, Decrypt, WrapKey, UnwrapKey],
         ("HMAC", _) => &[Sign, Verify],
         ("HKDF" | "PBKDF2", _) => &[DeriveKey, DeriveBits],
         ("RSASSA-PKCS1-v1_5" | "RSA-PSS", KeyType::Public) => &[Verify],
@@ -594,6 +603,8 @@ fn key_length(alg: &Normalized) -> Result<Option<u32>, Error> {
             aes_length(length)?;
             Ok(Some(length))
         }
+        // 256 bits, whatever length was asked (probed).
+        CHACHA => Ok(Some(256)),
         "HMAC" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             match alg.num("length") {
@@ -635,6 +646,7 @@ fn crypt(
 fn crypt_with(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outcome, Error> {
     match alg.name {
         "AES-CBC" => aes_cbc(secret(key), alg, data, encrypt),
+        CHACHA => chacha(secret(key), alg, data, encrypt),
         "AES-CTR" => aes_ctr(secret(key), alg, data),
         "AES-GCM" => {
             let iv = alg.bytes("iv").unwrap_or(&[]);
@@ -685,6 +697,42 @@ fn crypt_with(key: &Key, alg: &Normalized, data: &[u8], encrypt: bool) -> Result
 
 /// AES's cipher of a key of `len` bytes (128 or 256 bits: the
 /// reference refuses 192).
+/// ChaCha20-Poly1305 (RFC 8439), aws-lc-rs's: a 96-bit IV and a 128-bit
+/// tag alone, each refused otherwise in the reference's words (probed:
+/// its IV's says 16 bytes, as Chrome 158's does), the tag after the data.
+fn chacha(key: &[u8], alg: &Normalized, data: &[u8], encrypt: bool) -> Result<Outcome, Error> {
+    if alg.num("tagLength").is_some_and(|tag| tag != 128) {
+        return Err(Error::operation(
+            "The tag length is invalid: Must be 128 bits",
+        ));
+    }
+    let Ok(nonce) = <[u8; 12]>::try_from(alg.bytes("iv").unwrap_or(&[])) else {
+        return Err(Error::operation(
+            "The \"iv\" has an unexpected length -- must be 16 bytes",
+        ));
+    };
+    let aad = aead::Aad::from(alg.bytes("additionalData").unwrap_or(&[]));
+    let failed = |_| Error::operation("");
+    let sealing = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::CHACHA20_POLY1305, key).map_err(failed)?,
+    );
+    let nonce = aead::Nonce::assume_unique_for_key(nonce);
+    let mut buffer = data.to_vec();
+    if encrypt {
+        sealing
+            .seal_in_place_append_tag(nonce, aad, &mut buffer)
+            .map_err(failed)?;
+        return Ok(Outcome::Bytes(buffer));
+    }
+    if buffer.len() < 16 {
+        return Err(Error::operation("The provided data is too small"));
+    }
+    let plain = sealing
+        .open_in_place(nonce, aad, &mut buffer)
+        .map_err(failed)?;
+    Ok(Outcome::Bytes(plain.to_vec()))
+}
+
 fn aes_cipher(len: usize) -> Result<&'static aws_lc_rs::cipher::Algorithm, Error> {
     match len {
         16 => Ok(&aws_lc_rs::cipher::AES_128),
@@ -1755,7 +1803,7 @@ fn x25519_bits(
 pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
     use devtools::Json;
     let format = match &key.material {
-        Material::Secret(_) => "raw",
+        Material::Secret(_) => "raw-secret",
         Material::RsaPublic { .. } | Material::EcPublic { .. } | Material::OkpPublic { .. } => {
             "spki"
         }
@@ -1790,9 +1838,10 @@ pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
             ("name", name),
             ("namedCurve", Json::String((*curve).to_owned())),
         ]),
-        KeyAlgorithm::Aes { .. } | KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } => {
-            Json::object([("name", name)])
-        }
+        KeyAlgorithm::Aes { .. }
+        | KeyAlgorithm::Kdf { .. }
+        | KeyAlgorithm::Okp { .. }
+        | KeyAlgorithm::Chacha => Json::object([("name", name)]),
     };
     let record = Json::object([
         ("f", Json::String(format.to_owned())),
@@ -1823,7 +1872,7 @@ pub(crate) fn key_from_record(keys: &mut Keys, record: &[u8]) -> Result<KeyInfo,
     let json = Json::parse(text).map_err(|_| refused())?;
     let text_of = |name: &str| json.get(name).and_then(Json::as_str).ok_or_else(refused);
     let format = text_of("f")?;
-    if !matches!(format, "raw" | "spki" | "pkcs8") {
+    if !matches!(format, "raw" | "raw-secret" | "spki" | "pkcs8") {
         return Err(refused());
     }
     let mut data = jwk::decode(text_of("d")?).ok_or_else(refused)?;
@@ -2108,6 +2157,17 @@ fn generate(
             };
             Ok(Outcome::Key(keys.insert(key)))
         }
+        CHACHA => {
+            check_usages(CHACHA, KeyType::Secret, usages)?;
+            empty_usages(KeyType::Secret, usages)?;
+            Ok(Outcome::Key(keys.insert(Key {
+                kind: KeyType::Secret,
+                extractable,
+                algorithm: KeyAlgorithm::Chacha,
+                usages: usages.to_vec(),
+                material: Material::Secret(random(32)?),
+            })))
+        }
         "HMAC" => {
             check_usages("HMAC", KeyType::Secret, usages)?;
             let hash = alg.hash().unwrap_or("SHA-256");
@@ -2316,6 +2376,27 @@ fn import(
                 },
                 bytes,
             )))
+        }
+        CHACHA => {
+            check_usages(CHACHA, KeyType::Secret, usages)?;
+            let bytes = match format {
+                "raw-secret" => raw()?,
+                "jwk" => {
+                    let jwk = jwk()?;
+                    jwk.check("oct", Some("C20P"), extractable, usages)?;
+                    jwk.bytes("k")?
+                }
+                _ => {
+                    return Err(Error::not_supported(
+                        "Unsupported import key format for algorithm",
+                    ));
+                }
+            };
+            if bytes.len() != 32 {
+                return Err(Error::data("ChaCha20-Poly1305 key data must be 256 bits"));
+            }
+            empty_usages(KeyType::Secret, usages)?;
+            Ok(keys.insert(secret_key(KeyAlgorithm::Chacha, bytes)))
         }
         "HMAC" => {
             check_usages("HMAC", KeyType::Secret, usages)?;
@@ -2549,6 +2630,19 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             }
             _ => Err(unsupported()),
         },
+        (KeyAlgorithm::Chacha, Material::Secret(bytes)) => match format {
+            "raw-secret" => Ok(Outcome::Bytes(bytes.clone())),
+            "jwk" => Ok(Outcome::Jwk(jwk::exported(
+                vec![
+                    ("alg", JwkValue::Str("C20P".into())),
+                    ("k", JwkValue::Str(jwk::encode(bytes))),
+                    ("kty", JwkValue::Str("oct".into())),
+                ],
+                key.extractable,
+                &key.usages,
+            ))),
+            _ => Err(unsupported()),
+        },
         (KeyAlgorithm::Hmac { hash, .. }, Material::Secret(bytes)) => match format {
             "raw" | "raw-secret" => Ok(Outcome::Bytes(bytes.clone())),
             "jwk" => {
@@ -2690,16 +2784,17 @@ pub(crate) fn supports(op: &str, algorithm: &Value, extra: &Value) -> bool {
         // The AES ciphers run on a throwaway key and no data; RSA-OAEP's
         // checks all need its key.
         "encrypt" | "decrypt" => match alg.name {
-            "AES-CBC" | "AES-CTR" | "AES-GCM" => {
+            // A 256-bit throwaway key: AES-256's, and ChaCha20's.
+            "AES-CBC" | "AES-CTR" | "AES-GCM" | CHACHA => {
                 let key = Key {
                     kind: KeyType::Secret,
                     extractable: false,
                     algorithm: KeyAlgorithm::Aes {
                         name: alg.name,
-                        length: 128,
+                        length: 256,
                     },
                     usages: vec![],
-                    material: Material::Secret(vec![0; 16]),
+                    material: Material::Secret(vec![0; 32]),
                 };
                 crypt_with(&key, &alg, &[], true).is_ok()
             }

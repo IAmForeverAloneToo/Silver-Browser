@@ -5,6 +5,7 @@
 //! tagLength`), and its messages (`AeadParams: iv: Missing required
 //! property`).
 
+use crate::algorithms::CHACHA;
 use crate::{Error, Value};
 
 /// The algorithms the reference recognizes, by their canonical names.
@@ -153,6 +154,8 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
             }
         }
         ("importKey", "AES-GCM" | "AES-CBC" | "AES-CTR" | "AES-KW") => ("Algorithm", NONE),
+        ("generateKey" | "importKey" | "get key length", CHACHA) => ("Algorithm", NONE),
+        ("encrypt" | "decrypt", CHACHA) => ("AeadParams", AEAD),
         ("encrypt" | "decrypt", "AES-GCM") => ("AeadParams", AEAD),
         ("encrypt" | "decrypt", "RSA-OAEP") => ("RsaOaepParams", RSA_OAEP),
         ("encrypt" | "decrypt", "AES-CBC") => ("AesCbcParams", AES_CBC),

@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+const out = [];
+const t = (label, f) => { try { out.push(label + ' -> ' + String(f())); } catch (e) { out.push(label + ' -> ' + e.name + ': ' + e.message); } };
+const Q = self.QuotaExceededError;
+t('typeof', () => typeof Q);
+t('length', () => Q.length);
+t('name', () => Q.name);
+t('proto chain', () => Object.getPrototypeOf(Q) === DOMException);
+t('prototype chain', () => Object.getPrototypeOf(Q.prototype) === DOMException.prototype);
+t('own props', () => Object.getOwnPropertyNames(Q.prototype).join());
+t('own static', () => Object.getOwnPropertyNames(Q).join());
+t('desc quota', () => { const d = Object.getOwnPropertyDescriptor(Q.prototype, 'quota'); return [typeof d.get, typeof d.set, d.enumerable, d.configurable].join(); });
+t('tag', () => Object.prototype.toString.call(new Q('m')));
+t('plain', () => { const e = new Q(); return [e.name, e.message, e.code, e.quota, e.requested, e instanceof DOMException, e instanceof Error].join('|'); });
+t('with', () => { const e = new Q('m', {quota: 5, requested: 7}); return [e.message, e.quota, e.requested].join('|'); });
+t('quota only', () => { const e = new Q('m', {quota: 5}); return [e.quota, e.requested].join('|'); });
+t('neg quota', () => new Q('m', {quota: -1}));
+t('neg requested', () => new Q('m', {requested: -1}));
+t('requested < quota', () => new Q('m', {quota: 5, requested: 2}));
+t('NaN quota', () => new Q('m', {quota: NaN}));
+t('Infinity quota', () => new Q('m', {quota: Infinity}).quota);
+t('string quota', () => new Q('m', {quota: '5'}).quota);
+t('call', () => Q('m'));
+t('getter on DOMException', () => Object.getOwnPropertyDescriptor(Q.prototype, 'quota').get.call(new DOMException('x', 'QuotaExceededError')));
+t('DOMException QuotaExceededError code', () => new DOMException('x', 'QuotaExceededError').code);
+t('structuredClone', () => { const c = structuredClone(new Q('m', {quota: 5, requested: 7})); return [c.constructor.name, c.name, c.message, c.quota, c.requested].join('|'); });
+t('localStorage quota', () => { try { localStorage.setItem('x', 'y'.repeat(20 * 1024 * 1024)); return 'stored'; } catch (e) { return [e.constructor.name, e.name, e.quota, e.requested, e.message].join('|'); } finally { try { localStorage.removeItem('x'); } catch (e) {} } });
+window.__done = out;
+</script>

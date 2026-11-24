@@ -4201,3 +4201,193 @@ fn an_imported_public_key_keeps_the_extractable_asked() {
         }
     }
 }
+
+/// ChaCha20-Poly1305 (G255 step 5a): RFC 8439's AEAD vector (section
+/// 2.8.2), and every refusal in the reference's words (Chrome 158,
+/// probed: chacha), its formats raw-secret and jwk (C20P) alone.
+#[test]
+fn chacha20_poly1305_is_rfc_8439s_and_the_references() {
+    use crate::{deserialize_key, serialize_key};
+    let mut keys = Keys::default();
+    let name = "ChaCha20-Poly1305";
+    let key_bytes = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+    let import = |keys: &mut Keys, format: &str, data: Value| {
+        run(
+            keys,
+            Call::ImportKey {
+                format: format.into(),
+                key_data: data,
+                algorithm: s(name),
+                extractable: true,
+                usages: vec![Usage::Encrypt, Usage::Decrypt],
+            },
+        )
+    };
+    let key_info = key(import(
+        &mut keys,
+        "raw-secret",
+        Value::Bytes(key_bytes.clone()),
+    ));
+    assert_eq!(
+        key_info.algorithm,
+        crate::algorithms::KeyAlgorithm::Chacha.members()
+    );
+    let params = |iv: Vec<u8>, extra: &[(&str, Value)]| {
+        let mut members = vec![("name", s(name)), ("iv", Value::Bytes(iv))];
+        members.extend(extra.iter().cloned());
+        dict(&members)
+    };
+    let iv = hex("070000004041424344454647");
+    let aad = hex("50515253c0c1c2c3c4c5c6c7");
+    let plain = b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.".to_vec();
+    let sealed = bytes(run(
+        &mut keys,
+        Call::Encrypt {
+            algorithm: params(iv.clone(), &[("additionalData", Value::Bytes(aad.clone()))]),
+            key: key_info.id,
+            data: plain.clone(),
+        },
+    ));
+    let mut want = hex(
+        "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116",
+    );
+    want.extend(hex("1ae10b594f09e26a7e902ecbd0600691"));
+    assert_eq!(sealed, want);
+    let decrypt = |keys: &mut Keys, algorithm: Value, data: Vec<u8>| {
+        run(
+            keys,
+            Call::Decrypt {
+                algorithm,
+                key: key_info.id,
+                data,
+            },
+        )
+    };
+    let opened = decrypt(
+        &mut keys,
+        params(iv.clone(), &[("additionalData", Value::Bytes(aad.clone()))]),
+        sealed.clone(),
+    );
+    assert_eq!(bytes(opened), plain);
+    // The refusals, in the reference's words.
+    let mut tampered = sealed.clone();
+    *tampered.last_mut().expect("a tag") ^= 1;
+    assert_eq!(
+        error(decrypt(
+            &mut keys,
+            params(iv.clone(), &[("additionalData", Value::Bytes(aad))]),
+            tampered
+        )),
+        "OperationError: "
+    );
+    assert_eq!(
+        error(decrypt(&mut keys, params(iv.clone(), &[]), vec![0; 15])),
+        "OperationError: The provided data is too small"
+    );
+    let encrypt = |keys: &mut Keys, algorithm: Value| {
+        run(
+            keys,
+            Call::Encrypt {
+                algorithm,
+                key: key_info.id,
+                data: vec![1],
+            },
+        )
+    };
+    for iv in [vec![], vec![0; 16]] {
+        assert_eq!(
+            error(encrypt(&mut keys, params(iv, &[]))),
+            "OperationError: The \"iv\" has an unexpected length -- must be 16 bytes"
+        );
+    }
+    assert_eq!(
+        error(encrypt(
+            &mut keys,
+            params(vec![0; 12], &[("tagLength", Value::Num(96.0))])
+        )),
+        "OperationError: The tag length is invalid: Must be 128 bits"
+    );
+    assert_eq!(
+        bytes(encrypt(
+            &mut keys,
+            params(vec![0; 12], &[("tagLength", Value::Num(128.0))])
+        ))
+        .len(),
+        17
+    );
+    // A JWK's alg is C20P's.
+    let k = crate::jwk::encode(&key_bytes);
+    let jwk = |alg: &str| dict(&[("kty", s("oct")), ("k", s(&k)), ("alg", s(alg))]);
+    key(import(&mut keys, "jwk", jwk("C20P")));
+    assert_eq!(
+        error(import(&mut keys, "jwk", jwk("A256GCM"))),
+        "DataError: The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call"
+    );
+    // Its formats: raw-secret and jwk alone; 256 bits alone.
+    for format in ["raw", "spki", "pkcs8"] {
+        assert_eq!(
+            error(import(&mut keys, format, Value::Bytes(key_bytes.clone()))),
+            "NotSupportedError: Unsupported import key format for algorithm",
+            "{format}"
+        );
+    }
+    for length in [16, 33] {
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "raw-secret",
+                Value::Bytes(vec![0; length])
+            )),
+            "DataError: ChaCha20-Poly1305 key data must be 256 bits"
+        );
+    }
+    match run(
+        &mut keys,
+        Call::ExportKey {
+            format: "jwk".into(),
+            key: key_info.id,
+        },
+    ) {
+        Ok(Outcome::Jwk(members)) => {
+            let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, ["alg", "ext", "k", "key_ops", "kty"]);
+            assert_eq!(members[0].1, JwkValue::Str("C20P".into()));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: key_info.id
+            }
+        )),
+        "NotSupportedError: Unsupported export key format for algorithm"
+    );
+    assert_eq!(
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw-secret".into(),
+                key: key_info.id
+            }
+        )),
+        key_bytes
+    );
+    // A generated key: 256 bits, whatever length was asked; cloned as itself.
+    let made = key(run(
+        &mut keys,
+        Call::GenerateKey {
+            algorithm: dict(&[("name", s(name)), ("length", Value::Num(128.0))]),
+            extractable: false,
+            usages: vec![Usage::Encrypt],
+        },
+    ));
+    let record = serialize_key(&keys, made.id).expect("a record");
+    let copy = deserialize_key(&mut keys, &record).expect("the key again");
+    assert_eq!(
+        (copy.algorithm, copy.extractable),
+        (crate::algorithms::KeyAlgorithm::Chacha.members(), false)
+    );
+}

@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+const out = [];
+try { crypto.getRandomValues(new Uint8Array(65537)); } catch (e) {
+  out.push([e.constructor.name, e instanceof QuotaExceededError, String(e.quota), String(e.requested), e.message].join(' | '));
+}
+try { crypto.getRandomValues(new Int16Array(32769)); } catch (e) {
+  out.push([String(e.quota), String(e.requested), e.message].join(' | '));
+}
+window.__done = out;
+</script>

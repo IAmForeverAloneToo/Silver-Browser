@@ -15,6 +15,9 @@ Section 2's CNG table stays as the record of why. A beta item: Proton
 (the user's mail) refuses a browser without `crypto.subtle`, and 1Password
 needs it (docs/design/extensions.md, build step 5).
 
+Where the store copies Chrome against the spec or WPT, deliberately, the
+line is in docs/chrome-surface.md, with its probe and Chrome version.
+
 ## 1. What the reference ships (Chrome 157.0.8103.80, probed 2026-11-22)
 
 Probed with pages served from localhost (a secure context), every
@@ -348,6 +351,13 @@ by the runner from outside it, whatever it blocks on: deriveBits of
 2^32 - 8 bits of PBKDF2, which Chrome takes as long, is synchronous here
 until step 7 moves the costly operations off the renderer's main
 thread.
+
+ChaCha20-Poly1305 (step 5a), aws-lc-rs's: a 256-bit key, made whatever
+length is asked, and derived so; raw-secret and jwk (C20P) its formats
+alone, plain raw refused; a 96-bit IV and a 128-bit tag alone, each
+refused in Chrome 158's words (its IV's says 16 bytes, as Chrome's
+does); RFC 8439's vector. A key's clone record now names a secret's
+format raw-secret, which every secret takes (raw read still).
 
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
