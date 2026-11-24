@@ -1123,3 +1123,10 @@ seconds (`PROMPT_TIMEOUT`).
 - **The profile encryption's edges** (G109): pages freed when an older
   profile was sealed keep their values in the clear until written
   again.
+- **Ed25519 with a small-order public key differs by platform**
+  (aws-lc's verification, G255): a signature WPT expects refused
+  (`eddsa_small_order_points`, Test 11) verifies on Windows, as it does
+  in Chrome there, and is refused on Linux and macOS. Silver targets
+  Windows and matches Chrome on it; code that counts on small-order keys
+  being refused gets that nowhere on Windows (the lead's ruling,
+  2026-11-24).

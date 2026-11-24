@@ -221,6 +221,29 @@ fn parse_fuzzy(spec: &str) -> Option<(String, Fuzzy)> {
 /// by its test's path and its name, a tab between.
 fn expectations() -> BTreeMap<String, String> {
     let text = fs::read_to_string(root().join("expectations.txt")).unwrap_or_default();
+    parse_expectations(&text).unwrap_or_else(|why| panic!("expectations.txt: {why}"))
+}
+
+/// The reason that keeps a page from being run at all: a page that,
+/// given up on, would go on computing and starve the run's others (the
+/// lead's ruling, 2026-11-24). It names the G item that removes it.
+const NOT_RUN: &str = "not-run:";
+
+/// Whether `reason` names a G item: `G` and its number.
+fn names_a_g_item(reason: &str) -> bool {
+    reason.match_indices('G').any(|(at, _)| {
+        let before = reason[..at].chars().last();
+        let digits = reason[at + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        digits > 0 && !before.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// `expectations.txt`'s lines: each test or subtest named, with its
+/// reason; a not-run line a whole page's, naming its G item.
+fn parse_expectations(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut out = BTreeMap::new();
     for line in text.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
@@ -238,13 +261,36 @@ fn expectations() -> BTreeMap<String, String> {
         };
         let path = path.as_str();
         let reason = reason.trim();
-        assert!(!reason.is_empty(), "expectations.txt: {path} has no reason");
-        assert!(
-            out.insert(path.to_string(), reason.to_string()).is_none(),
-            "expectations.txt: {path} is named twice"
-        );
+        if reason.is_empty() {
+            return Err(format!("{path} has no reason"));
+        }
+        if reason.starts_with(NOT_RUN) {
+            if path.contains('\t') {
+                return Err(format!("{path}: a subtest cannot be not-run, only a page"));
+            }
+            if !names_a_g_item(reason) {
+                return Err(format!(
+                    "{path}: a not-run line names the G item that removes it"
+                ));
+            }
+        }
+        if out.insert(path.to_string(), reason.to_string()).is_some() {
+            return Err(format!("{path} is named twice"));
+        }
     }
-    out
+    Ok(out)
+}
+
+/// A not-run line must name the G item that removes it, and be a page's.
+#[test]
+fn a_not_run_line_names_the_g_item_that_removes_it() {
+    let parse = |line: &str| parse_expectations(line).map(|m| m.len());
+    assert_eq!(parse("a/b.html  not-run: hangs until G255 step 7"), Ok(1));
+    assert_eq!(parse("a/b.html  not-run: (G7) a reason"), Ok(1));
+    assert!(parse("a/b.html  not-run: hangs the run").is_err());
+    assert!(parse("a/b.html  not-run: GPU work (MG3 is not one)").is_err());
+    assert!(parse("a/b.html\tsub\tnot-run: G255").is_err());
+    assert_eq!(parse("a/b.html  fails, no G item needed"), Ok(1));
 }
 
 /// A subtest's name as `expectations.txt` writes it, in ASCII: each
@@ -1995,7 +2041,9 @@ fn equal(largest: u32, pixels: u32, fuzzy: Option<Fuzzy>) -> bool {
 /// How long in real time a page may run before the runner gives up on
 /// it, whatever it is doing: past its own waits (`LOAD`, and the harness's
 /// on the page's clock), which a page cannot pass unless one call into
-/// the engine never returns.
+/// the engine never returns. A page given up on still computes until the
+/// process ends, starving the others on CI's runners (CI 45294459933):
+/// one known to is not run (`not-run:` in expectations.txt).
 const GIVE_UP: Duration = Duration::from_secs(90);
 
 /// Runs `run` on each of `items` on `threads` threads, and gives the
@@ -2046,9 +2094,13 @@ where
                         Some(Instant::now());
                     let result = run(item);
                     let mut held = slots.0.lock().unwrap_or_else(|e| e.into_inner());
-                    // A run given up keeps the result it was given.
-                    if held.results[i].is_none() {
-                        held.results[i] = Some(result);
+                    // A run given up keeps the result it was given, and
+                    // one that ends after the results were taken has no
+                    // place left (CI 45294459933).
+                    if let Some(slot) = held.results.get_mut(i)
+                        && slot.is_none()
+                    {
+                        *slot = Some(result);
                     }
                     drop(held);
                     slots.1.notify_all();
@@ -3327,6 +3379,19 @@ fn the_web_platform_tests_subset_runs_as_expected() {
             .collect(),
         Err(_) => tests,
     };
+    // The pages not run, each said, never silently.
+    let (not_run, tests): (Vec<Test>, Vec<Test>) = tests.into_iter().partition(|t| {
+        expected
+            .get(t.path())
+            .is_some_and(|reason| reason.starts_with(NOT_RUN))
+    });
+    for test in &not_run {
+        eprintln!(
+            "web-platform-tests: not run: {}: {}",
+            test.path(),
+            expected[test.path()]
+        );
+    }
     let server = Arc::new(serve(root(), false));
     let harness = Arc::new(serve(root(), true));
     // A second port of the same, a distinct origin, and the same over
@@ -3372,11 +3437,12 @@ fn the_web_platform_tests_subset_runs_as_expected() {
     let passed = results.iter().filter(|(_, o)| o.passed).count();
     eprintln!(
         "web-platform-tests: {passed} of {} passed ({} of {} testharness subtests), \
-         {} expected to fail; report in {}",
+         {} expected to fail, {} not run; report in {}",
         results.len(),
         subtests.1,
         subtests.0,
-        expected.len(),
+        expected.len() - not_run.len(),
+        not_run.len(),
         out_dir().join("report.html").display()
     );
     assert!(
