@@ -12,8 +12,20 @@ webgpu:api,operation,adapter,requestDevice:default:*	:
 # A known bug, deferred: it holds only its page's promise; other pages,
 # the GPU process and the UI run on (measured 2026-11-21).
 webgpu:api,operation,compute,basic:large_dispatch:*	timeout
-# The uncaptured error of an out-of-memory error with no scope for it
-# (the filter internal or validation) can come after the test's end
-# under load (validation's seen in a gate, 2026-11-24).
+# An uncaptured error (an error no scope of its filter catches) can
+# come after the test's end under load, the GPU process's word reaching
+# the page late: a latency of ours, not the driver's, which Chrome's CTS
+# runs do not show (ws-todo, after G255). Counted 2026-11-24 with the
+# error_scope queries alone, 8 side by side, 50 runs under a parallel
+# cargo build: before the shared WebGL device (d23f610a4) 29 runs failed
+# such a case (out-of-memory/validation 39 times, validation/out-of-
+# memory 23, validation/internal 19, at least: 5 lines a run kept);
+# after it (098e1bdf9) none, its runs four times quicker. Caveats: the
+# build's load was not logged, and a gate's load is heavier, under
+# which validation/internal and out-of-memory/validation still failed
+# once each after the change. Out-of-memory/internal was never counted
+# failing; it is marked as its kin.
 webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="internal"	flaky
 webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="validation"	flaky
+webgpu:api,validation,error_scope:simple:*	:errorType="validation";errorFilter="internal"	flaky
+webgpu:api,validation,error_scope:simple:*	:errorType="validation";errorFilter="out-of-memory"	flaky
