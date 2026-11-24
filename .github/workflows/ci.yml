@@ -327,6 +327,9 @@ jobs:
       - name: Fuzz
         env:
           SECONDS_PER_TARGET: ${{ inputs.fuzz_seconds || (github.event_name == 'schedule' && 1800 || 60) }}
+          # Leaks inside lavapipe, which LeakSanitizer cannot follow, are
+          # not ours (fuzz/lsan-suppressions.txt says which and why).
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/fuzz/lsan-suppressions.txt
         # An input is a failure past 30 s (-timeout): the slowest a green
         # run's targets took under the address sanitizer was 12 s.
         # A page nested to the parser's cap needs about 17 MiB of stack

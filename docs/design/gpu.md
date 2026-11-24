@@ -147,7 +147,10 @@ allows no second process and caps its memory at `MAX_GPU_MEMORY`. Step
 1 finds which token the device accepts and records it in section 4.
 Elsewhere it is a plain process (G113, as the renderers). In one
 process, the GPU service is a thread of the browser, on the same
-protocol, as the renderers' are in tests.
+protocol, as the renderers' are in tests. A client's objects, its
+shared device too, go when the client does: a renderer's as the
+browser sees it go (`ToGpu::Gone`), the thread's as its last holder
+drops it (a test counts the devices before and after).
 
 **Renderers reach it through the browser.** A renderer sends its GPU
 requests to the browser (`ToBrowser::Gpu`), which forwards each to the

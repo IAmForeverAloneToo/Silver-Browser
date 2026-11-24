@@ -797,6 +797,15 @@ impl GpuService {
     pub fn objects(&self, client: u32) -> usize {
         self.clients.get(&client).map_or(0, |c| c.objects.len())
     }
+
+    /// How many devices its clients hold, all told.
+    pub fn devices(&self) -> usize {
+        self.clients
+            .values()
+            .flat_map(|c| c.objects.values())
+            .filter(|o| matches!(o, Object::Device(_)))
+            .count()
+    }
 }
 
 /// What a page is told of `adapter`.

@@ -23,6 +23,9 @@ type Answer = Box<dyn FnOnce(Reply, Vec<u8>) + Send>;
 /// One who listens to a device's news.
 type Listener = Box<dyn Fn(Reply) + Send + Sync>;
 
+/// What a client's end tells its service, where nothing else would.
+type End = Box<dyn FnOnce() + Send>;
+
 #[derive(Default)]
 struct State {
     waiting: HashMap<u32, Answer>,
@@ -41,6 +44,7 @@ pub struct GpuClient {
     next_id: AtomicU32,
     next_call: AtomicU32,
     state: Mutex<State>,
+    end: Mutex<Option<End>>,
 }
 
 impl GpuClient {
@@ -50,7 +54,17 @@ impl GpuClient {
             next_id: AtomicU32::new(1),
             next_call: AtomicU32::new(1),
             state: Mutex::default(),
+            end: Mutex::new(None),
         }
+    }
+
+    /// A client whose end (its last holder gone) runs `end`: the local
+    /// service's, which no process's end tells (a renderer's is told by
+    /// the browser, as the renderer goes).
+    pub fn with_end(channel: Channel, end: impl FnOnce() + Send + 'static) -> GpuClient {
+        let client = GpuClient::new(channel);
+        *client.end.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(end));
+        client
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -228,5 +242,18 @@ impl GpuClient {
 
     pub fn lost(&self) -> Option<String> {
         self.state().lost.clone()
+    }
+}
+
+impl Drop for GpuClient {
+    fn drop(&mut self) {
+        let end = self
+            .end
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(end) = end {
+            end();
+        }
     }
 }

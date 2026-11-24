@@ -63,11 +63,20 @@ mod local {
     use super::service::GpuService;
     use super::wire;
 
-    /// A batch of a client's, with where its replies go.
-    struct Job {
-        client: u32,
-        bytes: Vec<u8>,
-        to: Weak<GpuClient>,
+    /// What the service's thread takes.
+    enum Job {
+        /// A batch of a client's, with where its replies go.
+        Batch {
+            client: u32,
+            bytes: Vec<u8>,
+            to: Weak<GpuClient>,
+        },
+        /// A client gone: its objects go, its device with them (a
+        /// renderer's are told so by the browser as the renderer goes).
+        Gone(u32),
+        /// How many devices the service holds (the tests').
+        #[cfg(test)]
+        Devices(mpsc::Sender<usize>),
     }
 
     /// The service's thread, started at the first client.
@@ -78,47 +87,63 @@ mod local {
             std::thread::Builder::new()
                 .name("gpu-service".to_owned())
                 .spawn(move || {
-                    let mut service = GpuService::new(false);
+                    let service = GpuService::new(false);
                     service.warm();
-                    // Where each client's replies go, for its devices'
-                    // news too.
-                    let mut clients: HashMap<u32, Weak<GpuClient>> = HashMap::new();
-                    while let Ok(job) = jobs.recv() {
-                        clients.insert(job.client, job.to.clone());
-                        let handled =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                service.handle(job.client, &job.bytes)
-                            }));
-                        let Some(to) = job.to.upgrade() else {
-                            service.gone(job.client);
-                            clients.remove(&job.client);
-                            continue;
-                        };
-                        match handled {
-                            Ok(Ok(replies)) => {
-                                for batch in wire::reply_batches(replies) {
-                                    let _ = to.deliver(&batch);
-                                }
-                            }
-                            Ok(Err(why)) => {
-                                service.gone(job.client);
-                                to.lose(why);
-                            }
-                            Err(_) => {
-                                service.gone(job.client);
-                                to.lose("its request panicked the GPU service".to_owned());
-                            }
-                        }
-                        for (client, event) in service.events() {
-                            if let Some(to) = clients.get(&client).and_then(Weak::upgrade) {
-                                let _ = to.deliver(&wire::replies(&[event]));
-                            }
-                        }
-                    }
+                    run(service, &jobs);
                 })
                 .expect("the GPU service's thread");
             Mutex::new(sender)
         })
+    }
+
+    /// The service's loop: each job in turn, until no client can send.
+    fn run(mut service: GpuService, jobs: &mpsc::Receiver<Job>) {
+        // Where each client's replies go, for its devices' news too.
+        let mut clients: HashMap<u32, Weak<GpuClient>> = HashMap::new();
+        while let Ok(job) = jobs.recv() {
+            let (client, bytes, to) = match job {
+                Job::Batch { client, bytes, to } => (client, bytes, to),
+                Job::Gone(client) => {
+                    service.gone(client);
+                    clients.remove(&client);
+                    continue;
+                }
+                #[cfg(test)]
+                Job::Devices(answer) => {
+                    let _ = answer.send(service.devices());
+                    continue;
+                }
+            };
+            clients.insert(client, to.clone());
+            let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                service.handle(client, &bytes)
+            }));
+            let Some(to) = to.upgrade() else {
+                service.gone(client);
+                clients.remove(&client);
+                continue;
+            };
+            match handled {
+                Ok(Ok(replies)) => {
+                    for batch in wire::reply_batches(replies) {
+                        let _ = to.deliver(&batch);
+                    }
+                }
+                Ok(Err(why)) => {
+                    service.gone(client);
+                    to.lose(why);
+                }
+                Err(_) => {
+                    service.gone(client);
+                    to.lose("its request panicked the GPU service".to_owned());
+                }
+            }
+            for (client, event) in service.events() {
+                if let Some(to) = clients.get(&client).and_then(Weak::upgrade) {
+                    let _ = to.deliver(&wire::replies(&[event]));
+                }
+            }
+        }
     }
 
     pub(super) fn client() -> Arc<GpuClient> {
@@ -128,24 +153,97 @@ mod local {
         let _ = service();
         static CLIENTS: AtomicU32 = AtomicU32::new(1);
         let number = CLIENTS.fetch_add(1, Ordering::Relaxed);
+        client_of(number, |job| {
+            service()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .send(job)
+                .is_ok()
+        })
+    }
+
+    /// Client `number` of the service `send` reaches; its end tells the
+    /// service so.
+    fn client_of(
+        number: u32,
+        send: impl Fn(Job) -> bool + Clone + Send + Sync + 'static,
+    ) -> Arc<GpuClient> {
+        let end = send.clone();
         Arc::new_cyclic(|this: &Weak<GpuClient>| {
             let to = this.clone();
-            GpuClient::new(Box::new(move |bytes| {
-                let job = Job {
-                    client: number,
-                    bytes,
-                    to: to.clone(),
-                };
-                let sent = service()
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .send(job);
-                if sent.is_err()
-                    && let Some(to) = to.upgrade()
-                {
-                    to.lose("the GPU service is gone".to_owned());
-                }
-            }))
+            GpuClient::with_end(
+                Box::new(move |bytes| {
+                    let job = Job::Batch {
+                        client: number,
+                        bytes,
+                        to: to.clone(),
+                    };
+                    if !send(job)
+                        && let Some(to) = to.upgrade()
+                    {
+                        to.lose("the GPU service is gone".to_owned());
+                    }
+                }),
+                move || {
+                    end(Job::Gone(number));
+                },
+            )
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::webgl::Harness;
+
+        #[test]
+        fn a_gone_clients_shared_device_goes_with_it() {
+            // CI's fuzzing suppresses leaks inside Mesa's software Vulkan
+            // (fuzz/lsan-suppressions.txt), which a device of ours never
+            // dropped would hide behind: the devices are counted here.
+            if !super::super::adapter_here() {
+                eprintln!("no adapter here: the devices are not counted");
+                return;
+            }
+            let (sender, jobs) = mpsc::channel::<Job>();
+            let thread = std::thread::spawn(move || run(GpuService::new(false), &jobs));
+            let sender = Arc::new(Mutex::new(sender));
+            let send = {
+                let sender = sender.clone();
+                move |job| {
+                    sender
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .send(job)
+                        .is_ok()
+                }
+            };
+            let devices = || {
+                let (answer, count) = mpsc::channel();
+                sender.lock().unwrap().send(Job::Devices(answer)).unwrap();
+                count.recv().unwrap()
+            };
+            assert_eq!(devices(), 0);
+            for number in 1..=3 {
+                let client = client_of(number, send.clone());
+                let mut h = Harness::new(client.clone());
+                assert!(h.create(1), "client {number}: no context");
+                h.call("createBuffer", &[], Vec::new(), None);
+                assert!(h.create(2), "client {number}: no second context");
+                // Two contexts, one device: the client's.
+                assert_eq!(devices(), 1, "client {number}");
+                // Its contexts gone, the client keeps its device for the
+                // next it makes (one a client, never more).
+                h.call("loseContext", &[], Vec::new(), None);
+                drop(h);
+                assert_eq!(devices(), 1, "client {number}");
+                // The client gone: the device goes.
+                drop(client);
+                assert_eq!(devices(), 0, "client {number}");
+            }
+            drop(send);
+            drop(sender);
+            thread.join().unwrap();
+        }
     }
 }

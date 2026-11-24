@@ -1,0 +1,12 @@
+# LeakSanitizer's suppressions for the fuzz targets on CI (LSAN_OPTIONS
+# in the Fuzz step). Each names a module outside this repository whose
+# allocations LeakSanitizer cannot follow; a leak of this repository's
+# own code is never suppressed here.
+#
+# Mesa's software Vulkan (lavapipe), webgpu_ops' and webgl_ops' adapter:
+# it keeps pointers to its host allocations where LeakSanitizer does not
+# look, so one it still holds is reported as a direct leak. Seen once a
+# device lived across inputs (webgl_ops, CI 45318415399: 48 bytes, every
+# frame but the target's in libvulkan_lvp.so); the input is the seed
+# fuzz/seeds/webgl_ops/618a0bd240bb1eea2c6603e96031118415e2e646.
+leak:libvulkan_lvp.so
