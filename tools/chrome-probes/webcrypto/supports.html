@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+const S = SubtleCrypto;
+const out = [];
+const t = (label, f) => { try { out.push(label + ' -> ' + String(f())); } catch (e) { out.push(label + ' -> ' + e.name + ': ' + e.message); } };
+const d = Object.getOwnPropertyDescriptor(S, 'supports');
+t('shape', () => [typeof S.supports, S.supports.length, S.supports.name, d.writable, d.enumerable, d.configurable, 'supports' in S.prototype].join());
+t('no args', () => S.supports());
+t('one arg', () => S.supports('digest'));
+t('this undefined', () => S.supports.call(undefined, 'digest', 'SHA-256'));
+const hkdf = {name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(1), info: new Uint8Array(0)};
+const pb = {name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(1), iterations: 1};
+const {publicKey} = await crypto.subtle.generateKey({name: 'ECDH', namedCurve: 'P-256'}, false, ['deriveBits']);
+const {publicKey: p384} = await crypto.subtle.generateKey({name: 'ECDH', namedCurve: 'P-384'}, false, ['deriveBits']);
+const {publicKey: xpub} = await crypto.subtle.generateKey('X25519', false, ['deriveBits']);
+const rsa = (name, bits, e) => ({name, modulusLength: bits, publicExponent: new Uint8Array(e || [1, 0, 1]), hash: 'SHA-256'});
+const cases = [
+  ['exportKey', 'AES-GCM'], ['wrapKey', 'AES-KW'], ['unwrapKey', 'AES-KW'], ['deriveKey', hkdf], ['deriveKey', hkdf, {name: 'AES-GCM', length: 256}],
+  ['deriveKey', hkdf, {name: 'AES-GCM', length: 192}], ['deriveKey', hkdf, {name: 'HMAC', hash: 'SHA-256'}], ['deriveKey', hkdf, 256],
+  ['get key length', {name: 'AES-GCM', length: 256}], ['encapsulateKey', 'ML-KEM-768'], ['getPublicKey', 'ECDSA'], ['getPublicKey', 'AES-GCM'],
+  ['digest', 'SHA-256'], ['digest', 'sha-256'], ['digest', {name: 'SHA-256'}], ['digest', 'SHA3-256'],
+  ['generateKey', 'AES-GCM'], ['generateKey', {name: 'AES-GCM', length: 192}], ['generateKey', {name: 'AES-GCM', length: 128.5}],
+  ['generateKey', rsa('RSA-OAEP', 2048)], ['generateKey', rsa('RSA-OAEP', 1024)], ['generateKey', rsa('RSA-OAEP', 256)], ['generateKey', rsa('RSA-OAEP', 16384)], ['generateKey', rsa('RSA-OAEP', 2048, [3])], ['generateKey', rsa('RSA-OAEP', 2048, [1, 0, 0])], ['generateKey', rsa('RSA-OAEP', 2049)],
+  ['generateKey', {name: 'ECDSA', namedCurve: 'P-521'}], ['generateKey', {name: 'HMAC', hash: 'SHA-1', length: 7}], ['generateKey', 'Ed25519'], ['generateKey', 'X25519'], ['generateKey', 'HKDF'],
+  ['importKey', 'AES-GCM'], ['importKey', 'HKDF'], ['importKey', {name: 'RSA-OAEP'}], ['importKey', {name: 'ECDSA', namedCurve: 'P-999'}],
+  ['sign', {name: 'ECDSA', hash: 'SHA-1'}], ['sign', {name: 'ECDSA', hash: 'MD5'}], ['sign', {name: 'RSA-PSS', saltLength: 1e6}], ['sign', 'RSASSA-PKCS1-v1_5'], ['sign', 'Ed25519'], ['verify', {name: 'HMAC'}],
+  ['encrypt', {name: 'RSA-OAEP', label: new Uint8Array(3)}], ['encrypt', {name: 'AES-GCM', iv: new Uint8Array(0)}], ['encrypt', {name: 'AES-GCM', iv: new Uint8Array(1)}], ['encrypt', {name: 'AES-GCM', iv: new Uint8Array(12), tagLength: 32}],
+  ['encrypt', {name: 'AES-CBC', iv: new Uint8Array(16)}], ['encrypt', {name: 'AES-CTR', counter: new Uint8Array(16), length: 64}], ['encrypt', {name: 'AES-KW'}],
+  ['deriveBits', hkdf, 256], ['deriveBits', hkdf, 0], ['deriveBits', hkdf, 230], ['deriveBits', hkdf, 255 * 256 + 8], ['deriveBits', hkdf, -8], ['deriveBits', hkdf, null], ['deriveBits', hkdf, '256'],
+  ['deriveBits', pb, 256], ['deriveBits', {...pb, iterations: 0}, 256], ['deriveBits', pb, 2 ** 31],
+  ['deriveBits', {name: 'ECDH', public: publicKey}], ['deriveBits', {name: 'ECDH', public: publicKey}, 384], ['deriveBits', {name: 'ECDH', public: publicKey}, 230], ['deriveBits', {name: 'ECDH', public: p384}, 384],
+  ['deriveBits', {name: 'ECDH', public: xpub}], ['deriveBits', {name: 'X25519', public: xpub}], ['deriveBits', {name: 'X25519', public: xpub}, 512], ['deriveBits', {name: 'X25519', public: publicKey}],
+  [5, 'SHA-256'], ['digest', 5], ['digest', null],
+];
+for (const c of cases) {
+  const label = c.map((x) => typeof x === 'object' && x !== null ? JSON.stringify(x, (k, v) => v instanceof Uint8Array ? 'u8(' + v.length + ')' : (v instanceof CryptoKey ? 'key:' + v.algorithm.namedCurve + v.algorithm.name : v)) : String(x)).join(' ');
+  t(label, () => S.supports(...c));
+}
+window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

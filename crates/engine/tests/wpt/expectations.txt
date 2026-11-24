@@ -32898,23 +32898,7 @@ WebCryptoAPI/supports.tentative.https.any.html	supports(getPublicKey, ECDSA)	G25
 WebCryptoAPI/supports.tentative.https.any.html	supports(getPublicKey, ECDH)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.html	supports(getPublicKey, Ed25519)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.html	supports(getPublicKey, X25519)	G255 step 5: the KEM methods and getPublicKey not made yet
-WebCryptoAPI/supports.tentative.https.any.html	supports validates HKDF SHA-1 output length	Chrome fails it too: assert_false: HKDF with SHA-1 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates HKDF SHA-256 output length	Chrome fails it too: assert_false: HKDF with SHA-256 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates HKDF SHA-384 output length	Chrome fails it too: SHA-3, which it does not ship
-WebCryptoAPI/supports.tentative.https.any.html	supports validates HKDF SHA-512 output length	Chrome fails it too: assert_false: HKDF with SHA-512 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates HKDF output length for deriveKey	Chrome fails it too: assert_false: HKDF rejects a derived key longer than 255 hash blocks expected false got true
 WebCryptoAPI/supports.tentative.https.any.html	supports validates HMAC import length	Chrome fails it too: assert_false: HMAC rejects an explicitly zero-length imported key expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates ECDSA import namedCurve	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.html	supports validates ECDH import namedCurve	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.html	supports validates ECDH P-256 deriveBits length	Chrome fails it too: assert_false: ECDH P-256 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates ECDH P-384 deriveBits length	Chrome fails it too: assert_false: ECDH P-384 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates ECDH P-521 deriveBits length	Chrome fails it too: assert_false: ECDH P-521 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates the ECDH public key	Chrome fails it too: assert_false: ECDH rejects a private public property expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports validates the X25519 public key	Chrome fails it too: assert_false: X25519 rejects a private public property expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	supports derives the ECDH output limit from the public curve	Chrome fails it too: assert_false: ECDH P-256 cannot derive a 512-bit HMAC key expected false got true
-WebCryptoAPI/supports.tentative.https.any.html	deriveKey promise tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.html	exportKey tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.html	wrapKey tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, RSASSA-PKCS1-v1_5)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, RSA-PSS)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, RSA-OAEP)	G255 step 5: the KEM methods and getPublicKey not made yet
@@ -32922,23 +32906,7 @@ WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, ECD
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, ECDH)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, Ed25519)	G255 step 5: the KEM methods and getPublicKey not made yet
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports(getPublicKey, X25519)	G255 step 5: the KEM methods and getPublicKey not made yet
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HKDF SHA-1 output length	Chrome fails it too: assert_false: HKDF with SHA-1 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HKDF SHA-256 output length	Chrome fails it too: assert_false: HKDF with SHA-256 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HKDF SHA-384 output length	Chrome fails it too: SHA-3, which it does not ship
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HKDF SHA-512 output length	Chrome fails it too: assert_false: HKDF with SHA-512 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HKDF output length for deriveKey	Chrome fails it too: assert_false: HKDF rejects a derived key longer than 255 hash blocks expected false got true
 WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates HMAC import length	Chrome fails it too: assert_false: HMAC rejects an explicitly zero-length imported key expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates ECDSA import namedCurve	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates ECDH import namedCurve	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates ECDH P-256 deriveBits length	Chrome fails it too: assert_false: ECDH P-256 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates ECDH P-384 deriveBits length	Chrome fails it too: assert_false: ECDH P-384 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates ECDH P-521 deriveBits length	Chrome fails it too: assert_false: ECDH P-521 rejects output longer than its maximum expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates the ECDH public key	Chrome fails it too: assert_false: ECDH rejects a private public property expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports validates the X25519 public key	Chrome fails it too: assert_false: X25519 rejects a private public property expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	supports derives the ECDH output limit from the public curve	Chrome fails it too: assert_false: ECDH P-256 cannot derive a 512-bit HMAC key expected false got true
-WebCryptoAPI/supports.tentative.https.any.worker.html	deriveKey promise tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.worker.html	exportKey tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
-WebCryptoAPI/supports.tentative.https.any.worker.html	wrapKey tests	SubtleCrypto.supports says yes where the operation refuses, which Chrome's does not: a step 6 bug, to fix (G255)
 WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.html	Can wrap and unwrap RSA-OAEP private key keys as non-extractable using pkcs8 and AES-CTR	RSA-OAEP outside 2048..8192 bits: NotSupportedError by ruling (G255, OAEP_GAP)
 WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.html	Can wrap and unwrap RSA-OAEP private key keys as non-extractable using jwk and AES-CTR	RSA-OAEP outside 2048..8192 bits: NotSupportedError by ruling (G255, OAEP_GAP)
 WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey.https.any.html	Can unwrap RSA-OAEP private key non-extractable keys using jwk and AES-CTR	RSA-OAEP outside 2048..8192 bits: NotSupportedError by ruling (G255, OAEP_GAP)

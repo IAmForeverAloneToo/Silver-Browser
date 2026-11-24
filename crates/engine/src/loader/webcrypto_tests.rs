@@ -331,6 +331,9 @@ fn subtle_crypto_supports_and_quota_exceeded_error_are_the_references() {
         t(() => [S.supports('deriveBits', hkdf, 256), S.supports('deriveBits', hkdf, -8), S.supports('deriveBits', hkdf, '256'), S.supports('deriveBits', hkdf), S.supports('deriveBits', hkdf, 230)].join());\
         t(() => [S.supports('deriveKey', hkdf, {name: 'AES-GCM', length: 256}), S.supports('deriveKey', hkdf, {name: 'AES-GCM', length: 192}), S.supports('deriveKey', hkdf)].join());\
         t(() => [S.supports('encrypt', {name: 'AES-CTR', counter: new Uint8Array(16), length: 129}), S.supports('exportKey', 'AES-GCM'), S.supports(5, 'SHA-256')].join());\
+        t(() => [S.supports('wrapKey', 'AES-KW', 'AES-GCM'), S.supports('wrapKey', 'AES-KW', 'HKDF'), S.supports('unwrapKey', 'AES-KW', 'HKDF'), S.supports('exportKey', 'HKDF'), S.supports('importKey', {name: 'ECDSA', namedCurve: 'P-51'})].join());\
+        const ecdh = await crypto.subtle.generateKey({name: 'ECDH', namedCurve: 'P-256'}, false, ['deriveBits']);\
+        t(() => [S.supports('deriveBits', {name: 'ECDH', public: ecdh.publicKey}, 256), S.supports('deriveBits', {name: 'ECDH', public: ecdh.publicKey}, 257), S.supports('deriveBits', {name: 'ECDH', public: ecdh.privateKey}, 256), S.supports('deriveKey', {name: 'ECDH', public: ecdh.publicKey}, {name: 'HMAC', hash: 'SHA-256'})].join());\
         const Q = QuotaExceededError;\
         t(() => [Q.length, Object.getPrototypeOf(Q) === DOMException, Object.getOwnPropertyNames(Q.prototype).join('/')].join());\
         t(() => { const e = new Q('m', {quota: 5, requested: 2}); return [e.quota, e.requested, e.code, e instanceof DOMException].join(); });\
@@ -339,16 +342,22 @@ fn subtle_crypto_supports_and_quota_exceeded_error_are_the_references() {
         t(() => { const c = structuredClone(new Q('m')); return [c.constructor === Q, c.quota, c.requested].join(); });\
         for (const line of out) console.log(line);\
         })().catch((e) => console.log('failed', e.name, e.message));";
-    let lines = logged(script, 11);
+    let lines = logged(script, 13);
     assert_eq!(
         lines,
         [
             "function,2,supports,true,true,true,false",
             "TypeError: Failed to execute 'supports' on 'SubtleCrypto': 2 arguments required, but only 1 present.",
             "true,false,false,true",
-            "true,true,false,false,false",
+            // -8 wraps to 2^32 - 8 bits, past HKDF's most: deriveBits
+            // refuses it (the reference's too), so supports says no,
+            // where the reference's says yes (the contract over its
+            // answer; WPT's supports.tentative expects no).
+            "true,false,false,false,false",
             "true,false,false",
             "false,true,false",
+            "true,false,true,false,false",
+            "true,false,false,false",
             "0,true,quota/requested/constructor",
             "5,2,22,true",
             "TypeError: Failed to construct 'QuotaExceededError': Failed to read the 'quota' property from 'QuotaExceededErrorOptions': The provided double value is non-finite.",

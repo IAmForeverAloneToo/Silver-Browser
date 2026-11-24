@@ -17,6 +17,9 @@ Rules:
   before relying on them, and update the version here.
 - A WPT failure kept because of a line here says so in its expectation
   reason.
+- Where Silver differs from Chrome on purpose instead, the line goes
+  under "We differ, deliberately", at the end, with the same probe and
+  version, and why.
 
 ## User-Agent and client hints
 
@@ -67,3 +70,16 @@ Probes: `tools/chrome-probes/webcrypto/`, Chrome 158.0.8127.37. Design:
   This agrees with WPT's `getRandomValues.any.js`, which expects null
   for both; it is listed so that nobody "fixes" it to the numbers
   (`quota.html`).
+
+## We differ, deliberately
+
+### Web Crypto
+
+- `SubtleCrypto.supports('deriveBits', hkdf, -8)`: Chrome says true,
+  Silver false. -8 wraps to 2^32 - 8 bits, past HKDF's 255 hash
+  lengths, and Chrome's own `deriveBits` refuses it ("The length
+  provided for HKDF is too large."); `supports` must never say yes to
+  what the operation refuses (the lead's ruling, G255), and WPT's
+  `supports.tentative` expects false. The same holds for any HKDF
+  length past 255 hash lengths (`supports.html`, `enforce-range.html`;
+  Chrome 158.0.8127.37).

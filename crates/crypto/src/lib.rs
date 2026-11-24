@@ -384,6 +384,18 @@ impl Keys {
         info
     }
 
+    /// The number the next key will have.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn next_id(&self) -> u32 {
+        self.next + 1
+    }
+
+    /// Every key from number `first` on gone.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn forget_from(&mut self, first: u32) {
+        self.keys.retain(|id, _| *id < first);
+    }
+
     pub(crate) fn get(&self, id: u32) -> Result<&Key, Error> {
         self.keys
             .get(&id)
@@ -419,8 +431,8 @@ pub fn deserialize_key(keys: &mut Keys, record: &[u8]) -> Result<KeyInfo, Error>
 /// `SubtleCrypto.supports`: whether `operation` would take `algorithm`
 /// (and `extra`, a length or a derived key's algorithm), by the
 /// operations' own checks that need no key.
-pub fn supports(operation: &str, algorithm: &Value, extra: &Value) -> bool {
-    algorithms::supports(operation, algorithm, extra)
+pub fn supports(keys: &Keys, operation: &str, algorithm: &Value, extra: &Value) -> bool {
+    algorithms::supports(keys, operation, algorithm, extra)
 }
 
 pub fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
@@ -675,6 +687,9 @@ fn rsa_signed_natively_verifies(choice: u8, message: &[u8]) {
 /// `native`'s AES-GCM, for the fuzz target that holds it to aws-lc-rs's
 /// (`fuzz_targets/crypto_gcm.rs`), and the property that a signature the
 /// library made verifies: in no build but the fuzz crate's.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod oracle;
+
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing {
     /// A signature the library made verifies true, another message false,

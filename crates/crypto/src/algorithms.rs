@@ -581,9 +581,11 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                 let length = key_length(&derived_length)?;
                 derive_bits(keys, base, &alg, length)?
             };
+            // As raw-secret, which every secret's algorithm takes
+            // (ChaCha20-Poly1305 refuses raw; the reference derives it).
             let info = import(
                 keys,
-                "raw",
+                "raw-secret",
                 &Value::Bytes(bits),
                 &derived_import,
                 extractable,
@@ -859,7 +861,7 @@ fn aes_kw(key: &[u8], data: &[u8], wrap: bool) -> Result<Vec<u8>, Error> {
 
 /// An exported JWK's text, as the reference wraps it (probed: compact,
 /// its members in their export order).
-fn jwk_text(members: &[(String, JwkValue)]) -> String {
+pub(crate) fn jwk_text(members: &[(String, JwkValue)]) -> String {
     use devtools::Json;
     Json::object(members.iter().map(|(name, value)| {
         let value = match value {
@@ -1299,6 +1301,47 @@ fn export_ec(key: &Key, curve: &str, material: &Material, format: &str) -> Resul
 
 /// ECDSA's signature (r and s, each the curve's length), aws-lc-rs's for
 /// the curve and hash pairs it signs.
+/// The curve and hash pairs aws-lc-rs signs ECDSA with: `supports`'s
+/// table too.
+fn ecdsa_signing(curve: &str, hash: &str) -> Option<&'static signature::EcdsaSigningAlgorithm> {
+    Some(match (curve, hash) {
+        ("P-256", "SHA-256") => &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        ("P-384", "SHA-384") => &signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+        ("P-521", "SHA-256") => &signature::ECDSA_P521_SHA256_FIXED_SIGNING,
+        ("P-521", "SHA-384") => &signature::ECDSA_P521_SHA384_FIXED_SIGNING,
+        ("P-521", "SHA-512") => &signature::ECDSA_P521_SHA512_FIXED_SIGNING,
+        _ => return None,
+    })
+}
+
+/// The curve and hash pairs aws-lc-rs verifies ECDSA with, and whether
+/// as the fixed form (else its ASN.1 form): `supports`'s table too.
+fn ecdsa_verifying(
+    curve: &str,
+    hash: &str,
+) -> Option<(&'static signature::EcdsaVerificationAlgorithm, bool)> {
+    use signature::{
+        ECDSA_P256_SHA1_ASN1, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA384_ASN1,
+        ECDSA_P256_SHA512_ASN1, ECDSA_P384_SHA256_ASN1, ECDSA_P384_SHA384_FIXED,
+        ECDSA_P384_SHA512_ASN1, ECDSA_P521_SHA1_FIXED, ECDSA_P521_SHA256_FIXED,
+        ECDSA_P521_SHA384_FIXED, ECDSA_P521_SHA512_FIXED,
+    };
+    Some(match (curve, hash) {
+        ("P-256", "SHA-256") => (&ECDSA_P256_SHA256_FIXED, true),
+        ("P-256", "SHA-1") => (&ECDSA_P256_SHA1_ASN1, false),
+        ("P-256", "SHA-384") => (&ECDSA_P256_SHA384_ASN1, false),
+        ("P-256", "SHA-512") => (&ECDSA_P256_SHA512_ASN1, false),
+        ("P-384", "SHA-384") => (&ECDSA_P384_SHA384_FIXED, true),
+        ("P-384", "SHA-256") => (&ECDSA_P384_SHA256_ASN1, false),
+        ("P-384", "SHA-512") => (&ECDSA_P384_SHA512_ASN1, false),
+        ("P-521", "SHA-1") => (&ECDSA_P521_SHA1_FIXED, true),
+        ("P-521", "SHA-256") => (&ECDSA_P521_SHA256_FIXED, true),
+        ("P-521", "SHA-384") => (&ECDSA_P521_SHA384_FIXED, true),
+        ("P-521", "SHA-512") => (&ECDSA_P521_SHA512_FIXED, true),
+        _ => return None,
+    })
+}
+
 fn ecdsa_sign(
     curve: &str,
     hash: &str,
@@ -1306,14 +1349,7 @@ fn ecdsa_sign(
     point: &[u8],
     data: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    let algorithm: &'static signature::EcdsaSigningAlgorithm = match (curve, hash) {
-        ("P-256", "SHA-256") => &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        ("P-384", "SHA-384") => &signature::ECDSA_P384_SHA384_FIXED_SIGNING,
-        ("P-521", "SHA-256") => &signature::ECDSA_P521_SHA256_FIXED_SIGNING,
-        ("P-521", "SHA-384") => &signature::ECDSA_P521_SHA384_FIXED_SIGNING,
-        ("P-521", "SHA-512") => &signature::ECDSA_P521_SHA512_FIXED_SIGNING,
-        _ => return Err(Error::not_supported(ECDSA_GAP)),
-    };
+    let algorithm = ecdsa_signing(curve, hash).ok_or_else(|| Error::not_supported(ECDSA_GAP))?;
     let pair = signature::EcdsaKeyPair::from_private_key_and_public_key(algorithm, d, point)
         .map_err(|_| Error::operation(""))?;
     let signature = pair
@@ -1347,27 +1383,9 @@ fn ecdsa_verify(
     signature: &[u8],
     data: &[u8],
 ) -> Result<bool, Error> {
-    use signature::{
-        ECDSA_P256_SHA1_ASN1, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA384_ASN1,
-        ECDSA_P256_SHA512_ASN1, ECDSA_P384_SHA256_ASN1, ECDSA_P384_SHA384_FIXED,
-        ECDSA_P384_SHA512_ASN1, ECDSA_P521_SHA1_FIXED, ECDSA_P521_SHA256_FIXED,
-        ECDSA_P521_SHA384_FIXED, ECDSA_P521_SHA512_FIXED, UnparsedPublicKey,
-    };
-    let (algorithm, fixed): (&'static signature::EcdsaVerificationAlgorithm, bool) =
-        match (curve, hash) {
-            ("P-256", "SHA-256") => (&ECDSA_P256_SHA256_FIXED, true),
-            ("P-256", "SHA-1") => (&ECDSA_P256_SHA1_ASN1, false),
-            ("P-256", "SHA-384") => (&ECDSA_P256_SHA384_ASN1, false),
-            ("P-256", "SHA-512") => (&ECDSA_P256_SHA512_ASN1, false),
-            ("P-384", "SHA-384") => (&ECDSA_P384_SHA384_FIXED, true),
-            ("P-384", "SHA-256") => (&ECDSA_P384_SHA256_ASN1, false),
-            ("P-384", "SHA-512") => (&ECDSA_P384_SHA512_ASN1, false),
-            ("P-521", "SHA-1") => (&ECDSA_P521_SHA1_FIXED, true),
-            ("P-521", "SHA-256") => (&ECDSA_P521_SHA256_FIXED, true),
-            ("P-521", "SHA-384") => (&ECDSA_P521_SHA384_FIXED, true),
-            ("P-521", "SHA-512") => (&ECDSA_P521_SHA512_FIXED, true),
-            _ => return Err(Error::not_supported(ECDSA_GAP)),
-        };
+    use signature::UnparsedPublicKey;
+    let (algorithm, fixed) =
+        ecdsa_verifying(curve, hash).ok_or_else(|| Error::not_supported(ECDSA_GAP))?;
     let c = curve_of(curve).coord;
     if signature.len() != 2 * c {
         return Ok(false);
@@ -1387,6 +1405,41 @@ fn ecdsa_verify(
 
 /// ECDH's shared secret with the `public` key, its first `length` bits
 /// (all the curve's, by default), the reference's errors in its order.
+/// The public key an ECDH or X25519 derivation's `public` member names,
+/// checked as the derivation checks it (the reference's words), and the
+/// most bits it agrees on: `supports`'s check too.
+fn agreement_public<'k>(keys: &'k Keys, alg: &Normalized) -> Result<(&'k Key, u32), Error> {
+    let public = keys.get(alg.key("public").ok_or_else(|| Error::operation(""))?)?;
+    if alg.name == "X25519" {
+        let prefix = "The public parameter for X25519 key derivation";
+        let KeyAlgorithm::Okp { name: "X25519" } = &public.algorithm else {
+            return Err(Error::invalid_access(format!(
+                "{prefix} must be for X25519"
+            )));
+        };
+        let Material::OkpPublic { .. } = &public.material else {
+            return Err(Error::invalid_access(format!(
+                "{prefix} is not a public key"
+            )));
+        };
+        return Ok((public, 256));
+    }
+    let prefix = "The public parameter for ECDH key derivation";
+    let KeyAlgorithm::Ec {
+        name: "ECDH",
+        curve,
+    } = &public.algorithm
+    else {
+        return Err(Error::invalid_access(format!("{prefix} must be for ECDH")));
+    };
+    let Material::EcPublic { .. } = &public.material else {
+        return Err(Error::invalid_access(format!(
+            "{prefix} is not a public EC key"
+        )));
+    };
+    Ok((public, 8 * curve_of(curve).coord as u32))
+}
+
 fn ecdh_bits(
     keys: &Keys,
     key: &Key,
@@ -1398,27 +1451,18 @@ fn ecdh_bits(
     else {
         return Err(Error::operation(""));
     };
-    let public = keys.get(alg.key("public").ok_or_else(|| Error::operation(""))?)?;
-    let prefix = "The public parameter for ECDH key derivation";
-    let KeyAlgorithm::Ec {
-        name: "ECDH",
-        curve: theirs,
-    } = &public.algorithm
+    let (public, most) = agreement_public(keys, alg)?;
+    let (KeyAlgorithm::Ec { curve: theirs, .. }, Material::EcPublic { point }) =
+        (&public.algorithm, &public.material)
     else {
-        return Err(Error::invalid_access(format!("{prefix} must be for ECDH")));
-    };
-    let Material::EcPublic { point } = &public.material else {
-        return Err(Error::invalid_access(format!(
-            "{prefix} is not a public EC key"
-        )));
+        return Err(Error::operation(""));
     };
     if theirs != curve {
-        return Err(Error::invalid_access(format!(
-            "{prefix} is for a different named curve"
-        )));
+        return Err(Error::invalid_access(
+            "The public parameter for ECDH key derivation is for a different named curve",
+        ));
     }
     let c = curve_of(curve);
-    let most = 8 * c.coord as u32;
     let length = length.unwrap_or(most);
     if length > most {
         return Err(Error::operation(format!(
@@ -1765,20 +1809,12 @@ fn x25519_bits(
     let Material::OkpPrivate { d, .. } = &key.material else {
         return Err(Error::operation(""));
     };
-    let public = keys.get(alg.key("public").ok_or_else(|| Error::operation(""))?)?;
-    let prefix = "The public parameter for X25519 key derivation";
-    let KeyAlgorithm::Okp { name: "X25519" } = &public.algorithm else {
-        return Err(Error::invalid_access(format!(
-            "{prefix} must be for X25519"
-        )));
-    };
+    let (public, most) = agreement_public(keys, alg)?;
     let Material::OkpPublic { x } = &public.material else {
-        return Err(Error::invalid_access(format!(
-            "{prefix} is not a public key"
-        )));
+        return Err(Error::operation(""));
     };
-    let length = length.unwrap_or(256);
-    if length > 256 {
+    let length = length.unwrap_or(most);
+    if length > most {
         return Err(Error::operation(
             "The length provided for X25519 is too large.",
         ));
@@ -2223,6 +2259,11 @@ fn rsa_params(alg: &Normalized) -> Result<(u32, u64), Error> {
     Ok((bits, e))
 }
 
+/// The largest RSA modulus the library parses (aws-lc's
+/// OPENSSL_RSA_MAX_MODULUS_BITS): a PSS salt past what it fits, with
+/// SHA-1's 20 bytes, fits no key.
+const RSA_MOST_BITS: u32 = 16384;
+
 /// The least modulus the library makes a key of: a smaller one is an
 /// OperationError at generation (the reference's too, probed).
 const RSA_LEAST_GENERATED: u32 = 512;
@@ -2599,10 +2640,26 @@ pub(crate) fn rsa_public_key_der(n: &[u8], e: &[u8]) -> Vec<u8> {
 /// exportKey's and wrapKey's checks (probed: "HKDF: Unsupported
 /// operation: exportKey", with the method's prefix in exportKey alone).
 fn exportable(key: &Key) -> Result<(), Error> {
-    match key.algorithm {
-        KeyAlgorithm::Kdf { name } => Err(Error::not_supported(format!(
+    let name = key.algorithm.name();
+    if has_export(name) {
+        Ok(())
+    } else {
+        Err(Error::not_supported(format!(
             "{name}: Unsupported operation: exportKey"
-        ))),
+        )))
+    }
+}
+
+/// Whether algorithm `name`'s keys export at all (a KDF's do not).
+fn has_export(name: &str) -> bool {
+    !matches!(name, "HKDF" | "PBKDF2")
+}
+
+/// An import's checks of its algorithm that need no key data, run by
+/// the import itself and by `supports`: an EC algorithm's curve.
+fn import_params(alg: &Normalized) -> Result<(), Error> {
+    match alg.name {
+        "ECDSA" | "ECDH" => named_curve(alg, "EcKeyImportParams").map(|_| ()),
         _ => Ok(()),
     }
 }
@@ -2731,6 +2788,14 @@ fn derive_params(alg: &Normalized, length: Option<u32>) -> Result<(), Error> {
                     _ => "Length for PBKDF2 key derivation must be a multiple of 8 bits.",
                 }));
             }
+            // RFC 5869's most, 255 hash lengths: checked before any
+            // buffer is made (a wrapped -8 asks 512 MiB).
+            let hash_bits = 8 * digest_algorithm(alg.hash().unwrap_or("SHA-256")).output_len();
+            if name == "HKDF" && u64::from(length) > 255 * hash_bits as u64 {
+                return Err(Error::operation(
+                    "The length provided for HKDF is too large.",
+                ));
+            }
             if name == "PBKDF2" && alg.num("iterations").unwrap_or(0) == 0 {
                 return Err(Error::operation("PBKDF2 requires iterations > 0"));
             }
@@ -2746,7 +2811,7 @@ fn derive_params(alg: &Normalized, length: Option<u32>) -> Result<(), Error> {
 /// operations' code run or their checks shared, so that it never says yes
 /// to what the operation refuses. `extra` is a length (`Value::Num`), a
 /// derived key's algorithm (deriveKey's), or `Value::Absent`.
-pub(crate) fn supports(op: &str, algorithm: &Value, extra: &Value) -> bool {
+pub(crate) fn supports(keys: &Keys, op: &str, algorithm: &Value, extra: &Value) -> bool {
     let length = match extra {
         Value::Num(n) => Some(*n as u32),
         _ => None,
@@ -2781,28 +2846,38 @@ pub(crate) fn supports(op: &str, algorithm: &Value, extra: &Value) -> bool {
                 generate(&mut Keys::default(), &alg, false, &usages).is_ok()
             }
         },
-        // The AES ciphers run on a throwaway key and no data; RSA-OAEP's
-        // checks all need its key.
-        "encrypt" | "decrypt" => match alg.name {
-            // A 256-bit throwaway key: AES-256's, and ChaCha20's.
-            "AES-CBC" | "AES-CTR" | "AES-GCM" | CHACHA => {
-                let key = Key {
-                    kind: KeyType::Secret,
-                    extractable: false,
-                    algorithm: KeyAlgorithm::Aes {
-                        name: alg.name,
-                        length: 256,
-                    },
-                    usages: vec![],
-                    material: Material::Secret(vec![0; 32]),
-                };
-                crypt_with(&key, &alg, &[], true).is_ok()
-            }
-            _ => true,
-        },
-        "deriveBits" => {
-            derive_params(&alg, length).is_ok()
-                && !(alg.name == "X25519" && length.is_some_and(|l| l > 256))
+        "importKey" => import_params(&alg).is_ok(),
+        "exportKey" => import_params(&alg).is_ok() && has_export(alg.name),
+        "encrypt" | "decrypt" => cipher_params(&alg),
+        // The wrapped key's algorithm, if given: one that imports, and,
+        // to be wrapped, exports.
+        "wrapKey" | "unwrapKey" => {
+            cipher_params(&alg)
+                && match extra {
+                    Value::Absent => true,
+                    _ => normalize("importKey", extra).is_ok_and(|wrapped| {
+                        import_params(&wrapped).is_ok()
+                            && (op == "unwrapKey"
+                                || has_export(wrapped.name)
+                                    && (alg.name != "AES-KW" || kw_wraps(&wrapped)))
+                    }),
+                }
+        }
+        "deriveBits" => derive_supported(keys, &alg, length),
+        // ECDSA's hash where some curve pairs with it; RSA-PSS's salt
+        // where some key the store takes fits it.
+        "sign" | "verify" if alg.name == "ECDSA" => {
+            let hash = alg.hash().unwrap_or("SHA-256");
+            CURVES.iter().any(|c| {
+                if op == "sign" {
+                    ecdsa_signing(c.name, hash).is_some()
+                } else {
+                    ecdsa_verifying(c.name, hash).is_some()
+                }
+            })
+        }
+        "sign" | "verify" if alg.name == "RSA-PSS" => {
+            alg.num("saltLength").unwrap_or(0) <= RSA_MOST_BITS / 8 - 20 - 2
         }
         "deriveKey" => {
             let derived_length = match extra {
@@ -2821,10 +2896,88 @@ pub(crate) fn supports(op: &str, algorithm: &Value, extra: &Value) -> bool {
                 }
                 _ => return false,
             };
-            derive_params(&alg, derived_length).is_ok()
+            derive_supported(keys, &alg, derived_length)
         }
         _ => true,
     }
+}
+
+/// Whether AES-KW wraps some key of `wrapped`'s algorithm: its export
+/// must be a multiple of 8 bytes, 16 or more. An EC or OKP key's every
+/// encoding has a length its curve and usages fix (none of P-256's is
+/// one, P-384's SPKI is), so a throwaway key of the curve is exported
+/// in each format with each usages it may have; a secret's or an RSA
+/// key's lengths vary with the key, and some fits. (An unwrap takes any
+/// bytes, a JWK's text padded among them.)
+fn kw_wraps(wrapped: &Normalized) -> bool {
+    if !matches!(wrapped.name, "ECDSA" | "ECDH" | "Ed25519" | "X25519") {
+        return true;
+    }
+    let mut keys = Keys::default();
+    let mut usages: Vec<Usage> = allowed(wrapped.name, KeyType::Public).to_vec();
+    usages.extend_from_slice(allowed(wrapped.name, KeyType::Private));
+    let Ok(Outcome::Pair(public, private)) = generate(&mut keys, wrapped, true, &usages) else {
+        return false;
+    };
+    [public, private].iter().any(|info| {
+        let Ok(made) = keys.get(info.id) else {
+            return false;
+        };
+        let all = &info.usages;
+        // Each subset of its usages: a JWK's key_ops are the key's.
+        (0..1u32 << all.len()).any(|mask| {
+            let mut key = made.clone();
+            key.usages = (0..all.len())
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| all[i])
+                .collect();
+            if key.kind == KeyType::Private && key.usages.is_empty() {
+                return false;
+            }
+            ["raw", "spki", "pkcs8", "jwk"].iter().any(|format| {
+                let len = match export(&key, format) {
+                    Ok(Outcome::Bytes(bytes)) => bytes.len(),
+                    Ok(Outcome::Jwk(members)) => jwk_text(&members).len(),
+                    _ => return false,
+                };
+                len >= 16 && len.is_multiple_of(8)
+            })
+        })
+    })
+}
+
+/// An encryption's checks that need no key: the AES ciphers' and
+/// ChaCha20's run on a throwaway key and no data; RSA-OAEP's and AES-KW's
+/// all need the key.
+fn cipher_params(alg: &Normalized) -> bool {
+    match alg.name {
+        // A 256-bit throwaway key: AES-256's, and ChaCha20's.
+        "AES-CBC" | "AES-CTR" | "AES-GCM" | CHACHA => {
+            let key = Key {
+                kind: KeyType::Secret,
+                extractable: false,
+                algorithm: KeyAlgorithm::Aes {
+                    name: alg.name,
+                    length: 256,
+                },
+                usages: vec![],
+                material: Material::Secret(vec![0; 32]),
+            };
+            crypt_with(&key, alg, &[], true).is_ok()
+        }
+        _ => true,
+    }
+}
+
+/// A derivation's checks that need no base key: its parameters, and an
+/// agreement's public key, which bounds its length.
+fn derive_supported(keys: &Keys, alg: &Normalized, length: Option<u32>) -> bool {
+    derive_params(alg, length).is_ok()
+        && match alg.name {
+            "ECDH" | "X25519" => agreement_public(keys, alg)
+                .is_ok_and(|(_, most)| length.is_none_or(|length| length <= most)),
+            _ => true,
+        }
 }
 
 fn derive_bits(

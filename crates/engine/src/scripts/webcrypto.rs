@@ -59,7 +59,7 @@ pub(crate) fn call(
                     crypto::Value::Absent => get("extra"),
                     derived => merged(derived, get("derivedLength")),
                 };
-                crypto::supports(op, &get("alg"), &extra)
+                crypto::supports(keys, op, &get("alg"), &extra)
             });
             (Ok(Answer::Bool(yes)), None)
         }

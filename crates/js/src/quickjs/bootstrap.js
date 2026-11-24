@@ -34180,7 +34180,8 @@
     // the algorithm, by the host's own checks of it. The last argument
     // is Web IDL's (AlgorithmIdentifier or unsigned long?): null, a
     // number (wrapping, as unsigned long does), or an algorithm, which
-    // deriveKey alone reads, as its derived key's type.
+    // deriveKey reads as its derived key's type, and wrapKey and
+    // unwrapKey as the wrapped key's.
     const statics = {
       supports(operation, algorithm, lengthOrAdditionalAlgorithm = null) {
         need(arguments.length, 2, "supports", SUBTLE);
@@ -34194,6 +34195,8 @@
         } else if (extra !== null && extra !== undefined && op === "deriveKey") {
           args.derived = cryptoAlgorithm(extra, "importKey", buffers);
           args.derivedLength = cryptoAlgorithm(extra, "get key length", buffers);
+        } else if (extra !== null && extra !== undefined && (op === "wrapKey" || op === "unwrapKey")) {
+          args.derived = cryptoAlgorithm(extra, "importKey", buffers);
         }
         const call = [JSONStringify(args)];
         for (let i = 0; i < buffers.length; i++) {

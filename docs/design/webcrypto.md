@@ -352,6 +352,32 @@ by the runner from outside it, whatever it blocks on: deriveBits of
 until step 7 moves the costly operations off the renderer's main
 thread.
 
+`SubtleCrypto.supports`'s contract (the lead's ruling): it says yes
+exactly when the operation itself takes the algorithm on some key that
+fits, never yes to what the operation refuses. It runs the operations'
+own checks that need no key, shared with them (an import's curve, a
+KDF's lack of an export, a wrapped key's export, an agreement's public
+key and the length its curve bounds, HKDF's 255 hash lengths), and
+reads the store for a `public` member's key. It is held to that by the
+operations themselves: `crypto::oracle` makes throwaway keys of every
+algorithm, curve, hash and size, and runs each operation through the
+store's entry point; a test enumerates every operation, every name and
+each algorithm's parameters, valid and not (1,530 combinations), and
+asserts the two agree, and the fuzz target `crypto_supports` feeds it
+random algorithms. Its first run found what step 6's hand-picked cases
+missed: yeses the operations refused (an unknown curve at importKey for
+ECDSA and ECDH, X25519 deriving a 512-bit HMAC key, an HKDF key's
+export and wrap, an HKDF length past 255 hash lengths, an ECDH length
+past its curve's, a private or foreign `public` key, ECDSA signing with
+SHA-1, which no curve pairs with, a PSS salt no key fits, AES-KW
+wrapping a P-256 key, none of whose encodings is a multiple of 8
+bytes), and one refusal of the operation's own: deriveKey imported its
+bits as raw, which ChaCha20-Poly1305 refuses (the reference derives
+it); it imports them as raw-secret now. wrapKey's and unwrapKey's third
+argument, the wrapped key's algorithm, now reaches the store. Where the
+reference's supports says yes to what its own operation refuses (an
+HKDF length of -8, wrapped to 2^32 - 8 bits), ours says no.
+
 ChaCha20-Poly1305 (step 5a), aws-lc-rs's: a 256-bit key, made whatever
 length is asked, and derived so; raw-secret and jwk (C20P) its formats
 alone, plain raw refused; a 96-bit IV and a 128-bit tag alone, each
