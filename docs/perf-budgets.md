@@ -2074,6 +2074,21 @@ ms as the page's clock says (a thousand calls, then a pixel read that
 waits for them); a WebGPU compute round trip of sixteen numbers written,
 dispatched, copied and mapped, 2.4 ms (1.8 to 15.1 ms).
 
+A WebGL context's making (2026-11-24, release, this machine's GPU,
+medians of ten): each asked the GPU process for an adapter and made a
+device of its own, 297 ms a WebGL 1 context and 313 ms a WebGL 2, 207
+to 323 ms a restore, and 1,745 ms the first (the GPU backends loaded,
+1.35 s, and the adapters enumerated, 0.28 s). Fingerprinting scripts
+make one per page to read its renderer, and maps and video sites more.
+Now the GPU process keeps the adapter it found, a renderer's contexts
+share its one device (each its own objects, errors and loss), and the
+GPU process starts once the window's first frame is presented: a new
+context or a restore 0.01 ms, the first one 55 ms (its device) once
+the process is warm, about 1 s when asked at once. The first frame,
+alternated with and without the warming, four starts each after a
+first: 108 and 105 ms, the page's frame 165 and 161 ms, within each
+other's spread.
+
 A realm makes neither WebGPU's nor WebGL's bindings until its page
 first uses them: they are a script of their own, read from their
 bytecode then (M41 step 10), as a realm that made them at once cost a

@@ -264,6 +264,12 @@ impl Context {
             .clone()
     }
 
+    /// Starts the GPU process ahead of a page's asking (see
+    /// [`crate::service::GpuRelay::warm`]), with `launcher`.
+    pub fn warm_gpu(&self, launcher: &Arc<dyn crate::service::Launcher>) {
+        self.gpu_relay(launcher).warm();
+    }
+
     /// A new renderer's number, never one another tab's renderer had.
     pub(crate) fn new_renderer(&self) -> u32 {
         self.shared.renderers.fetch_add(1, Ordering::Relaxed)

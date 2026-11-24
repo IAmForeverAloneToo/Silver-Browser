@@ -12,6 +12,8 @@ webgpu:api,operation,adapter,requestDevice:default:*	:
 # A known bug, deferred: it holds only its page's promise; other pages,
 # the GPU process and the UI run on (measured 2026-11-21).
 webgpu:api,operation,compute,basic:large_dispatch:*	timeout
-# The uncaptured error of an out-of-memory error with no scope for it can
-# come after the test's end under load.
+# The uncaptured error of an out-of-memory error with no scope for it
+# (the filter internal or validation) can come after the test's end
+# under load (validation's seen in a gate, 2026-11-24).
 webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="internal"	flaky
+webgpu:api,validation,error_scope:simple:*	:errorType="out-of-memory";errorFilter="validation"	flaky

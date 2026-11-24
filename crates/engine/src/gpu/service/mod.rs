@@ -8,7 +8,8 @@
 //! say, through the device's error scopes or as an uncaptured error.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 mod work;
 
@@ -176,9 +177,20 @@ impl Client {
 /// uncaptured errors and losses, sent after the batch they came in.
 type Events = Arc<Mutex<Vec<(u32, Reply)>>>;
 
+/// The adapters found, by the power and fallback asked for: each looked
+/// for once and kept, a page's every request answered from it (each
+/// still an adapter object of its own, its "consumed" its own). Looking
+/// enumerates the machine's adapters: 1.5 s the first time on this
+/// machine's GPU and a quarter of a second each time after, which every
+/// WebGL context paid (measured 2026-11-24).
+type Adapters = Arc<Mutex<HashMap<(u8, bool), Arc<OnceLock<Option<wgpu::Adapter>>>>>>;
+
 /// The GPU service.
 pub struct GpuService {
     instance: wgpu::Instance,
+    adapters: Adapters,
+    /// How many times the machine's adapters were looked for.
+    lookups: Arc<AtomicUsize>,
     /// Whether the fallback adapter alone is taken (a setting, and the
     /// tests').
     fallback_only: bool,
@@ -227,6 +239,8 @@ impl GpuService {
         });
         GpuService {
             instance,
+            adapters: Adapters::default(),
+            lookups: Arc::default(),
             fallback_only,
             clients: HashMap::new(),
             events: Arc::default(),
@@ -518,33 +532,93 @@ impl GpuService {
         self.adapter(0, false).is_some()
     }
 
-    /// An adapter as a page asks: the machine's, of the power asked for,
-    /// else the platform's fallback; the fallback alone when it asks for
-    /// it or the service takes no other.
-    fn adapter(&self, power: u8, fallback: bool) -> Option<wgpu::Adapter> {
-        let power_preference = match power {
-            1 => wgpu::PowerPreference::LowPower,
-            2 => wgpu::PowerPreference::HighPerformance,
-            _ => wgpu::PowerPreference::None,
-        };
-        let ask = |force_fallback_adapter| {
-            pollster::block_on(self.instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference,
-                force_fallback_adapter,
-                compatible_surface: None,
-                // The adapter's limits in wgpu's buckets, so that a page
-                // learns less of the machine (D39); never the page's
-                // choice.
-                apply_limit_buckets: true,
-            }))
-            .ok()
-        };
-        if fallback || self.fallback_only {
-            return ask(true);
-        }
-        ask(false).or_else(|| ask(true))
+    /// Looks for the adapter a page asks for first in the background, so
+    /// that a page's first context does not wait for the machine's
+    /// adapters to be enumerated; a request meanwhile waits for it
+    /// rather than looking again. A failure is quiet: the adapter is
+    /// looked for again as a page asks.
+    pub fn warm(&self) {
+        let (instance, adapters, only, lookups) = (
+            self.instance.clone(),
+            self.adapters.clone(),
+            self.fallback_only,
+            self.lookups.clone(),
+        );
+        let _ = std::thread::Builder::new()
+            .name("gpu-warm".to_owned())
+            .spawn(move || {
+                let _ = slot(&adapters, 0, false)
+                    .get_or_init(|| request_adapter(&instance, 0, false, only, &lookups));
+            });
     }
 
+    /// An adapter as a page asks: the machine's, of the power asked for,
+    /// else the platform's fallback; the fallback alone when it asks for
+    /// it or the service takes no other. Looked for once ([`Adapters`]).
+    fn adapter(&self, power: u8, fallback: bool) -> Option<wgpu::Adapter> {
+        slot(&self.adapters, power, fallback)
+            .get_or_init(|| {
+                request_adapter(
+                    &self.instance,
+                    power,
+                    fallback,
+                    self.fallback_only,
+                    &self.lookups,
+                )
+            })
+            .clone()
+    }
+
+    /// How many times the machine's adapters were looked for: once for
+    /// each power and fallback asked, however many pages ask.
+    pub fn adapter_lookups(&self) -> usize {
+        self.lookups.load(Ordering::SeqCst)
+    }
+}
+
+/// The slot of the adapter for `power` and `fallback`.
+fn slot(adapters: &Adapters, power: u8, fallback: bool) -> Arc<OnceLock<Option<wgpu::Adapter>>> {
+    adapters
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry((power, fallback))
+        .or_default()
+        .clone()
+}
+
+/// Looks for an adapter as [`GpuService::adapter`] describes.
+fn request_adapter(
+    instance: &wgpu::Instance,
+    power: u8,
+    fallback: bool,
+    fallback_only: bool,
+    lookups: &AtomicUsize,
+) -> Option<wgpu::Adapter> {
+    lookups.fetch_add(1, Ordering::SeqCst);
+    let power_preference = match power {
+        1 => wgpu::PowerPreference::LowPower,
+        2 => wgpu::PowerPreference::HighPerformance,
+        _ => wgpu::PowerPreference::None,
+    };
+    let ask = |force_fallback_adapter| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference,
+            force_fallback_adapter,
+            compatible_surface: None,
+            // The adapter's limits in wgpu's buckets, so that a page
+            // learns less of the machine (D39); never the page's
+            // choice.
+            apply_limit_buckets: true,
+        }))
+        .ok()
+    };
+    if fallback || fallback_only {
+        return ask(true);
+    }
+    ask(false).or_else(|| ask(true))
+}
+
+impl GpuService {
     /// A device of `adapter` with the features and limits asked for, or
     /// why it is refused. The standard's defaults stand for limits not
     /// asked for, and for those asked for worse than the defaults.

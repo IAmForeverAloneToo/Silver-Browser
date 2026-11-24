@@ -21,6 +21,9 @@ static TRACE: OnceLock<Trace> = OnceLock::new();
 
 /// Whether the first frame, and the first with the page drawn, are said.
 static FRAMED: AtomicBool = AtomicBool::new(false);
+/// Whether a frame was presented, traced or not: what the GPU process's
+/// start waits for, so as not to delay the first paint.
+static PRESENTED: AtomicBool = AtomicBool::new(false);
 static PAGED: AtomicBool = AtomicBool::new(false);
 
 /// Starts the trace: the process's age from the platform, or none where
@@ -43,9 +46,20 @@ pub(crate) fn mark(step: &str) {
     }
 }
 
+/// Waits, up to `most`, for the window's first frame to be presented
+/// (the multi-process build's: its GPU process starts after it).
+#[cfg(not(feature = "single-process"))]
+pub(crate) fn first_frame(most: Duration) {
+    let began = Instant::now();
+    while !PRESENTED.load(Ordering::Relaxed) && began.elapsed() < most {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// A frame is presented, with the page drawn or not: the first of each
 /// is said, when traced.
 pub(crate) fn presented(page: bool) {
+    PRESENTED.store(true, Ordering::Relaxed);
     if TRACE.get().is_none() {
         return;
     }

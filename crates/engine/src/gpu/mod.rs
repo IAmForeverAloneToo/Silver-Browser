@@ -79,6 +79,7 @@ mod local {
                 .name("gpu-service".to_owned())
                 .spawn(move || {
                     let mut service = GpuService::new(false);
+                    service.warm();
                     // Where each client's replies go, for its devices'
                     // news too.
                     let mut clients: HashMap<u32, Weak<GpuClient>> = HashMap::new();
@@ -121,6 +122,10 @@ mod local {
     }
 
     pub(super) fn client() -> Arc<GpuClient> {
+        // The service started with its first client, not its first
+        // request: making its instance (the backends loaded, more than a
+        // second here) and its adapter go on while the page loads.
+        let _ = service();
         static CLIENTS: AtomicU32 = AtomicU32::new(1);
         let number = CLIENTS.fetch_add(1, Ordering::Relaxed);
         Arc::new_cyclic(|this: &Weak<GpuClient>| {

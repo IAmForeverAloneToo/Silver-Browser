@@ -136,8 +136,11 @@ const theirs = other.createBuffer();
 other.bindBuffer(other.ARRAY_BUFFER, theirs);
 gl.bindBuffer(gl.ARRAY_BUFFER, theirs);
 const bound = gl.getError();
-// isBuffer of another's is false, with no error.
-log('other context ' + bound + ' ' + gl.isBuffer(theirs) + ' ' + gl.getError());
+// isBuffer of another's is false, with no error. The other context,
+// on the same device (one a client), heard none of it, and kept its own.
+log('other context ' + bound + ' ' + gl.isBuffer(theirs) + ' ' + gl.getError() + ' '
+  + other.getError() + ' ' + (other.getParameter(other.ARRAY_BUFFER_BINDING) === theirs)
+  + ' ' + (gl.getParameter(gl.ARRAY_BUFFER_BINDING) === null));
 log('extensions ' + (gl.getSupportedExtensions().length >= 15) + ' ' + gl.getExtension('OES_nothing'));
 const two = document.createElement('canvas').getContext('webgl2');
 log('webgl2 ' + two.constructor.name + ' ' + (two instanceof WebGLRenderingContext) + ' ' + two.getParameter(two.VERSION));
@@ -163,7 +166,7 @@ log('webgl2 ' + two.constructor.name + ' ' + (two instanceof WebGLRenderingConte
             "precision WebGLShaderPrecisionFormat 127 127 23",
             "not a buffer TypeError",
             "too few TypeError",
-            "other context 1282 false 0",
+            "other context 1282 false 0 0 true true",
             "extensions true null",
             "webgl2 WebGL2RenderingContext false WebGL 2.0 (OpenGL ES 3.0 Chromium)",
         ]

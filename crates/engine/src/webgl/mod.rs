@@ -362,6 +362,8 @@ pub(crate) struct Context {
     pub lost: bool,
     pub errors: Vec<u32>,
     pub device: u32,
+    /// The client's shared device it draws on, lost with it.
+    pub shared: Arc<draw::Shared>,
     pub client: Arc<GpuClient>,
     pub drawing: Option<DrawingBuffer>,
     /// Whether the drawing buffer is to be cleared before it is drawn
@@ -609,8 +611,9 @@ impl WebGl {
         if call.op == "restoreContext" {
             return Ok(Answer::Bool(false));
         }
-        // Its GPU process gone: lost.
-        if context.client.is_lost() {
+        // Its GPU process, or the device its client's contexts share, gone:
+        // lost.
+        if context.client.is_lost() || context.shared.lost() {
             context.lose();
             return Ok(lost_answer(&call.op, context));
         }
@@ -663,7 +666,12 @@ impl Context {
         attributes: Attributes,
         size: (u32, u32),
     ) -> Option<Context> {
-        let (device, features, adapter) = draw::device(client)?;
+        let shared = draw::shared_device(client)?;
+        let (device, features, adapter) = (
+            shared.device,
+            shared.features.clone(),
+            shared.adapter.clone(),
+        );
         let gpu = draw::Gpu::new(client, device);
         Some(Context {
             version,
@@ -672,6 +680,7 @@ impl Context {
             lost: false,
             errors: Vec::new(),
             device,
+            shared,
             client: client.clone(),
             drawing: None,
             needs_clear: true,
@@ -2601,7 +2610,158 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     #[test]
-    fn contexts_made_and_lost_leave_nothing_in_the_gpu_process() {
+    fn a_clients_contexts_share_its_device_and_nothing_else() {
+        // The lead's conditions for the shared device (2026-11-24): one
+        // device a client; a context's handles name its own objects alone,
+        // another's an INVALID_OPERATION; its errors its own; its
+        // loseContext its own, the device and the other context untouched.
+        let Some(client) = crate::gpu::local_client() else {
+            eprintln!("no GPU here: the shared device is not checked");
+            return;
+        };
+        let mut h = Harness::new(client);
+        if !h.create(1) {
+            eprintln!("no adapter here: the shared device is not checked");
+            return;
+        }
+        let a = h.context.expect("made");
+        h.call("createBuffer", &[], Vec::new(), None);
+        h.call(
+            "bindBuffer",
+            &[f64::from(ARRAY_BUFFER), 1.0],
+            Vec::new(),
+            None,
+        );
+        assert!(h.create(2));
+        let b = h.context.expect("made");
+        assert_ne!(a, b);
+        let device = |h: &Harness, id| h.webgl.contexts[&id].device;
+        assert_eq!(device(&h, a), device(&h, b), "one device a client");
+        // In b, a's buffer's number names nothing of b's.
+        h.call(
+            "bindBuffer",
+            &[f64::from(ARRAY_BUFFER), 1.0],
+            Vec::new(),
+            None,
+        );
+        let errors = |h: &Harness, id| h.webgl.contexts[&id].errors.clone();
+        assert_eq!(errors(&h, b), [INVALID_OPERATION]);
+        assert!(h.webgl.contexts[&b].array_buffer.is_none());
+        assert!(errors(&h, a).is_empty(), "a heard b's error");
+        assert_eq!(h.webgl.contexts[&a].array_buffer, Some(1));
+        // b's loss is b's alone.
+        h.call("loseContext", &[], Vec::new(), None);
+        assert!(h.webgl.contexts[&b].lost);
+        let context_a = &h.webgl.contexts[&a];
+        assert!(!context_a.lost && !context_a.shared.lost());
+        assert_eq!(context_a.buffers.len(), 1);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_validation_error_on_the_shared_device_harms_no_other_context() {
+        // The lead's question (2026-11-24): one context's work that fails
+        // the device's validation, uncaptured, neither panics the GPU
+        // process nor loses the device; another context on it draws on.
+        let Some(client) = crate::gpu::local_client() else {
+            eprintln!("no GPU here: the shared device is not checked");
+            return;
+        };
+        let mut h = Harness::new(client.clone());
+        if !h.create(1) {
+            eprintln!("no adapter here: the shared device is not checked");
+            return;
+        }
+        let a = h.context.expect("made");
+        assert!(h.create(1));
+        let b = h.context.expect("made");
+        let device = h.webgl.contexts[&a].device;
+        // A buffer both mappable to read and to write: wgpu refuses it.
+        client.queue([Request::CreateBuffer {
+            device,
+            id: client.id(),
+            size: 4,
+            usage: 0x3,
+            mapped: false,
+        }]);
+        client.flush();
+        // b clears to red and reads its pixel back.
+        h.context = Some(b);
+        h.call("clearColor", &[1.0, 0.0, 0.0, 1.0], Vec::new(), None);
+        h.call("clear", &[f64::from(COLOR_BUFFER_BIT)], Vec::new(), None);
+        let read = CanvasCall {
+            op: "readPixels".to_owned(),
+            numbers: vec![
+                f64::from(b),
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                f64::from(RGBA),
+                f64::from(UNSIGNED_BYTE),
+                // A Uint8Array, as the bindings say it.
+                1.0,
+                0.0,
+            ],
+            strings: Vec::new(),
+            bytes: Some(vec![0; 4]),
+        };
+        let client2 = client.clone();
+        let env = Env {
+            client: Some(&client2),
+            inbox: &h.inbox,
+            canvas_size: &|_| (64, 32),
+        };
+        let pixel = h.webgl.call(read, &env);
+        assert!(
+            matches!(pixel, Ok(Answer::Bytes(ref p)) if p == &[255, 0, 0, 255]),
+            "{pixel:?}"
+        );
+        let shared = &h.webgl.contexts[&a].shared;
+        assert!(shared.uncaptured() >= 1, "no validation error was made");
+        assert!(!shared.lost() && !client.is_lost());
+        assert!(!h.webgl.contexts[&a].lost && !h.webgl.contexts[&b].lost);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_shared_devices_loss_loses_every_context_and_a_restore_makes_another() {
+        let Some(client) = crate::gpu::local_client() else {
+            eprintln!("no GPU here: the shared device's loss is not checked");
+            return;
+        };
+        let mut h = Harness::new(client.clone());
+        if !h.create(1) {
+            eprintln!("no adapter here: the shared device's loss is not checked");
+            return;
+        }
+        let a = h.context.expect("made");
+        assert!(h.create(2));
+        let b = h.context.expect("made");
+        let device = h.webgl.contexts[&a].device;
+        // The device lost, as the GPU process says it.
+        client
+            .deliver(&crate::gpu::wire::replies(&[Reply::DeviceLost {
+                device,
+                destroyed: false,
+                message: "lost".to_owned(),
+            }]))
+            .expect("delivered");
+        for id in [a, b] {
+            h.context = Some(id);
+            h.call("getError", &[], Vec::new(), None);
+            assert!(h.webgl.contexts[&id].lost, "context {id} kept going");
+        }
+        // Restored on a device made again.
+        h.context = Some(a);
+        h.call("restoreContext", &[], Vec::new(), None);
+        assert!(h.made());
+        assert_ne!(h.webgl.contexts[&a].device, device);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn contexts_made_and_lost_leave_their_clients_one_device_alone() {
         // CI's nightly webgl_ops fuzzing ran out of memory: every context
         // left the adapter it asked for in the GPU process. A service of
         // the test's own on a thread (it is not `Send`), its objects
@@ -2649,9 +2809,12 @@ mod tests {
                 return;
             }
             h.call("createBuffer", &[], Vec::new(), None);
-            assert!(objects() > 0);
+            // The device at least (a context's own objects go to the GPU
+            // process as it first draws).
+            assert!(objects() >= 1);
             h.call("loseContext", &[], Vec::new(), None);
-            assert_eq!(objects(), 0);
+            // The client's one shared device alone, whichever context.
+            assert_eq!(objects(), 1);
         }
     }
 }

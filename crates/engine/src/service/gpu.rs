@@ -74,6 +74,24 @@ impl GpuRelay {
         })
     }
 
+    /// Starts the GPU process off the caller's thread, if it does not
+    /// run, so that its backends, instance and adapter are made before a
+    /// page asks (about 1.6 s on this machine's GPU, which a page's first
+    /// WebGL context waited for): the lead's ruling of 2026-11-24. Quiet
+    /// when it cannot: a page's first request starts it then, as before.
+    pub fn warm(self: &Arc<Self>) {
+        if self.running() {
+            return;
+        }
+        let relay = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("gpu-warm".to_owned())
+            .spawn(move || {
+                let mut state = lock(&relay.state);
+                let _ = relay.sender(&mut state);
+            });
+    }
+
     /// Renderer `renderer` is gone: its objects in the GPU process go.
     pub fn renderer_gone(&self, renderer: u32) {
         let mut state = lock(&self.state);

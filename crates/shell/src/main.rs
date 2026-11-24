@@ -1220,6 +1220,19 @@ fn show(line: &CommandLine) {
     let context = engine::Context::new();
     context.set_audio_output(audio::output());
     let launcher: Arc<dyn engine::service::Launcher> = Arc::new(launcher);
+    // The GPU process started once the window has its first frame, off
+    // this thread: a page's first WebGL context does not wait for it, and
+    // the first paint is not delayed by it (the lead's ruling, 2026-11-24).
+    {
+        let (context, launcher) = (context.clone(), launcher.clone());
+        let _ = std::thread::Builder::new()
+            .name("gpu-start".to_owned())
+            .spawn(move || {
+                startup::first_frame(Duration::from_secs(10));
+                context.warm_gpu(&launcher);
+                startup::mark("gpu process asked");
+            });
+    }
     let make = move |context: &engine::Context| {
         engine::service::RemoteTab::in_context(launcher.clone(), fonts.clone(), context)
     };

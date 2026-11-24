@@ -1,5 +1,6 @@
 //! WebGL's calls (M41 step 8, D40) driven by arbitrary bytes: any
-//! sequence of the calls the bootstrap makes of a WebGL 1 or 2 context,
+//! sequence of the calls the bootstrap makes of a WebGL 1 and a WebGL 2
+//! context of one client, interleaved on its one shared device,
 //! with GL's enums, small numbers, objects by their numbers, shaders
 //! that compile and data, into a GPU service on this machine's adapter
 //! (none: nothing is checked). No call panics: what is wrong is GL's
@@ -245,31 +246,40 @@ fuzz_target!(|data: &[u8]| {
     };
     HARNESSES.with(|cell| {
         let mut cell = cell.borrow_mut();
+        // A WebGL 1 and a WebGL 2 context of one client: on its one
+        // shared device, their calls interleaved.
         if cell.is_none() {
-            let (Some(one), Some(two)) = (engine::gpu::local_client(), engine::gpu::local_client())
-            else {
+            let Some(client) = engine::gpu::local_client() else {
                 return;
             };
-            *cell = Some(ManuallyDrop::new([Harness::new(one), Harness::new(two)]));
+            *cell = Some(ManuallyDrop::new([
+                Harness::new(client.clone()),
+                Harness::new(client),
+            ]));
         }
         let runs = RUNS.get();
         RUNS.set(runs + 1);
-        let two = first & 1 == 1;
-        let h = &mut cell.as_mut().expect("made")[usize::from(two)];
-        if runs % AGAIN < 2 || !h.made() {
-            h.call("loseContext", &[], Vec::new(), None);
-            if !h.create(if two { 2 } else { 1 }) {
-                return;
+        let harnesses = cell.as_mut().expect("made");
+        for (at, h) in harnesses.iter_mut().enumerate() {
+            if runs % AGAIN < 2 || !h.made() {
+                h.call("loseContext", &[], Vec::new(), None);
+                if !h.create(if at == 1 { 2 } else { 1 }) {
+                    return;
+                }
+            }
+            if first & (2 << at) != 0 {
+                prelude(h, at == 1);
             }
         }
-        if first & 2 == 2 {
-            prelude(h, two);
-        }
-        let (mut restores, mut lost) = (0, true);
+        let (mut restores, mut lost) = (0, [true, true]);
         for _ in 0..256 {
-            let Some(k) = input.small(CALLS.len()) else {
+            // A call's byte names it and, past the calls, its context.
+            let Some(pick) = input.byte() else {
                 break;
             };
+            let k = usize::from(pick) % CALLS.len();
+            let at = (usize::from(pick) / CALLS.len()) & 1;
+            let h = &mut harnesses[at];
             let (name, count, string, bytes) = CALLS[k];
             let mut numbers = Vec::with_capacity(count);
             for _ in 0..count {
@@ -300,19 +310,21 @@ fuzz_target!(|data: &[u8]| {
                 None
             };
             match name {
-                "loseContext" => lost = true,
-                "restoreContext" if lost => {
+                "loseContext" => lost[at] = true,
+                "restoreContext" if lost[at] => {
                     if restores == RESTORES {
                         continue;
                     }
                     restores += 1;
-                    lost = false;
+                    lost[at] = false;
                 }
                 _ => {}
             }
             h.call(name, &numbers, strings, data);
         }
         // What was drawn sent, as a task's end would.
-        h.call("flush", &[], Vec::new(), None);
+        for h in harnesses.iter_mut() {
+            h.call("flush", &[], Vec::new(), None);
+        }
     });
 });

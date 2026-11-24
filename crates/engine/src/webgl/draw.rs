@@ -6,7 +6,8 @@
 //! ends or something must be read or written in order.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use devtools::Json;
 
@@ -93,7 +94,86 @@ pub(crate) struct Gpu {
 
 /// A device for a context, with the features WebGL's extensions take
 /// where the adapter has them: its number, or none without an adapter.
-pub(crate) fn device(client: &Arc<GpuClient>) -> Option<(u32, Features, super::ext::Adapter)> {
+/// A GPU client's one device for its WebGL contexts (the lead's ruling,
+/// 2026-11-24): made for its first context and shared by every context
+/// after, each with its own objects on it, which it alone can name (its
+/// handles resolve in its own tables). A client is a renderer's, of one
+/// site. Made once, it spares each new context an adapter's enumeration
+/// and a device's creation (a quarter and a twentieth of a second,
+/// measured). Its loss loses every context on it, as the reference's
+/// does, each of which may be restored on a device made again; a
+/// context's own loss (`loseContext`, its document gone) releases its
+/// objects alone. The device's uncaptured errors are no context's: WebGL
+/// gives the errors GL's rules give, each context its own.
+pub(crate) struct Shared {
+    pub device: u32,
+    pub features: Features,
+    pub adapter: super::ext::Adapter,
+    lost: Arc<AtomicBool>,
+    /// The device's uncaptured errors heard: counted, no context's, and
+    /// never its loss (the GPU process's handler records them, never
+    /// panics). Read by the tests alone.
+    #[cfg_attr(not(all(test, feature = "gpu")), allow(dead_code))]
+    uncaptured: Arc<AtomicUsize>,
+}
+
+impl Shared {
+    /// Whether the device was lost.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// How many uncaptured errors the device reported.
+    #[cfg(all(test, feature = "gpu"))]
+    pub fn uncaptured(&self) -> usize {
+        self.uncaptured.load(Ordering::SeqCst)
+    }
+}
+
+/// The clients' shared devices, by client.
+static SHARED: Mutex<Vec<(Weak<GpuClient>, Arc<Shared>)>> = Mutex::new(Vec::new());
+
+/// `client`'s shared device ([`Shared`]), made if it has none or lost
+/// the one it had; `None` when none can be made.
+pub(crate) fn shared_device(client: &Arc<GpuClient>) -> Option<Arc<Shared>> {
+    let mut table = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+    table.retain(|(owner, _)| owner.strong_count() > 0);
+    let mine =
+        |(owner, _): &(Weak<GpuClient>, Arc<Shared>)| Weak::as_ptr(owner) == Arc::as_ptr(client);
+    if let Some(at) = table.iter().position(mine) {
+        if !table[at].1.lost() {
+            return Some(table[at].1.clone());
+        }
+        // A lost device goes, its listener with it.
+        let (_, old) = table.remove(at);
+        client.unlisten(old.device);
+        client.queue([Request::Drop { id: old.device }]);
+        client.flush();
+    }
+    let (device, features, adapter) = device(client)?;
+    let lost = Arc::new(AtomicBool::new(false));
+    let uncaptured = Arc::new(AtomicUsize::new(0));
+    let (flag, count) = (lost.clone(), uncaptured.clone());
+    client.listen(device, move |reply| match reply {
+        Reply::DeviceLost { .. } => flag.store(true, Ordering::SeqCst),
+        Reply::Uncaptured { .. } => {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+        _ => {}
+    });
+    let shared = Arc::new(Shared {
+        device,
+        features,
+        adapter,
+        lost,
+        uncaptured,
+    });
+    table.push((Arc::downgrade(client), shared.clone()));
+    Some(shared)
+}
+
+/// A new device of `client`'s adapter, for [`shared_device`].
+fn device(client: &Arc<GpuClient>) -> Option<(u32, Features, super::ext::Adapter)> {
     let adapter = client.id();
     let (reply, _) = wait(client, |call| Request::RequestAdapter {
         call,
@@ -247,7 +327,8 @@ impl Gpu {
         self.pending.clear();
         let made = std::mem::take(&mut self.made);
         client.queue(made.into_iter().rev().map(|id| Request::Drop { id }));
-        client.queue([Request::Drop { id: self.device }]);
+        // Its objects alone: the device is the client's contexts' own
+        // ([`Shared`]).
         // Sent now: a context lost as its document goes queues nothing
         // after this, and its device would stay in the GPU process.
         client.flush();
@@ -1900,8 +1981,9 @@ mod tests {
     #[test]
     fn a_released_context_sends_its_drops_at_once() {
         // A context lost as its document goes queues nothing after its
-        // release: were its drops left queued, its device would stay in
-        // the GPU process (the Khronos suite ran out of devices).
+        // release: were its drops left queued, its objects would stay in
+        // the GPU process (the Khronos suite ran out of devices). The
+        // device is its client's contexts' ([`Shared`]), not dropped.
         let sent: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
         let record = sent.clone();
         let client = Arc::new(GpuClient::new(Box::new(move |bytes| {
@@ -1918,6 +2000,17 @@ mod tests {
             .iter()
             .flat_map(|batch| wire::read_requests(batch).expect("a batch"))
             .collect();
-        assert!(requests.contains(&Request::Drop { id: 7 }), "{requests:?}");
+        let dropped: Vec<u32> = requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Drop { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(!dropped.is_empty(), "{requests:?}");
+        assert!(
+            !dropped.contains(&7),
+            "the shared device dropped: {requests:?}"
+        );
     }
 }

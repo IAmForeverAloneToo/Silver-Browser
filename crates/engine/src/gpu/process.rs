@@ -49,6 +49,9 @@ pub fn run(
         })
         .map_err(|_| "the browser is gone".to_owned())?;
     let mut service = GpuService::new(fallback_only);
+    // The machine's adapter looked for at once, off this loop: a page's
+    // first context does not wait for it (the lead's ruling (a2)).
+    service.warm();
     while let Ok(Some(message)) = inputs.recv() {
         let mut answers = Vec::new();
         match message {

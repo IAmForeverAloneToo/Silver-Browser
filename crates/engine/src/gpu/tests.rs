@@ -229,6 +229,27 @@ mod service {
     }
 
     #[test]
+    fn the_machines_adapters_are_looked_for_once_however_many_ask() {
+        // Each lookup enumerates the machine's adapters (a quarter of a
+        // second here after the first): looked for once, then kept,
+        // each request still an adapter object of its own.
+        let mut service = GpuService::new(false);
+        for (client, call) in [(1, 1), (1, 2), (2, 1)] {
+            let id = 10 + call;
+            service
+                .handle(client, &wire::requests(&[adapter(call, id)]))
+                .unwrap();
+        }
+        assert_eq!(service.adapter_lookups(), 1);
+        service.warm();
+        assert_eq!(
+            service.adapter_lookups(),
+            1,
+            "warmed after: looked for again"
+        );
+    }
+
+    #[test]
     fn an_adapter_is_the_machines_or_none_and_kept_by_the_clients_number() {
         let mut service = GpuService::new(false);
         let replies = service
