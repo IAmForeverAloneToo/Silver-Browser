@@ -42,6 +42,10 @@ pub(crate) enum KeyAlgorithm {
     },
     /// ChaCha20-Poly1305's: a 256-bit key, its algorithm its name alone.
     Chacha,
+    /// ML-DSA-44, -65 or -87's: its algorithm its name alone.
+    MlDsa {
+        name: &'static str,
+    },
 }
 
 impl KeyAlgorithm {
@@ -51,7 +55,8 @@ impl KeyAlgorithm {
             | KeyAlgorithm::Kdf { name }
             | KeyAlgorithm::Rsa { name, .. }
             | KeyAlgorithm::Ec { name, .. }
-            | KeyAlgorithm::Okp { name } => name,
+            | KeyAlgorithm::Okp { name }
+            | KeyAlgorithm::MlDsa { name } => name,
             KeyAlgorithm::Hmac { .. } => "HMAC",
             KeyAlgorithm::Chacha => CHACHA,
         }
@@ -69,9 +74,10 @@ impl KeyAlgorithm {
                 ("length", AlgorithmValue::Num(*length)),
                 ("hash", AlgorithmValue::Named((*hash).to_owned())),
             ],
-            KeyAlgorithm::Kdf { .. } | KeyAlgorithm::Okp { .. } | KeyAlgorithm::Chacha => {
-                vec![name]
-            }
+            KeyAlgorithm::Kdf { .. }
+            | KeyAlgorithm::Okp { .. }
+            | KeyAlgorithm::Chacha
+            | KeyAlgorithm::MlDsa { .. } => vec![name],
             KeyAlgorithm::Ec { curve, .. } => vec![
                 name,
                 ("namedCurve", AlgorithmValue::Str((*curve).to_owned())),
@@ -138,8 +144,8 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
         ("ECDSA", _) => &[Sign],
         ("ECDH" | "X25519", KeyType::Public) => &[],
         ("ECDH" | "X25519", _) => &[DeriveKey, DeriveBits],
-        ("Ed25519", KeyType::Public) => &[Verify],
-        ("Ed25519", _) => &[Sign],
+        ("Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87", KeyType::Public) => &[Verify],
+        ("Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87", _) => &[Sign],
         ("RSA-OAEP", KeyType::Public) => &[Encrypt, WrapKey],
         ("RSA-OAEP", _) => &[Decrypt, UnwrapKey],
         _ => &[],
@@ -193,7 +199,9 @@ fn secret(key: &Key) -> &[u8] {
         | Material::EcPublic { .. }
         | Material::EcPrivate { .. }
         | Material::OkpPublic { .. }
-        | Material::OkpPrivate { .. } => &[],
+        | Material::OkpPrivate { .. }
+        | Material::PqPublic { .. }
+        | Material::PqPrivate { .. } => &[],
     }
 }
 
@@ -473,6 +481,12 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
                         let pair = signature::Ed25519KeyPair::from_seed_and_public_key(d, x)
                             .map_err(|_| Error::operation(""))?;
                         Ok(Outcome::Bytes(pair.sign(&data).as_ref().to_vec()))
+                    }
+                    _ => Err(Error::operation("")),
+                },
+                KeyAlgorithm::MlDsa { name } => match &key.material {
+                    Material::PqPrivate { seed, .. } => {
+                        Ok(Outcome::Bytes(ml_dsa_sign(name, seed, &alg, &data)?))
                     }
                     _ => Err(Error::operation("")),
                 },
@@ -1797,6 +1811,322 @@ fn export_okp(key: &Key, name: &str, material: &Material, format: &str) -> Resul
     }
 }
 
+/// ML-DSA's known gap (G255 step 5's ruling): a non-empty context,
+/// which aws-lc-rs's stable API cannot pass.
+pub(crate) const ML_DSA_CONTEXT_GAP: &str = "ML-DSA with a non-empty context is not supported";
+
+/// ML-DSA `name`'s signing and verifying algorithms (aws-lc-rs's) and
+/// the last byte of its OID (2.16.840.1.101.3.4.3.17, .18, .19).
+fn ml_dsa(
+    name: &str,
+) -> Option<(
+    &'static signature::PqdsaSigningAlgorithm,
+    &'static signature::PqdsaVerificationAlgorithm,
+    u8,
+)> {
+    match name {
+        "ML-DSA-44" => Some((&signature::ML_DSA_44_SIGNING, &signature::ML_DSA_44, 0x11)),
+        "ML-DSA-65" => Some((&signature::ML_DSA_65_SIGNING, &signature::ML_DSA_65, 0x12)),
+        "ML-DSA-87" => Some((&signature::ML_DSA_87_SIGNING, &signature::ML_DSA_87, 0x13)),
+        _ => None,
+    }
+}
+
+/// The AlgorithmIdentifier of the ML-DSA whose OID ends in `last`: its
+/// OID, no parameters (RFC 9881).
+fn ml_dsa_algorithm_id(last: u8) -> [u8; 13] {
+    [
+        0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, last,
+    ]
+}
+
+/// An ML-DSA public key's SPKI.
+fn ml_dsa_spki(last: u8, public: &[u8]) -> Vec<u8> {
+    let mut bits = vec![0x03];
+    der_length(&mut bits, public.len() + 1);
+    bits.push(0);
+    bits.extend_from_slice(public);
+    let id = ml_dsa_algorithm_id(last);
+    let mut out = vec![0x30];
+    der_length(&mut out, id.len() + bits.len());
+    out.extend_from_slice(&id);
+    out.extend_from_slice(&bits);
+    out
+}
+
+/// An ML-DSA private key's PKCS#8, of its seed alone (RFC 9881's
+/// `seed` choice, `[0] IMPLICIT OCTET STRING (SIZE (32))`): the only
+/// form the reference writes or reads (probed: 54 bytes; the expanded
+/// key and the pair of both refused).
+fn ml_dsa_pkcs8(last: u8, seed: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x30, 0x34, 0x02, 0x01, 0x00];
+    out.extend_from_slice(&ml_dsa_algorithm_id(last));
+    out.extend_from_slice(&[0x04, 0x22, 0x80, 0x20]);
+    out.extend_from_slice(seed);
+    out
+}
+
+/// The public key ML-DSA `signing` makes of `seed` (FIPS 204's
+/// ML-DSA.KeyGen_internal); `None` for a seed of another length.
+fn ml_dsa_public(
+    signing: &'static signature::PqdsaSigningAlgorithm,
+    seed: &[u8],
+) -> Option<Vec<u8>> {
+    use signature::KeyPair;
+    let pair = signature::PqdsaKeyPair::from_seed(signing, seed).ok()?;
+    Some(pair.public_key().as_ref().to_vec())
+}
+
+/// ML-DSA's context, checked as the reference checks it (probed): over
+/// 255 bytes an OperationError; any other non-empty, the known gap.
+fn ml_dsa_context(alg: &Normalized) -> Result<(), Error> {
+    let context = alg.bytes("context").unwrap_or(&[]);
+    if context.len() > 255 {
+        return Err(Error::operation(""));
+    }
+    if !context.is_empty() {
+        return Err(Error::not_supported(ML_DSA_CONTEXT_GAP));
+    }
+    Ok(())
+}
+
+/// An ML-DSA signature of `data` by the key of `seed`: FIPS 204's
+/// hedged signing, so never the same twice (as the reference's).
+fn ml_dsa_sign(name: &str, seed: &[u8], alg: &Normalized, data: &[u8]) -> Result<Vec<u8>, Error> {
+    ml_dsa_context(alg)?;
+    let failed = || Error::operation("");
+    let (signing, _, _) = ml_dsa(name).ok_or_else(failed)?;
+    let pair = signature::PqdsaKeyPair::from_seed(signing, seed).map_err(|_| failed())?;
+    let mut out = vec![0u8; signing.signature_len()];
+    let len = pair.sign(data, &mut out).map_err(|_| failed())?;
+    out.truncate(len);
+    Ok(out)
+}
+
+/// An ML-DSA key pair, made from 32 random bytes as FIPS 204's
+/// ML-DSA.KeyGen makes it, the seed kept (its raw-seed and PKCS#8).
+fn generate_ml_dsa(
+    keys: &mut Keys,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<Outcome, Error> {
+    let public_allowed = allowed(alg.name, KeyType::Public);
+    let private_allowed = allowed(alg.name, KeyType::Private);
+    if usages
+        .iter()
+        .any(|u| !public_allowed.contains(u) && !private_allowed.contains(u))
+    {
+        return Err(Error::syntax(
+            "Cannot create a key using the specified key usages.",
+        ));
+    }
+    let failed = || Error::operation("");
+    let (signing, _, _) = ml_dsa(alg.name).ok_or_else(failed)?;
+    let seed = random(signing.seed_len())?;
+    let public = ml_dsa_public(signing, &seed).ok_or_else(failed)?;
+    let public_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| public_allowed.contains(u))
+        .collect();
+    let private_usages: Vec<Usage> = usages
+        .iter()
+        .copied()
+        .filter(|u| private_allowed.contains(u))
+        .collect();
+    empty_usages(KeyType::Private, &private_usages)?;
+    let algorithm = KeyAlgorithm::MlDsa { name: alg.name };
+    let public_key = Key {
+        kind: KeyType::Public,
+        extractable: true,
+        algorithm: algorithm.clone(),
+        usages: public_usages,
+        material: Material::PqPublic {
+            public: public.clone(),
+        },
+    };
+    let private_key = Key {
+        kind: KeyType::Private,
+        extractable,
+        algorithm,
+        usages: private_usages,
+        material: Material::PqPrivate { seed, public },
+    };
+    Ok(Outcome::Pair(
+        keys.insert(public_key),
+        keys.insert(private_key),
+    ))
+}
+
+/// An ML-DSA key's import, as the reference checks it (probed): the
+/// public key raw (`raw-public`) or in an SPKI, the private key its seed
+/// (`raw-seed`) or the seed's PKCS#8, or a JWK (`AKP`: `pub`, and the
+/// seed as `priv`, the two agreeing); a length or encoding refused a
+/// DataError with no message, as the reference's.
+fn import_ml_dsa(
+    keys: &mut Keys,
+    format: &str,
+    data: &Value,
+    alg: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<KeyInfo, Error> {
+    let name = alg.name;
+    let (signing, _, last) = ml_dsa(name).ok_or_else(|| Error::operation(""))?;
+    let bad = || Error::data("");
+    let bytes = || match data {
+        Value::Bytes(bytes) => Ok(bytes.as_slice()),
+        _ => Err(Error::type_error(
+            "Key data must be a BufferSource for non-JWK formats",
+        )),
+    };
+    let private = |seed: &[u8]| {
+        let public = ml_dsa_public(signing, seed).ok_or_else(bad)?;
+        Ok::<_, Error>((
+            KeyType::Private,
+            Material::PqPrivate {
+                seed: seed.to_vec(),
+                public,
+            },
+        ))
+    };
+    let (kind, material) = match format {
+        "raw-public" => {
+            check_usages(name, KeyType::Public, usages)?;
+            let public = bytes()?;
+            if public.len() != signing.public_key_len() {
+                return Err(bad());
+            }
+            (
+                KeyType::Public,
+                Material::PqPublic {
+                    public: public.to_vec(),
+                },
+            )
+        }
+        "spki" => {
+            check_usages(name, KeyType::Public, usages)?;
+            let der = bytes()?;
+            let len = signing.public_key_len();
+            let prefix = ml_dsa_spki(last, &vec![0; len]);
+            let prefix = &prefix[..prefix.len() - len];
+            if der.len() != prefix.len() + len || !der.starts_with(prefix) {
+                return Err(bad());
+            }
+            (
+                KeyType::Public,
+                Material::PqPublic {
+                    public: der[prefix.len()..].to_vec(),
+                },
+            )
+        }
+        "raw-seed" => {
+            check_usages(name, KeyType::Private, usages)?;
+            private(bytes()?)?
+        }
+        "pkcs8" => {
+            check_usages(name, KeyType::Private, usages)?;
+            let der = bytes()?;
+            let prefix = ml_dsa_pkcs8(last, &[]);
+            if der.len() != prefix.len() + signing.seed_len() || !der.starts_with(&prefix) {
+                return Err(bad());
+            }
+            private(&der[prefix.len()..])?
+        }
+        "jwk" => {
+            let Value::Dict(_) = data else {
+                return Err(Error::type_error(
+                    "Key data must be an object for JWK import",
+                ));
+            };
+            let jwk = jwk::Jwk(data);
+            jwk.check("AKP", Some(name), extractable, usages)?;
+            let has_private = jwk.str("priv").is_some();
+            check_usages(
+                name,
+                if has_private {
+                    KeyType::Private
+                } else {
+                    KeyType::Public
+                },
+                usages,
+            )?;
+            let public = jwk.bytes("pub")?;
+            if public.len() != signing.public_key_len() {
+                return Err(bad());
+            }
+            if has_private {
+                let made = private(&jwk.bytes("priv")?)?;
+                match &made.1 {
+                    Material::PqPrivate {
+                        public: from_seed, ..
+                    } if *from_seed == public => made,
+                    _ => return Err(bad()),
+                }
+            } else {
+                (KeyType::Public, Material::PqPublic { public })
+            }
+        }
+        _ => {
+            return Err(Error::not_supported(
+                "Unsupported import key format for algorithm",
+            ));
+        }
+    };
+    if kind == KeyType::Private {
+        empty_usages(KeyType::Private, usages)?;
+    }
+    Ok(keys.insert(Key {
+        kind,
+        extractable,
+        algorithm: KeyAlgorithm::MlDsa { name },
+        usages: usages.to_vec(),
+        material,
+    }))
+}
+
+fn export_ml_dsa(
+    key: &Key,
+    name: &str,
+    material: &Material,
+    format: &str,
+) -> Result<Outcome, Error> {
+    let wrong = || Error::invalid_access("The key is not of the expected type");
+    let failed = || Error::operation("");
+    let (_, _, last) = ml_dsa(name).ok_or_else(failed)?;
+    let (seed, public) = match material {
+        Material::PqPublic { public } => (None, public),
+        Material::PqPrivate { seed, public } => (Some(seed), public),
+        _ => return Err(failed()),
+    };
+    match (format, seed) {
+        ("raw-public" | "spki", Some(_)) | ("raw-seed" | "pkcs8", None) => Err(wrong()),
+        ("raw-public", None) => Ok(Outcome::Bytes(public.clone())),
+        ("spki", None) => Ok(Outcome::Bytes(ml_dsa_spki(last, public))),
+        ("raw-seed", Some(seed)) => Ok(Outcome::Bytes(seed.clone())),
+        ("pkcs8", Some(seed)) => Ok(Outcome::Bytes(ml_dsa_pkcs8(last, seed))),
+        ("jwk", _) => {
+            let mut members = vec![
+                ("alg", JwkValue::Str(name.into())),
+                ("kty", JwkValue::Str("AKP".into())),
+                ("pub", JwkValue::Str(jwk::encode(public))),
+            ];
+            if let Some(seed) = seed {
+                members.push(("priv", JwkValue::Str(jwk::encode(seed))));
+            }
+            Ok(Outcome::Jwk(jwk::exported(
+                members,
+                key.extractable,
+                &key.usages,
+            )))
+        }
+        _ => Err(Error::not_supported(
+            "Unsupported export key format for algorithm",
+        )),
+    }
+}
+
 /// X25519's shared secret with the `public` key, cut as ECDH's (an
 /// all-zero secret, from a small-order point, the library's refusal: an
 /// OperationError, as the reference's).
@@ -1840,12 +2170,14 @@ pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
     use devtools::Json;
     let format = match &key.material {
         Material::Secret(_) => "raw-secret",
-        Material::RsaPublic { .. } | Material::EcPublic { .. } | Material::OkpPublic { .. } => {
-            "spki"
-        }
-        Material::RsaPrivate(_) | Material::EcPrivate { .. } | Material::OkpPrivate { .. } => {
-            "pkcs8"
-        }
+        Material::RsaPublic { .. }
+        | Material::EcPublic { .. }
+        | Material::OkpPublic { .. }
+        | Material::PqPublic { .. } => "spki",
+        Material::RsaPrivate(_)
+        | Material::EcPrivate { .. }
+        | Material::OkpPrivate { .. }
+        | Material::PqPrivate { .. } => "pkcs8",
     };
     // A secret's bytes as they are (a KDF's no export gives); any other
     // key's export, whatever its `extractable`.
@@ -1877,7 +2209,8 @@ pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
         KeyAlgorithm::Aes { .. }
         | KeyAlgorithm::Kdf { .. }
         | KeyAlgorithm::Okp { .. }
-        | KeyAlgorithm::Chacha => Json::object([("name", name)]),
+        | KeyAlgorithm::Chacha
+        | KeyAlgorithm::MlDsa { .. } => Json::object([("name", name)]),
     };
     let record = Json::object([
         ("f", Json::String(format.to_owned())),
@@ -2164,6 +2497,13 @@ fn verify(key: &Key, alg: &Normalized, signature: &[u8], data: &[u8]) -> Result<
                 .verify(data, signature)
                 .is_ok())
         }
+        (KeyAlgorithm::MlDsa { name }, Material::PqPublic { public }) => {
+            ml_dsa_context(alg)?;
+            let (_, verifying, _) = ml_dsa(name).ok_or_else(|| Error::operation(""))?;
+            Ok(signature::UnparsedPublicKey::new(verifying, public)
+                .verify(data, signature)
+                .is_ok())
+        }
         // Nothing else verifies (the usages refuse it first).
         _ => Err(Error::operation("")),
     }
@@ -2233,6 +2573,7 @@ fn generate(
         }
         "ECDSA" | "ECDH" => generate_ec(keys, alg, extractable, usages),
         "Ed25519" | "X25519" => generate_okp(keys, alg, extractable, usages),
+        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" => generate_ml_dsa(keys, alg, extractable, usages),
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -2484,6 +2825,9 @@ fn import(
         }
         "ECDSA" | "ECDH" => import_ec(keys, format, data, alg, extractable, usages),
         "Ed25519" | "X25519" => import_okp(keys, format, data, alg, extractable, usages),
+        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" => {
+            import_ml_dsa(keys, format, data, alg, extractable, usages)
+        }
         "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             let hash = alg.hash().unwrap_or("SHA-256");
             let (n, e) = match format {
@@ -2725,6 +3069,10 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             material @ (Material::OkpPublic { .. } | Material::OkpPrivate { .. }),
         ) => export_okp(key, name, material, format),
         (
+            KeyAlgorithm::MlDsa { name },
+            material @ (Material::PqPublic { .. } | Material::PqPrivate { .. }),
+        ) => export_ml_dsa(key, name, material, format),
+        (
             KeyAlgorithm::Ec { curve, .. },
             material @ (Material::EcPublic { .. } | Material::EcPrivate { .. }),
         ) => export_ec(key, curve, material, format),
@@ -2876,6 +3224,8 @@ pub(crate) fn supports(keys: &Keys, op: &str, algorithm: &Value, extra: &Value) 
                 }
             })
         }
+        // ML-DSA's context, as signing and verifying check it.
+        "sign" | "verify" if ml_dsa(alg.name).is_some() => ml_dsa_context(&alg).is_ok(),
         "sign" | "verify" if alg.name == "RSA-PSS" => {
             alg.num("saltLength").unwrap_or(0) <= RSA_MOST_BITS / 8 - 20 - 2
         }

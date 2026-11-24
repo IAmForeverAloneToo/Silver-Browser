@@ -330,6 +330,11 @@ pub(crate) enum Material {
     /// An Ed25519 or X25519 private key: its 32 bytes (a seed, a scalar),
     /// overwritten as they go, and its public key's.
     OkpPrivate { d: Vec<u8>, x: Vec<u8> },
+    /// A post-quantum public key (ML-DSA's), as FIPS 204 encodes it.
+    PqPublic { public: Vec<u8> },
+    /// A post-quantum private key: the seed it is made from, overwritten
+    /// as it goes, and its public key.
+    PqPrivate { seed: Vec<u8>, public: Vec<u8> },
 }
 
 impl Drop for Material {
@@ -337,7 +342,8 @@ impl Drop for Material {
     fn drop(&mut self) {
         if let Material::Secret(bytes)
         | Material::EcPrivate { d: bytes, .. }
-        | Material::OkpPrivate { d: bytes, .. } = self
+        | Material::OkpPrivate { d: bytes, .. }
+        | Material::PqPrivate { seed: bytes, .. } = self
         {
             bytes.iter_mut().for_each(|b| *b = 0);
             std::hint::black_box(&bytes);

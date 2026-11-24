@@ -33784,9 +33784,10 @@
     "wrapKey", "unwrapKey"];
   const KEY_FORMATS = ["raw", "spki", "pkcs8", "jwk", "raw-public", "raw-private", "raw-seed",
     "raw-secret"];
-  // JsonWebKey's members, in Web IDL's order, and those that are strings.
+  // JsonWebKey's members, in Web IDL's order, and those that are strings
+  // (an AKP key's pub and priv, ML-DSA's and ML-KEM's, among them).
   const JWK_MEMBERS = ["alg", "crv", "d", "dp", "dq", "e", "ext", "k", "key_ops", "kty", "n",
-    "oth", "p", "q", "qi", "use", "x", "y"];
+    "oth", "p", "priv", "pub", "q", "qi", "use", "x", "y"];
 
   class CryptoKey {
     constructor(key, state) {

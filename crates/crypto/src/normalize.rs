@@ -119,6 +119,7 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
         num("tagLength", OCTET, false),
     ];
     const AES_GEN: &[Member] = &[num("length", UNSIGNED_SHORT, true)];
+    const CONTEXT: &[Member] = &[opt("context", Buffer)];
     const HMAC_GEN: &[Member] = &[req("hash", Algorithm), num("length", UNSIGNED_LONG, false)];
     const HKDF: &[Member] = &[
         req("hash", Algorithm),
@@ -167,6 +168,10 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
         ("sign" | "verify", "RSA-PSS") => ("RsaPssParams", RSA_PSS),
         ("sign" | "verify", "ECDSA") => ("EcdsaParams", ECDSA),
         ("sign" | "verify" | "generateKey" | "importKey", "Ed25519") => ("Algorithm", NONE),
+        ("generateKey" | "importKey", "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87") => {
+            ("Algorithm", NONE)
+        }
+        ("sign" | "verify", "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87") => ("ContextParams", CONTEXT),
         ("generateKey" | "importKey", "X25519") => ("Algorithm", NONE),
         ("importKey", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("get key length", "HKDF" | "PBKDF2") => ("Algorithm", NONE),

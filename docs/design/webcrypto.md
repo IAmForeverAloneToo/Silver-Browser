@@ -385,6 +385,21 @@ refused in Chrome 158's words (its IV's says 16 bytes, as Chrome's
 does); RFC 8439's vector. A key's clone record now names a secret's
 format raw-secret, which every secret takes (raw read still).
 
+ML-DSA-44, -65 and -87 (step 5b, FIPS 204), aws-lc-rs's stable
+`PqdsaKeyPair`, as Chrome 158 has them (probed: pq, mldsa): a key made
+from 32 random bytes, its seed kept, as raw-seed, as the seed-only
+PKCS#8 (54 bytes; the expanded key and the pair of both refused, as
+the reference refuses them) or as an AKP JWK's `priv`; the public key
+raw (raw-public), in its SPKI, or as `pub`; a length or encoding
+refused a DataError with no message, a private JWK whose `pub` is not
+its seed's refused. Signing is hedged, never the same twice. A context
+over 255 bytes is an OperationError, as the reference's; any other
+non-empty context is the known gap (the lead's ruling: aws-lc-rs's
+stable API takes none), a NotSupportedError that `supports` says no
+to. The bindings read a JWK's `pub` and `priv` now (JsonWebKey's new
+members). The keys from the seed 00..1f are Node 24's, and Node's
+signature verifies.
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`

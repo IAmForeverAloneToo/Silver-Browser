@@ -4152,3 +4152,468 @@ fn chacha20_poly1305_is_rfc_8439s_and_the_references() {
         (crate::algorithms::KeyAlgorithm::Chacha.members(), false)
     );
 }
+
+/// ML-DSA (FIPS 204), aws-lc-rs's, as the reference has it (Chrome 158,
+/// probed: pq, mldsa): each key made from the seed 00..1f is Node 24's
+/// (its public key and SPKI by their SHA-256), Node's signature verifies,
+/// a pair made here signs and verifies, never the same bytes twice; its
+/// formats, each refusal in the reference's words, the context's checks
+/// and gap, and a clone of each key.
+#[test]
+fn ml_dsa_is_fips_204s_and_the_references() {
+    use crate::{deserialize_key, serialize_key};
+    let sha256 = |b: &[u8]| {
+        aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, b)
+            .as_ref()
+            .to_vec()
+    };
+    let seed: Vec<u8> = (0u8..32).collect();
+    let export = |keys: &mut Keys, format: &str, key: u32| {
+        run(
+            keys,
+            Call::ExportKey {
+                format: format.into(),
+                key,
+            },
+        )
+    };
+    for (name, public_len, sig_len, public_sha, spki_sha, last) in [
+        (
+            "ML-DSA-44",
+            1312,
+            2420,
+            "9f107644c1084526af3bc8098680b05499a2325a644e388fb4f970e058d19d46",
+            "837832708c5236d951581f1fddf2b79991b3424a0486d16da1ddad0fd69701be",
+            0x11,
+        ),
+        (
+            "ML-DSA-65",
+            1952,
+            3309,
+            "d666806e11cee19a7c989f7445f90dd419cf4d2d51db8c0fdb4c0f0a542238c9",
+            "b8b62131bfbe84433efb2273d7f5b87f7a22854a2cfd366fc2aead86d837c52d",
+            0x12,
+        ),
+        (
+            "ML-DSA-87",
+            2592,
+            4627,
+            "91dc389cfaa01470b7f66eee45a4ae9026d154817c754dfe22298b3fa241ffcd",
+            "07e57c4f14dbad1267f621ec3777b4e2e6c4fbc4c22fbb87510ff8e0b3c6a642",
+            0x13,
+        ),
+    ] {
+        let mut keys = Keys::default();
+        let import = |keys: &mut Keys, format: &str, data: Value, usages: &[Usage]| {
+            run(
+                keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: data,
+                    algorithm: s(name),
+                    extractable: true,
+                    usages: usages.to_vec(),
+                },
+            )
+        };
+        // The seed's key, Node's.
+        let private = key(import(
+            &mut keys,
+            "raw-seed",
+            Value::Bytes(seed.clone()),
+            &[Usage::Sign],
+        ));
+        assert_eq!(
+            private.algorithm,
+            crate::algorithms::KeyAlgorithm::MlDsa { name }.members()
+        );
+        let jwk = match export(&mut keys, "jwk", private.id) {
+            Ok(Outcome::Jwk(members)) => members,
+            other => panic!("{other:?}"),
+        };
+        let names: Vec<&str> = jwk.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["alg", "ext", "key_ops", "kty", "priv", "pub"]);
+        let member = |name: &str| match &jwk.iter().find(|(n, _)| n == name).expect(name).1 {
+            JwkValue::Str(text) => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (member("alg"), member("kty")),
+            (name.to_owned(), "AKP".to_owned())
+        );
+        assert_eq!(crate::jwk::decode(&member("priv")), Some(seed.clone()));
+        let public_bytes = crate::jwk::decode(&member("pub")).expect("pub");
+        assert_eq!(public_bytes.len(), public_len);
+        assert_eq!(sha256(&public_bytes), hex(public_sha), "{name}");
+        let public = key(import(
+            &mut keys,
+            "raw-public",
+            Value::Bytes(public_bytes.clone()),
+            &[Usage::Verify],
+        ));
+        let spki = bytes(export(&mut keys, "spki", public.id));
+        assert_eq!(sha256(&spki), hex(spki_sha), "{name}");
+        let pkcs8 = bytes(export(&mut keys, "pkcs8", private.id));
+        let mut want = hex("3034020100300b060960864801650304030004228020");
+        want[17] = last;
+        want.extend_from_slice(&seed);
+        assert_eq!(pkcs8, want);
+        // Each format's key again, the same.
+        for (format, data, usage) in [
+            ("spki", spki.clone(), Usage::Verify),
+            ("pkcs8", pkcs8.clone(), Usage::Sign),
+        ] {
+            let again = key(import(
+                &mut keys,
+                format,
+                Value::Bytes(data.clone()),
+                &[usage],
+            ));
+            assert_eq!(bytes(export(&mut keys, format, again.id)), data);
+        }
+        // Signed here, verified; never the same twice; a signature of
+        // another length or another context false, not an error.
+        let sign = |keys: &mut Keys, algorithm: Value, data: &[u8]| {
+            run(
+                keys,
+                Call::Sign {
+                    algorithm,
+                    key: private.id,
+                    data: data.to_vec(),
+                },
+            )
+        };
+        let verify = |keys: &mut Keys, algorithm: Value, signature: Vec<u8>, data: &[u8]| {
+            run(
+                keys,
+                Call::Verify {
+                    algorithm,
+                    key: public.id,
+                    signature,
+                    data: data.to_vec(),
+                },
+            )
+        };
+        let one = bytes(sign(&mut keys, s(name), b"abc"));
+        let two = bytes(sign(&mut keys, s(name), b"abc"));
+        assert_eq!((one.len(), two.len()), (sig_len, sig_len));
+        assert_ne!(one, two);
+        let truth = |out: Result<Outcome, Error>| match out {
+            Ok(Outcome::Bool(b)) => b,
+            other => panic!("{other:?}"),
+        };
+        assert!(truth(verify(&mut keys, s(name), one.clone(), b"abc")));
+        assert!(!truth(verify(&mut keys, s(name), one.clone(), b"abd")));
+        assert!(!truth(verify(
+            &mut keys,
+            s(name),
+            one[1..].to_vec(),
+            b"abc"
+        )));
+        let mut long = one.clone();
+        long.push(0);
+        assert!(!truth(verify(&mut keys, s(name), long, b"abc")));
+        if name == "ML-DSA-44" {
+            let node = hex(&[
+                "cfa09df291610e8d116e9691d993e0d1f26d7f4d3a514829b1dc0cf1b5ad1189",
+                "00e4df7e4006ff10f36dd1e0e6d9d96593d1881c234c039f2ed479871ac3013b",
+                "4bf3a5af03fda0666047d0cf033fd9ccf1185bab9829deb8c0b281ae9a64d909",
+                "b6386b168322dcfb7a3b749169eb1c6a0b090d62c20e16c5bcd22fcc524a2958",
+                "17dec5d4123aaab6ec0c563555ae03ebbf2af0b0f36a7d4b894b4c3d43ee55d8",
+                "72ec76cadf0d7443a281af568d87b1ae4c6787fa2cf66c85f2626d4a5091eaa3",
+                "4e34265c714a1ee9514ab1ee1dbcb587835637b3325c9ac5e033b4e7d87aea5a",
+                "e0cb7fc4986bee3d6d618571ce5b84edbab11eb9b7856543cb71f59b62c98323",
+                "fe0677ff42adceb78b8737a96f064f7543db0f598e6a8ca71c06d4eb1df600ae",
+                "a3fb82f2324c5776f14caac29dc51c2f1710dbb1fc48f7c187d47919442c51b6",
+                "4b469f416776907d61528356bd647b2d33237d0e61d765f5ff9cbf857db42f5c",
+                "3c5588d200607a981912f6a020eda03ce61fed0d752d58d1d22d2afcb844412d",
+                "b2149d359f2a10c3536491c64f35b750fc7c030038d7632b2c7a38f310ab416d",
+                "a7af68b621b39c40c0d04dcdc142c6c4fbe5a2eefa31d4dca39ff73620bcd468",
+                "cddf79b6dd946a110ee7eed2b9f4d96431a7195d8d5ba2011fbd3bac3fa522ad",
+                "5fecc659cdb23aaa5e11a67488ee201f0ec945f7e3b350088eed6adda2beed8c",
+                "5741ac7591908231469203854209051ce5c93420a1e1b1b6826721ee9d700818",
+                "d0c8a0e3fc62f9a8b19c94ce62f118c131030642e648ddfd9ef94565cbfa8d66",
+                "2d12654cd1df6e424807f4fc9318610a74b40d0323361167b5121a8a37c54775",
+                "2dbe0877a67510f0be0764a832cbf2d57ada932f2f2db6423ae9cc4fa6c5f613",
+                "0d614c590c3eb22f2a50b9d7836482176690819cd75acab8374ac91bdc8317f0",
+                "28d2b794bb217246ac8f6fad2b3aa5f13a36b864aea2cbf237de2e7dc3f0b832",
+                "50f9ee9a562757d4bf8e09cbe75e288f6ebcd3dc1bdb125b7aec6592df79af2b",
+                "d1439fd8cc246b82fbb0dcbc35a3718e9cb7dca76f1b84816b81383a64acc445",
+                "6fe3d81ffb13c18d15c1c4a6c88fe4726b59de80ad20ec3af4992db71ce6f2c1",
+                "c8d80c68e8935e12d6fe4162e8bf2941cd441fe78979b019c050705e881b0ba2",
+                "eb73a4142bd43780ba7ec31f427d795ad9b557fa8484d4f283c915e5ce3421f7",
+                "805ebf2d6c6a110e1793619eb07da3343b201a78daf3ee0337f2f3ce2213946f",
+                "b6d24774edce807ca55ab3a04c5cc4240ef00e6ceddd4c289035a5837bcb44a4",
+                "5e397420ff5ae67dbf596de998057a3f3056153fa4633b31d044c6ea32278512",
+                "4bca0b017f21d979272c345f675ecb242805887332f935359b37b5a6f2afb9cb",
+                "b6bd8b4c9909a00f5c0f23c8276330bdda4ad397345661d8c4a91616e8818626",
+                "831b85ea0359e0d6fbf32ccd8b499ec861a784ac61c7fb43bca9ef1f4989f787",
+                "32b0f02e205cb258fafa83c97b0b54255cb064a1d49af070548a9f31dd5483c6",
+                "03243b4d0ee515a0604e9df6c7eeea61f44c2b72e9144392ec9bdfb6d8a2ab4c",
+                "7b9ca869da1a78b3dc5c55d7828dc2cc437923490a611635b2d0ba0dadb863e6",
+                "fb96e1114dec683c97675f136a9757ac4434beae281ca0675fe6e4943e7ad298",
+                "4c6766fd3892c3af9b3dd2e74921b5326325eb581a771ef31f2d7b1ccc744e89",
+                "69e5bd772636bf2d6cea13b46d651c6b2da9fd5fece129112fc5458b5bc274e1",
+                "aac13ba0b23184efe1456fccefde192add1260de858b42b44d2d360fefcdcf8a",
+                "a9f836490c4d8a65f293cdeecd012d4472ce6fc5ad70d021009263e3c2c05207",
+                "f79ca343f98dc0f567a97707937f278dbce362abc405f376305e2c4f61c1f03c",
+                "baa44f5070df7e1bc4dd3f162961d849b104b37de44ecb4e47f3b2bd8c87d8e0",
+                "a2fffbe83c23ca198610c85b125ecef948da005102238d4e7d912e7a680c2bff",
+                "71c7cd40743906d5fc996d6970083765c22d932ac4641e9ee724e64723008db2",
+                "7db810993f7694bf6933e6e902b84f1acb3c163fbdf0531427d7c0a0f4c80182",
+                "f345ea5c7fdd67718196332d4afa7c2e6c0369c81c88d0c23db908171f1bd96f",
+                "14a55b626190b14d104868c5e00b01a5f6004a61c97eea0e54bd679ecf5dfb80",
+                "011f8936f91898905aecc2fb6c018d416328d2a3f28229ba24466332570454ac",
+                "6f43f57cd531386bc4a919ab8855fee28c751784cd009afc2c23a7a12aa69365",
+                "7f883a772da4c6e78e294e3d44035bfb09bfbd419ea18128e91ea2773e4c9ce3",
+                "a8add4cf9727045da3ce7721dca1e22874426f25d28b8764d41fc70091bf4e38",
+                "7f4adae3ddf1ebf198ed96fbc40a960b90d77d26dc77abe4bf858a20634a33d1",
+                "77b7ac15c713db593db3d9f99a3b2305a52cc6b6e69e5263eec3c617d8aaa720",
+                "98417fbb7096ed53edcdd453357b08a7aed0f05b4b60e970fe0e5d88d0d731c4",
+                "16579ff474fd8e1a83fd8ccd23f6ff8e622973144d017189ff02e8b7f6c3d342",
+                "e32e9283298a1687777d32cae1aae2013d1221255c4318a377983b47bbcfef8d",
+                "c17eb9c3f7f96faa427dacd00741c936e00bfa87ceb54289ca3cda770ae8fe2f",
+                "48905d8319735b3701b1a4fd82b8963afdea799408a31ed6e702201020b0ac9e",
+                "552cd3f8241a95ee1731b194e822638ab1077e19a54d2fd3ce513107e0cac2d8",
+                "23e5e204bb1b4a830ce360ccf6bc8e3f512947b2c632171495b323ec0ff16fd9",
+                "4625514d8fb28961ccdbafeba24a6f2a4a9e68a9003cf08f7330f8d1ff7db811",
+                "52be12d487db0f2cd54dac93390a81e62667bf9deef5f804c4848a383ffddc2a",
+                "0b35de10f40075ba1e52de208300bb95fbca28d202dd6950c223389afd448d71",
+                "bb991e002348def73eb776f30c7e0a24940156ccb29e9d58e1ab80d44cd69c30",
+                "e809ffe5186c2e0b87264af406711cedc7755602bb8bc701b8684f19851e6581",
+                "8e70e028925269990f2962a6748ce0afd835075e8af28a0b67f23a8753233e06",
+                "d9459106e0e1adc671b720e748e18e9fd8d9ccbe15cd993a4e5e5961be4d7e64",
+                "00cfa484d5ae485eccd8e357ee531cf69f129408430038a5384106ca1f7348be",
+                "ee75c58fdf9d430b2609bef1bd6d171e050e4dab63b967fc4c5a1c2a13eea0d3",
+                "81511ba9bbcda12e2a6b8760707cf9aa707ff33a80ee2770af4037b5777d8b6f",
+                "b45ca27d0a01249185cd5b6b4b08a3d643f8a6abfa939ddebd8cbd454b95f4b2",
+                "7544f394f27f100265e7eac95afea91dcefb3e6dc8e5be5d9bda8c5dd989abf4",
+                "0c1233363f4a528494bfd8dcec070d2a2e4b4c5e7b80818694a6acafb2d0d6d8",
+                "f7f8faff0a1b1c2c2e3d4c4d5370787b9b9fb3def6fa0a1c3142474a5056595e",
+                "727c898ea7b5babcd4000000000000000d243649",
+            ]
+            .concat());
+            assert!(truth(verify(&mut keys, s(name), node, b"abc")));
+        }
+        // The context: empty, as none; over 255 bytes an OperationError;
+        // any other the known gap.
+        let context = |n: usize| dict(&[("name", s(name)), ("context", Value::Bytes(vec![7; n]))]);
+        assert_eq!(bytes(sign(&mut keys, context(0), b"abc")).len(), sig_len);
+        assert!(truth(verify(&mut keys, context(0), one.clone(), b"abc")));
+        assert_eq!(
+            error(sign(&mut keys, context(256), b"abc")),
+            "OperationError: "
+        );
+        assert_eq!(
+            error(verify(&mut keys, context(256), one.clone(), b"abc")),
+            "OperationError: "
+        );
+        for n in [1, 255] {
+            assert_eq!(
+                error(sign(&mut keys, context(n), b"abc")),
+                format!(
+                    "NotSupportedError: {}",
+                    crate::algorithms::ML_DSA_CONTEXT_GAP
+                )
+            );
+            assert_eq!(
+                error(verify(&mut keys, context(n), one.clone(), b"abc")),
+                format!(
+                    "NotSupportedError: {}",
+                    crate::algorithms::ML_DSA_CONTEXT_GAP
+                )
+            );
+        }
+        // The refusals, the reference's.
+        let data_error = "DataError: ";
+        let mut long_public = public_bytes.clone();
+        long_public.push(0);
+        let mut long_spki = spki.clone();
+        long_spki.push(0);
+        let mut other_spki = spki.clone();
+        other_spki[16] = if last == 0x11 { 0x12 } else { 0x11 };
+        let mut octet = pkcs8[..18].to_vec();
+        octet.extend_from_slice(&[0x04, 0x22, 0x04, 0x20]);
+        octet.extend_from_slice(&seed);
+        for (format, data, usage) in [
+            ("raw-public", public_bytes[1..].to_vec(), Usage::Verify),
+            ("raw-public", long_public, Usage::Verify),
+            ("spki", long_spki, Usage::Verify),
+            ("spki", other_spki, Usage::Verify),
+            ("raw-seed", seed[1..].to_vec(), Usage::Sign),
+            ("raw-seed", [&seed[..], &[0]].concat(), Usage::Sign),
+            ("pkcs8", [&pkcs8[..], &[0]].concat(), Usage::Sign),
+            ("pkcs8", octet, Usage::Sign),
+        ] {
+            assert_eq!(
+                error(import(&mut keys, format, Value::Bytes(data), &[usage])),
+                data_error,
+                "{format}"
+            );
+        }
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "raw",
+                Value::Bytes(public_bytes.clone()),
+                &[Usage::Verify]
+            )),
+            "NotSupportedError: Unsupported import key format for algorithm"
+        );
+        for (format, data, usage) in [
+            ("raw-public", public_bytes.clone(), Usage::Sign),
+            ("raw-seed", seed.clone(), Usage::Verify),
+        ] {
+            assert_eq!(
+                error(import(&mut keys, format, Value::Bytes(data), &[usage])),
+                "SyntaxError: Cannot create a key using the specified key usages.",
+                "{format}"
+            );
+        }
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "raw-seed",
+                Value::Bytes(seed.clone()),
+                &[]
+            )),
+            "SyntaxError: Usages cannot be empty when creating a key."
+        );
+        let akp = |members: &[(&str, Value)]| dict(members);
+        let pub_text = s(&member("pub"));
+        let priv_text = s(&member("priv"));
+        for (data, want) in [
+            (
+                akp(&[
+                    ("kty", s("OKP")),
+                    ("pub", pub_text.clone()),
+                    ("priv", priv_text.clone()),
+                ]),
+                "DataError: The JWK \"kty\" member was not \"AKP\"",
+            ),
+            (
+                akp(&[
+                    ("kty", s("AKP")),
+                    (
+                        "alg",
+                        s(if last == 0x11 {
+                            "ML-DSA-65"
+                        } else {
+                            "ML-DSA-44"
+                        }),
+                    ),
+                    ("pub", pub_text.clone()),
+                    ("priv", priv_text.clone()),
+                ]),
+                "DataError: The JWK \"alg\" member was inconsistent with that specified by the Web Crypto call",
+            ),
+            (
+                akp(&[("kty", s("AKP")), ("priv", priv_text.clone())]),
+                "DataError: The required JWK member \"pub\" was missing",
+            ),
+            (
+                akp(&[
+                    ("kty", s("AKP")),
+                    ("pub", s(&crate::jwk::encode(&public_bytes[3..]))),
+                ]),
+                data_error,
+            ),
+            (
+                akp(&[
+                    ("kty", s("AKP")),
+                    ("pub", s(&crate::jwk::encode(&vec![0; public_len]))),
+                    ("priv", priv_text.clone()),
+                ]),
+                data_error,
+            ),
+        ] {
+            let usages = if matches!(data.get("priv"), Value::Str(_)) {
+                [Usage::Sign]
+            } else {
+                [Usage::Verify]
+            };
+            assert_eq!(error(import(&mut keys, "jwk", data, &usages)), want);
+        }
+        // No alg: taken as the call's.
+        key(import(
+            &mut keys,
+            "jwk",
+            akp(&[("kty", s("AKP")), ("pub", pub_text), ("priv", priv_text)]),
+            &[Usage::Sign],
+        ));
+        // Each key's own formats alone.
+        for (format, key_id) in [
+            ("raw-public", private.id),
+            ("spki", private.id),
+            ("raw-seed", public.id),
+            ("pkcs8", public.id),
+        ] {
+            assert_eq!(
+                error(export(&mut keys, format, key_id)),
+                "InvalidAccessError: The key is not of the expected type",
+                "{format}"
+            );
+        }
+        for format in ["raw", "raw-private", "raw-secret"] {
+            assert_eq!(
+                error(export(&mut keys, format, private.id)),
+                "NotSupportedError: Unsupported export key format for algorithm",
+                "{format}"
+            );
+        }
+        // A generated pair: the usages split, signing for verifying;
+        // the private key cloned as itself.
+        let (made_public, made_private) = match run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: s(name),
+                extractable: false,
+                usages: vec![Usage::Sign, Usage::Verify],
+            },
+        ) {
+            Ok(Outcome::Pair(public, private)) => (public, private),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (made_public.usages.clone(), made_private.usages.clone()),
+            (vec![Usage::Verify], vec![Usage::Sign])
+        );
+        assert!(made_public.extractable && !made_private.extractable);
+        assert_eq!(
+            error(run(
+                &mut keys,
+                Call::GenerateKey {
+                    algorithm: s(name),
+                    extractable: true,
+                    usages: vec![Usage::Verify],
+                },
+            )),
+            "SyntaxError: Usages cannot be empty when creating a key."
+        );
+        for made in [made_public.id, made_private.id] {
+            let record = serialize_key(&keys, made).expect("a record");
+            let copy = deserialize_key(&mut keys, &record).expect("the key again");
+            assert_eq!(
+                copy.algorithm,
+                crate::algorithms::KeyAlgorithm::MlDsa { name }.members()
+            );
+        }
+        let signed = bytes(run(
+            &mut keys,
+            Call::Sign {
+                algorithm: s(name),
+                key: made_private.id,
+                data: b"x".to_vec(),
+            },
+        ));
+        assert!(truth(run(
+            &mut keys,
+            Call::Verify {
+                algorithm: s(name),
+                key: made_public.id,
+                signature: signed,
+                data: b"x".to_vec(),
+            },
+        )));
+    }
+}

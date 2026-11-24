@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const t = async (label, f) => {
+    try { const v = await f(); out.push(label + ' -> ' + (v instanceof ArrayBuffer ? 'bytes ' + v.byteLength : typeof v === 'object' && v !== null ? JSON.stringify(v).slice(0, 160) : String(v))); }
+    catch (e) { out.push(label + ' -> ' + e.name + ': ' + e.message); }
+  };
+  for (const name of ['ML-KEM-512', 'ML-KEM-768', 'ML-KEM-1024']) {
+    let pair = null;
+    await t(name + ' generate', async () => { pair = await s.generateKey(name, true, ['encapsulateKey', 'encapsulateBits', 'decapsulateKey', 'decapsulateBits']); return [pair.publicKey.algorithm.name, pair.publicKey.usages.join('/'), pair.privateKey.usages.join('/')].join(' '); });
+    if (!pair) continue;
+    for (const f of ['raw-public', 'spki', 'raw-seed', 'pkcs8', 'raw-private', 'jwk', 'raw']) {
+      await t(name + ' export public ' + f, () => s.exportKey(f, pair.publicKey));
+      await t(name + ' export private ' + f, () => s.exportKey(f, pair.privateKey));
+    }
+    await t(name + ' encapsulateBits', async () => { const r = await s.encapsulateBits(name, pair.publicKey); return Object.keys(r).join('/') + ' ' + r.sharedKey.byteLength + ' ' + r.ciphertext.byteLength; });
+    await t(name + ' getPublicKey', async () => { const k = await s.getPublicKey(pair.privateKey, ['encapsulateBits']); return k.type + ' ' + k.usages.join('/') + ' ' + k.extractable; });
+    await t(name + ' pkcs8 hex prefix', async () => { const b = new Uint8Array(await s.exportKey('pkcs8', pair.privateKey)); return b.length + ' ' + Array.from(b.slice(0, 26), (x) => x.toString(16).padStart(2, '0')).join(''); });
+  }
+  for (const name of ['ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87']) {
+    let pair = null;
+    await t(name + ' generate', async () => { pair = await s.generateKey(name, true, ['sign', 'verify']); return pair.privateKey.algorithm.name; });
+    if (!pair) continue;
+    for (const f of ['raw-public', 'spki', 'raw-seed', 'pkcs8', 'raw-private', 'jwk']) {
+      await t(name + ' export private ' + f, () => s.exportKey(f, pair.privateKey));
+      await t(name + ' export public ' + f, () => s.exportKey(f, pair.publicKey));
+    }
+    const data = new Uint8Array([1, 2, 3]);
+    await t(name + ' sign no context', async () => (await s.sign(name, pair.privateKey, data)).byteLength);
+    await t(name + ' sign twice same', async () => { const a = new Uint8Array(await s.sign(name, pair.privateKey, data)); const b = new Uint8Array(await s.sign(name, pair.privateKey, data)); return a.every((x, i) => x === b[i]); });
+    await t(name + ' sign context', async () => { const sig = await s.sign({name, context: new Uint8Array([9, 9])}, pair.privateKey, data); return [sig.byteLength, await s.verify({name, context: new Uint8Array([9, 9])}, pair.publicKey, sig, data), await s.verify(name, pair.publicKey, sig, data)].join(' '); });
+    await t(name + ' sign context 256', async () => (await s.sign({name, context: new Uint8Array(256)}, pair.privateKey, data)).byteLength);
+    await t(name + ' pkcs8 hex prefix', async () => { const b = new Uint8Array(await s.exportKey('pkcs8', pair.privateKey)); return b.length + ' ' + Array.from(b.slice(0, 24), (x) => x.toString(16).padStart(2, '0')).join(''); });
+  }
+  let c = null;
+  await t('ChaCha20 generate', async () => { c = await s.generateKey({name: 'ChaCha20-Poly1305'}, true, ['encrypt', 'decrypt']); return JSON.stringify(c.algorithm); });
+  if (c) {
+    for (const f of ['raw', 'raw-secret', 'jwk']) await t('ChaCha20 export ' + f, () => s.exportKey(f, c));
+    await t('ChaCha20 encrypt', async () => (await s.encrypt({name: 'ChaCha20-Poly1305', iv: new Uint8Array(12)}, c, new Uint8Array(5))).byteLength);
+    await t('ChaCha20 tag 64', async () => (await s.encrypt({name: 'ChaCha20-Poly1305', iv: new Uint8Array(12), tagLength: 64}, c, new Uint8Array(5))).byteLength);
+    await t('ChaCha20 iv 8', async () => (await s.encrypt({name: 'ChaCha20-Poly1305', iv: new Uint8Array(8)}, c, new Uint8Array(5))).byteLength);
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

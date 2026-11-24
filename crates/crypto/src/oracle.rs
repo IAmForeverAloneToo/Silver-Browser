@@ -236,6 +236,9 @@ impl Oracle {
         ));
         specs.push((s("Ed25519"), true));
         specs.push((s("X25519"), true));
+        for name in ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"] {
+            specs.push((s(name), name == "ML-DSA-44"));
+        }
         specs.push((d(&[("name", s("AES-GCM")), ("length", n(256.0))]), true));
         for (algorithm, wrapped) in specs {
             let made_now = USAGE_SETS.iter().find_map(|usages| {
@@ -869,6 +872,15 @@ impl Oracle {
                 ));
             }
             out.push((op, d(&[("name", s("ECDSA"))]), absent.clone()));
+            for name in ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"] {
+                for context in [0, 1, 255, 256] {
+                    out.push((
+                        op,
+                        d(&[("name", s(name)), ("context", b(context))]),
+                        absent.clone(),
+                    ));
+                }
+            }
         }
         // deriveBits, its lengths.
         let lengths = |values: &[f64]| -> Vec<Value> {

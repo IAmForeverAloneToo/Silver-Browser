@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');
+  const show = (r) => r instanceof CryptoKey
+    ? 'key ' + r.type + ' ' + JSON.stringify(r.algorithm) + ' ' + r.extractable + ' ' + r.usages.join('/')
+    : r instanceof ArrayBuffer ? 'bytes ' + r.byteLength
+    : typeof r === 'boolean' ? String(r) : JSON.stringify(r);
+  const t = async (name, f) => {
+    try { out.push(name + ' -> ' + show(await f())); }
+    catch (e) { out.push(name + ' -> ' + e.name + ': ' + e.message); }
+  };
+  const der = (tag, body) => {
+    const len = body.length;
+    const head = len < 128 ? [tag, len] : len < 256 ? [tag, 0x81, len] : [tag, 0x82, len >> 8, len & 255];
+    return new Uint8Array([...head, ...body]);
+  };
+  const oid = {44: [0x11], 65: [0x12], 87: [0x13]};
+  const algId = (v) => der(0x30, der(0x06, [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, ...oid[v]]));
+  const pkcs8 = (v, inner) => der(0x30, [...der(0x02, [0]), ...algId(v), ...der(0x04, inner)]);
+  for (const v of [44, 65, 87]) {
+    const name = 'ML-DSA-' + v;
+    const pair = await s.generateKey(name, true, ['sign', 'verify']);
+    const seed = new Uint8Array(await s.exportKey('raw-seed', pair.privateKey));
+    const pub = new Uint8Array(await s.exportKey('raw-public', pair.publicKey));
+    const spki = new Uint8Array(await s.exportKey('spki', pair.publicKey));
+    const p8 = new Uint8Array(await s.exportKey('pkcs8', pair.privateKey));
+    const jwk = await s.exportKey('jwk', pair.privateKey);
+    const other = v === 44 ? 'ML-DSA-65' : 'ML-DSA-44';
+    const n = name + ' ';
+    await t(n + 'generate usages verify only', () => s.generateKey(name, true, ['verify']));
+    await t(n + 'generate usages none', () => s.generateKey(name, true, []));
+    await t(n + 'generate usage encrypt', () => s.generateKey(name, true, ['sign', 'encrypt']));
+    await t(n + 'generate as dict', () => s.generateKey({name}, false, ['sign']));
+    await t(n + 'import raw-public', () => s.importKey('raw-public', pub, name, true, ['verify']));
+    await t(n + 'import raw-public short', () => s.importKey('raw-public', pub.slice(1), name, true, ['verify']));
+    await t(n + 'import raw-public long', () => s.importKey('raw-public', new Uint8Array([...pub, 0]), name, true, ['verify']));
+    await t(n + 'import raw-public sign', () => s.importKey('raw-public', pub, name, true, ['sign']));
+    await t(n + 'import raw-public no usages', () => s.importKey('raw-public', pub, name, true, []));
+    await t(n + 'import raw', () => s.importKey('raw', pub, name, true, ['verify']));
+    await t(n + 'import raw-public as other', () => s.importKey('raw-public', pub, other, true, ['verify']));
+    await t(n + 'import spki', () => s.importKey('spki', spki, name, true, ['verify']));
+    await t(n + 'import spki as other', () => s.importKey('spki', spki, other, true, ['verify']));
+    await t(n + 'import spki trailing', () => s.importKey('spki', new Uint8Array([...spki, 0]), name, true, ['verify']));
+    await t(n + 'import raw-seed', () => s.importKey('raw-seed', seed, name, true, ['sign']));
+    await t(n + 'import raw-seed short', () => s.importKey('raw-seed', seed.slice(1), name, true, ['sign']));
+    await t(n + 'import raw-seed long', () => s.importKey('raw-seed', new Uint8Array([...seed, 0]), name, true, ['sign']));
+    await t(n + 'import raw-seed verify', () => s.importKey('raw-seed', seed, name, true, ['verify']));
+    await t(n + 'import raw-seed no usages', () => s.importKey('raw-seed', seed, name, true, []));
+    await t(n + 'import raw-seed same pub', async () => {
+      const k = await s.importKey('raw-seed', seed, name, true, ['sign']);
+      const pk = await s.importKey('pkcs8', p8, name, true, ['sign']);
+      return hex(await s.exportKey('raw-seed', pk)) === hex(seed) && JSON.stringify(await s.exportKey('jwk', k)) === JSON.stringify(jwk);
+    });
+    await t(n + 'import pkcs8', () => s.importKey('pkcs8', p8, name, true, ['sign']));
+    await t(n + 'import pkcs8 as other', () => s.importKey('pkcs8', p8, other, true, ['sign']));
+    await t(n + 'import pkcs8 trailing', () => s.importKey('pkcs8', new Uint8Array([...p8, 0]), name, true, ['sign']));
+    await t(n + 'import pkcs8 built seed', () => s.importKey('pkcs8', pkcs8(v, [0x80, 0x20, ...seed]), name, true, ['sign']));
+    const fake = crypto.getRandomValues(new Uint8Array(v === 44 ? 2560 : v === 65 ? 4032 : 4896));
+    await t(n + 'import pkcs8 expanded', () => s.importKey('pkcs8', pkcs8(v, der(0x04, fake)), name, true, ['sign']));
+    await t(n + 'import pkcs8 both', () => s.importKey('pkcs8', pkcs8(v, der(0x30, [...der(0x04, seed), ...der(0x04, fake)])), name, true, ['sign']));
+    await t(n + 'import pkcs8 seed as octet', () => s.importKey('pkcs8', pkcs8(v, der(0x04, seed)), name, true, ['sign']));
+    await t(n + 'import pkcs8 verify', () => s.importKey('pkcs8', p8, name, true, ['verify']));
+    await t(n + 'import jwk private', () => s.importKey('jwk', jwk, name, true, ['sign']));
+    await t(n + 'import jwk public', () => s.importKey('jwk', {kty: 'AKP', alg: name, pub: jwk.pub}, name, true, ['verify']));
+    await t(n + 'import jwk no alg', () => s.importKey('jwk', {kty: 'AKP', pub: jwk.pub, priv: jwk.priv}, name, true, ['sign']));
+    await t(n + 'import jwk wrong alg', () => s.importKey('jwk', {...jwk, alg: other}, name, true, ['sign']));
+    await t(n + 'import jwk wrong kty', () => s.importKey('jwk', {...jwk, kty: 'OKP'}, name, true, ['sign']));
+    await t(n + 'import jwk priv no pub', () => s.importKey('jwk', {kty: 'AKP', alg: name, priv: jwk.priv}, name, true, ['sign']));
+    await t(n + 'import jwk pub mismatch', async () => {
+      const o = await s.exportKey('jwk', (await s.generateKey(name, true, ['sign', 'verify'])).publicKey);
+      return s.importKey('jwk', {...jwk, pub: o.pub}, name, true, ['sign']);
+    });
+    await t(n + 'import jwk priv short', () => s.importKey('jwk', {...jwk, priv: jwk.priv.slice(2)}, name, true, ['sign']));
+    await t(n + 'import jwk pub short', () => s.importKey('jwk', {kty: 'AKP', alg: name, pub: jwk.pub.slice(4)}, name, true, ['verify']));
+    await t(n + 'import jwk ext false', () => s.importKey('jwk', {...jwk, ext: false}, name, true, ['sign']));
+    await t(n + 'import jwk key_ops verify', () => s.importKey('jwk', {...jwk, key_ops: ['verify']}, name, true, ['sign']));
+    await t(n + 'import jwk use sig', () => s.importKey('jwk', {...jwk, use: 'sig'}, name, true, ['sign']));
+    await t(n + 'import jwk use enc', () => s.importKey('jwk', {...jwk, use: 'enc'}, name, true, ['sign']));
+    const msg = new Uint8Array([1, 2, 3]);
+    const sig = await s.sign(name, pair.privateKey, msg);
+    await t(n + 'verify', () => s.verify(name, pair.publicKey, sig, msg));
+    await t(n + 'verify empty context', () => s.verify({name, context: new Uint8Array(0)}, pair.publicKey, sig, msg));
+    await t(n + 'verify wrong context', () => s.verify({name, context: new Uint8Array(1)}, pair.publicKey, sig, msg));
+    await t(n + 'verify sig short', () => s.verify(name, pair.publicKey, sig.slice(1), msg));
+    await t(n + 'verify sig long', () => s.verify(name, pair.publicKey, new Uint8Array([...new Uint8Array(sig), 0]), msg));
+    await t(n + 'verify context 256', () => s.verify({name, context: new Uint8Array(256)}, pair.publicKey, sig, msg));
+    await t(n + 'sign empty context', () => s.sign({name, context: new Uint8Array(0)}, pair.privateKey, msg));
+    await t(n + 'sign with public', () => s.sign(name, pair.publicKey, msg));
+    await t(n + 'verify with private', () => s.verify(name, pair.privateKey, sig, msg));
+    await t(n + 'sign as other', () => s.sign(other, pair.privateKey, msg));
+    await t(n + 'sign context null', () => s.sign({name, context: null}, pair.privateKey, msg));
+    await t(n + 'export private raw', () => s.exportKey('raw', pair.privateKey));
+    await t(n + 'export public raw', () => s.exportKey('raw', pair.publicKey));
+    await t(n + 'export public jwk keys', async () => Object.keys(await s.exportKey('jwk', pair.publicKey)).join(','));
+    await t(n + 'export private jwk keys', async () => Object.keys(await s.exportKey('jwk', pair.privateKey)).join(','));
+    await t(n + 'algorithm', async () => JSON.stringify(pair.privateKey.algorithm) + ' ' + pair.privateKey.usages + ' ' + pair.publicKey.usages + ' ' + pair.publicKey.extractable);
+    await t(n + 'deriveBits', () => s.deriveBits(name, pair.privateKey, 8));
+    await t(n + 'digest name', () => s.digest(name, msg));
+    await t(n + 'encrypt', () => s.encrypt(name, pair.publicKey, msg));
+  }
+  window.__done = out;
+})();
+</script>
