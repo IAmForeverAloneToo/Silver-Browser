@@ -91,6 +91,25 @@ const HEIGHT: u32 = 600;
 /// How long a page may take to load.
 const LOAD: Duration = Duration::from_secs(30);
 
+/// How long a page whose `timeout` is long may take to load: six times
+/// [`LOAD`], as `wptrunner` gives such a test six times a test's time
+/// (a minute against ten seconds). Range-mutations-dataChange.html and
+/// html5lib_url.html, both long upstream, passed [`LOAD`] by a few
+/// seconds alone and missed it in a whole run on a loaded host (gates of
+/// 2026-11-25 and 26).
+const LOAD_LONG: Duration = Duration::from_secs(180);
+
+/// The load limit of a page, long or not.
+fn load_limit(long: bool) -> Duration {
+    if long { LOAD_LONG } else { LOAD }
+}
+
+#[test]
+fn a_long_page_has_six_times_the_time_to_load() {
+    assert_eq!(load_limit(false), LOAD);
+    assert_eq!(load_limit(true), LOAD * 6);
+}
+
 /// How long, on its own clock, a test may wait before it is drawn.
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -1454,8 +1473,8 @@ struct Loaded {
 }
 
 /// An engine with the bundled font and a hand's clock that has loaded
-/// `path` from `server`; or why it could not.
-fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
+/// `path` from `server` within `limit`; or why it could not.
+fn load_waking(server: &TestServer, path: &str, limit: Duration) -> Result<Loaded, String> {
     let mut engine = Engine::with_fonts(
         text::FontCollection::from_bytes_with_monospace(
             text::TEST_FONT.to_vec(),
@@ -1480,7 +1499,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
     // reference browser is run: 800 by 600.
     engine.set_viewport(WIDTH, HEIGHT);
     engine.navigate(test_url(server, path));
-    let deadline = Instant::now() + LOAD;
+    let deadline = Instant::now() + limit;
     loop {
         engine.poll_network();
         match engine.load_state() {
@@ -1496,7 +1515,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
         }
         let left = deadline
             .checked_duration_since(Instant::now())
-            .ok_or_else(|| format!("{path} took more than {LOAD:?} to load"))?;
+            .ok_or_else(|| format!("{path} took more than {limit:?} to load"))?;
         let _ = woken.recv_timeout(left);
     }
 }
@@ -1504,7 +1523,7 @@ fn load_waking(server: &TestServer, path: &str) -> Result<Loaded, String> {
 /// An engine with the bundled font that has loaded `path` from `server`,
 /// or why it could not.
 fn load(server: &TestServer, path: &str) -> Result<Engine, String> {
-    load_waking(server, path).map(|loaded| loaded.engine)
+    load_waking(server, path, LOAD).map(|loaded| loaded.engine)
 }
 
 /// Where the page's clock goes from `now`: to the next frame, a frame's
@@ -1978,7 +1997,7 @@ fn wait_for(loaded: &mut Loaded, path: &str, class: &str) -> Result<(), String> 
 /// decoded (M23): a frame asks for its images' pixels, and the one after
 /// they are decoded draws them.
 fn render(server: &TestServer, path: &str) -> Result<Vec<u8>, String> {
-    let mut loaded = load_waking(server, path)?;
+    let mut loaded = load_waking(server, path, LOAD)?;
     wait_for(&mut loaded, path, "reftest-wait")?;
     let Loaded {
         mut engine, woken, ..
@@ -2378,7 +2397,7 @@ fn a_port_is_named_only_where_it_stands_as_one() {
 /// once no fetch is in flight, so that a page waiting on the server is
 /// not timed out by its own timers running ahead.
 fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
-    let mut loaded = match load_waking(server, path) {
+    let mut loaded = match load_waking(server, path, load_limit(long)) {
         Ok(loaded) => loaded,
         Err(error) => return Outcome::fail(error),
     };
@@ -3156,7 +3175,7 @@ fn run_check_layout(
 }
 
 fn run_crashtest(server: &TestServer, path: &str) -> Outcome {
-    let ran = load_waking(server, path).and_then(|mut loaded| {
+    let ran = load_waking(server, path, LOAD).and_then(|mut loaded| {
         wait_for(&mut loaded, path, "test-wait")?;
         loaded.engine.frame(WIDTH, HEIGHT);
         Ok(())
