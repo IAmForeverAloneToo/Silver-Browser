@@ -48,6 +48,9 @@ pub use dom::{
     NestedScript, SocketCall, SourceCall, WORK_PER_STEP,
 };
 pub use pattern::pattern_matches;
+/// The fuzz target `bytes_in`'s hook (G255 step 7a).
+#[cfg(feature = "fuzzing")]
+pub use quickjs::copy_of_buffer;
 /// Sweep builds' dump of the scripts pages run (`dump-scripts`).
 #[cfg(feature = "dump-scripts")]
 pub use quickjs::dump;

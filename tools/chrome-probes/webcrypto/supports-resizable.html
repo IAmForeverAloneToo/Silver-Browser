@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const out = [];
+  const rz = () => new ArrayBuffer(12, {maxByteLength: 32});
+  const cases = {
+    'supports encrypt AES-GCM iv resizable': () => SubtleCrypto.supports('encrypt', {name: 'AES-GCM', iv: rz()}),
+    'supports encrypt AES-GCM iv shared view': () => SubtleCrypto.supports('encrypt', {name: 'AES-GCM', iv: new Uint8Array(new SharedArrayBuffer(12))}),
+    'supports deriveBits HKDF salt resizable': () => SubtleCrypto.supports('deriveBits', {name: 'HKDF', hash: 'SHA-256', salt: rz(), info: new Uint8Array(0)}),
+    'supports generateKey RSA publicExponent resizable': () => SubtleCrypto.supports('generateKey', {name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array(new ArrayBuffer(3, {maxByteLength: 4})), hash: 'SHA-256'}),
+  };
+  for (const [label, op] of Object.entries(cases)) {
+    try { out.push(label + ': ' + op()); } catch (e) { out.push(label + ': ' + e.name + ': ' + e.message); }
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

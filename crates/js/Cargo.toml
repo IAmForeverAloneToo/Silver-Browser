@@ -20,6 +20,9 @@ js-sampler = []
 # the directory `SILVER_DUMP_SCRIPTS` names: a corpus for parsers, never
 # shipped. Off, compiled out, and the variable is never read.
 dump-scripts = []
+# The fuzz targets' hook into the copy of a buffer's bytes for a native
+# (`quickjs/bytes_in.rs`, G255 step 7a): never shipped.
+fuzzing = []
 
 [dependencies]
 rquickjs.workspace = true

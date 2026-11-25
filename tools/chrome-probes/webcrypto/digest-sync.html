@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const now = () => performance.now();
+  const big = new Uint8Array(256 << 20);
+  // How long the call itself holds the page's thread.
+  let t = now(); const p = s.digest('SHA-256', big); const call = now() - t; await p; const all = now() - t;
+  out.push('digest 256 MiB: call returns ms ' + call.toFixed(0) + ', settles ms ' + all.toFixed(0));
+  // The copy alone, for comparison.
+  t = now(); big.slice(); out.push('a 256 MiB copy ms ' + (now() - t).toFixed(0));
+  // A timer set before the call.
+  const order = []; t = now();
+  setTimeout(() => order.push('timer ' + (now() - t).toFixed(0)), 0);
+  await new Promise((r) => setTimeout(r, 0));
+  t = now();
+  setTimeout(() => order.push('timer2 ' + (now() - t).toFixed(0)), 5);
+  const q = s.digest('SHA-256', big).then(() => order.push('digest ' + (now() - t).toFixed(0)));
+  await q; await new Promise((r) => setTimeout(r, 20));
+  out.push('timer during digest: ' + order.join(', '));
+  // PBKDF2's call: does it hold the thread?
+  const key = await s.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits']);
+  t = now(); const r = s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 2000000}, key, 256); const pcall = now() - t; await r;
+  out.push('pbkdf2 2M: call returns ms ' + pcall.toFixed(0) + ', settles ms ' + (now() - t).toFixed(0));
+  // HMAC over a big input, and AES-GCM over it.
+  const hk = await s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  t = now(); const h = s.sign('HMAC', hk, big); const hcall = now() - t; await h;
+  out.push('hmac 256 MiB: call returns ms ' + hcall.toFixed(0) + ', settles ms ' + (now() - t).toFixed(0));
+  const ak = await s.generateKey({name: 'AES-GCM', length: 256}, false, ['encrypt']);
+  t = now(); const e = s.encrypt({name: 'AES-GCM', iv: new Uint8Array(12)}, ak, big); const ecall = now() - t; await e;
+  out.push('aes-gcm 256 MiB: call returns ms ' + ecall.toFixed(0) + ', settles ms ' + (now() - t).toFixed(0));
+  // Behind a PBKDF2: a big digest, and a 16-byte one after it.
+  const o2 = []; t = now();
+  const a1 = s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 2000000}, key, 256).then(() => o2.push('pbkdf2 ' + (now() - t).toFixed(0)));
+  const a2 = s.digest('SHA-256', big).then(() => o2.push('big digest ' + (now() - t).toFixed(0)));
+  const a3 = s.digest('SHA-256', new Uint8Array(16)).then(() => o2.push('small digest ' + (now() - t).toFixed(0)));
+  await Promise.all([a1, a2, a3]);
+  out.push('pbkdf2, big digest, small digest: ' + o2.join(', '));
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

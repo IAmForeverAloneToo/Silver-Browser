@@ -21,6 +21,7 @@
   const $RangeError = RangeError;
   const $Error = Error;
   const ToBase64 = uncurry(Uint8Array.prototype.toBase64);
+  const AtoB = atob;
   const ObjectFreeze = Object.freeze;
   const FunctionBind = uncurry(Function.prototype.bind);
   const BigIntAsIntN = BigInt.asIntN;
@@ -3819,6 +3820,14 @@
   const ArrayBufferSlice = uncurry(ArrayBuffer.prototype.slice);
   const goneGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "detached");
   const bufferGone = goneGetter === undefined ? () => false : uncurry(goneGetter.get);
+  const bufferResizableGetter = getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizable");
+  const bufferResizable = bufferResizableGetter === undefined ? () => false : uncurry(bufferResizableGetter.get);
+  // A buffer's bytes copied for a native at the speed of a copy (G255
+  // step 7a): `bytesStash(buffer, offset, length)` gives the token a
+  // native takes them by, once; `bytesDrop(...tokens)` lets go of those
+  // no native took. Held here alone: no script reaches them.
+  const bytesStash = native.bytesStash;
+  const bytesDrop = native.bytesDrop;
   const IsView = ArrayBuffer.isView;
   const MathFloor = Math.floor;
   const MathMax = Math.max;
@@ -7185,17 +7194,34 @@
     });
   }
 
-  // Bytes as a string of code units 0 to 255, as the natives take them.
+  // Bytes as a string of code units 0 to 255, as the natives take them:
+  // QuickJS-ng's base64 both ways, at the speed of C, where the bytes
+  // were once read one at a time (G255 step 7a).
   function binaryString(bytes) {
-    let out = "";
     const n = viewLength(bytes);
-    for (let i = 0; i < n; i += 4096) {
-      const chunk = [];
-      const end = MathMin(n, i + 4096);
-      for (let j = i; j < end; j++) ArrayPush(chunk, bytes[j]);
-      out += ReflectApply(FromCharCode, null, chunk);
+    if (n === 0) {
+      return "";
     }
-    return out;
+    // A view of the same bytes, whatever the array's type: toBase64 is
+    // Uint8Array's alone.
+    return AtoB(ToBase64(new $Uint8Array(viewBuffer(bytes), viewOffset(bytes), n)));
+  }
+
+  // A BufferSource's bytes as they are now, copied for a native: the
+  // token it takes them by (G255 step 7a), one copy. A detached
+  // buffer's are none.
+  function stashBytes(value) {
+    if (isBuffer(value)) {
+      return bytesStash(value, 0, bufferGone(value) ? 0 : bufferLength(value));
+    }
+    const typed = isTypedArray(value);
+    const buffer = typed ? viewBuffer(value) : dataViewBuffer(value);
+    if (bufferGone(buffer)) {
+      return bytesStash(buffer, 0, 0);
+    }
+    return typed
+      ? bytesStash(buffer, viewOffset(value), viewLength(value))
+      : bytesStash(buffer, dataViewOffset(value), dataViewLength(value));
   }
 
   // A header list as the natives take it: name, value, name, value...
@@ -33729,6 +33755,7 @@
       if (!IsView(array)) {
         throw new $TypeError(where + "parameter 1 is not of type 'ArrayBufferView'.");
       }
+      plainBuffer(array, where);
       const tag = TypedArrayTag(array);
       if (!ArrayIncludes(INTEGER_ARRAYS, tag)) {
         const kind = tag === undefined ? "DataView" : StringSlice(tag, 0, tag.length - 5);
@@ -33858,8 +33885,53 @@
   // An argument as the host takes it: JSON, a buffer by its place in
   // `buffers` (at most four a call).
   function cryptoBytes(bytes, buffers) {
-    ArrayPush(buffers, binaryString(bytes));
+    ArrayPush(buffers, stashBytes(bytes));
     return { $b: buffers.length - 1 };
+  }
+
+  // The method a SubtleCrypto call is converting the arguments of, for
+  // its errors' prefix; whether it is `supports`, which answers false
+  // where a method refuses a member (probed, Chrome 158).
+  let cryptoWhere = "";
+  let cryptoSupporting = false;
+
+  // Why Web IDL refuses a buffer that SubtleCrypto's BufferSource takes
+  // neither shared nor resizable (no [AllowShared], no
+  // [AllowResizable]), in the reference's words (probed, Chrome 158);
+  // undefined when it takes it. `kind` names the type, a view's or the
+  // buffer's by default.
+  function bufferRefusal(value, kind) {
+    const view = !isBuffer(value);
+    const buffer = view ? (isTypedArray(value) ? viewBuffer(value) : dataViewBuffer(value)) : value;
+    const what = kind !== undefined ? kind : view ? "ArrayBufferView" : "ArrayBuffer";
+    if (view && !isBuffer(buffer)) {
+      return "The provided " + what + " value must not be shared.";
+    }
+    if (bufferResizable(buffer)) {
+      return "The provided " + what + " value must not be resizable.";
+    }
+    return undefined;
+  }
+
+  // The refusal, thrown with the method's prefix `where`.
+  function plainBuffer(value, where, kind) {
+    const refused = bufferRefusal(value, kind);
+    if (refused !== undefined) {
+      throw new $TypeError(where + refused);
+    }
+  }
+
+  // A dictionary member's buffer refused: thrown by a method, a value
+  // that is no buffer to `supports`.
+  function memberRefused(value, kind) {
+    const refused = bufferRefusal(value, kind);
+    if (refused === undefined) {
+      return false;
+    }
+    if (cryptoSupporting) {
+      return true;
+    }
+    throw new $TypeError(cryptoWhere + refused);
   }
 
   // A member of kind `kind`, as the host's normalization takes it.
@@ -33869,13 +33941,16 @@
     }
     switch (kind) {
       case "Buffer": {
-        const bytes = bufferBytes(value);
-        return bytes === undefined ? { $o: 1 } : cryptoBytes(bytes, buffers);
+        if (!isBufferSource(value) || memberRefused(value)) {
+          return { $o: 1 };
+        }
+        return cryptoBytes(value, buffers);
       }
       case "BigInteger":
-        return TypedArrayTag(value) === "Uint8Array"
-          ? cryptoBytes(bufferBytes(value), buffers)
-          : { $o: 1 };
+        if (TypedArrayTag(value) !== "Uint8Array" || memberRefused(value, "Uint8Array")) {
+          return { $o: 1 };
+        }
+        return cryptoBytes(value, buffers);
       case "Number":
         return { $n: String($Number(value)) };
       case "Str":
@@ -33969,6 +34044,7 @@
           " is not of type '(ArrayBuffer or ArrayBufferView)'.",
       );
     }
+    plainBuffer(value, prefix(method, SUBTLE));
     return value;
   }
 
@@ -33979,7 +34055,7 @@
 
   // A BufferSource's bytes as they are now, copied for the host.
   function cryptoCopy(value, buffers) {
-    return cryptoBytes(bufferBytes(value), buffers);
+    return cryptoBytes(value, buffers);
   }
 
   // A JsonWebKey dictionary's members, read in Web IDL's order.
@@ -34013,13 +34089,22 @@
   // A method's body: its arguments converted by `convert`, any failure a
   // rejected promise, as a promise-returning method's must be.
   function cryptoMethod(method, required, count, convert) {
+    const buffers = [];
+    const outerWhere = cryptoWhere;
+    const outerSupporting = cryptoSupporting;
     try {
       need(count, required, method, SUBTLE);
-      const buffers = [];
+      cryptoWhere = prefix(method, SUBTLE);
+      cryptoSupporting = false;
       const args = convert(buffers);
       return cryptoRun(method, args, buffers);
     } catch (error) {
       return rejected(error);
+    } finally {
+      cryptoWhere = outerWhere;
+      cryptoSupporting = outerSupporting;
+      // What no native took goes now (G255 step 7a).
+      ReflectApply(bytesDrop, null, buffers);
     }
   }
 
@@ -34069,6 +34154,7 @@
             throw new $TypeError(prefix("digest", SUBTLE) +
               "The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.");
           }
+          plainBuffer(d, prefix("digest", SUBTLE));
           const alg = cryptoAlgorithm(algorithm, "digest", buffers);
           return { alg, data: cryptoCopy(d, buffers) };
         });
@@ -34103,6 +34189,7 @@
           let data;
           const bytes = isBufferSource(keyData) ? keyData : undefined;
           if (bytes !== undefined) {
+            plainBuffer(bytes, prefix("importKey", SUBTLE));
             data = bytes;
           } else if (isObject(keyData) || keyData === undefined || keyData === null) {
             data = cryptoJwk(isObject(keyData) ? keyData : {});
@@ -34245,29 +34332,39 @@
     const statics = {
       supports(operation, algorithm, lengthOrAdditionalAlgorithm = null) {
         need(arguments.length, 2, "supports", SUBTLE);
-        const op = str(operation);
-        const extra = lengthOrAdditionalAlgorithm;
         const buffers = [];
-        const as = op === "exportKey" || op === "getPublicKey" ? "importKey"
-          : op === "deriveKey" ? "deriveBits"
-          : op === "encapsulateKey" || op === "encapsulateBits" ? "encapsulate"
-          : op === "decapsulateKey" || op === "decapsulateBits" ? "decapsulate"
-          : op;
-        const args = { op, alg: cryptoAlgorithm(algorithm, as, buffers) };
-        if (typeof extra === "number" || typeof extra === "boolean") {
-          args.extra = { $n: String($Number(extra) >>> 0) };
-        } else if (extra !== null && extra !== undefined && op === "deriveKey") {
-          args.derived = cryptoAlgorithm(extra, "importKey", buffers);
-          args.derivedLength = cryptoAlgorithm(extra, "get key length", buffers);
-        } else if (extra !== null && extra !== undefined && (op === "wrapKey" ||
-          op === "unwrapKey" || op === "encapsulateKey" || op === "decapsulateKey")) {
-          args.derived = cryptoAlgorithm(extra, "importKey", buffers);
+        const outerWhere = cryptoWhere;
+        const outerSupporting = cryptoSupporting;
+        cryptoWhere = prefix("supports", SUBTLE);
+        cryptoSupporting = true;
+        try {
+          const op = str(operation);
+          const extra = lengthOrAdditionalAlgorithm;
+          const as = op === "exportKey" || op === "getPublicKey" ? "importKey"
+            : op === "deriveKey" ? "deriveBits"
+            : op === "encapsulateKey" || op === "encapsulateBits" ? "encapsulate"
+            : op === "decapsulateKey" || op === "decapsulateBits" ? "decapsulate"
+            : op;
+          const args = { op, alg: cryptoAlgorithm(algorithm, as, buffers) };
+          if (typeof extra === "number" || typeof extra === "boolean") {
+            args.extra = { $n: String($Number(extra) >>> 0) };
+          } else if (extra !== null && extra !== undefined && op === "deriveKey") {
+            args.derived = cryptoAlgorithm(extra, "importKey", buffers);
+            args.derivedLength = cryptoAlgorithm(extra, "get key length", buffers);
+          } else if (extra !== null && extra !== undefined && (op === "wrapKey" ||
+            op === "unwrapKey" || op === "encapsulateKey" || op === "decapsulateKey")) {
+            args.derived = cryptoAlgorithm(extra, "importKey", buffers);
+          }
+          const call = [JSONStringify(args)];
+          for (let i = 0; i < buffers.length; i++) {
+            ArrayPush(call, buffers[i]);
+          }
+          return ReflectApply(native.cryptoSupports, native, call) === true;
+        } finally {
+          cryptoWhere = outerWhere;
+          cryptoSupporting = outerSupporting;
+          ReflectApply(bytesDrop, null, buffers);
         }
-        const call = [JSONStringify(args)];
-        for (let i = 0; i < buffers.length; i++) {
-          ArrayPush(call, buffers[i]);
-        }
-        return ReflectApply(native.cryptoSupports, native, call) === true;
       },
     };
     defineProperty(SubtleCrypto, "supports", getOwnPropertyDescriptor(statics, "supports"));

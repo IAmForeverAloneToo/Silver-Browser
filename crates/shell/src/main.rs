@@ -1554,6 +1554,11 @@ mod tests {
         // A WebAssembly memory's buffer read in place as a call enters
         // the store (twitch's player), reviewed: the js crate's fourth.
         const WASM: &str = "crates/js/src/quickjs/wasm.rs";
+        // A buffer's bytes copied in place for a native where its
+        // binding's spec copies them (G255 step 7a, the lead's ruling),
+        // never a shared one's, the range checked against the buffer's
+        // length as it is: the js crate's fifth, one block, reviewed.
+        const BYTES_IN: &str = "crates/js/src/quickjs/bytes_in.rs";
         // A realm's context given QuickJS-ng's base64 intrinsic, which
         // its runtime's second context lacked (G90), and a realm's
         // context made and entered under a run's held lock (G90 phase 3
@@ -1574,6 +1579,7 @@ mod tests {
         let mut stack_blocks = 0;
         let mut sampler_blocks = 0;
         let mut wasm_blocks = 0;
+        let mut bytes_in_blocks = 0;
         let mut blocks = 0;
         let mut bytecode_blocks = 0;
         let mut av1_blocks = 0;
@@ -1602,6 +1608,7 @@ mod tests {
                         || name == STACK
                         || name == SAMPLER
                         || name == WASM
+                        || name == BYTES_IN
                         || name == CONTEXT
                         || name == NATIVE,
                     "unsafe in {name} at line {}",
@@ -1638,6 +1645,8 @@ mod tests {
                     sampler_blocks += 1;
                 } else if name == WASM {
                     wasm_blocks += 1;
+                } else if name == BYTES_IN {
+                    bytes_in_blocks += 1;
                 } else if name == CONTEXT {
                     context_blocks += 1;
                 } else if name == NATIVE {
@@ -1675,6 +1684,7 @@ mod tests {
         assert_eq!(stack_blocks, 3, "the stack module's reviewed blocks");
         assert_eq!(sampler_blocks, 2, "the sampler's reviewed blocks");
         assert_eq!(wasm_blocks, 1, "the WebAssembly memory's reviewed block");
+        assert_eq!(bytes_in_blocks, 1, "the bytes in's reviewed block");
         assert_eq!(context_blocks, 3, "the realm's context's reviewed blocks");
         assert_eq!(native_blocks, NATIVE_BLOCKS, "Web Crypto's reviewed blocks");
         // The shell denies it but where the platform module allows it.

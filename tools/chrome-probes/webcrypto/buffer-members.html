@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const rz = () => new ArrayBuffer(16, {maxByteLength: 32});
+  const rzView = () => new Uint8Array(new ArrayBuffer(16, {maxByteLength: 32}));
+  const sh = () => new Uint8Array(new SharedArrayBuffer(16));
+  const aes = await s.importKey('raw', new Uint8Array(16), 'AES-GCM', false, ['encrypt']);
+  const pb = await s.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits']);
+  const hk = await s.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveBits']);
+  const cases = {
+    'encrypt iv resizable': () => s.encrypt({name: 'AES-GCM', iv: rz()}, aes, new Uint8Array(1)),
+    'encrypt iv view over resizable': () => s.encrypt({name: 'AES-GCM', iv: rzView()}, aes, new Uint8Array(1)),
+    'encrypt iv shared view': () => s.encrypt({name: 'AES-GCM', iv: sh()}, aes, new Uint8Array(1)),
+    'encrypt additionalData resizable': () => s.encrypt({name: 'AES-GCM', iv: new Uint8Array(12), additionalData: rz()}, aes, new Uint8Array(1)),
+    'pbkdf2 salt resizable': () => s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: rz(), iterations: 1}, pb, 256),
+    'hkdf info shared view': () => s.deriveBits({name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(1), info: sh()}, hk, 256),
+    'importKey raw resizable': () => s.importKey('raw', rz(), 'AES-GCM', false, ['encrypt']),
+    'importKey raw shared view': () => s.importKey('raw', sh(), 'AES-GCM', false, ['encrypt']),
+    'encrypt data resizable view': () => s.encrypt({name: 'AES-GCM', iv: new Uint8Array(12)}, aes, rzView()),
+    'RSA publicExponent over resizable': () => s.generateKey({name: 'RSA-PSS', modulusLength: 1024, publicExponent: new Uint8Array(new ArrayBuffer(3, {maxByteLength: 4})).fill(1), hash: 'SHA-256'}, false, ['sign']),
+    'getRandomValues resizable view': async () => crypto.getRandomValues(rzView()),
+    'getRandomValues shared view': async () => crypto.getRandomValues(sh()),
+  };
+  for (const [label, op] of Object.entries(cases)) {
+    try { await op(); out.push(label + ': ok'); } catch (e) { out.push(label + ': ' + e.name + ': ' + e.message); }
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

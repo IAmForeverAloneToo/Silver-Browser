@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = ['crossOriginIsolated ' + self.crossOriginIsolated];
+  const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  const empty = hex(await s.digest('SHA-256', new Uint8Array(0)));
+  const eight = hex(await s.digest('SHA-256', new Uint8Array(8)));
+  out.push('empty ' + empty + ', eight zeros ' + eight);
+  const run = async (label, make) => {
+    try {
+      const data = make();
+      const r = await s.digest('SHA-256', data);
+      const h = hex(r);
+      out.push(label + ': ok ' + (h === empty ? 'empty' : h === eight ? 'eight zeros' : h));
+    } catch (e) { out.push(label + ': ' + e.name + ': ' + e.message); }
+  };
+  await run('SharedArrayBuffer', () => new SharedArrayBuffer(8));
+  await run('Uint8Array over SharedArrayBuffer', () => new Uint8Array(new SharedArrayBuffer(8)));
+  await run('DataView over SharedArrayBuffer', () => new DataView(new SharedArrayBuffer(8)));
+  await run('resizable ArrayBuffer', () => new ArrayBuffer(8, {maxByteLength: 16}));
+  await run('Uint8Array over resizable', () => new Uint8Array(new ArrayBuffer(8, {maxByteLength: 16})));
+  await run('length-tracking view, buffer shrunk 16 to 8', () => { const b = new ArrayBuffer(16, {maxByteLength: 16}); const v = new Uint8Array(b); b.resize(8); return v; });
+  await run('fixed view 0..16, buffer shrunk to 8', () => { const b = new ArrayBuffer(16, {maxByteLength: 16}); const v = new Uint8Array(b, 0, 16); b.resize(8); return v; });
+  await run('detached ArrayBuffer', () => { const b = new ArrayBuffer(8); structuredClone(b, {transfer: [b]}); return b; });
+  await run('view over detached', () => { const b = new ArrayBuffer(8); const v = new Uint8Array(b); structuredClone(b, {transfer: [b]}); return v; });
+  await run('growable SharedArrayBuffer', () => new SharedArrayBuffer(8, {maxByteLength: 16}));
+  // The same kinds where the copy happens after the algorithm is read.
+  const key = await s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  for (const [label, make] of [['sign over SharedArrayBuffer view', () => new Uint8Array(new SharedArrayBuffer(8))], ['sign over resizable', () => new ArrayBuffer(8, {maxByteLength: 16})]]) {
+    try { await s.sign('HMAC', key, make()); out.push(label + ': ok'); } catch (e) { out.push(label + ': ' + e.name + ': ' + e.message); }
+  }
+  // TextDecoder takes shared views ([AllowShared]).
+  try { out.push('TextDecoder over shared: ' + JSON.stringify(new TextDecoder().decode(new Uint8Array(new SharedArrayBuffer(2)).fill(65)))); } catch (e) { out.push('TextDecoder over shared: ' + e.name + ': ' + e.message); }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

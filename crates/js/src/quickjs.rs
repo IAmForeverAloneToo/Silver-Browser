@@ -4,6 +4,7 @@
 //! limits set on the runtime.
 
 mod bytecode;
+mod bytes_in;
 pub(crate) mod console;
 mod context;
 mod dom;
@@ -28,6 +29,8 @@ pub(crate) use sampler::Sampler as sampler_for_tests;
 mod wasm;
 
 pub use bytecode::warm as warm_bindings;
+#[cfg(feature = "fuzzing")]
+pub use bytes_in::copy_of_buffer;
 pub use intl_zone::set_windows_time_zone;
 
 #[cfg(test)]
@@ -372,6 +375,16 @@ impl<H: ScriptingHost> AgentCore<H> {
         self.runtime.set_memory_limit(limit);
     }
 
+    /// Lets go of the bytes every realm's bindings copied and no native
+    /// took (G255 step 7a): at a microtask checkpoint, before each job
+    /// and after it, so that nothing copied outlives the run of script
+    /// that copied it.
+    fn clear_stashes(&self) {
+        for links in self.realms.borrow().values() {
+            links.stash.borrow_mut().clear();
+        }
+    }
+
     /// The heap its realms may hold together, `more` realms to come: its
     /// first realm's limit, and [`crate::REALM_HEAP`] for each after it,
     /// up to [`crate::MAX_AGENT_HEAP`] (or the first's, if more).
@@ -411,6 +424,8 @@ pub(crate) struct Links<H: ScriptingHost> {
     /// Its context: an anchor of the agent's runtime for a realm made as
     /// its run reaches a document (G90 phase 3 (b)).
     context: Context,
+    /// The bytes its bindings copied for its natives (G255 step 7a).
+    stash: bytes_in::Stashed,
 }
 
 /// A realm's nodes let go of while no host of its was there, released
@@ -436,6 +451,7 @@ impl<H: ScriptingHost> Clone for Links<H> {
             frame: Rc::clone(&self.frame),
             released: Rc::clone(&self.released),
             context: self.context.clone(),
+            stash: Rc::clone(&self.stash),
         }
     }
 }
@@ -887,6 +903,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 frame: frame.clone(),
                 released: released.clone(),
                 context: context.clone(),
+                stash: Rc::default(),
             },
         );
         // Under a run's held lock the limit was fitted as the context was
@@ -912,7 +929,10 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
             // A realm not made goes without its `Drop`: the agent forgets
             // it, as there.
             let _ = LIVE.try_with(|live| live.borrow_mut().remove(&key));
-            core.realms.borrow_mut().remove(&key);
+            let links = core.realms.borrow_mut().remove(&key);
+            if let Some(links) = links {
+                links.stash.borrow_mut().close();
+            }
             // Grown for it under a run's lock: fitted again before the
             // next run, the lock not held then.
             if held.is_some() {
@@ -1021,6 +1041,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
     /// of those that threw.
     fn jobs(&mut self) -> Vec<ScriptError> {
         let mut errors = Vec::new();
+        self.agent.clear_stashes();
         while self.agent.runtime.is_job_pending() && !self.exhausted.get() {
             if let Err(job) = self.agent.runtime.execute_pending_job() {
                 let error = job.0.with(|ctx| {
@@ -1029,6 +1050,7 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
                 });
                 errors.push(error);
             }
+            self.agent.clear_stashes();
         }
         errors
     }
@@ -1108,8 +1130,11 @@ impl<H: ScriptingHost> QuickJsRealm<H> {
 impl<H: ScriptingHost> Drop for QuickJsRealm<H> {
     fn drop(&mut self) {
         // The agent forgets it; its hooks are the agent's, which goes
-        // with its last realm.
-        self.agent.realms.borrow_mut().remove(&self.key);
+        // with its last realm. The bytes its bindings copied go now.
+        let links = self.agent.realms.borrow_mut().remove(&self.key);
+        if let Some(links) = links {
+            links.stash.borrow_mut().close();
+        }
         // A realm a thread-local held goes as the thread ends, perhaps
         // after this set did: nothing to forget then.
         let _ = LIVE.try_with(|live| live.borrow_mut().remove(&self.key));
@@ -2331,6 +2356,68 @@ pub(crate) fn gone_error(ctx: &Ctx<'_>) -> rquickjs::Error {
         "InvalidStateError",
         "The window's document is no longer active.",
     )
+}
+
+#[cfg(test)]
+mod stash_tests {
+    use super::*;
+    use crate::tests::{Recorder, script};
+
+    /// Bytes a binding copied and no native took go at the microtask
+    /// checkpoint, and everything, the getters too, with the realm.
+    #[test]
+    fn copied_bytes_go_at_the_checkpoint_and_with_the_realm() {
+        let agent: Agent<Recorder> = Agent::new(Limits::default(), None).expect("an agent");
+        let mut realm = QuickJsRealm::new(&RealmKind::Window, &agent, None).expect("a realm");
+        let stash = agent
+            .core
+            .realms
+            .borrow()
+            .get(&realm.key)
+            .expect("its links")
+            .stash
+            .clone();
+        let mut host = Recorder::default();
+        stash.borrow_mut().put(vec![1, 2, 3]).expect("held");
+        realm.run(&script("1"), &mut host).expect("it runs");
+        assert!(realm.checkpoint(&mut host).is_empty());
+        assert_eq!(stash.borrow().len(), 0);
+        // With jobs to run: what is held goes before them, and after each.
+        realm
+            .run(
+                &script("Promise.resolve().then(() => 1).then(() => 2)"),
+                &mut host,
+            )
+            .expect("it runs");
+        stash.borrow_mut().put(vec![4]).expect("held");
+        assert!(realm.checkpoint(&mut host).is_empty());
+        assert_eq!(stash.borrow().len(), 0);
+        stash.borrow_mut().put(vec![5]).expect("held");
+        assert!(!stash.borrow().closed());
+        drop(realm);
+        assert_eq!(stash.borrow().len(), 0);
+        assert!(stash.borrow().closed());
+    }
+
+    /// No script reaches the natives that copy bytes: nothing the global
+    /// holds, nor anything one of its values holds, is named for them.
+    #[test]
+    fn no_script_reaches_the_bytes_natives() {
+        let lines = crate::tests::logged(
+            "const found = []; \
+             for (const name of Object.getOwnPropertyNames(globalThis)) { \
+               let value; try { value = globalThis[name]; } catch { continue; } \
+               if (/^bytes(Stash|Drop)$/.test(name)) found.push(name); \
+               if (typeof value === 'function' && /bytes(Stash|Drop)/.test(value.name)) found.push(name); \
+               if (value !== null && (typeof value === 'object' || typeof value === 'function')) { \
+                 let names = []; try { names = Object.getOwnPropertyNames(value); } catch {} \
+                 for (const inner of names) if (/^bytes(Stash|Drop)$/.test(inner)) found.push(name + '.' + inner); \
+               } \
+             } \
+             console.log('found ' + found.length + ' ' + found.join());",
+        );
+        assert_eq!(lines, ["found 0 "]);
+    }
 }
 
 #[cfg(test)]

@@ -504,7 +504,20 @@ as a call enters a WebAssembly store, a memory's `ArrayBuffer` is read
 in place (rquickjs's `as_bytes`), compared with the mirror kept of it
 and its runs that differ copied into the memory, with nothing that
 reaches QuickJS while the slice lives (no value made or freed, no call,
-no callback from `wasmi`). And `quickjs/context.rs`, three blocks: a
+no callback from `wasmi`). And `quickjs/bytes_in.rs`, one block (G255
+step 7a, the lead's ruling): a binding's buffer copied for a native
+where its spec copies it, rquickjs's `as_bytes` read once into a vector
+with nothing that reaches QuickJS while the slice lives. The buffer is
+never shared: the realm's own first `ArrayBuffer.prototype.byteLength`
+getter, which throws for a SharedArrayBuffer, takes it first, and a
+page's realm has no SharedArrayBuffer anyway. The range is checked,
+with checked arithmetic, against the slice's length as it is at the
+copy, a resizable buffer's shrunk one included, and refused past it,
+never cut short. The vector waits under a token for the call, taken
+once; one never taken goes at the next microtask checkpoint or with the
+realm. The fuzz target `bytes_in` holds the copy to a model for every
+kind of buffer and range, and a page's digests to the bytes the page
+read. And `quickjs/context.rs`, three blocks: a
 realm's context, made with rquickjs's intrinsics, is given QuickJS-ng's
 base64 functions by the call `JS_NewContext` makes, on the fresh
 context before anything runs in it (G90: a runtime's later contexts

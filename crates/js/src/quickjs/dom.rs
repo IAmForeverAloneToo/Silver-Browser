@@ -85,6 +85,8 @@ impl Budget {
 struct Args<'a, 'js> {
     ctx: &'a Ctx<'js>,
     values: &'a [Value<'js>],
+    /// The realm's copied bytes, which [`Args::bytes`] takes by token.
+    stash: Option<&'a super::bytes_in::Stashed>,
 }
 
 impl<'js> Args<'_, 'js> {
@@ -164,12 +166,20 @@ impl<'js> Args<'_, 'js> {
         array.iter::<String>().collect()
     }
 
-    /// Bytes, as the bindings pass them: a string of code units 0 to 255
-    /// (no byte crosses as a buffer, which `rquickjs` reads only through
-    /// `unsafe`); `None` for `null`.
+    /// Bytes, as the bindings pass them: a token of the bytes the
+    /// binding copied (`bytesStash`, G255 step 7a), taken once, or a
+    /// string of code units 0 to 255; `None` for `null`. A token the
+    /// realm does not hold is an internal error, never a read.
     fn bytes(&self, i: usize) -> rquickjs::Result<Option<Vec<u8>>> {
-        if self.value(i).is_null() {
+        let value = self.value(i);
+        if value.is_null() {
             return Ok(None);
+        }
+        if let Some(number) = value.as_number() {
+            return super::bytes_in::token_of(number)
+                .and_then(|token| self.stash.and_then(|stash| stash.borrow_mut().take(token)))
+                .map(Some)
+                .ok_or_else(|| Exception::throw_internal(self.ctx, "no such bytes"));
         }
         let text = self.string(i)?;
         text.chars()
@@ -1492,9 +1502,15 @@ pub(super) fn install<'js, H: ScriptingHost>(
     }
     // The nodes let go of while the realm's document is not lent (G90).
     let released = super::links_of(realms, ctx).map(|links| links.released);
+    // The bytes its bindings copy for its natives (G255 step 7a).
+    let stash = super::links_of(realms, ctx).map(|links| links.stash);
+    if let Some(stash) = &stash {
+        super::bytes_in::install(ctx, &natives, stash)?;
+    }
     for &(name, decode) in NATIVES {
         let (host, budget, entries) = (host.clone(), budget.clone(), entries.clone());
         let released = released.clone();
+        let stash = stash.clone();
         let state = state.clone();
         let runs_scripts = RUN_SCRIPTS.contains(&name);
         let native = Function::new(
@@ -1506,6 +1522,7 @@ pub(super) fn install<'js, H: ScriptingHost>(
                 let call = decode(&Args {
                     ctx: &ctx,
                     values: &args.0,
+                    stash: stash.as_ref(),
                 })?;
                 // No document lent: a call that needs none is answered all
                 // the same, and one of a realm dropped answers as a
@@ -2162,6 +2179,47 @@ mod tests {
     use super::{Args, NATIVES};
     use crate::Call;
 
+    /// Bytes by token: taken once; a token taken, never held or no whole
+    /// number is an internal error, never a read; a string as before.
+    #[test]
+    fn bytes_by_token_are_taken_once() {
+        let runtime = Runtime::new().expect("a runtime");
+        let context = Context::full(&runtime).expect("a context");
+        context.with(|ctx| {
+            let stash = super::super::bytes_in::Stashed::default();
+            let token = stash.borrow_mut().put(vec![7, 8]).expect("held");
+            let number = |n: f64| Value::new_number(ctx.clone(), n);
+            fn read<'js>(
+                ctx: &rquickjs::Ctx<'js>,
+                values: &[Value<'js>],
+                stash: Option<&super::super::bytes_in::Stashed>,
+            ) -> Option<Option<Vec<u8>>> {
+                let args = Args { ctx, values, stash };
+                let got = args.bytes(0);
+                if got.is_err() {
+                    assert!(ctx.has_exception());
+                    let _ = ctx.catch();
+                }
+                got.ok()
+            }
+            let held = [number(f64::from(token))];
+            assert_eq!(read(&ctx, &held, Some(&stash)), Some(Some(vec![7, 8])));
+            assert_eq!(read(&ctx, &held, Some(&stash)), None);
+            assert_eq!(read(&ctx, &[number(99.0)], Some(&stash)), None);
+            assert_eq!(read(&ctx, &[number(0.5)], Some(&stash)), None);
+            let other = stash.borrow_mut().put(vec![1]).expect("held");
+            assert_eq!(read(&ctx, &[number(f64::from(other))], None), None);
+            let text = rquickjs::String::from_str(ctx.clone(), "\u{1}\u{ff}")
+                .expect("a string")
+                .into_value();
+            assert_eq!(read(&ctx, &[text], Some(&stash)), Some(Some(vec![1, 255])));
+            assert_eq!(
+                read(&ctx, &[Value::new_null(ctx.clone())], Some(&stash)),
+                Some(None)
+            );
+        });
+    }
+
     /// `fetch`'s native given the arguments a script's `fetch()` gives
     /// (no destination) and an XHR's `send()` gives (no integrity either):
     /// decoded, and no exception left behind (one left pending surfaced
@@ -2203,6 +2261,7 @@ mod tests {
                 let args = Args {
                     ctx: &ctx,
                     values: &values,
+                    stash: None,
                 };
                 let Ok(Call::Fetch(call)) = decode(&args) else {
                     panic!("{given} arguments: not decoded");
@@ -2219,6 +2278,7 @@ mod tests {
             let args = Args {
                 ctx: &ctx,
                 values: &values,
+                stash: None,
             };
             assert!(decode(&args).is_err());
             assert!(ctx.has_exception());

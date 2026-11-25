@@ -558,3 +558,57 @@ fn a_page_encapsulates_and_decapsulates_with_ml_kem() {
         ]
     );
 }
+
+/// A page's buffers cross to the store copied once, where the spec
+/// copies them (G255 step 7a): a view's own bytes at its offset, a
+/// detached buffer's none, the bytes as they were at the call. Resizable
+/// ones are refused as the reference refuses them, its words (Chrome
+/// 158, probed: tools/chrome-probes/webcrypto/buffer-kinds and
+/// buffer-members), and `supports` answers false for them.
+#[test]
+fn a_pages_buffers_are_copied_once_and_resizable_ones_refused() {
+    let script = "(async () => {\
+      const s = crypto.subtle; const out = [];\
+      const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('').slice(0, 16);\
+      const err = async (f) => { try { const r = await f(); return 'ok ' + (r instanceof ArrayBuffer ? hex(r) : ''); } catch (e) { return e.name + ': ' + e.message; } };\
+      const rz = () => new ArrayBuffer(16, {maxByteLength: 32});\
+      out.push(await err(() => s.digest('SHA-256', new ArrayBuffer(8, {maxByteLength: 16}))));\
+      out.push(await err(() => s.digest('SHA-256', new Uint8Array(new ArrayBuffer(8, {maxByteLength: 16})))));\
+      out.push(await err(() => { const b = new ArrayBuffer(16, {maxByteLength: 16}); const v = new Uint8Array(b, 0, 16); b.resize(8); return s.digest('SHA-256', v); }));\
+      out.push(await err(() => { const b = new ArrayBuffer(8); b.transfer(); return s.digest('SHA-256', b); }));\
+      out.push(await err(() => { const b = new ArrayBuffer(8); const v = new Uint8Array(b); b.transfer(); return s.digest('SHA-256', v); }));\
+      const aes = await s.importKey('raw', new Uint8Array(16), 'AES-GCM', false, ['encrypt']);\
+      out.push(await err(() => s.encrypt({name: 'AES-GCM', iv: rz()}, aes, new Uint8Array(1))));\
+      out.push(await err(() => s.encrypt({name: 'AES-GCM', iv: new Uint8Array(12)}, aes, new Uint8Array(rz()))));\
+      out.push(await err(() => s.importKey('raw', rz(), 'AES-GCM', false, ['encrypt'])));\
+      out.push(await err(() => s.generateKey({name: 'RSA-PSS', modulusLength: 1024, publicExponent: new Uint8Array(new ArrayBuffer(3, {maxByteLength: 4})).fill(1), hash: 'SHA-256'}, false, ['sign'])));\
+      out.push(await err(async () => crypto.getRandomValues(new Uint8Array(rz()))));\
+      out.push('supports ' + SubtleCrypto.supports('encrypt', {name: 'AES-GCM', iv: rz()}) + ' ' + SubtleCrypto.supports('deriveBits', {name: 'HKDF', hash: 'SHA-256', salt: rz(), info: new Uint8Array(0)}) + ' ' + SubtleCrypto.supports('encrypt', {name: 'AES-GCM', iv: new Uint8Array(12)}));\
+      const bytes = new Uint8Array(64).map((_, i) => i);\
+      const at = hex(await s.digest('SHA-256', new Uint8Array(bytes.buffer, 3, 5)));\
+      const dv = hex(await s.digest('SHA-256', new DataView(bytes.buffer, 3, 5)));\
+      out.push('a view at an offset ' + (at === hex(await s.digest('SHA-256', bytes.slice(3, 8)))) + ' ' + (dv === at));\
+      const d = new Uint8Array(1 << 20); const p = s.digest('SHA-256', d); d.fill(1);\
+      out.push('as at the call ' + (hex(await p) === hex(await s.digest('SHA-256', new Uint8Array(1 << 20)))));\
+      for (const line of out) console.log(line);\
+      })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 13);
+    assert_eq!(
+        lines,
+        [
+            "TypeError: Failed to execute 'digest' on 'SubtleCrypto': The provided ArrayBuffer value must not be resizable.",
+            "TypeError: Failed to execute 'digest' on 'SubtleCrypto': The provided ArrayBufferView value must not be resizable.",
+            "TypeError: Failed to execute 'digest' on 'SubtleCrypto': The provided ArrayBufferView value must not be resizable.",
+            "ok e3b0c44298fc1c14",
+            "ok e3b0c44298fc1c14",
+            "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': The provided ArrayBuffer value must not be resizable.",
+            "TypeError: Failed to execute 'encrypt' on 'SubtleCrypto': The provided ArrayBufferView value must not be resizable.",
+            "TypeError: Failed to execute 'importKey' on 'SubtleCrypto': The provided ArrayBuffer value must not be resizable.",
+            "TypeError: Failed to execute 'generateKey' on 'SubtleCrypto': The provided Uint8Array value must not be resizable.",
+            "TypeError: Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView value must not be resizable.",
+            "supports false false true",
+            "a view at an offset true true",
+            "as at the call true",
+        ]
+    );
+}

@@ -19,9 +19,13 @@
 # runs in 121 s), until its push runs come.
 # crypto_pq's is a tenth of a local Windows run's rate (455242 runs in
 # 121 s), until its push runs come.
+# bytes_in's is a tenth of a local Windows run's rate (3655 runs in
+# 301 s; each input makes a realm or a runtime), until its push runs
+# come.
 animations 2.299 22.99 23.63 23.90
 audio_graph 11.699 116.99 127.21 195.57
 av1_decode 1.394 13.94 15.42 27.26
+bytes_in 1.214 12.14
 cache_api 79.757 797.57 831.79 866.72
 canvas 5.310 53.10 53.19 53.39
 clone 0.805 8.05 8.54 10.43

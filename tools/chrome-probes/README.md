@@ -22,3 +22,10 @@ for example:
     cd tools/chrome-probes/webcrypto
     python -I -m http.server 8796 --bind 127.0.0.1
     node ../probe.mjs http://127.0.0.1:8796/chacha.html chacha.json 5
+
+A page that needs SharedArrayBuffer (`buffer-kinds`, `buffer-members`,
+`supports-resizable`) needs cross-origin isolation: `coi_server.py`
+serves its directory with COOP and COEP, for example:
+
+    python -I tools/chrome-probes/webcrypto/coi_server.py 8799
+    node tools/chrome-probes/probe.mjs http://127.0.0.1:8799/buffer-kinds.html buffer-kinds.json 30

@@ -51,7 +51,7 @@ engine = { path = "../crates/engine", default-features = false }
 glsl = { path = "../crates/glsl" }
 html = { path = "../crates/html" }
 images = { path = "../crates/images" }
-js = { path = "../crates/js" }
+js = { path = "../crates/js", features = ["fuzzing"] }
 layout = { path = "../crates/layout" }
 net = { path = "../crates/net" }
 paint = { path = "../crates/paint" }
@@ -420,6 +420,13 @@ bench = false
 [[bin]]
 name = "crypto_import"
 path = "fuzz_targets/crypto_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytes_in"
+path = "fuzz_targets/bytes_in.rs"
 test = false
 doc = false
 bench = false

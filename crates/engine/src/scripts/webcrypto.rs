@@ -4,6 +4,8 @@
 //! method's promise. A document's host and a worker's each keep a store;
 //! a key's material never leaves it but by an export it allows.
 
+use std::cell::RefCell;
+
 use devtools::Json;
 use js::{Answer, CryptoCall, DomError};
 
@@ -31,7 +33,7 @@ pub(crate) fn call(
         }
         CryptoCall::Run { id, json, buffers } => {
             let outcome = match Json::parse(&json) {
-                Ok(args) => match call_of(&args, &buffers) {
+                Ok(args) => match call_of(&args, &RefCell::new(buffers)) {
                     Some(call) => crypto::run(keys, call),
                     None => Err(crypto::Error {
                         name: "TypeError",
@@ -48,6 +50,7 @@ pub(crate) fn call(
             (Ok(Answer::Nothing), Some(settled(id, outcome)))
         }
         CryptoCall::Supports { json, buffers } => {
+            let buffers = RefCell::new(buffers);
             let yes = Json::parse(&json).is_ok_and(|args| {
                 let get = |name: &str| {
                     args.get(name)
@@ -78,8 +81,10 @@ pub(crate) fn call(
     }
 }
 
-/// An argument's value, from the bindings' JSON.
-fn value(json: &Json, buffers: &[Vec<u8>]) -> crypto::Value {
+/// An argument's value, from the bindings' JSON: a buffer's bytes moved
+/// out of `buffers`, each slot named once (one copy of a page's bytes,
+/// the binding's, G255 step 7a).
+fn value(json: &Json, buffers: &RefCell<Vec<Vec<u8>>>) -> crypto::Value {
     use crypto::Value;
     if let Some(text) = json.as_str() {
         return Value::Str(text.to_owned());
@@ -92,8 +97,9 @@ fn value(json: &Json, buffers: &[Vec<u8>]) -> crypto::Value {
     }
     if let Some(slot) = json.get("$b").and_then(Json::as_u64) {
         return buffers
-            .get(slot as usize)
-            .map_or(Value::Other, |b| Value::Bytes(b.clone()));
+            .borrow_mut()
+            .get_mut(slot as usize)
+            .map_or(Value::Other, |b| Value::Bytes(std::mem::take(b)));
     }
     if let Some(id) = json.get("$k").and_then(Json::as_u64) {
         return u32::try_from(id).map_or(Value::Other, Value::Key);
@@ -139,7 +145,7 @@ fn merged(a: crypto::Value, b: crypto::Value) -> crypto::Value {
     }
 }
 
-fn call_of(args: &Json, buffers: &[Vec<u8>]) -> Option<crypto::Call> {
+fn call_of(args: &Json, buffers: &RefCell<Vec<Vec<u8>>>) -> Option<crypto::Call> {
     use crypto::Call;
     let get = |name: &str| args.get(name).map(|j| value(j, buffers));
     let bytes = |name: &str| match get(name) {

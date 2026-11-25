@@ -420,6 +420,21 @@ it). getPublicKey gives any asymmetric private key's public key, of the
 usages asked; a public key's an InvalidAccessError, a secret key's a
 NotSupportedError, in the reference's words.
 
+A page's bytes cross to the store copied once (step 7a, the lead's
+ruling): the binding hands a buffer's range to `bytesStash` where Web
+IDL copies it, which copies it into a vector held for the realm under a
+token, and the native takes it by the token. They crossed as a binary
+string before, built a byte at a time: a 256 MiB digest held its page
+about 46 s, and held 1.25 GiB of copies; now it holds it 201 ms (Chrome
+158: 346 ms) and one 256 MiB copy. The store takes each buffer by moving
+it, not cloning it. A resizable buffer, a view of one, or a view of a
+shared one is refused with a TypeError in the reference's words, as
+Chrome refuses them (no [AllowResizable], no [AllowShared]), and
+SubtleCrypto.supports answers false for one; a detached buffer's bytes
+are none. The bindings' other byte strings (fetch's and WebSocket's
+among them) are made by QuickJS-ng's base64 functions both ways, at the
+speed of C.
+
 Wycheproof's post-quantum vectors (step 5d), vendored at the pinned
 commit as all the others, each file under its MANIFEST hash: ML-DSA's
 verification (every valid signature true, every invalid false, a public
