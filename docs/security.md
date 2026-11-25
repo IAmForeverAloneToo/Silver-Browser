@@ -319,7 +319,12 @@ font folders; a file it cannot read, it scans for.
   bytes to every import format, and `crypto_gcm` holds `native`'s
   AES-GCM to aws-lc-rs's where both run and to its own round trip
   where only it does; `crypto_rsa_roundtrip`, RSA's signatures on
-  either route. A known gap (the lead's ruling, 2026-11-23): RSA-OAEP
+  either route; `crypto_supports`, SubtleCrypto.supports against the
+  operations; `crypto_pq`, ML-KEM's and ML-DSA's keys and operations
+  on mutated inputs (a ciphertext decapsulating to implicit
+  rejection's key, never an error; a mutated key, seed or PKCS #8
+  taken or refused as a DataError, never a panic; a mutated signature
+  false). A known gap (the lead's ruling, 2026-11-23): RSA-OAEP
   runs on aws-lc-rs alone, for a key of 2048 to 8192 bits; with any
   other key it is an explicit NotSupportedError both ways, never a
   wrong answer, though the reference works; and ECDSA's eight curve and

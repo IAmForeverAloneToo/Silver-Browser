@@ -232,19 +232,6 @@ impl Oracle {
                 ));
             }
         }
-        // A key whose SPKI AES-KW wraps whatever key the generation made:
-        // a 2064-bit modulus's is 296 bytes, a multiple of 8 (2048 bits'
-        // is 294), where a 2048-bit key's PKCS #8 and JWK lengths vary
-        // with the key, and none of the others' may fit (CI 45518083863).
-        specs.push((
-            d(&[
-                ("name", s("RSA-OAEP")),
-                ("modulusLength", n(2064.0)),
-                ("publicExponent", Value::Bytes(vec![1, 0, 1])),
-                ("hash", s("SHA-256")),
-            ]),
-            true,
-        ));
         // A key large enough to wrap a 2048-bit RSA key with RSA-OAEP.
         specs.push((
             d(&[
@@ -302,6 +289,60 @@ impl Oracle {
                 });
             }
         }
+        // A key AES-KW wraps whatever the generation made: an RSA-OAEP
+        // key whose PKCS #8 is a multiple of 8 bytes long. An SPKI never
+        // is (a modulus is rounded down to a multiple of 128 bits, as
+        // Chrome's is, and 65537's SPKI is then 6 past a multiple of 8);
+        // a 2048-bit key's PKCS #8 length varies with its integers, so
+        // keys are made until one fits (one in eight, about), where
+        // otherwise none of the others' may (CI 45518083863).
+        let fits = (0..256)
+            .find_map(|_| {
+                let algorithm = d(&[
+                    ("name", s("RSA-OAEP")),
+                    ("modulusLength", n(2048.0)),
+                    ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+                    ("hash", s("SHA-256")),
+                ]);
+                let Ok(Outcome::Pair(public, private)) = run(
+                    &mut keys,
+                    Call::GenerateKey {
+                        algorithm: algorithm.clone(),
+                        extractable: true,
+                        usages: vec![Usage::Encrypt, Usage::Decrypt],
+                    },
+                ) else {
+                    panic!("the oracle's AES-KW witness is not made");
+                };
+                let Ok(Outcome::Bytes(der)) = run(
+                    &mut keys,
+                    Call::ExportKey {
+                        format: "pkcs8".into(),
+                        key: private.id,
+                    },
+                ) else {
+                    panic!("the oracle's AES-KW witness does not export");
+                };
+                der.len()
+                    .is_multiple_of(8)
+                    .then_some((public.id, private.id, algorithm))
+            })
+            .expect("an RSA-OAEP key whose PKCS #8 AES-KW wraps");
+        let (public, private, algorithm) = fits;
+        made.push(Made {
+            id: public,
+            partner: Some(private),
+            algorithm: algorithm.clone(),
+            wrapped: true,
+            private: false,
+        });
+        made.push(Made {
+            id: private,
+            partner: Some(public),
+            algorithm,
+            wrapped: true,
+            private: true,
+        });
         // The KDFs' keys, which only import, and never export.
         for name in ["HKDF", "PBKDF2"] {
             let key = run(

@@ -35,6 +35,16 @@ its Apache License 2.0 (`LICENSE` beside this file), at commit
 | `rsa_signature_4096_sha512_test.json` | `testvectors_v1/rsa_signature_4096_sha512_test.json` |
 | `mlkem_768_keygen_seed_test.json` | `testvectors_v1/mlkem_768_keygen_seed_test.json` |
 | `mlkem_1024_keygen_seed_test.json` | `testvectors_v1/mlkem_1024_keygen_seed_test.json` |
+| `mldsa_44_sign_seed_test.json` | `testvectors_v1/mldsa_44_sign_seed_test.json` |
+| `mldsa_44_verify_test.json` | `testvectors_v1/mldsa_44_verify_test.json` |
+| `mldsa_65_sign_seed_test.json` | `testvectors_v1/mldsa_65_sign_seed_test.json` |
+| `mldsa_65_verify_test.json` | `testvectors_v1/mldsa_65_verify_test.json` |
+| `mldsa_87_sign_seed_test.json` | `testvectors_v1/mldsa_87_sign_seed_test.json` |
+| `mldsa_87_verify_test.json` | `testvectors_v1/mldsa_87_verify_test.json` |
+| `mlkem_1024_encaps_test.json` | `testvectors_v1/mlkem_1024_encaps_test.json` |
+| `mlkem_1024_test.json` | `testvectors_v1/mlkem_1024_test.json` |
+| `mlkem_768_encaps_test.json` | `testvectors_v1/mlkem_768_encaps_test.json` |
+| `mlkem_768_test.json` | `testvectors_v1/mlkem_768_test.json` |
 | `LICENSE` | `LICENSE` |
 
 Their SHA-256s are in `MANIFEST`, which a test holds every file here to

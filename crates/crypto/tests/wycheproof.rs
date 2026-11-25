@@ -495,3 +495,388 @@ fn ecdh_webcrypto_every_vector() {
     });
     assert!(ran > 300, "ran {ran}");
 }
+
+/// The ML-DSA or ML-KEM algorithm a vector file's name says.
+fn pq_name(file: &str) -> &'static str {
+    match &file[..9] {
+        "mldsa_44_" => "ML-DSA-44",
+        "mldsa_65_" => "ML-DSA-65",
+        "mldsa_87_" => "ML-DSA-87",
+        _ if file.starts_with("mlkem_768") => "ML-KEM-768",
+        _ if file.starts_with("mlkem_1024") => "ML-KEM-1024",
+        other => panic!("{other}: no algorithm"),
+    }
+}
+
+fn pq_import(
+    keys: &mut Keys,
+    format: &str,
+    bytes: Vec<u8>,
+    name: &str,
+    usage: Usage,
+) -> Option<u32> {
+    match run(
+        keys,
+        Call::ImportKey {
+            format: format.into(),
+            key_data: Value::Bytes(bytes),
+            algorithm: str_value(name),
+            extractable: true,
+            usages: vec![usage],
+        },
+    ) {
+        Ok(Outcome::Key(key)) => Some(key.id),
+        _ => None,
+    }
+}
+
+fn exported(keys: &mut Keys, key: u32, format: &str) -> Vec<u8> {
+    match run(
+        keys,
+        Call::ExportKey {
+            format: format.into(),
+            key,
+        },
+    ) {
+        Ok(Outcome::Bytes(bytes)) => bytes,
+        other => panic!("{format}: {other:?}"),
+    }
+}
+
+/// What a runner did not run, each by its file and number, and why: no
+/// vector is dropped silently (the lead's ruling).
+#[derive(Default)]
+struct Skipped(Vec<(String, u64, &'static str)>);
+
+impl Skipped {
+    fn add(&mut self, file: &str, id: u64, why: &'static str) {
+        self.0.push((file.to_owned(), id, why));
+    }
+
+    /// How many of each reason, said on the test's output.
+    fn report(&self, runner: &str) -> HashMap<&'static str, usize> {
+        let mut counts: HashMap<&'static str, usize> = HashMap::new();
+        for (file, id, why) in &self.0 {
+            eprintln!("{runner}: skipped {file} tc {id}: {why}");
+            *counts.entry(why).or_default() += 1;
+        }
+        counts
+    }
+}
+
+/// ML-DSA's context the store cannot pass: a non-empty one under 256
+/// bytes (G255 step 5's ruling, a NotSupportedError).
+const CONTEXT_GAP: &str = "a non-empty context: the known gap (G255 step 5's ruling)";
+
+/// ML-DSA's verification (FIPS 204), every vector of the three sets: a
+/// valid signature true, an invalid one false, a public key of another
+/// length refused at its import, a context past 255 bytes an
+/// OperationError; a vector with a context under 256 bytes is the known
+/// gap, counted and named.
+#[test]
+fn ml_dsa_verify_every_vector() {
+    let mut keys = Keys::default();
+    let mut skipped = Skipped::default();
+    let ran = each("mldsa_", |file, group, test| {
+        if !file.contains("_verify_") {
+            return;
+        }
+        let name = pq_name(file);
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let valid = field(test, "result") == "valid";
+        let flagged = |flag: &str| {
+            test.get("flags")
+                .and_then(Json::as_array)
+                .is_some_and(|flags| flags.iter().any(|f| f.as_str() == Some(flag)))
+        };
+        let imported = pq_import(
+            &mut keys,
+            "raw-public",
+            hex(field(group, "publicKey")),
+            name,
+            Usage::Verify,
+        );
+        // A public key of another length is refused at its import, not
+        // merely failed at verification.
+        assert_eq!(
+            imported.is_none(),
+            flagged("IncorrectPublicKeyLength"),
+            "{file} tc {id}"
+        );
+        let Some(key) = imported else {
+            assert!(!valid, "{file} tc {id}: its public key imports");
+            return;
+        };
+        let context = test.get("ctx").and_then(Json::as_str).map(hex);
+        if context
+            .as_ref()
+            .is_some_and(|c| !c.is_empty() && c.len() <= 255)
+        {
+            skipped.add(file, id, CONTEXT_GAP);
+            return;
+        }
+        let algorithm = match &context {
+            Some(context) => dict(&[
+                ("name", str_value(name)),
+                ("context", Value::Bytes(context.clone())),
+            ]),
+            None => str_value(name),
+        };
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm,
+                key,
+                signature: hex(field(test, "sig")),
+                data: hex(field(test, "msg")),
+            },
+        );
+        if context.is_some_and(|c| c.len() > 255) {
+            assert!(!valid, "{file} tc {id}");
+            assert!(
+                matches!(&out, Err(e) if e.name == "OperationError"),
+                "{file} tc {id}: {out:?}"
+            );
+            return;
+        }
+        assert_eq!(out, Ok(Outcome::Bool(valid)), "{file} tc {id}");
+    });
+    let counts = skipped.report("ml_dsa_verify");
+    assert_eq!(
+        counts.len(),
+        usize::from(!skipped.0.is_empty()),
+        "{counts:?}"
+    );
+    assert!(ran >= 600, "ran {ran}");
+}
+
+/// ML-DSA's key from its seed (FIPS 204's KeyGen_internal), every
+/// vector of the three sign_seed sets: the seed's public key exactly the
+/// vector's, a seed of another length refused; the vector's own PKCS #8
+/// of the seed alone taken as that key, any other form refused (as the
+/// reference refuses it); and each valid signature of a message verified
+/// true with the key. Signing itself is hedged here, so the vectors'
+/// signature bytes are not ours to match; a vector of FIPS 204's
+/// internal interface (mu, no message) or with a context under 256
+/// bytes is counted and named.
+#[test]
+fn ml_dsa_seed_keys_every_vector() {
+    let mut keys = Keys::default();
+    let mut skipped = Skipped::default();
+    let mut groups_checked = 0;
+    let mut last_group = String::new();
+    let ran = each("mldsa_", |file, group, test| {
+        if !file.contains("_sign_seed_") {
+            return;
+        }
+        let name = pq_name(file);
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let valid = field(test, "result") == "valid";
+        let Some(private) = pq_import(
+            &mut keys,
+            "raw-seed",
+            hex(field(group, "privateSeed")),
+            name,
+            Usage::Sign,
+        ) else {
+            assert!(!valid, "{file} tc {id}: its seed imports");
+            return;
+        };
+        let public = hex(field(group, "publicKey"));
+        let key_of_group = format!("{file}/{}", field(group, "privateSeed"));
+        if key_of_group != last_group {
+            last_group = key_of_group;
+            let derived = match run(
+                &mut keys,
+                Call::GetPublicKey {
+                    key: private,
+                    usages: vec![Usage::Verify],
+                },
+            ) {
+                Ok(Outcome::Key(key)) => key.id,
+                other => panic!("{file} tc {id}: {other:?}"),
+            };
+            assert_eq!(
+                exported(&mut keys, derived, "raw-public"),
+                public,
+                "{file} tc {id}"
+            );
+            let pkcs8 = hex(field(group, "privateKeyPkcs8"));
+            if !pkcs8.is_empty() {
+                let seed_only = pkcs8.len() == 22 + 32;
+                let again = pq_import(&mut keys, "pkcs8", pkcs8, name, Usage::Sign);
+                assert_eq!(again.is_some(), seed_only, "{file} tc {id}: its PKCS #8");
+                if let Some(again) = again {
+                    assert_eq!(
+                        exported(&mut keys, again, "raw-seed"),
+                        hex(field(group, "privateSeed")),
+                        "{file} tc {id}"
+                    );
+                }
+            }
+            groups_checked += 1;
+        }
+        if field(test, "msg").is_empty() && test.get("msg").is_none() {
+            skipped.add(
+                file,
+                id,
+                "FIPS 204's internal interface (mu, no message), which Web Crypto has not",
+            );
+            return;
+        }
+        if test
+            .get("ctx")
+            .and_then(Json::as_str)
+            .is_some_and(|c| !c.is_empty() && c.len() <= 510)
+        {
+            skipped.add(file, id, CONTEXT_GAP);
+            return;
+        }
+        if !valid {
+            return;
+        }
+        let key = pq_import(&mut keys, "raw-public", public, name, Usage::Verify)
+            .expect("its public key");
+        let out = run(
+            &mut keys,
+            Call::Verify {
+                algorithm: str_value(name),
+                key,
+                signature: hex(field(test, "sig")),
+                data: hex(field(test, "msg")),
+            },
+        );
+        assert_eq!(out, Ok(Outcome::Bool(true)), "{file} tc {id}");
+    });
+    skipped.report("ml_dsa_seed_keys");
+    assert!(groups_checked >= 60, "{groups_checked} keys");
+    assert!(ran >= 200, "ran {ran}");
+}
+
+/// ML-KEM's decapsulation (FIPS 203), every vector of the two sets: the
+/// seed's key, its public key exactly the vector's, each valid
+/// ciphertext decapsulated to the vector's shared key (malleable ones
+/// and implicit rejection's among them), a ciphertext of another length
+/// a DataError, a seed of another length refused at its import.
+#[test]
+fn ml_kem_decapsulate_every_vector() {
+    let mut keys = Keys::default();
+    let ran = each("mlkem_", |file, _group, test| {
+        if file.contains("_encaps_") || file.contains("_keygen_seed_") {
+            return;
+        }
+        let name = pq_name(file);
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let valid = field(test, "result") == "valid";
+        let Some(private) = pq_import(
+            &mut keys,
+            "raw-seed",
+            hex(field(test, "seed")),
+            name,
+            Usage::DecapsulateBits,
+        ) else {
+            assert!(!valid, "{file} tc {id}: its seed imports");
+            return;
+        };
+        let ek = field(test, "ek");
+        if !ek.is_empty() {
+            let derived = match run(
+                &mut keys,
+                Call::GetPublicKey {
+                    key: private,
+                    usages: Vec::new(),
+                },
+            ) {
+                Ok(Outcome::Key(key)) => key.id,
+                other => panic!("{file} tc {id}: {other:?}"),
+            };
+            assert_eq!(
+                exported(&mut keys, derived, "raw-public"),
+                hex(ek),
+                "{file} tc {id}"
+            );
+        }
+        let out = run(
+            &mut keys,
+            Call::DecapsulateBits {
+                algorithm: str_value(name),
+                key: private,
+                ciphertext: hex(field(test, "c")),
+            },
+        );
+        if valid {
+            assert_eq!(
+                out,
+                Ok(Outcome::Bytes(hex(field(test, "K")))),
+                "{file} tc {id}"
+            );
+        } else {
+            assert!(
+                matches!(&out, Err(e) if e.name == "DataError"),
+                "{file} tc {id}: {out:?}"
+            );
+        }
+    });
+    assert!(ran >= 400, "ran {ran}");
+}
+
+/// ML-KEM's encapsulation keys (FIPS 203), every vector of the two
+/// encaps sets: an invalid key (of another length, or with coefficients
+/// past q, FIPS 203's modulus check) refused at its import; a valid one
+/// taken, and encapsulating. Their ciphertexts and shared keys come of
+/// the randomness m, which aws-lc-rs cannot be given: those vectors are
+/// counted and named, never dropped silently.
+#[test]
+fn ml_kem_encapsulation_keys_every_vector() {
+    let mut keys = Keys::default();
+    let mut skipped = Skipped::default();
+    let (mut refused, mut taken) = (0, 0);
+    let ran = each("mlkem_", |file, _group, test| {
+        if !file.contains("_encaps_") {
+            return;
+        }
+        let name = pq_name(file);
+        let id = test.get("tcId").and_then(Json::as_u64).unwrap();
+        let valid = field(test, "result") == "valid";
+        let key = pq_import(
+            &mut keys,
+            "raw-public",
+            hex(field(test, "ek")),
+            name,
+            Usage::EncapsulateBits,
+        );
+        assert_eq!(
+            key.is_some(),
+            valid,
+            "{file} tc {id}: {}",
+            field(test, "comment")
+        );
+        let Some(key) = key else {
+            refused += 1;
+            return;
+        };
+        taken += 1;
+        let out = run(
+            &mut keys,
+            Call::EncapsulateBits {
+                algorithm: str_value(name),
+                key,
+            },
+        );
+        assert!(
+            matches!(out, Ok(Outcome::Encapsulated { .. })),
+            "{file} tc {id}: {out:?}"
+        );
+        skipped.add(
+            file,
+            id,
+            "encapsulation randomness m can't be injected in aws-lc-rs",
+        );
+    });
+    let counts = skipped.report("ml_kem_encapsulation_keys");
+    assert_eq!(skipped.0.len(), taken, "{counts:?}");
+    assert!(
+        refused >= 200 && taken >= 250,
+        "refused {refused}, taken {taken}, ran {ran}"
+    );
+}

@@ -420,6 +420,24 @@ it). getPublicKey gives any asymmetric private key's public key, of the
 usages asked; a public key's an InvalidAccessError, a secret key's a
 NotSupportedError, in the reference's words.
 
+Wycheproof's post-quantum vectors (step 5d), vendored at the pinned
+commit as all the others, each file under its MANIFEST hash: ML-DSA's
+verification (every valid signature true, every invalid false, a public
+key of another length refused at its import, a context past 255 bytes
+an OperationError), its keys from their seeds (the public key the
+vector's exactly, its seed-only PKCS #8 the same key, each valid
+signature verified; signing is hedged here, so the vectors' signature
+bytes are not ours to match), ML-KEM's decapsulation (the seed's public
+key exactly the vector's, each shared key the vector's, implicit
+rejection's among them, a ciphertext of another length a DataError) and
+its encapsulation keys (each invalid one refused at its import, a
+coefficient past q among them). What a runner cannot run is named on its
+output with its reason, never dropped: a context under 256 bytes (the
+known gap), FIPS 204's internal interface, and an encapsulation whose
+randomness the vector fixes (aws-lc-rs takes none). The fuzz target
+`crypto_pq` mutates their ciphertexts, keys, seeds, PKCS #8 and
+signatures.
+
 The bindings' own lists are the store's (the lead's ruling): the
 bootstrap's JsonWebKey members, usages, formats and methods are held to
 `crypto::JWK_MEMBERS`, `Usage::ALL`, `FORMATS` and `METHODS` by an

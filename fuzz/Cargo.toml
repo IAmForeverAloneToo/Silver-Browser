@@ -425,6 +425,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "crypto_pq"
+path = "fuzz_targets/crypto_pq.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "crypto_supports"
 path = "fuzz_targets/crypto_supports.rs"
 test = false

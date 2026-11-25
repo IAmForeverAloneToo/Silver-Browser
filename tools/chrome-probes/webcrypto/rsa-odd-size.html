@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  for (const bits of [2056, 2064, 2112, 2176, 1032, 520]) {
+    try {
+      const k = await s.generateKey({name: 'RSA-OAEP', modulusLength: bits, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, true, ['encrypt', 'decrypt']);
+      const spki = new Uint8Array(await s.exportKey('spki', k.publicKey));
+      const jwk = await s.exportKey('jwk', k.publicKey);
+      const nBytes = atob(jwk.n.replace(/-/g, '+').replace(/_/g, '/')).length;
+      out.push(bits + ': algorithm ' + k.publicKey.algorithm.modulusLength + ' n bytes ' + nBytes + ' spki ' + spki.length);
+    } catch (e) { out.push(bits + ': ' + e.name + ' ' + e.message); }
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>
