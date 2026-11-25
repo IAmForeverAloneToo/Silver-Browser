@@ -52,33 +52,11 @@ jobs:
             echo "::error::network code outside crates/net"
             exit 1
           fi
-      # T3.2 (M33.5): `unsafe` only in the shell's platform module, which
-      # the shell's own test also holds each block of to its argument,
-      # and in the one reviewed reading of the bindings' bytecode
-      # (M35.12, crates/js/src/quickjs/bytecode.rs) and question of a
-      # thread's stack's bounds (G253, crates/js/src/stack.rs), and the
-      # scripts' sampler, a tool built with the js-sampler feature alone
-      # (crates/js/src/quickjs/sampler.rs), and a WebAssembly memory's
-      # buffer read in place (crates/js/src/quickjs/wasm.rs, one block),
-      # and a realm's context's base64 intrinsic (quickjs/context.rs),
-      # and Web Crypto's calls into aws-lc's C library (G255,
-      # crates/crypto/src/native.rs), and a binding's buffer copied for a
-      # native (G255 step 7a, crates/js/src/quickjs/bytes_in.rs, one
-      # block).
-      # Strings and line comments are cut first; M29's module, a crate
-      # of its own built to WebAssembly, marks its exports `no_mangle`.
-      - name: unsafe only in the platform module
-        run: |
-          if grep -rn --include='*.rs' unsafe crates fuzz/fuzz_targets \
-              | grep -v -e '^crates/shell/src/platform.rs:' -e '^crates/js/src/quickjs/bytecode.rs:' \
-                  -e '^crates/js/src/stack.rs:' -e '^crates/js/src/quickjs/sampler.rs:'                   -e '^crates/js/src/quickjs/wasm.rs:' -e '^crates/js/src/quickjs/context.rs:' \
-                  -e '^crates/media/src/av1.rs:' -e '^crates/engine/tests/wasm/' \
-                  -e '^crates/crypto/src/native.rs:' -e '^crates/js/src/quickjs/bytes_in.rs:' \
-              | sed -E 's/"([^"\\]|\\.)*"//g; s#//.*##' \
-              | grep -E '(^|[^[:alnum:]_-])unsafe[[:space:]]*(\{|fn|impl|trait|extern)|#\[unsafe\('; then
-            echo "::error::unsafe outside crates/shell/src/platform.rs"
-            exit 1
-          fi
+      # T3.2 (M33.5): `unsafe` only in the files reviewed for it, each
+      # block argued; the list and the check are tools/ci/unsafe-allowlist.sh,
+      # which the local gate runs too, so that the two cannot differ.
+      - name: unsafe only in the reviewed files
+        run: bash tools/ci/unsafe-allowlist.sh
 
   audit:
     name: advisories + licenses

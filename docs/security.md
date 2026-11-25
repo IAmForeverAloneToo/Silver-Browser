@@ -531,43 +531,42 @@ refuse a context of another runtime than the one held, and a test
 holds the context's globals to an eager one's, name for name. The
 shell's test `unsafe_is_written_in_the_platform_module_alone_each_block_argued`
 holds every source file to this, that module's one block among them,
-and CI greps the same (T3.2). M40 adds the second exception, `media`'s
-`av1` module, with 12 blocks over `rav1d`'s C interface (its settings,
-`dav1d_open`, the data's creation and copy, `dav1d_send_data`,
-`dav1d_get_picture`, the picture's and the data's release, the
-sequence header, the planes read as slices of their strides and
-heights, `dav1d_close`), which `media`'s `#![deny(unsafe_code)]`
+and `tools/ci/unsafe-allowlist.sh`, which CI and the local gate both
+run, greps the same against one list (T3.2). M40 adds the second
+exception, `media`'s `av1` module, with 12 blocks over `rav1d`'s C
+interface (its settings, `dav1d_open`, the data's creation and copy,
+`dav1d_send_data`, `dav1d_get_picture`, the picture's and the data's
+release, the sequence header, the planes read as slices of their strides
+and heights, `dav1d_close`), which `media`'s `#![deny(unsafe_code)]`
 allows there alone and the same test names and counts; and the shell's
 platform module, 72 blocks now, gains WASAPI's 14: the COM apartment
 entered and left, the device enumerator, the default device and its
 client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
-as a slice of floats and released.
-G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 40 blocks and one declaration over aws-lc's C interface
-where aws-lc-rs has
-none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
-cipher context made and freed, the cipher chosen by the key's length,
-the seal and the open, each length a script controls checked in Rust
-against `c_int` and the reference first, the tag checked by
-`EVP_DecryptFinal_ex`, never compared here), and an RSA public key's
-parts (the PKCS #1 key that aws-lc-rs read from an SPKI parsed by
-`RSA_public_key_from_bytes`, its modulus and exponent copied out with
-`RSA_get0_key` and `BN_bn2bin`, the key freed), each RSA public key
-checked by the library as it is imported (`RSA_check_key`: refused
-there, a DataError, so that no verification of it is answered false),
-and RSASSA-PKCS1-v1_5's verification of a key outside aws-lc-rs's
-ranges (`RSA_verify` on the checked key; the routing a function whose
-boundaries a test pins); RSA's private keys outside aws-lc-rs's range
-(2048 to 8192 bits) or its exponent (65537): their generation
-(`BN_new`, `BN_set_u64`, `RSA_new`, `RSA_generate_key_ex`), a key made
-from its parts (`BN_bin2bn`, `RSA_new_private_key`), a PKCS #8
+as a slice of floats and released. G255 adds the third, the crypto
+crate's `native` module (the lead's ruling), with 40 blocks and one
+declaration over aws-lc's C interface where aws-lc-rs has none: AES-GCM
+at an IV or a tag length other than 96 and 128 bits (the cipher context
+made and freed, the cipher chosen by the key's length, the seal and the
+open, each length a script controls checked in Rust against `c_int` and
+the reference first, the tag checked by `EVP_DecryptFinal_ex`, never
+compared here), and an RSA public key's parts (the PKCS #1 key that
+aws-lc-rs read from an SPKI parsed by `RSA_public_key_from_bytes`, its
+modulus and exponent copied out with `RSA_get0_key` and `BN_bn2bin`, the
+key freed), each RSA public key checked by the library as it is imported
+(`RSA_check_key`: refused there, a DataError, so that no verification of
+it is answered false), and RSASSA-PKCS1-v1_5's verification of a key
+outside aws-lc-rs's ranges (`RSA_verify` on the checked key; the routing
+a function whose boundaries a test pins); RSA's private keys outside
+aws-lc-rs's range (2048 to 8192 bits) or its exponent (65537): their
+generation (`BN_new`, `BN_set_u64`, `RSA_new`, `RSA_generate_key_ex`), a
+key made from its parts (`BN_bin2bn`, `RSA_new_private_key`), a PKCS #8
 parsed (`EVP_parse_private_key` over a `CBS` of the caller's bytes,
-nothing after it; `EVP_PKEY_get1_RSA`, null for a key of another
-kind), each checked by `RSA_check_key` again on purpose though aws-lc
-checks it too, its parts read (`RSA_get0_*`), its PKCS #1
-written (`RSA_private_key_to_bytes`, the library's buffer copied,
-cleansed and freed) and wrapped in a PKCS #8 written here, never read;
+nothing after it; `EVP_PKEY_get1_RSA`, null for a key of another kind),
+each checked by `RSA_check_key` again on purpose though aws-lc checks it
+too, its parts read (`RSA_get0_*`), its PKCS #1 written
+(`RSA_private_key_to_bytes`, the library's buffer copied, cleansed and
+freed) and wrapped in a PKCS #8 written here, never read;
 RSASSA-PKCS1-v1_5's signing (`RSA_size`, `RSA_sign`); and RSA-PSS's
 signing and verification (`RSA_sign_pss_mgf1`, `RSA_verify_pss_mgf1`,
 the digest's static description, the salt checked against `c_int`
@@ -580,23 +579,23 @@ a failure); and an ML-KEM key made from its 64-byte seed, which
 aws-lc-rs makes not (step 5c, the lead's approval of 2026-11-24: the
 seed's length checked before any call, a key context made by
 `EVP_PKEY_CTX_new_id` and freed, `EVP_PKEY_keygen_init`,
-`EVP_PKEY_CTX_kem_set_params`, `EVP_PKEY_keygen_deterministic`, the
-key owned at once whatever its code, its expanded secret and public key
-read by `EVP_PKEY_get_raw_private_key` and `_public_key` into buffers of
+`EVP_PKEY_CTX_kem_set_params`, `EVP_PKEY_keygen_deterministic`, the key
+owned at once whatever its code, its expanded secret and public key read
+by `EVP_PKEY_get_raw_private_key` and `_public_key` into buffers of
 their lengths, the secret overwritten as it goes and never shown).
 `EVP_PKEY_keygen_deterministic` is declared in `native` itself, under
 the library's symbol for aws-lc-sys 0.45.0: its bindings leave out the
 experimental header that declares it, while the library builds it in; a
 version that renames it fails the link. Wycheproof's seed vectors hold
 its keys, and a test holds them to aws-lc-rs's safe encapsulation and
-decapsulation. A private
-key is kept as its parts, overwritten as they go and never printed.
-The tests and the fuzz target `crypto_rsa_roundtrip` hold that a
-signature the library made, with a key of any size, verifies true on
-either route and is, byte for byte, what the page's own signing makes;
-`crypto_import` parses any bytes as a PKCS #8 and a private JWK. No
-pointer outlives its call, nothing is kept. The crypto crate says `#![deny(unsafe_code)]`
-and allows it there alone, and the same test names and counts them.
+decapsulation. A private key is kept as its parts, overwritten as they
+go and never printed. The tests and the fuzz target
+`crypto_rsa_roundtrip` hold that a signature the library made, with a
+key of any size, verifies true on either route and is, byte for byte,
+what the page's own signing makes; `crypto_import` parses any bytes as a
+PKCS #8 and a private JWK. No pointer outlives its call, nothing is
+kept. The crypto crate says `#![deny(unsafe_code)]` and allows it there
+alone, and the same test names and counts them.
 
 **Under it**: of the 414 registry packages `Cargo.lock` holds (every
 platform's together, M41), 273 write `unsafe` somewhere and 141 none;
