@@ -430,6 +430,9 @@ impl Host {
                 if let Some(answer) = give(target, input) {
                     let _ = link.send(&answer(view));
                 }
+                // Said from the loop that takes input: a renderer whose
+                // loop is stuck says nothing, and its tab's bar shows.
+                let _ = link.send(&ToBrowser::InputTaken { view });
             }
             ToRenderer::FrameTaken { view, frame } => {
                 let view = self.view(view)?;

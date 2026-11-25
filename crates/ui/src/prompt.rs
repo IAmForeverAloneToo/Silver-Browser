@@ -1,7 +1,9 @@
 //! The permission prompt (M33.4, docs/design/hardening.md): a strip
 //! under the toolbar, over the top of the page, saying what a site asks
 //! for, with "Allow" and "Block" at its right. The shell puts its pixels
-//! over the page's and gives it the pointer's presses there.
+//! over the page's and gives it the pointer's presses there. The page
+//! unresponsive bar (2026-11-26) is the same strip, its buttons "Wait"
+//! and "Exit page" in the same places.
 
 use paint::{DisplayItem, DisplayList, Rgba8};
 use render::{RenderBackend as _, SoftwareBackend};
@@ -11,7 +13,9 @@ use text::FontCollection;
 pub const HEIGHT: u32 = 34;
 const PADDING: f32 = 10.0;
 const FONT_SIZE: f32 = 13.0;
-const BUTTON_W: f32 = 64.0;
+/// A button's width: room for "Exit page", the unresponsive bar's
+/// longest label.
+pub const BUTTON_W: f32 = 84.0;
 const BUTTON_H: f32 = 24.0;
 const GAP: f32 = 8.0;
 const BAR: Rgba8 = Rgba8::rgb(0xFF, 0xF8, 0xE1);
@@ -29,14 +33,14 @@ pub enum Choice {
     Block,
 }
 
-impl Choice {
-    fn label(self) -> &'static str {
-        match self {
-            Choice::Allow => "Allow",
-            Choice::Block => "Block",
-        }
-    }
+/// The page unresponsive bar's words, Chrome's ("Page Unresponsive",
+/// IDS_BROWSER_HANGMONITOR_RENDERER), and its buttons': [`Choice::Allow`]
+/// is "Wait", [`Choice::Block`] "Exit page".
+pub const UNRESPONSIVE: &str =
+    "Page Unresponsive. You can wait for it to become responsive or exit the page.";
+pub const UNRESPONSIVE_BUTTONS: [&str; 2] = ["Wait", "Exit page"];
 
+impl Choice {
     /// Its left edge in a bar `width` wide: Block at the right, Allow
     /// before it.
     fn x(self, width: f32) -> f32 {
@@ -90,6 +94,18 @@ impl PromptBar {
     /// display's `scale`: its RGBA8 pixels, [`HEIGHT`] CSS pixels high,
     /// lent until the next frame.
     pub fn frame(&mut self, text: &str, width: u32, scale: f32) -> &[u8] {
+        self.frame_labelled(text, ["Allow", "Block"], width, scale)
+    }
+
+    /// [`PromptBar::frame`] with its two buttons saying `labels`, the
+    /// first [`Choice::Allow`]'s and the second [`Choice::Block`]'s.
+    pub fn frame_labelled(
+        &mut self,
+        text: &str,
+        labels: [&str; 2],
+        width: u32,
+        scale: f32,
+    ) -> &[u8] {
         let w = width as f32 / scale;
         let h = HEIGHT as f32;
         let metrics = self.fonts.primary().metrics(FONT_SIZE);
@@ -121,9 +137,8 @@ impl PromptBar {
             },
         ];
         let top = (h - BUTTON_H) / 2.0;
-        for choice in [Choice::Allow, Choice::Block] {
+        for (choice, label) in [Choice::Allow, Choice::Block].into_iter().zip(labels) {
             let x = choice.x(w);
-            let label = choice.label();
             let inset = (BUTTON_W - self.fonts.measure(label, FONT_SIZE)) / 2.0;
             items.extend([
                 DisplayItem::Rect {

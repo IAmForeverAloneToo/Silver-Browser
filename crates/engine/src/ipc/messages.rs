@@ -424,6 +424,9 @@ wire_enum! {
         /// renderer, and it goes once it shows nothing. `view` is the one
         /// that noticed.
         40 => Retire { view: u32 },
+        // The renderer took input for `view`: its loop turned (the page
+        // unresponsive bar, 2026-11-26).
+        41 => InputTaken { view: u32 },
     }
 }
 

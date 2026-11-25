@@ -75,6 +75,18 @@ pub trait View {
     fn pointer_down(&mut self, x: f32, y: f32, button: Button, count: u32);
     fn pointer_up(&mut self, x: f32, y: f32, button: Button, count: u32);
     fn wheel(&mut self, x: f32, y: f32, dy: f32);
+    /// Whether the page shown has left input unanswered for
+    /// [`crate::service::UNRESPONSIVE_AFTER`]: the "Page Unresponsive" bar
+    /// (2026-11-26, as Chrome's hang monitor). Never for a hidden tab.
+    fn unresponsive(&self) -> bool {
+        false
+    }
+    /// "Wait": the page is given [`crate::service::UNRESPONSIVE_AFTER`]
+    /// more.
+    fn wait_unresponsive(&mut self) {}
+    /// "Exit page": the unresponsive renderer is ended, as a crash ends
+    /// it.
+    fn exit_unresponsive(&mut self) {}
     fn cursor_at(&mut self, x: f32, y: f32) -> Cursor;
     fn link_at(&mut self, x: f32, y: f32) -> Option<Link>;
     fn key_down(&mut self, key: &Key) -> KeyOutcome;

@@ -188,6 +188,12 @@ pub(crate) struct Session<V: View = Engine> {
     prompt: Option<PermissionPrompt>,
     prompt_bar: PromptBar,
     drawn_prompt: Option<u64>,
+    /// Whether the page shown is unresponsive, its input unanswered
+    /// (2026-11-26), in a window focused with no DevTools panel open, as
+    /// Chrome shows its dialog; and whether the last frame showed it. Its
+    /// bar takes the prompt's place.
+    hang: bool,
+    drawn_hang: bool,
     /// The page's dialog the tab has open (gap batch A, D43), its sheet,
     /// and whether the last frame showed it as it is.
     dialog: Option<engine::UserDialog>,
@@ -281,6 +287,8 @@ impl<V: View> Session<V> {
             prompt: None,
             prompt_bar: PromptBar::new(fonts.clone()),
             drawn_prompt: None,
+            hang: false,
+            drawn_hang: false,
             dialog: None,
             dialog_sheet: ui::DialogSheet::new(fonts.clone()),
             dialog_drawn: true,
@@ -965,7 +973,14 @@ impl<V: View> Session<V> {
             || self.strip.needs_frame()
             || self.drawn_bubble.as_deref() != self.bubble_text()
             || self.drawn_prompt != self.prompt.as_ref().map(|prompt| prompt.id)
+            || self.drawn_hang != self.hang
             || !self.dialog_drawn
+    }
+
+    /// Whether a bar shows over the top of the page: the page
+    /// unresponsive bar or the permission prompt's.
+    fn bar_shown(&self) -> bool {
+        self.hang || self.prompt.is_some()
     }
 
     /// The permission prompt shown, if any (M33.4).
@@ -1549,8 +1564,18 @@ impl<V: View> Session<V> {
         }
         // The permission prompt over the top of the page (M33.4).
         self.drawn_prompt = self.prompt.as_ref().map(|prompt| prompt.id);
+        self.drawn_hang = self.hang;
         let prompt_rows = ui::rows(ui::prompt::HEIGHT, self.scale) as usize;
-        if let Some(prompt) = &self.prompt
+        if self.hang && page_height as usize >= prompt_rows {
+            let pixels = self.prompt_bar.frame_labelled(
+                ui::prompt::UNRESPONSIVE,
+                ui::prompt::UNRESPONSIVE_BUTTONS,
+                width,
+                self.scale,
+            );
+            let rows = bar_rows * w..(bar_rows + prompt_rows) * w;
+            put(&pixels[..prompt_rows * w * 4], &mut out[rows]);
+        } else if let Some(prompt) = &self.prompt
             && page_height as usize >= prompt_rows
         {
             let pixels = self.prompt_bar.frame(&prompt.text(), width, self.scale);
@@ -1561,10 +1586,7 @@ impl<V: View> Session<V> {
         // (D43).
         self.dialog_drawn = true;
         let dialog_rows = ui::rows(self.dialog_sheet.height(), self.scale) as usize;
-        let above = match self.prompt {
-            Some(_) => prompt_rows,
-            None => 0,
-        };
+        let above = if self.bar_shown() { prompt_rows } else { 0 };
         if dialog_rows > 0 && page_height as usize >= above + dialog_rows {
             let pixels = self.dialog_sheet.frame(width, self.scale);
             let top = bar_rows + above;
@@ -1801,9 +1823,10 @@ impl<V: View> Session<V> {
         // it, and the page under it takes no press (D43).
         if self.dialog.is_some() {
             self.toolbar.blur();
-            let above = match self.prompt {
-                Some(_) => ui::prompt::HEIGHT as f32,
-                None => 0.0,
+            let above = if self.bar_shown() {
+                ui::prompt::HEIGHT as f32
+            } else {
+                0.0
             };
             let width = self.size.0 as f32;
             match self.dialog_sheet.part_at(width, x, y - TOP - above) {
@@ -1811,9 +1834,20 @@ impl<V: View> Session<V> {
                 Some(ui::DialogPart::Cancel) => self.answer_dialog(false),
                 _ => {}
             }
-            if self.prompt.is_none() || y >= TOP + above {
+            if !self.bar_shown() || y >= TOP + above {
                 return;
             }
+        }
+        // The page unresponsive bar, over the page: "Wait" gives it its
+        // time again, "Exit page" ends its renderer.
+        if self.hang && y < TOP + ui::prompt::HEIGHT as f32 {
+            let width = self.size.0 as f32;
+            match PromptBar::choice_at(width, x, y - TOP) {
+                Some(Choice::Allow) => self.engine.wait_unresponsive(),
+                Some(Choice::Block) => self.engine.exit_unresponsive(),
+                None => {}
+            }
+            return;
         }
         // The prompt's bar, over the page (M33.4): its buttons answer it.
         if let Some(prompt) = &self.prompt
@@ -1977,6 +2011,7 @@ impl<V: View> Session<V> {
             self.notice = Some(notice);
         }
         self.prompt = self.engine.permission_prompt();
+        self.hang = self.engine.unresponsive() && self.window_focused && self.panel.is_none();
         self.dialog = self.engine.dialog();
         let shown = self.dialog_sheet.id();
         match &self.dialog {

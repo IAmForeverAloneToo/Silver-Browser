@@ -37,6 +37,8 @@ mod tab;
 mod tab_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unresponsive_tests;
 mod workers;
 #[cfg(test)]
 mod workers_tests;
@@ -50,6 +52,6 @@ pub use process::{
     Serve, Services, ThreadLauncher,
 };
 pub use storage::StorageService;
-pub use tab::{MAX_RENDERERS, RemoteTab};
+pub use tab::{MAX_RENDERERS, RemoteTab, UNRESPONSIVE_AFTER};
 pub(crate) use workers::Claimed;
 pub use workers::{WORKER_RENDERER_IDLE, WorkerRenderers};

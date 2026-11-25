@@ -103,3 +103,19 @@ Probes: `tools/chrome-probes/webcrypto/`, Chrome 158.0.8127.37. Design:
   `supports.tentative` expects false. The same holds for any HKDF
   length past 255 hash lengths (`supports.html`, `enforce-range.html`;
   Chrome 158.0.8127.37).
+
+### Page Unresponsive
+
+- Input a page's renderer leaves unanswered for 15 s, in a focused
+  window with no DevTools open, shows Chrome's words ("Page
+  Unresponsive. You can wait for it to become responsive or exit the
+  page.") with "Wait" and "Exit page", as Chrome's hang monitor does
+  (kHungRendererDelay, 15 s on desktop; a hidden tab's clock stopped
+  and started again when shown; a busy page nobody touches never
+  asked). Chrome shows a modal dialog; Silver shows the same words as a
+  bar over the top of the page, the permission prompt's, so the rest of
+  the window stays usable while it waits. Source, not a probe: Chrome
+  hides the dialog while DevTools is attached, so a CDP-driven probe
+  never sees it (WebContentsImpl::ShouldIgnoreUnresponsiveRenderer;
+  input_constants.h; generated_resources.grd, Chromium main, read
+  2026-11-26).

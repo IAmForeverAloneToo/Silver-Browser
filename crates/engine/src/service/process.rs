@@ -378,8 +378,18 @@ pub(super) fn start_within(
                 }
             };
             if let Some(event) = event {
+                // A renderer's word that it took input wakes nothing: the
+                // browser's next turn takes it, before it asks whether a
+                // page is unresponsive. Woken by it, the browser drew a
+                // frame, the frame moved the pointer, and the move was
+                // input again: a core each in the browser and the
+                // renderer on a page left alone (the idle CPU test).
+                let quiet = matches!(&event, Event::Message(message)
+                    if matches!(**message, ToBrowser::InputTaken { .. }));
                 let _ = deliver.send((number, event));
-                delivered();
+                if !quiet {
+                    delivered();
+                }
             }
         },
         move |reason| {

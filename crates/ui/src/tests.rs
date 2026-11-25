@@ -391,6 +391,28 @@ fn the_status_bubble_fits_its_text_and_keeps_its_start() {
 }
 
 #[test]
+fn the_unresponsive_bar_says_chromes_words_with_wait_and_exit_page() {
+    // The page unresponsive bar (2026-11-26): the prompt's strip, its
+    // buttons in the prompt's places, their labels other than its.
+    let mut bar = PromptBar::new(fonts());
+    let plain = bar.frame(prompt::UNRESPONSIVE, WIDTH, 1.0).to_vec();
+    let labelled = bar
+        .frame_labelled(
+            prompt::UNRESPONSIVE,
+            prompt::UNRESPONSIVE_BUTTONS,
+            WIDTH,
+            1.0,
+        )
+        .to_vec();
+    assert_eq!(labelled.len(), (WIDTH * prompt::HEIGHT * 4) as usize);
+    assert_ne!(labelled, plain, "Wait and Exit page, not Allow and Block");
+    assert_eq!(prompt::UNRESPONSIVE_BUTTONS, ["Wait", "Exit page"]);
+    assert!(prompt::UNRESPONSIVE.starts_with("Page Unresponsive."));
+    // "Exit page" fits its button.
+    assert!(fonts().measure("Exit page", 13.0) < prompt::BUTTON_W - 4.0);
+}
+
+#[test]
 fn the_prompt_bar_draws_its_text_and_its_buttons() {
     let mut bar = PromptBar::new(fonts());
     let text = "https://a.test wants to connect to devices on your local network";
@@ -403,7 +425,7 @@ fn the_prompt_bar_draws_its_text_and_its_buttons() {
         Some(Choice::Block)
     );
     assert_eq!(
-        PromptBar::choice_at(w, w - 100.0, middle),
+        PromptBar::choice_at(w, w - 140.0, middle),
         Some(Choice::Allow)
     );
     assert_eq!(PromptBar::choice_at(w, 20.0, middle), None);

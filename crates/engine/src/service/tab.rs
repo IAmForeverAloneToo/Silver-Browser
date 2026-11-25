@@ -23,6 +23,7 @@
 //! frame's pixels into the hole, gives the frame the pointer's events
 //! that fall in it, and its keys once it is clicked.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
@@ -50,6 +51,11 @@ use crate::{
 /// The most renderers a tab has alive at once, the spare among them
 /// (docs/design/processes.md, "The cap and eviction").
 pub const MAX_RENDERERS: usize = 16;
+
+/// How long input may go unanswered before the page is said
+/// unresponsive: Chrome's `kHungRendererDelay` on desktop
+/// (components/input/input_constants.h), its hang monitor's delay.
+pub const UNRESPONSIVE_AFTER: Duration = Duration::from_secs(15);
 
 /// A view of a renderer: the renderer's number and the view's.
 type ViewId = (u32, u32);
@@ -328,6 +334,9 @@ pub struct RemoteTab {
     /// The inspector's answers of every view, by its renderer's number:
     /// what [`RemoteTab::inspect_every_renderer`] asked.
     inspected_by: Vec<(u32, String)>,
+    /// Since when, on the tab's clock, each renderer has input it has
+    /// not said it took (the page unresponsive bar, 2026-11-26).
+    unanswered: RefCell<HashMap<u32, Duration>>,
     /// The tab's network log (M36.3), which its client tells.
     log: Arc<crate::network_log::NetworkLog>,
     /// The tabs its pages asked for (M37), whether its page asked to close
@@ -526,6 +535,7 @@ impl RemoteTab {
             relayed: 0,
             panel: false,
             devtools: Vec::new(),
+            unanswered: RefCell::default(),
             inspected: Vec::new(),
             inspected_by: Vec::new(),
             log,
@@ -588,15 +598,45 @@ impl RemoteTab {
     }
 
     fn send(&self, message: impl FnOnce(u32) -> ToRenderer) {
-        if let Some((renderer, view)) = self.shown() {
-            let _ = renderer.send(&message(view));
+        if let Some((number, view)) = self.shown_view()
+            && let Some(slot) = self.renderers.get(&number)
+        {
+            let message = message(view);
+            self.note_input(number, &message);
+            let _ = slot.renderer.send(&message);
         }
     }
 
     fn send_to(&self, (renderer, view): ViewId, message: impl FnOnce(u32) -> ToRenderer) {
         if let Some(slot) = self.renderers.get(&renderer) {
-            let _ = slot.renderer.send(&message(view));
+            let message = message(view);
+            self.note_input(renderer, &message);
+            let _ = slot.renderer.send(&message);
         }
+    }
+
+    /// Input sent to renderer `number` starts its clock, unless one runs:
+    /// it stops when the renderer says it took input.
+    fn note_input(&self, number: u32, message: &ToRenderer) {
+        if matches!(message, ToRenderer::Input { .. }) {
+            let now = self.now();
+            self.unanswered.borrow_mut().entry(number).or_insert(now);
+        }
+    }
+
+    /// The renderer that has left input unanswered for
+    /// [`UNRESPONSIVE_AFTER`], none while the tab is hidden.
+    fn unresponsive_renderer(&self) -> Option<u32> {
+        if self.settings.hidden {
+            return None;
+        }
+        let now = self.now();
+        self.unanswered
+            .borrow()
+            .iter()
+            .filter(|&(_, &at)| now.saturating_sub(at) >= UNRESPONSIVE_AFTER)
+            .map(|(&number, _)| number)
+            .min()
     }
 
     /// Answers renderer `number`'s call `call`, which waits on a dialog.
@@ -807,6 +847,7 @@ impl RemoteTab {
     /// stays another renderer's than its parent's: its next document is
     /// handed over to a new view.
     fn left(&mut self, number: u32) {
+        self.unanswered.borrow_mut().remove(&number);
         self.grants.forget(number);
         // Its WebSockets close (G74).
         self.network.renderer_gone(number);
@@ -1031,6 +1072,16 @@ impl RemoteTab {
         }
         while let Ok((number, event)) = self.events.try_recv() {
             if !self.renderers.contains_key(&number) {
+                continue;
+            }
+            // A renderer's word that it took input changes nothing shown:
+            // taken as a change, it drew a frame, the frame a hover, the
+            // hover input again, a loop of a core each in the browser and
+            // the renderer on a page left alone (the idle CPU test).
+            if let Event::Message(message) = &event
+                && let ToBrowser::InputTaken { .. } = **message
+            {
+                self.unanswered.borrow_mut().remove(&number);
                 continue;
             }
             changed = true;
@@ -1378,6 +1429,10 @@ impl RemoteTab {
     fn take(&mut self, number: u32, message: ToBrowser) -> Result<(), String> {
         // A renderer's own word on itself (G255 step 7): it costs it no
         // more than a new renderer for its site's next documents.
+        if let ToBrowser::InputTaken { .. } = message {
+            self.unanswered.borrow_mut().remove(&number);
+            return Ok(());
+        }
         if let ToBrowser::Retire { .. } = message {
             if let Some(slot) = self.renderers.get_mut(&number) {
                 slot.retiring = true;
@@ -2036,8 +2091,8 @@ impl RemoteTab {
             .collect()
     }
 
-    /// Kills renderer `number`, as a crash would end it.
-    #[cfg(test)]
+    /// Kills renderer `number`, as a crash would end it: the tests', and
+    /// the page unresponsive bar's "Exit page".
     pub(crate) fn kill(&self, number: u32) {
         if let Some(slot) = self.renderers.get(&number) {
             slot.renderer.kill();
@@ -2358,6 +2413,14 @@ impl View for RemoteTab {
     fn set_hidden(&mut self, hidden: bool) {
         self.settings.hidden = hidden;
         self.send_settings();
+        // Shown again, input still unanswered has its time from now: a
+        // hidden tab's clock does not run (as Chrome's hang monitor).
+        if !hidden {
+            let now = self.now();
+            for at in self.unanswered.borrow_mut().values_mut() {
+                *at = now;
+            }
+        }
         // A hidden tab keeps no spare renderer (M37): the tab shown has
         // the one a window keeps.
         if hidden {
@@ -2520,7 +2583,19 @@ impl View for RemoteTab {
             self.now()
                 .saturating_add(at.saturating_duration_since(Instant::now()))
         });
-        [flush, retire].into_iter().flatten().min()
+        // The moment a page's unanswered input makes it unresponsive.
+        let now = self.now();
+        let unresponsive = (!self.settings.hidden)
+            .then(|| {
+                self.unanswered
+                    .borrow()
+                    .values()
+                    .map(|at| at.saturating_add(UNRESPONSIVE_AFTER))
+                    .filter(|&due| due > now)
+                    .min()
+            })
+            .flatten();
+        [flush, retire, unresponsive].into_iter().flatten().min()
     }
 
     fn needs_frame(&self) -> bool {
@@ -2640,6 +2715,26 @@ impl View for RemoteTab {
 
     fn wheel(&mut self, x: f32, y: f32, dy: f32) {
         self.pointer(x, y, |x, y| Input::Wheel { x, y, dy });
+    }
+
+    fn unresponsive(&self) -> bool {
+        self.unresponsive_renderer().is_some()
+    }
+
+    fn wait_unresponsive(&mut self) {
+        let now = self.now();
+        for at in self.unanswered.borrow_mut().values_mut() {
+            if now.saturating_sub(*at) >= UNRESPONSIVE_AFTER {
+                *at = now;
+            }
+        }
+    }
+
+    fn exit_unresponsive(&mut self) {
+        if let Some(number) = self.unresponsive_renderer() {
+            self.unanswered.borrow_mut().remove(&number);
+            self.kill(number);
+        }
     }
 
     fn cursor_at(&mut self, x: f32, y: f32) -> Cursor {
