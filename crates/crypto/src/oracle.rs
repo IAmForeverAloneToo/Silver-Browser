@@ -224,6 +224,19 @@ impl Oracle {
                 ));
             }
         }
+        // A key whose SPKI AES-KW wraps whatever key the generation made:
+        // a 2064-bit modulus's is 296 bytes, a multiple of 8 (2048 bits'
+        // is 294), where a 2048-bit key's PKCS #8 and JWK lengths vary
+        // with the key, and none of the others' may fit (CI 45518083863).
+        specs.push((
+            d(&[
+                ("name", s("RSA-OAEP")),
+                ("modulusLength", n(2064.0)),
+                ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+                ("hash", s("SHA-256")),
+            ]),
+            true,
+        ));
         // A key large enough to wrap a 2048-bit RSA key with RSA-OAEP.
         specs.push((
             d(&[
