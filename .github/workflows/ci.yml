@@ -62,7 +62,9 @@ jobs:
       # buffer read in place (crates/js/src/quickjs/wasm.rs, one block),
       # and a realm's context's base64 intrinsic (quickjs/context.rs),
       # and Web Crypto's calls into aws-lc's C library (G255,
-      # crates/crypto/src/native.rs).
+      # crates/crypto/src/native.rs), and a binding's buffer copied for a
+      # native (G255 step 7a, crates/js/src/quickjs/bytes_in.rs, one
+      # block).
       # Strings and line comments are cut first; M29's module, a crate
       # of its own built to WebAssembly, marks its exports `no_mangle`.
       - name: unsafe only in the platform module
@@ -71,7 +73,7 @@ jobs:
               | grep -v -e '^crates/shell/src/platform.rs:' -e '^crates/js/src/quickjs/bytecode.rs:' \
                   -e '^crates/js/src/stack.rs:' -e '^crates/js/src/quickjs/sampler.rs:'                   -e '^crates/js/src/quickjs/wasm.rs:' -e '^crates/js/src/quickjs/context.rs:' \
                   -e '^crates/media/src/av1.rs:' -e '^crates/engine/tests/wasm/' \
-                  -e '^crates/crypto/src/native.rs:' \
+                  -e '^crates/crypto/src/native.rs:' -e '^crates/js/src/quickjs/bytes_in.rs:' \
               | sed -E 's/"([^"\\]|\\.)*"//g; s#//.*##' \
               | grep -E '(^|[^[:alnum:]_-])unsafe[[:space:]]*(\{|fn|impl|trait|extern)|#\[unsafe\('; then
             echo "::error::unsafe outside crates/shell/src/platform.rs"
