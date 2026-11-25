@@ -93,13 +93,16 @@ pub(crate) enum WorkerMessage {
 }
 
 impl WorkerMessage {
-    /// The bytes of data it holds, which an inbox counts.
+    /// The bytes of data it holds, which an inbox counts: a canvas's
+    /// frame's pixels among them, so that frames a realm does not take
+    /// stop at the inbox's bound.
     fn bytes(&self) -> usize {
         match self {
             WorkerMessage::ToWorker(data)
             | WorkerMessage::FromWorker(_, FromWorker::Message(data))
             | WorkerMessage::Port(_, data)
             | WorkerMessage::ServiceWorker(data) => data.len(),
+            WorkerMessage::GpuFrame(_, frame) => frame.bytes.len(),
             _ => 0,
         }
     }

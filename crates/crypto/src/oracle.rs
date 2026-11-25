@@ -983,6 +983,10 @@ impl Oracle {
             for key in &derived {
                 out.push(("deriveKey", base.clone(), key.clone()));
             }
+            // A number where the derived key's type goes.
+            for length in [0.0, 128.0, 256.0] {
+                out.push(("deriveKey", base.clone(), n(length)));
+            }
         }
         out
     }

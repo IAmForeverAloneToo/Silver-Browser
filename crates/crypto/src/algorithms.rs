@@ -3229,9 +3229,10 @@ pub(crate) fn supports(keys: &Keys, op: &str, algorithm: &Value, extra: &Value) 
         "sign" | "verify" if alg.name == "RSA-PSS" => {
             alg.num("saltLength").unwrap_or(0) <= RSA_MOST_BITS / 8 - 20 - 2
         }
+        // The derived key's type must be an algorithm: deriveKey takes
+        // no length (fuzzed: crypto_supports, CI 45419454311).
         "deriveKey" => {
             let derived_length = match extra {
-                Value::Num(_) => length,
                 Value::Str(_) | Value::Dict(_) => {
                     let (Ok(_), Ok(by_length)) = (
                         normalize("importKey", extra),

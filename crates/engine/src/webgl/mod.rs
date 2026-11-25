@@ -447,7 +447,11 @@ pub struct Harness {
     webgl: WebGl,
     client: Arc<GpuClient>,
     inbox: Inbox,
-    _mailbox: crate::scripts::workers::Mailbox,
+    /// What its contexts send the document (their frames), taken and
+    /// dropped after each call, as a document's loop takes them.
+    mailbox: crate::scripts::workers::Mailbox,
+    /// How many messages it took so.
+    taken: std::cell::Cell<usize>,
     context: Option<u32>,
 }
 
@@ -459,7 +463,8 @@ impl Harness {
             webgl: WebGl::default(),
             client,
             inbox,
-            _mailbox: mailbox,
+            mailbox,
+            taken: std::cell::Cell::new(0),
             context: None,
         }
     }
@@ -467,6 +472,20 @@ impl Harness {
     /// A new context of `version` (1 or 2), the one called from now on:
     /// false when none could be made.
     pub fn create(&mut self, version: u8) -> bool {
+        // A new context is a new canvas's: the lost ones before it go
+        // with their canvases, nothing of them kept (a live one stays,
+        // sharing its client's device).
+        let lost: Vec<u32> = self
+            .webgl
+            .contexts
+            .iter()
+            .filter(|(_, context)| context.lost)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in lost {
+            self.webgl.contexts.remove(&id);
+            self.webgl.made.retain(|&made| made != id);
+        }
         let call = CanvasCall {
             op: "create".to_owned(),
             numbers: vec![1.0, f64::from(version), 1.0, 1.0, 1.0, 0.0, 1.0, 0.0],
@@ -483,7 +502,20 @@ impl Harness {
             Ok(Answer::Number(id)) if id > 0.0 => Some(id as u32),
             _ => None,
         };
+        self.drain();
         self.context.is_some()
+    }
+
+    /// The frames its contexts sent, taken and dropped.
+    fn drain(&self) {
+        while self.mailbox.try_take().is_some() {
+            self.taken.set(self.taken.get() + 1);
+        }
+    }
+
+    /// How many contexts it holds, lost ones among them.
+    pub fn contexts(&self) -> usize {
+        self.webgl.contexts.len()
     }
 
     /// Whether a context was made and is not lost.
@@ -520,6 +552,7 @@ impl Harness {
             canvas_size: &|_| (64, 32),
         };
         let _ = self.webgl.call(call, &env);
+        self.drain();
     }
 }
 
@@ -2757,6 +2790,63 @@ mod tests {
         h.call("restoreContext", &[], Vec::new(), None);
         assert!(h.made());
         assert_ne!(h.webgl.contexts[&a].device, device);
+    }
+
+    #[test]
+    fn a_harness_keeps_one_context_and_no_frame_however_long_it_runs() {
+        // The scheduled webgl_ops fuzzing (CI 45419454311) ran out of
+        // memory: each input's frames waited in the harness's mailbox,
+        // which nothing took, and each context it made stayed, lost.
+        let Some(client) = crate::gpu::local_client() else {
+            eprintln!("no GPU here: the harness is not checked");
+            return;
+        };
+        let mut h = Harness::new(client);
+        for round in 0..20 {
+            // As the fuzz target makes them: the context lost, another.
+            h.call("loseContext", &[], Vec::new(), None);
+            if !h.create(1 + round % 2) {
+                eprintln!("no adapter here: the harness is not checked");
+                return;
+            }
+            h.call("clearColor", &[1.0, 0.0, 0.0, 1.0], Vec::new(), None);
+            h.call("clear", &[16384.0], Vec::new(), None);
+            h.call("present", &[], Vec::new(), None);
+            assert_eq!(h.contexts(), 1, "round {round}");
+        }
+        // The frames come as their readbacks are mapped, after the calls
+        // that presented them; each call takes what came.
+        let began = std::time::Instant::now();
+        while h.taken.get() == 0 && began.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            h.call("getError", &[], Vec::new(), None);
+        }
+        assert!(h.taken.get() > 0, "no frame was taken");
+    }
+
+    #[test]
+    fn a_frame_counts_toward_its_inbox_bound() {
+        let (inbox, mailbox) = crate::scripts::workers::inbox(None);
+        let frame = |len: usize| {
+            crate::scripts::workers::WorkerMessage::GpuFrame(
+                1.0,
+                crate::scripts::canvas::GpuFrame {
+                    width: 1,
+                    height: 1,
+                    stride: 4,
+                    format: 0,
+                    premultiplied: false,
+                    opaque: true,
+                    flip: false,
+                    bytes: vec![0; len],
+                },
+            )
+        };
+        let most = crate::scripts::workers::MAX_QUEUED_BYTES;
+        assert!(inbox.send(frame(most - 8)));
+        assert!(!inbox.send(frame(16)), "past the bound, refused");
+        assert!(mailbox.try_take().is_some());
+        assert!(inbox.send(frame(16)), "taken, room again");
     }
 
     #[cfg(feature = "gpu")]
