@@ -237,6 +237,34 @@ fn call_of(args: &Json, buffers: &[Vec<u8>]) -> Option<crypto::Call> {
             extractable,
             usages: usages(),
         },
+        "encapsulateBits" => Call::EncapsulateBits {
+            algorithm,
+            key: key("key")?,
+        },
+        "encapsulateKey" => Call::EncapsulateKey {
+            algorithm,
+            key: key("key")?,
+            shared_algorithm: get("shared")?,
+            extractable,
+            usages: usages(),
+        },
+        "decapsulateBits" => Call::DecapsulateBits {
+            algorithm,
+            key: key("key")?,
+            ciphertext: bytes("data")?,
+        },
+        "decapsulateKey" => Call::DecapsulateKey {
+            algorithm,
+            key: key("key")?,
+            ciphertext: bytes("data")?,
+            shared_algorithm: get("shared")?,
+            extractable,
+            usages: usages(),
+        },
+        "getPublicKey" => Call::GetPublicKey {
+            key: key("key")?,
+            usages: usages(),
+        },
         _ => return None,
     })
 }
@@ -308,6 +336,34 @@ fn settled(id: u32, outcome: Result<crypto::Outcome, crypto::Error>) -> Settling
             ),
             Vec::new(),
         ),
+        // An encapsulation's ciphertext, then its shared secret's bytes in
+        // the same buffer (`split` where they part), or its shared key.
+        Ok(Outcome::Encapsulated { ciphertext, shared }) => match *shared {
+            Outcome::Key(info) => (
+                format!(
+                    "{{\"id\":{id},\"ok\":true,\"kind\":\"encapsulatedKey\",\"key\":{}}}",
+                    key_json(&info)
+                ),
+                ciphertext,
+            ),
+            Outcome::Bytes(secret) => {
+                let split = ciphertext.len();
+                let mut joined = ciphertext;
+                joined.extend_from_slice(&secret);
+                (
+                    format!(
+                        "{{\"id\":{id},\"ok\":true,\"kind\":\"encapsulatedBits\",\"split\":{split}}}"
+                    ),
+                    joined,
+                )
+            }
+            _ => (
+                format!(
+                    "{{\"id\":{id},\"ok\":false,\"name\":\"OperationError\",\"message\":\"\"}}"
+                ),
+                Vec::new(),
+            ),
+        },
         Ok(Outcome::Jwk(members)) => {
             let members: Vec<String> = members
                 .iter()

@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');
+  const show = (r) => r instanceof CryptoKey
+    ? 'key ' + r.type + ' ' + JSON.stringify(r.algorithm) + ' ' + r.extractable + ' ' + r.usages.join('/')
+    : r instanceof ArrayBuffer ? 'bytes ' + r.byteLength
+    : (r && typeof r === 'object') ? 'object ' + Object.keys(r).join(',') + ' ' + Object.keys(r).map((k) => show(r[k])).join(' | ')
+    : typeof r === 'boolean' ? String(r) : JSON.stringify(r);
+  const t = async (name, f) => {
+    try { out.push(name + ' -> ' + show(await f())); }
+    catch (e) { out.push(name + ' -> ' + e.name + ': ' + e.message); }
+  };
+  out.push('methods ' + ['encapsulateKey', 'encapsulateBits', 'decapsulateKey', 'decapsulateBits', 'getPublicKey']
+    .map((m) => m + ':' + typeof s[m] + ':' + (s[m] ? s[m].length : '-')).join(' '));
+  out.push('proto order ' + Object.getOwnPropertyNames(SubtleCrypto.prototype).join(','));
+  for (const name of ['ML-KEM-768', 'ML-KEM-1024']) {
+    const n = name + ' ';
+    const pair = await s.generateKey(name, true, ['encapsulateKey', 'encapsulateBits', 'decapsulateKey', 'decapsulateBits']);
+    const other = await s.generateKey(name, true, ['encapsulateBits', 'decapsulateBits']);
+    await t(n + 'generate usages', async () => pair.publicKey.usages.join('/') + ' ' + pair.privateKey.usages.join('/'));
+    await t(n + 'generate encapsulate only', () => s.generateKey(name, true, ['encapsulateBits']));
+    await t(n + 'generate sign', () => s.generateKey(name, true, ['sign']));
+    await t(n + 'generate none', () => s.generateKey(name, true, []));
+    const seed = new Uint8Array(await s.exportKey('raw-seed', pair.privateKey));
+    const pub = new Uint8Array(await s.exportKey('raw-public', pair.publicKey));
+    const p8 = new Uint8Array(await s.exportKey('pkcs8', pair.privateKey));
+    const jwk = await s.exportKey('jwk', pair.privateKey);
+    await t(n + 'export jwk public keys', async () => Object.keys(await s.exportKey('jwk', pair.publicKey)).join(','));
+    await t(n + 'export jwk private keys', async () => Object.keys(jwk).join(','));
+    await t(n + 'import raw-seed', () => s.importKey('raw-seed', seed, name, true, ['decapsulateBits']));
+    await t(n + 'import raw-seed 63', () => s.importKey('raw-seed', seed.slice(1), name, true, ['decapsulateBits']));
+    await t(n + 'import raw-seed 65', () => s.importKey('raw-seed', new Uint8Array([...seed, 0]), name, true, ['decapsulateBits']));
+    await t(n + 'import raw-public', () => s.importKey('raw-public', pub, name, true, ['encapsulateBits']));
+    await t(n + 'import raw-public short', () => s.importKey('raw-public', pub.slice(1), name, true, ['encapsulateBits']));
+    await t(n + 'import raw-public decap usage', () => s.importKey('raw-public', pub, name, true, ['decapsulateBits']));
+    await t(n + 'import raw-public bad poly', () => { const b = pub.slice(); b.fill(0xff, 0, 384); return s.importKey('raw-public', b, name, true, ['encapsulateBits']); });
+    await t(n + 'import pkcs8', () => s.importKey('pkcs8', p8, name, true, ['decapsulateKey']));
+    await t(n + 'import pkcs8 trailing', () => s.importKey('pkcs8', new Uint8Array([...p8, 0]), name, true, ['decapsulateKey']));
+    await t(n + 'import jwk', () => s.importKey('jwk', jwk, name, true, ['decapsulateBits']));
+    await t(n + 'import jwk no pub', () => s.importKey('jwk', {kty: 'AKP', alg: name, priv: jwk.priv}, name, true, ['decapsulateBits']));
+    await t(n + 'import jwk wrong alg', () => s.importKey('jwk', {...jwk, alg: 'ML-KEM-512'}, name, true, ['decapsulateBits']));
+    await t(n + 'import raw', () => s.importKey('raw', pub, name, true, ['encapsulateBits']));
+    await t(n + 'import spki as dsa', () => s.importKey('spki', new Uint8Array(1), name, true, ['encapsulateBits']));
+    // the KEM methods
+    const enc = await s.encapsulateBits(name, pair.publicKey);
+    await t(n + 'encapsulateBits', async () => enc);
+    await t(n + 'encapsulateBits keys', async () => Object.keys(enc).join(',') + ' ' + Object.getPrototypeOf(enc) === Object.prototype);
+    await t(n + 'decapsulateBits', async () => hex(await s.decapsulateBits(name, pair.privateKey, enc.ciphertext)) === hex(enc.sharedKey));
+    await t(n + 'decapsulateBits other key', async () => hex(await s.decapsulateBits(name, other.privateKey, enc.ciphertext)) === hex(enc.sharedKey));
+    await t(n + 'decapsulateBits short', () => s.decapsulateBits(name, pair.privateKey, enc.ciphertext.slice(1)));
+    await t(n + 'decapsulateBits long', () => s.decapsulateBits(name, pair.privateKey, new Uint8Array([...new Uint8Array(enc.ciphertext), 0])));
+    await t(n + 'decapsulateBits tampered', async () => { const c = new Uint8Array(enc.ciphertext); c[0] ^= 1; return hex(await s.decapsulateBits(name, pair.privateKey, c)) === hex(enc.sharedKey); });
+    await t(n + 'encapsulateBits with private', () => s.encapsulateBits(name, pair.privateKey));
+    await t(n + 'decapsulateBits with public', () => s.decapsulateBits(name, pair.publicKey, enc.ciphertext));
+    await t(n + 'encapsulateBits no usage', () => s.encapsulateBits(name, other.publicKey === undefined ? pair.publicKey : (async () => { const k = await s.importKey('raw-public', pub, name, true, ['encapsulateKey']); return s.encapsulateBits(name, k); })()));
+    await t(n + 'encapsulateBits key no bits usage', async () => { const k = await s.importKey('raw-public', pub, name, true, ['encapsulateKey']); return s.encapsulateBits(name, k); });
+    await t(n + 'encapsulateBits wrong alg', () => s.encapsulateBits(name === 'ML-KEM-768' ? 'ML-KEM-1024' : 'ML-KEM-768', pair.publicKey));
+    await t(n + 'encapsulateBits AES', () => s.encapsulateBits('AES-GCM', pair.publicKey));
+    const encK = await s.encapsulateKey(name, pair.publicKey, 'AES-GCM', true, ['encrypt']);
+    await t(n + 'encapsulateKey AES-GCM', async () => encK);
+    await t(n + 'decapsulateKey AES-GCM', () => s.decapsulateKey(name, pair.privateKey, encK.ciphertext, 'AES-GCM', true, ['decrypt']));
+    await t(n + 'decapsulateKey same', async () => { const k = await s.decapsulateKey(name, pair.privateKey, encK.ciphertext, {name: 'HMAC', hash: 'SHA-256'}, true, ['sign']); return hex(await s.exportKey('raw', k)) === hex(await s.exportKey('raw', encK.sharedKey)); });
+    await t(n + 'encapsulateKey HMAC', () => s.encapsulateKey(name, pair.publicKey, {name: 'HMAC', hash: 'SHA-256'}, true, ['sign']));
+    await t(n + 'encapsulateKey HMAC 512', () => s.encapsulateKey(name, pair.publicKey, {name: 'HMAC', hash: 'SHA-256', length: 512}, true, ['sign']));
+    await t(n + 'encapsulateKey AES-GCM 128', () => s.encapsulateKey(name, pair.publicKey, {name: 'AES-GCM', length: 128}, true, ['encrypt']));
+    await t(n + 'encapsulateKey HKDF', () => s.encapsulateKey(name, pair.publicKey, 'HKDF', false, ['deriveBits']));
+    await t(n + 'encapsulateKey HKDF extractable', () => s.encapsulateKey(name, pair.publicKey, 'HKDF', true, ['deriveBits']));
+    await t(n + 'encapsulateKey ChaCha', () => s.encapsulateKey(name, pair.publicKey, 'ChaCha20-Poly1305', true, ['encrypt']));
+    await t(n + 'encapsulateKey ECDSA', () => s.encapsulateKey(name, pair.publicKey, {name: 'ECDSA', namedCurve: 'P-256'}, true, ['sign']));
+    await t(n + 'encapsulateKey bad usage', () => s.encapsulateKey(name, pair.publicKey, 'AES-GCM', true, ['sign']));
+    await t(n + 'encapsulateKey no usage', () => s.encapsulateKey(name, pair.publicKey, 'AES-GCM', true, []));
+    await t(n + 'encapsulateKey key no key usage', async () => { const k = await s.importKey('raw-public', pub, name, true, ['encapsulateBits']); return s.encapsulateKey(name, k, 'AES-GCM', true, ['encrypt']); });
+    await t(n + 'decapsulateKey short', () => s.decapsulateKey(name, pair.privateKey, encK.ciphertext.slice(1), 'AES-GCM', true, ['decrypt']));
+    await t(n + 'encapsulate length', () => s.encapsulateBits({name, length: 128}, pair.publicKey));
+    // getPublicKey
+    await t(n + 'getPublicKey', () => s.getPublicKey(pair.privateKey, ['encapsulateBits']));
+    await t(n + 'getPublicKey none', () => s.getPublicKey(pair.privateKey, []));
+    await t(n + 'getPublicKey decap usage', () => s.getPublicKey(pair.privateKey, ['decapsulateBits']));
+    await t(n + 'getPublicKey from public', () => s.getPublicKey(pair.publicKey, ['encapsulateBits']));
+    await t(n + 'getPublicKey same', async () => hex(await s.exportKey('raw-public', await s.getPublicKey(pair.privateKey, []))) === hex(pub));
+    const nx = await s.importKey('raw-seed', seed, name, false, ['decapsulateBits']);
+    await t(n + 'getPublicKey non-extractable', () => s.getPublicKey(nx, ['encapsulateBits']));
+  }
+  // getPublicKey on the others
+  const aes = await s.generateKey({name: 'AES-GCM', length: 128}, true, ['encrypt']);
+  await t('getPublicKey AES', () => s.getPublicKey(aes, []));
+  const ec = await s.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, false, ['sign', 'verify']);
+  await t('getPublicKey ECDSA', () => s.getPublicKey(ec.privateKey, ['verify']));
+  await t('getPublicKey ECDSA sign', () => s.getPublicKey(ec.privateKey, ['sign']));
+  const ed = await s.generateKey('Ed25519', false, ['sign', 'verify']);
+  await t('getPublicKey Ed25519', () => s.getPublicKey(ed.privateKey, ['verify']));
+  const x = await s.generateKey('X25519', false, ['deriveBits']);
+  await t('getPublicKey X25519', () => s.getPublicKey(x.privateKey, []));
+  const rsa = await s.generateKey({name: 'RSA-OAEP', modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, false, ['encrypt', 'decrypt']);
+  await t('getPublicKey RSA-OAEP', () => s.getPublicKey(rsa.privateKey, ['encrypt']));
+  const dsa = await s.generateKey('ML-DSA-44', false, ['sign', 'verify']);
+  await t('getPublicKey ML-DSA', () => s.getPublicKey(dsa.privateKey, ['verify']));
+  await t('getPublicKey bad usage string', () => s.getPublicKey(dsa.privateKey, ['nope']));
+  await t('getPublicKey not a key', () => s.getPublicKey({}, []));
+  await t('encapsulateBits ML-DSA', () => s.encapsulateBits('ML-DSA-44', dsa.publicKey));
+  await t('encapsulateBits ECDH', async () => { const k = await s.generateKey({name: 'ECDH', namedCurve: 'P-256'}, false, ['deriveBits']); return s.encapsulateBits('ECDH', k.publicKey); });
+  window.__done = out;
+})();
+</script>

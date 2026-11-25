@@ -2,7 +2,8 @@
 //! SPKI, as a PKCS #8, and as a JWK whose members are cut from the bytes,
 //! for each algorithm the store imports, RSA's private keys among them. It never panics; and a key imported
 //! extractable exports, in the format it came in, to what imports again
-//! as the same key; an RSA key verifies any bytes to true or false.
+//! as the same key; an RSA key verifies any bytes to true or false; and
+//! ML-KEM's keys from any bytes, round-tripped (`ml_kem_round_trip`).
 
 #![no_main]
 #![forbid(unsafe_code)]
@@ -107,6 +108,106 @@ fn x25519_round_trip(bytes: &[u8]) {
     );
 }
 
+/// ML-KEM's keys from any bytes (G255 step 5c, the library's seed key
+/// generation, `native`): the bytes as a seed and as a public key, taken
+/// or refused, never a panic; and the first 64 of them, padded, always a
+/// seed, whose key decapsulates to the secret its public key
+/// (getPublicKey's) encapsulates, and whose PKCS #8 imports again as the
+/// same key.
+fn ml_kem_round_trip(bytes: &[u8]) {
+    let all = [
+        Usage::EncapsulateKey,
+        Usage::EncapsulateBits,
+        Usage::DecapsulateKey,
+        Usage::DecapsulateBits,
+    ];
+    for name in ["ML-KEM-768", "ML-KEM-1024"] {
+        let mut keys = Keys::default();
+        let import = |keys: &mut Keys, format: &str, data: Vec<u8>, usages: &[Usage]| {
+            crypto::run(
+                keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: Value::Bytes(data),
+                    algorithm: Value::Str(name.into()),
+                    extractable: true,
+                    usages: usages.to_vec(),
+                },
+            )
+        };
+        let _ = import(&mut keys, "raw-seed", bytes.to_vec(), &all[2..]);
+        let _ = import(&mut keys, "raw-public", bytes.to_vec(), &all[..2]);
+        let mut seed: Vec<u8> = bytes.iter().copied().take(64).collect();
+        seed.resize(64, 0);
+        let Ok(Outcome::Key(private)) = import(&mut keys, "raw-seed", seed, &all[2..]) else {
+            panic!("a 64-byte seed imports");
+        };
+        let Ok(Outcome::Key(public)) = crypto::run(
+            &mut keys,
+            Call::GetPublicKey {
+                key: private.id,
+                usages: vec![Usage::EncapsulateBits],
+            },
+        ) else {
+            panic!("its public key");
+        };
+        let Ok(Outcome::Encapsulated { ciphertext, shared }) = crypto::run(
+            &mut keys,
+            Call::EncapsulateBits {
+                algorithm: Value::Str(name.into()),
+                key: public.id,
+            },
+        ) else {
+            panic!("an encapsulation");
+        };
+        let again = crypto::run(
+            &mut keys,
+            Call::DecapsulateBits {
+                algorithm: Value::Str(name.into()),
+                key: private.id,
+                ciphertext,
+            },
+        );
+        assert_eq!(again.ok(), Some(*shared), "the same secret");
+        let Ok(Outcome::Bytes(pkcs8)) = crypto::run(
+            &mut keys,
+            Call::ExportKey {
+                format: "pkcs8".into(),
+                key: private.id,
+            },
+        ) else {
+            panic!("its PKCS #8");
+        };
+        let Ok(Outcome::Key(copy)) = import(&mut keys, "pkcs8", pkcs8, &all[2..]) else {
+            panic!("its PKCS #8 imports again");
+        };
+        let public_of = |keys: &mut Keys, key: u32| {
+            crypto::run(
+                keys,
+                Call::GetPublicKey {
+                    key,
+                    usages: Vec::new(),
+                },
+            )
+            .and_then(|out| match out {
+                Outcome::Key(info) => crypto::run(
+                    keys,
+                    Call::ExportKey {
+                        format: "raw-public".into(),
+                        key: info.id,
+                    },
+                ),
+                other => Ok(other),
+            })
+        };
+        assert_eq!(
+            public_of(&mut keys, private.id),
+            public_of(&mut keys, copy.id),
+            "the same key"
+        );
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     let Some((&choice, rest)) = data.split_first() else {
         return;
@@ -121,6 +222,10 @@ fuzz_target!(|data: &[u8]| {
     // both deriving the same secret with a peer made here.
     if format == "pkcs8" {
         x25519_round_trip(rest);
+    }
+    // One input in 32: ML-KEM's keys cost more than an import's checks.
+    if choice % 32 == 31 {
+        ml_kem_round_trip(rest);
     }
     let key_data = if format == "jwk" {
         jwk(rest)

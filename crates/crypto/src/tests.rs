@@ -4617,3 +4617,481 @@ fn ml_dsa_is_fips_204s_and_the_references() {
         )));
     }
 }
+
+/// ML-KEM (FIPS 203), the KEM methods and getPublicKey, as the reference
+/// has them (Chrome 158, probed: pq, mlkem, hmac-length): each key's
+/// formats and refusals in its words; an encapsulation decapsulates to
+/// its secret, another key's or a changed ciphertext to another (FIPS
+/// 203's implicit rejection), a ciphertext of another length a
+/// DataError; a shared key imported as raw-secret (AES 256 bits whatever
+/// length asked, HMAC's 256, its length checked against the data); and
+/// getPublicKey of every kind of private key, refused for the others.
+#[test]
+fn ml_kem_and_the_kem_methods_are_the_references() {
+    use crate::{deserialize_key, serialize_key};
+    let all = vec![
+        Usage::EncapsulateKey,
+        Usage::EncapsulateBits,
+        Usage::DecapsulateKey,
+        Usage::DecapsulateBits,
+    ];
+    for (name, public_len, ciphertext_len) in
+        [("ML-KEM-768", 1184, 1088), ("ML-KEM-1024", 1568, 1568)]
+    {
+        let mut keys = Keys::default();
+        let (public, private) = match run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: s(name),
+                extractable: true,
+                usages: all.clone(),
+            },
+        ) {
+            Ok(Outcome::Pair(public, private)) => (public, private),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (public.usages.clone(), private.usages.clone()),
+            (
+                vec![Usage::EncapsulateKey, Usage::EncapsulateBits],
+                vec![Usage::DecapsulateKey, Usage::DecapsulateBits]
+            )
+        );
+        for usages in [vec![Usage::EncapsulateBits], vec![]] {
+            assert_eq!(
+                error(run(
+                    &mut keys,
+                    Call::GenerateKey {
+                        algorithm: s(name),
+                        extractable: true,
+                        usages,
+                    },
+                )),
+                "SyntaxError: Usages cannot be empty when creating a key."
+            );
+        }
+        let export = |keys: &mut Keys, format: &str, key: u32| {
+            run(
+                keys,
+                Call::ExportKey {
+                    format: format.into(),
+                    key,
+                },
+            )
+        };
+        let seed = bytes(export(&mut keys, "raw-seed", private.id));
+        let raw_public = bytes(export(&mut keys, "raw-public", public.id));
+        let pkcs8 = bytes(export(&mut keys, "pkcs8", private.id));
+        assert_eq!(
+            (seed.len(), raw_public.len(), pkcs8.len()),
+            (64, public_len, 86)
+        );
+        assert_eq!(
+            bytes(export(&mut keys, "spki", public.id)).len(),
+            public_len + 22
+        );
+        assert_eq!(
+            error(export(&mut keys, "raw", public.id)),
+            "NotSupportedError: Unsupported export key format for algorithm"
+        );
+        let import = |keys: &mut Keys, format: &str, data: Value, usages: Vec<Usage>| {
+            run(
+                keys,
+                Call::ImportKey {
+                    format: format.into(),
+                    key_data: data,
+                    algorithm: s(name),
+                    extractable: true,
+                    usages,
+                },
+            )
+        };
+        let decap = vec![Usage::DecapsulateBits];
+        let encap = vec![Usage::EncapsulateBits];
+        key(import(
+            &mut keys,
+            "raw-seed",
+            Value::Bytes(seed.clone()),
+            decap.clone(),
+        ));
+        key(import(
+            &mut keys,
+            "pkcs8",
+            Value::Bytes(pkcs8.clone()),
+            decap.clone(),
+        ));
+        key(import(
+            &mut keys,
+            "raw-public",
+            Value::Bytes(raw_public.clone()),
+            encap.clone(),
+        ));
+        let mut bad_poly = raw_public.clone();
+        bad_poly[..384].fill(0xff);
+        for (format, data, usages) in [
+            ("raw-seed", seed[1..].to_vec(), decap.clone()),
+            ("raw-seed", [&seed[..], &[0]].concat(), decap.clone()),
+            ("raw-public", raw_public[1..].to_vec(), encap.clone()),
+            ("raw-public", bad_poly, encap.clone()),
+            ("pkcs8", [&pkcs8[..], &[0]].concat(), decap.clone()),
+            ("spki", vec![1], encap.clone()),
+        ] {
+            assert_eq!(
+                error(import(&mut keys, format, Value::Bytes(data), usages)),
+                "DataError: ",
+                "{format}"
+            );
+        }
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "raw-public",
+                Value::Bytes(raw_public.clone()),
+                decap.clone()
+            )),
+            "SyntaxError: Cannot create a key using the specified key usages."
+        );
+        assert_eq!(
+            error(import(
+                &mut keys,
+                "raw",
+                Value::Bytes(raw_public.clone()),
+                encap.clone()
+            )),
+            "NotSupportedError: Unsupported import key format for algorithm"
+        );
+        // Encapsulation and decapsulation.
+        let encapsulate = |keys: &mut Keys, algorithm: Value, key: u32| {
+            run(keys, Call::EncapsulateBits { algorithm, key })
+        };
+        let (ciphertext, shared) = match encapsulate(&mut keys, s(name), public.id) {
+            Ok(Outcome::Encapsulated { ciphertext, shared }) => match *shared {
+                Outcome::Bytes(shared) => (ciphertext, shared),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((ciphertext.len(), shared.len()), (ciphertext_len, 32));
+        let decapsulate = |keys: &mut Keys, key: u32, ciphertext: Vec<u8>| {
+            run(
+                keys,
+                Call::DecapsulateBits {
+                    algorithm: s(name),
+                    key,
+                    ciphertext,
+                },
+            )
+        };
+        assert_eq!(
+            bytes(decapsulate(&mut keys, private.id, ciphertext.clone())),
+            shared
+        );
+        let mut changed = ciphertext.clone();
+        changed[0] ^= 1;
+        assert_ne!(bytes(decapsulate(&mut keys, private.id, changed)), shared);
+        for wrong in [ciphertext[1..].to_vec(), [&ciphertext[..], &[0]].concat()] {
+            assert_eq!(
+                error(decapsulate(&mut keys, private.id, wrong)),
+                "DataError: "
+            );
+        }
+        assert_eq!(
+            error(encapsulate(&mut keys, s(name), private.id)),
+            "InvalidAccessError: key.usages does not permit this operation"
+        );
+        assert_eq!(
+            error(decapsulate(&mut keys, public.id, ciphertext.clone())),
+            "InvalidAccessError: key.usages does not permit this operation"
+        );
+        let other = if name == "ML-KEM-768" {
+            "ML-KEM-1024"
+        } else {
+            "ML-KEM-768"
+        };
+        assert_eq!(
+            error(encapsulate(&mut keys, s(other), public.id)),
+            "InvalidAccessError: key.algorithm does not match that of operation"
+        );
+        assert_eq!(
+            error(encapsulate(&mut keys, s("AES-GCM"), public.id)),
+            "NotSupportedError: Failed to execute 'encapsulateBits' on 'SubtleCrypto': AES-GCM: Unsupported operation: encapsulate"
+        );
+        // Shared keys: raw-secret's, the reference's sizes and checks.
+        let encapsulate_key =
+            |keys: &mut Keys, shared: Value, extractable: bool, usages: Vec<Usage>| {
+                run(
+                    keys,
+                    Call::EncapsulateKey {
+                        algorithm: s(name),
+                        key: public.id,
+                        shared_algorithm: shared,
+                        extractable,
+                        usages,
+                    },
+                )
+            };
+        let shared_key = |out: Result<Outcome, Error>| match out {
+            Ok(Outcome::Encapsulated { ciphertext, shared }) => match *shared {
+                Outcome::Key(key) => (ciphertext, key),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        let aes = dict(&[("name", s("AES-GCM")), ("length", Value::Num(128.0))]);
+        let (aes_ciphertext, aes_key) = shared_key(encapsulate_key(
+            &mut keys,
+            aes.clone(),
+            true,
+            vec![Usage::Encrypt],
+        ));
+        assert_eq!(
+            aes_key.algorithm,
+            crate::algorithms::KeyAlgorithm::Aes {
+                name: "AES-GCM",
+                length: 256
+            }
+            .members()
+        );
+        let again = key(run(
+            &mut keys,
+            Call::DecapsulateKey {
+                algorithm: s(name),
+                key: private.id,
+                ciphertext: aes_ciphertext,
+                shared_algorithm: aes,
+                extractable: true,
+                usages: vec![Usage::Decrypt],
+            },
+        ));
+        assert_eq!(
+            bytes(export(&mut keys, "raw", again.id)),
+            bytes(export(&mut keys, "raw", aes_key.id))
+        );
+        let hmac = |length: Option<f64>| {
+            let mut members = vec![("name", s("HMAC")), ("hash", s("SHA-256"))];
+            if let Some(length) = length {
+                members.push(("length", Value::Num(length)));
+            }
+            dict(&members)
+        };
+        let (_, hmac_key) = shared_key(encapsulate_key(
+            &mut keys,
+            hmac(None),
+            true,
+            vec![Usage::Sign],
+        ));
+        assert!(
+            hmac_key
+                .algorithm
+                .contains(&("length", crate::AlgorithmValue::Num(256)))
+        );
+        assert_eq!(
+            error(encapsulate_key(
+                &mut keys,
+                hmac(Some(512.0)),
+                true,
+                vec![Usage::Sign]
+            )),
+            "DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits."
+        );
+        assert_eq!(
+            error(encapsulate_key(
+                &mut keys,
+                s("HKDF"),
+                true,
+                vec![Usage::DeriveBits]
+            )),
+            "SyntaxError: KDF keys must set extractable=false"
+        );
+        shared_key(encapsulate_key(
+            &mut keys,
+            s("HKDF"),
+            false,
+            vec![Usage::DeriveBits],
+        ));
+        shared_key(encapsulate_key(
+            &mut keys,
+            s("ChaCha20-Poly1305"),
+            true,
+            vec![Usage::Encrypt],
+        ));
+        assert_eq!(
+            error(encapsulate_key(
+                &mut keys,
+                dict(&[("name", s("ECDSA")), ("namedCurve", s("P-256"))]),
+                true,
+                vec![Usage::Sign]
+            )),
+            "NotSupportedError: Unsupported import key format for algorithm"
+        );
+        assert_eq!(
+            error(encapsulate_key(
+                &mut keys,
+                s("AES-GCM"),
+                true,
+                vec![Usage::Sign]
+            )),
+            "SyntaxError: Cannot create a key using the specified key usages."
+        );
+        assert_eq!(
+            error(encapsulate_key(&mut keys, s("AES-GCM"), true, vec![])),
+            "SyntaxError: Usages cannot be empty when creating a key."
+        );
+        // getPublicKey of the private key: its public key, the same bytes.
+        let derived = key(run(
+            &mut keys,
+            Call::GetPublicKey {
+                key: private.id,
+                usages: vec![Usage::EncapsulateBits],
+            },
+        ));
+        assert_eq!(
+            bytes(export(&mut keys, "raw-public", derived.id)),
+            raw_public
+        );
+        assert_eq!(
+            error(run(
+                &mut keys,
+                Call::GetPublicKey {
+                    key: private.id,
+                    usages: vec![Usage::DecapsulateBits],
+                },
+            )),
+            "SyntaxError: Cannot create a key using the specified key usages."
+        );
+        assert_eq!(
+            error(run(
+                &mut keys,
+                Call::GetPublicKey {
+                    key: public.id,
+                    usages: vec![],
+                },
+            )),
+            "InvalidAccessError: Failed to execute 'getPublicKey' on 'SubtleCrypto': getPublicKey can only be called with a private key"
+        );
+        // Clones of both keys.
+        for made in [public.id, private.id] {
+            let record = serialize_key(&keys, made).expect("a record");
+            let copy = deserialize_key(&mut keys, &record).expect("the key again");
+            assert_eq!(
+                copy.algorithm,
+                crate::algorithms::KeyAlgorithm::MlKem { name }.members()
+            );
+        }
+    }
+    // getPublicKey of every other kind, and of a secret key.
+    let mut keys = Keys::default();
+    for (algorithm, usages, public_usages) in [
+        (
+            dict(&[("name", s("ECDSA")), ("namedCurve", s("P-256"))]),
+            vec![Usage::Sign, Usage::Verify],
+            vec![Usage::Verify],
+        ),
+        (
+            s("Ed25519"),
+            vec![Usage::Sign, Usage::Verify],
+            vec![Usage::Verify],
+        ),
+        (s("X25519"), vec![Usage::DeriveBits], vec![]),
+        (
+            s("ML-DSA-44"),
+            vec![Usage::Sign, Usage::Verify],
+            vec![Usage::Verify],
+        ),
+        (
+            dict(&[
+                ("name", s("RSA-OAEP")),
+                ("modulusLength", Value::Num(1024.0)),
+                ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+                ("hash", s("SHA-256")),
+            ]),
+            vec![Usage::Encrypt, Usage::Decrypt],
+            vec![Usage::Encrypt],
+        ),
+    ] {
+        let (public, private) = match run(
+            &mut keys,
+            Call::GenerateKey {
+                algorithm: algorithm.clone(),
+                extractable: false,
+                usages,
+            },
+        ) {
+            Ok(Outcome::Pair(public, private)) => (public, private),
+            other => panic!("{other:?}"),
+        };
+        let made = key(run(
+            &mut keys,
+            Call::GetPublicKey {
+                key: private.id,
+                usages: public_usages.clone(),
+            },
+        ));
+        assert_eq!(
+            (made.kind, made.extractable, &made.algorithm, &made.usages),
+            (KeyType::Public, true, &public.algorithm, &public_usages),
+            "{algorithm:?}"
+        );
+    }
+    let aes = key(run(
+        &mut keys,
+        Call::GenerateKey {
+            algorithm: dict(&[("name", s("AES-GCM")), ("length", Value::Num(128.0))]),
+            extractable: true,
+            usages: vec![Usage::Encrypt],
+        },
+    ));
+    assert_eq!(
+        error(run(
+            &mut keys,
+            Call::GetPublicKey {
+                key: aes.id,
+                usages: vec![],
+            },
+        )),
+        "NotSupportedError: Failed to execute 'getPublicKey' on 'SubtleCrypto': getPublicKey can only be called with keys from an asymmetric algorithm"
+    );
+}
+
+/// An HMAC key's length against its data, as the reference checks it
+/// (probed: hmac-length): from 7 bits short of it to all of it.
+#[test]
+fn an_hmac_keys_length_fits_its_data() {
+    let mut keys = Keys::default();
+    let import = |keys: &mut Keys, data: usize, length: Option<f64>, usages: Vec<Usage>| {
+        let mut members = vec![("name", s("HMAC")), ("hash", s("SHA-256"))];
+        if let Some(length) = length {
+            members.push(("length", Value::Num(length)));
+        }
+        run(
+            keys,
+            Call::ImportKey {
+                format: "raw".into(),
+                key_data: Value::Bytes(vec![0; data]),
+                algorithm: dict(&members),
+                extractable: true,
+                usages,
+            },
+        )
+    };
+    let refused = "DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.";
+    for length in [0.0, 1.0, 248.0, 257.0, 264.0, 512.0] {
+        assert_eq!(
+            error(import(&mut keys, 32, Some(length), vec![Usage::Sign])),
+            refused,
+            "{length}"
+        );
+    }
+    for length in [249.0, 255.0, 256.0] {
+        key(import(&mut keys, 32, Some(length), vec![Usage::Sign]));
+    }
+    assert_eq!(
+        error(import(&mut keys, 0, Some(8.0), vec![Usage::Sign])),
+        "DataError: HMAC key data must not be empty"
+    );
+    assert_eq!(
+        error(import(&mut keys, 32, Some(512.0), vec![Usage::Encrypt])),
+        "SyntaxError: Cannot create a key using the specified key usages."
+    );
+    assert_eq!(error(import(&mut keys, 32, Some(512.0), vec![])), refused);
+}

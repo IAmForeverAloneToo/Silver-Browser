@@ -172,6 +172,10 @@ fn dictionary_of(op: &str, name: &str) -> Option<(&'static str, &'static [Member
             ("Algorithm", NONE)
         }
         ("sign" | "verify", "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87") => ("ContextParams", CONTEXT),
+        (
+            "generateKey" | "importKey" | "encapsulate" | "decapsulate",
+            "ML-KEM-768" | "ML-KEM-1024",
+        ) => ("Algorithm", NONE),
         ("generateKey" | "importKey", "X25519") => ("Algorithm", NONE),
         ("importKey", "HKDF" | "PBKDF2") => ("Algorithm", NONE),
         ("get key length", "HKDF" | "PBKDF2") => ("Algorithm", NONE),

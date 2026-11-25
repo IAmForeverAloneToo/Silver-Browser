@@ -400,6 +400,37 @@ to. The bindings read a JWK's `pub` and `priv` now (JsonWebKey's new
 members). The keys from the seed 00..1f are Node 24's, and Node's
 signature verifies.
 
+ML-KEM-768 and -1024 (step 5c, FIPS 203), the KEM methods and
+getPublicKey, as Chrome 158 has them (probed: pq, mlkem): a key made
+from 64 random bytes, its seed kept, as raw-seed, as the seed-only
+PKCS#8 (86 bytes), or as an AKP JWK's `priv`; aws-lc-rs takes the
+expanded key alone, so the library's deterministic key generation makes
+it (`native::ml_kem_from_seed`, the lead's approval, Wycheproof's seed
+vectors holding it), the expanded key overwritten after each use. A
+public key whose coefficients are not all below q is refused, as the
+reference refuses it: the library checks it as it encapsulates, so an
+import makes a throwaway encapsulation. encapsulateBits and
+decapsulateBits give the 32-byte secret, a ciphertext of another length
+a DataError with no message, a wrong one FIPS 203's implicit rejection;
+encapsulateKey and decapsulateKey import it as raw-secret, as the
+reference does (an AES key of 256 bits whatever length was asked,
+HMAC's of 256). An HMAC key's length is checked against its data now, as
+the spec and the reference check it (from 7 bits short of it to all of
+it). getPublicKey gives any asymmetric private key's public key, of the
+usages asked; a public key's an InvalidAccessError, a secret key's a
+NotSupportedError, in the reference's words.
+
+The bindings' own lists are the store's (the lead's ruling): the
+bootstrap's JsonWebKey members, usages, formats and methods are held to
+`crypto::JWK_MEMBERS`, `Usage::ALL`, `FORMATS` and `METHODS` by an
+engine test, and the store reads no JWK member outside its list (a
+debug build refuses one). Two engine tests run the oracle through a
+page: a sample of the generated `supports` combinations, and an import
+of every export of every throwaway key, each answer compared with the
+store's, so that a member, an argument or a conversion the bindings
+drop shows (5b's `pub` and `priv`, step 6's wrapKey argument would
+have).
+
 On any version bump of aws-lc-rs (or aws-lc-sys), before the push: read
 again the spots `native` leans on, `RSA_new_private_key`
 (crypto/fipsmodule/rsa/rsa.c) and `RSA_parse_private_key`

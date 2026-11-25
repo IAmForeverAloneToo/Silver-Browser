@@ -1,0 +1,23 @@
+{
+ "version": "Chrome/158.0.8127.37",
+ "result": [
+  "raw 32 length 0 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 32 length 1 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 32 length 248 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 32 length 249 -> {\"name\":\"HMAC\",\"hash\":{\"name\":\"SHA-256\"},\"length\":249}",
+  "raw 32 length 255 -> {\"name\":\"HMAC\",\"hash\":{\"name\":\"SHA-256\"},\"length\":255}",
+  "raw 32 length 256 -> {\"name\":\"HMAC\",\"hash\":{\"name\":\"SHA-256\"},\"length\":256}",
+  "raw 32 length 257 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 32 length 264 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 32 length 512 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "raw 0 length 0 -> DataError: HMAC key data must not be empty",
+  "raw 0 length 8 -> DataError: HMAC key data must not be empty",
+  "raw 0 -> DataError: HMAC key data must not be empty",
+  "jwk 32 length 512 -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+  "length 512 bad usage -> SyntaxError: Cannot create a key using the specified key usages.",
+  "length 512 no usage -> DataError: The optional HMAC key length must be shorter than the key data, and by no more than 7 bits."
+ ],
+ "console": [
+  "error network Failed to load resource: the server responded with a status of 404 (File not found)"
+ ]
+}

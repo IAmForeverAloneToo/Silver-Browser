@@ -3,7 +3,7 @@
 //! webcrypto.md).
 
 use aws_lc_rs::encoding::AsDer;
-use aws_lc_rs::{aead, digest, hkdf, hmac, pbkdf2, rand, rsa, signature};
+use aws_lc_rs::{aead, digest, hkdf, hmac, kem, pbkdf2, rand, rsa, signature};
 
 use crate::jwk::{self, Jwk};
 use crate::native;
@@ -46,6 +46,10 @@ pub(crate) enum KeyAlgorithm {
     MlDsa {
         name: &'static str,
     },
+    /// ML-KEM-768 or -1024's: its algorithm its name alone.
+    MlKem {
+        name: &'static str,
+    },
 }
 
 impl KeyAlgorithm {
@@ -56,7 +60,8 @@ impl KeyAlgorithm {
             | KeyAlgorithm::Rsa { name, .. }
             | KeyAlgorithm::Ec { name, .. }
             | KeyAlgorithm::Okp { name }
-            | KeyAlgorithm::MlDsa { name } => name,
+            | KeyAlgorithm::MlDsa { name }
+            | KeyAlgorithm::MlKem { name } => name,
             KeyAlgorithm::Hmac { .. } => "HMAC",
             KeyAlgorithm::Chacha => CHACHA,
         }
@@ -77,7 +82,8 @@ impl KeyAlgorithm {
             KeyAlgorithm::Kdf { .. }
             | KeyAlgorithm::Okp { .. }
             | KeyAlgorithm::Chacha
-            | KeyAlgorithm::MlDsa { .. } => vec![name],
+            | KeyAlgorithm::MlDsa { .. }
+            | KeyAlgorithm::MlKem { .. } => vec![name],
             KeyAlgorithm::Ec { curve, .. } => vec![
                 name,
                 ("namedCurve", AlgorithmValue::Str((*curve).to_owned())),
@@ -146,6 +152,8 @@ fn allowed(name: &str, kind: KeyType) -> &'static [Usage] {
         ("ECDH" | "X25519", _) => &[DeriveKey, DeriveBits],
         ("Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87", KeyType::Public) => &[Verify],
         ("Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87", _) => &[Sign],
+        ("ML-KEM-768" | "ML-KEM-1024", KeyType::Public) => &[EncapsulateKey, EncapsulateBits],
+        ("ML-KEM-768" | "ML-KEM-1024", KeyType::Private) => &[DecapsulateKey, DecapsulateBits],
         ("RSA-OAEP", KeyType::Public) => &[Encrypt, WrapKey],
         ("RSA-OAEP", _) => &[Decrypt, UnwrapKey],
         _ => &[],
@@ -607,6 +615,74 @@ pub(crate) fn run(keys: &mut Keys, call: Call) -> Result<Outcome, Error> {
             )?;
             Ok(Outcome::Key(info))
         }
+        Call::EncapsulateBits { algorithm, key } => {
+            let alg = normalize("encapsulate", &algorithm)?;
+            let key = key_for(keys, key, alg.name, Usage::EncapsulateBits)?;
+            let Material::PqPublic { public } = &key.material else {
+                return Err(Error::operation(""));
+            };
+            let (ciphertext, shared) = ml_kem_encapsulate(alg.name, public)?;
+            Ok(Outcome::Encapsulated {
+                ciphertext,
+                shared: Box::new(Outcome::Bytes(shared)),
+            })
+        }
+        Call::EncapsulateKey {
+            algorithm,
+            key,
+            shared_algorithm,
+            extractable,
+            usages,
+        } => {
+            let alg = normalize("encapsulate", &algorithm)?;
+            let shared_import = normalize("importKey", &shared_algorithm)?;
+            let key = key_for(keys, key, alg.name, Usage::EncapsulateKey)?;
+            let Material::PqPublic { public } = &key.material else {
+                return Err(Error::operation(""));
+            };
+            let (ciphertext, shared) = ml_kem_encapsulate(alg.name, public)?;
+            let shared = shared_key(keys, shared, &shared_import, extractable, &usages)?;
+            Ok(Outcome::Encapsulated {
+                ciphertext,
+                shared: Box::new(shared),
+            })
+        }
+        Call::DecapsulateBits {
+            algorithm,
+            key,
+            ciphertext,
+        } => {
+            let alg = normalize("decapsulate", &algorithm)?;
+            let key = key_for(keys, key, alg.name, Usage::DecapsulateBits)?;
+            let Material::PqPrivate { seed, .. } = &key.material else {
+                return Err(Error::operation(""));
+            };
+            Ok(Outcome::Bytes(ml_kem_decapsulate(
+                alg.name,
+                seed,
+                &ciphertext,
+            )?))
+        }
+        Call::DecapsulateKey {
+            algorithm,
+            key,
+            ciphertext,
+            shared_algorithm,
+            extractable,
+            usages,
+        } => {
+            let alg = normalize("decapsulate", &algorithm)?;
+            let shared_import = normalize("importKey", &shared_algorithm)?;
+            let shared = {
+                let key = key_for(keys, key, alg.name, Usage::DecapsulateKey)?;
+                let Material::PqPrivate { seed, .. } = &key.material else {
+                    return Err(Error::operation(""));
+                };
+                ml_kem_decapsulate(alg.name, seed, &ciphertext)?
+            };
+            shared_key(keys, shared, &shared_import, extractable, &usages)
+        }
+        Call::GetPublicKey { key, usages } => public_key_of(keys, key, &usages),
     }
 }
 
@@ -1815,66 +1891,138 @@ fn export_okp(key: &Key, name: &str, material: &Material, format: &str) -> Resul
 /// which aws-lc-rs's stable API cannot pass.
 pub(crate) const ML_DSA_CONTEXT_GAP: &str = "ML-DSA with a non-empty context is not supported";
 
-/// ML-DSA `name`'s signing and verifying algorithms (aws-lc-rs's) and
-/// the last byte of its OID (2.16.840.1.101.3.4.3.17, .18, .19).
+/// ML-DSA `name`'s signing and verifying algorithms (aws-lc-rs's).
 fn ml_dsa(
     name: &str,
 ) -> Option<(
     &'static signature::PqdsaSigningAlgorithm,
     &'static signature::PqdsaVerificationAlgorithm,
-    u8,
 )> {
     match name {
-        "ML-DSA-44" => Some((&signature::ML_DSA_44_SIGNING, &signature::ML_DSA_44, 0x11)),
-        "ML-DSA-65" => Some((&signature::ML_DSA_65_SIGNING, &signature::ML_DSA_65, 0x12)),
-        "ML-DSA-87" => Some((&signature::ML_DSA_87_SIGNING, &signature::ML_DSA_87, 0x13)),
+        "ML-DSA-44" => Some((&signature::ML_DSA_44_SIGNING, &signature::ML_DSA_44)),
+        "ML-DSA-65" => Some((&signature::ML_DSA_65_SIGNING, &signature::ML_DSA_65)),
+        "ML-DSA-87" => Some((&signature::ML_DSA_87_SIGNING, &signature::ML_DSA_87)),
         _ => None,
     }
 }
 
-/// The AlgorithmIdentifier of the ML-DSA whose OID ends in `last`: its
-/// OID, no parameters (RFC 9881).
-fn ml_dsa_algorithm_id(last: u8) -> [u8; 13] {
-    [
-        0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, last,
-    ]
+/// ML-KEM `name`'s parameter set: aws-lc-rs's, and the library's own
+/// for a key made from its seed (`native`).
+fn ml_kem(name: &str) -> Option<(&'static kem::Algorithm<kem::AlgorithmId>, native::MlKem)> {
+    match name {
+        "ML-KEM-768" => Some((&kem::ML_KEM_768, native::MlKem::K768)),
+        "ML-KEM-1024" => Some((&kem::ML_KEM_1024, native::MlKem::K1024)),
+        _ => None,
+    }
 }
 
-/// An ML-DSA public key's SPKI.
-fn ml_dsa_spki(last: u8, public: &[u8]) -> Vec<u8> {
-    let mut bits = vec![0x03];
-    der_length(&mut bits, public.len() + 1);
-    bits.push(0);
-    bits.extend_from_slice(public);
-    let id = ml_dsa_algorithm_id(last);
-    let mut out = vec![0x30];
-    der_length(&mut out, id.len() + bits.len());
-    out.extend_from_slice(&id);
-    out.extend_from_slice(&bits);
-    out
+/// A post-quantum algorithm's keys (ML-DSA's, step 5b, and ML-KEM's,
+/// 5c), which share their forms: a seed kept as the private key, its
+/// raw-seed and its PKCS#8 of the seed alone, the public key raw and in
+/// its SPKI, and an AKP JWK. Its OID is 2.16.840.1.101.3.4.`arc`.`last`.
+#[derive(Clone, Copy)]
+struct Pq {
+    name: &'static str,
+    arc: u8,
+    last: u8,
+    seed_len: usize,
+    public_len: usize,
+    kem: bool,
 }
 
-/// An ML-DSA private key's PKCS#8, of its seed alone (RFC 9881's
-/// `seed` choice, `[0] IMPLICIT OCTET STRING (SIZE (32))`): the only
-/// form the reference writes or reads (probed: 54 bytes; the expanded
-/// key and the pair of both refused).
-fn ml_dsa_pkcs8(last: u8, seed: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x30, 0x34, 0x02, 0x01, 0x00];
-    out.extend_from_slice(&ml_dsa_algorithm_id(last));
-    out.extend_from_slice(&[0x04, 0x22, 0x80, 0x20]);
-    out.extend_from_slice(seed);
-    out
+/// The post-quantum algorithm named `name`.
+fn pq(name: &str) -> Option<Pq> {
+    let (name, arc, last, seed_len, public_len, kem) = match name {
+        "ML-DSA-44" => ("ML-DSA-44", 0x03, 0x11, 32, 1312, false),
+        "ML-DSA-65" => ("ML-DSA-65", 0x03, 0x12, 32, 1952, false),
+        "ML-DSA-87" => ("ML-DSA-87", 0x03, 0x13, 32, 2592, false),
+        "ML-KEM-768" => ("ML-KEM-768", 0x04, 0x02, 64, 1184, true),
+        "ML-KEM-1024" => ("ML-KEM-1024", 0x04, 0x03, 64, 1568, true),
+        _ => return None,
+    };
+    Some(Pq {
+        name,
+        arc,
+        last,
+        seed_len,
+        public_len,
+        kem,
+    })
 }
 
-/// The public key ML-DSA `signing` makes of `seed` (FIPS 204's
-/// ML-DSA.KeyGen_internal); `None` for a seed of another length.
-fn ml_dsa_public(
-    signing: &'static signature::PqdsaSigningAlgorithm,
-    seed: &[u8],
-) -> Option<Vec<u8>> {
-    use signature::KeyPair;
-    let pair = signature::PqdsaKeyPair::from_seed(signing, seed).ok()?;
-    Some(pair.public_key().as_ref().to_vec())
+impl Pq {
+    fn key_algorithm(self) -> KeyAlgorithm {
+        if self.kem {
+            KeyAlgorithm::MlKem { name: self.name }
+        } else {
+            KeyAlgorithm::MlDsa { name: self.name }
+        }
+    }
+
+    /// Its AlgorithmIdentifier: the OID, no parameters (RFC 9881, the
+    /// ML-KEM draft's alike).
+    fn algorithm_id(self) -> [u8; 13] {
+        [
+            0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, self.arc, self.last,
+        ]
+    }
+
+    /// A public key's SPKI.
+    fn spki(self, public: &[u8]) -> Vec<u8> {
+        let mut bits = vec![0x03];
+        der_length(&mut bits, public.len() + 1);
+        bits.push(0);
+        bits.extend_from_slice(public);
+        let id = self.algorithm_id();
+        let mut out = vec![0x30];
+        der_length(&mut out, id.len() + bits.len());
+        out.extend_from_slice(&id);
+        out.extend_from_slice(&bits);
+        out
+    }
+
+    /// A private key's PKCS#8, of its seed alone (the `seed` choice,
+    /// `[0] IMPLICIT OCTET STRING`): the only form the reference writes
+    /// or reads (probed: 54 bytes for ML-DSA, 86 for ML-KEM; the
+    /// expanded key and the pair of both refused).
+    fn pkcs8(self, seed: &[u8]) -> Vec<u8> {
+        let n = self.seed_len as u8;
+        let mut out = vec![0x30, 20 + n, 0x02, 0x01, 0x00];
+        out.extend_from_slice(&self.algorithm_id());
+        out.extend_from_slice(&[0x04, n + 2, 0x80, n]);
+        out.extend_from_slice(seed);
+        out
+    }
+
+    /// The public key its seed makes (FIPS 204's ML-DSA.KeyGen_internal,
+    /// FIPS 203's ML-KEM.KeyGen_internal); `None` for a seed of another
+    /// length.
+    fn public_of(self, seed: &[u8]) -> Option<Vec<u8>> {
+        if seed.len() != self.seed_len {
+            return None;
+        }
+        if let Some((_, kind)) = ml_kem(self.name) {
+            let (_secret, public) = native::ml_kem_from_seed(kind, seed).ok()?;
+            return Some(public);
+        }
+        use signature::KeyPair;
+        let (signing, _) = ml_dsa(self.name)?;
+        let pair = signature::PqdsaKeyPair::from_seed(signing, seed).ok()?;
+        Some(pair.public_key().as_ref().to_vec())
+    }
+
+    /// Whether `public` is one of its public keys: its length, and for
+    /// ML-KEM FIPS 203's check that each coefficient is below q (the
+    /// reference refuses a key that fails it, probed), which the library
+    /// makes as it encapsulates (FIPS 203 section 7.2's input check), not
+    /// as it takes the key: a throwaway encapsulation makes it.
+    fn public_ok(self, public: &[u8]) -> bool {
+        public.len() == self.public_len
+            && ml_kem(self.name).is_none_or(|(algorithm, _)| {
+                kem::EncapsulationKey::new(algorithm, public)
+                    .is_ok_and(|key| key.encapsulate().is_ok())
+            })
+    }
 }
 
 /// ML-DSA's context, checked as the reference checks it (probed): over
@@ -1895,7 +2043,7 @@ fn ml_dsa_context(alg: &Normalized) -> Result<(), Error> {
 fn ml_dsa_sign(name: &str, seed: &[u8], alg: &Normalized, data: &[u8]) -> Result<Vec<u8>, Error> {
     ml_dsa_context(alg)?;
     let failed = || Error::operation("");
-    let (signing, _, _) = ml_dsa(name).ok_or_else(failed)?;
+    let (signing, _) = ml_dsa(name).ok_or_else(failed)?;
     let pair = signature::PqdsaKeyPair::from_seed(signing, seed).map_err(|_| failed())?;
     let mut out = vec![0u8; signing.signature_len()];
     let len = pair.sign(data, &mut out).map_err(|_| failed())?;
@@ -1903,9 +2051,39 @@ fn ml_dsa_sign(name: &str, seed: &[u8], alg: &Normalized, data: &[u8]) -> Result
     Ok(out)
 }
 
-/// An ML-DSA key pair, made from 32 random bytes as FIPS 204's
-/// ML-DSA.KeyGen makes it, the seed kept (its raw-seed and PKCS#8).
-fn generate_ml_dsa(
+/// An ML-KEM encapsulation to the public key `public`: its ciphertext
+/// and shared secret (32 bytes), aws-lc-rs's.
+fn ml_kem_encapsulate(name: &str, public: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    let failed = || Error::operation("");
+    let (algorithm, _) = ml_kem(name).ok_or_else(failed)?;
+    let key = kem::EncapsulationKey::new(algorithm, public).map_err(|_| failed())?;
+    let (ciphertext, shared) = key.encapsulate().map_err(|_| failed())?;
+    Ok((ciphertext.as_ref().to_vec(), shared.as_ref().to_vec()))
+}
+
+/// An ML-KEM decapsulation of `ciphertext` with the key of `seed`: the
+/// key expanded from its seed (`native`, the expanded bytes overwritten
+/// as they go) and decapsulated by aws-lc-rs. A ciphertext of another
+/// length is a DataError with no message (the reference's, probed); a
+/// wrong one gives FIPS 203's implicit rejection, never an error.
+fn ml_kem_decapsulate(name: &str, seed: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+    let failed = || Error::operation("");
+    let (algorithm, kind) = ml_kem(name).ok_or_else(failed)?;
+    if ciphertext.len() != kind.ciphertext_len() {
+        return Err(Error::data(""));
+    }
+    let (secret, _) = native::ml_kem_from_seed(kind, seed).map_err(|_| failed())?;
+    let key = kem::DecapsulationKey::new(algorithm, secret.bytes()).map_err(|_| failed())?;
+    let shared = key
+        .decapsulate(kem::Ciphertext::from(ciphertext))
+        .map_err(|_| failed())?;
+    Ok(shared.as_ref().to_vec())
+}
+
+/// A post-quantum key pair, made from random bytes as FIPS 204's
+/// ML-DSA.KeyGen and FIPS 203's ML-KEM.KeyGen make it, the seed kept
+/// (its raw-seed and PKCS#8).
+fn generate_pq(
     keys: &mut Keys,
     alg: &Normalized,
     extractable: bool,
@@ -1922,9 +2100,9 @@ fn generate_ml_dsa(
         ));
     }
     let failed = || Error::operation("");
-    let (signing, _, _) = ml_dsa(alg.name).ok_or_else(failed)?;
-    let seed = random(signing.seed_len())?;
-    let public = ml_dsa_public(signing, &seed).ok_or_else(failed)?;
+    let pq = pq(alg.name).ok_or_else(failed)?;
+    let seed = random(pq.seed_len)?;
+    let public = pq.public_of(&seed).ok_or_else(failed)?;
     let public_usages: Vec<Usage> = usages
         .iter()
         .copied()
@@ -1936,7 +2114,7 @@ fn generate_ml_dsa(
         .filter(|u| private_allowed.contains(u))
         .collect();
     empty_usages(KeyType::Private, &private_usages)?;
-    let algorithm = KeyAlgorithm::MlDsa { name: alg.name };
+    let algorithm = pq.key_algorithm();
     let public_key = Key {
         kind: KeyType::Public,
         extractable: true,
@@ -1959,12 +2137,12 @@ fn generate_ml_dsa(
     ))
 }
 
-/// An ML-DSA key's import, as the reference checks it (probed): the
-/// public key raw (`raw-public`) or in an SPKI, the private key its seed
-/// (`raw-seed`) or the seed's PKCS#8, or a JWK (`AKP`: `pub`, and the
-/// seed as `priv`, the two agreeing); a length or encoding refused a
+/// A post-quantum key's import, as the reference checks it (probed):
+/// the public key raw (`raw-public`) or in an SPKI, the private key its
+/// seed (`raw-seed`) or the seed's PKCS#8, or a JWK (`AKP`: `pub`, and
+/// the seed as `priv`, the two agreeing); a length or encoding refused a
 /// DataError with no message, as the reference's.
-fn import_ml_dsa(
+fn import_pq(
     keys: &mut Keys,
     format: &str,
     data: &Value,
@@ -1973,7 +2151,7 @@ fn import_ml_dsa(
     usages: &[Usage],
 ) -> Result<KeyInfo, Error> {
     let name = alg.name;
-    let (signing, _, last) = ml_dsa(name).ok_or_else(|| Error::operation(""))?;
+    let pq = pq(name).ok_or_else(|| Error::operation(""))?;
     let bad = || Error::data("");
     let bytes = || match data {
         Value::Bytes(bytes) => Ok(bytes.as_slice()),
@@ -1982,7 +2160,7 @@ fn import_ml_dsa(
         )),
     };
     let private = |seed: &[u8]| {
-        let public = ml_dsa_public(signing, seed).ok_or_else(bad)?;
+        let public = pq.public_of(seed).ok_or_else(bad)?;
         Ok::<_, Error>((
             KeyType::Private,
             Material::PqPrivate {
@@ -1995,7 +2173,7 @@ fn import_ml_dsa(
         "raw-public" => {
             check_usages(name, KeyType::Public, usages)?;
             let public = bytes()?;
-            if public.len() != signing.public_key_len() {
+            if !pq.public_ok(public) {
                 return Err(bad());
             }
             (
@@ -2008,10 +2186,12 @@ fn import_ml_dsa(
         "spki" => {
             check_usages(name, KeyType::Public, usages)?;
             let der = bytes()?;
-            let len = signing.public_key_len();
-            let prefix = ml_dsa_spki(last, &vec![0; len]);
-            let prefix = &prefix[..prefix.len() - len];
-            if der.len() != prefix.len() + len || !der.starts_with(prefix) {
+            let prefix = pq.spki(&vec![0; pq.public_len]);
+            let prefix = &prefix[..prefix.len() - pq.public_len];
+            if der.len() != prefix.len() + pq.public_len
+                || !der.starts_with(prefix)
+                || !pq.public_ok(&der[prefix.len()..])
+            {
                 return Err(bad());
             }
             (
@@ -2028,8 +2208,8 @@ fn import_ml_dsa(
         "pkcs8" => {
             check_usages(name, KeyType::Private, usages)?;
             let der = bytes()?;
-            let prefix = ml_dsa_pkcs8(last, &[]);
-            if der.len() != prefix.len() + signing.seed_len() || !der.starts_with(&prefix) {
+            let prefix = pq.pkcs8(&[]);
+            if der.len() != prefix.len() + pq.seed_len || !der.starts_with(&prefix) {
                 return Err(bad());
             }
             private(&der[prefix.len()..])?
@@ -2053,11 +2233,15 @@ fn import_ml_dsa(
                 usages,
             )?;
             let public = jwk.bytes("pub")?;
-            if public.len() != signing.public_key_len() {
+            if !pq.public_ok(&public) {
                 return Err(bad());
             }
             if has_private {
-                let made = private(&jwk.bytes("priv")?)?;
+                let mut seed = jwk.bytes("priv")?;
+                let made = private(&seed);
+                seed.iter_mut().for_each(|b| *b = 0);
+                std::hint::black_box(&seed);
+                let made = made?;
                 match &made.1 {
                     Material::PqPrivate {
                         public: from_seed, ..
@@ -2080,21 +2264,16 @@ fn import_ml_dsa(
     Ok(keys.insert(Key {
         kind,
         extractable,
-        algorithm: KeyAlgorithm::MlDsa { name },
+        algorithm: pq.key_algorithm(),
         usages: usages.to_vec(),
         material,
     }))
 }
 
-fn export_ml_dsa(
-    key: &Key,
-    name: &str,
-    material: &Material,
-    format: &str,
-) -> Result<Outcome, Error> {
+fn export_pq(key: &Key, name: &str, material: &Material, format: &str) -> Result<Outcome, Error> {
     let wrong = || Error::invalid_access("The key is not of the expected type");
     let failed = || Error::operation("");
-    let (_, _, last) = ml_dsa(name).ok_or_else(failed)?;
+    let pq = pq(name).ok_or_else(failed)?;
     let (seed, public) = match material {
         Material::PqPublic { public } => (None, public),
         Material::PqPrivate { seed, public } => (Some(seed), public),
@@ -2103,9 +2282,9 @@ fn export_ml_dsa(
     match (format, seed) {
         ("raw-public" | "spki", Some(_)) | ("raw-seed" | "pkcs8", None) => Err(wrong()),
         ("raw-public", None) => Ok(Outcome::Bytes(public.clone())),
-        ("spki", None) => Ok(Outcome::Bytes(ml_dsa_spki(last, public))),
+        ("spki", None) => Ok(Outcome::Bytes(pq.spki(public))),
         ("raw-seed", Some(seed)) => Ok(Outcome::Bytes(seed.clone())),
-        ("pkcs8", Some(seed)) => Ok(Outcome::Bytes(ml_dsa_pkcs8(last, seed))),
+        ("pkcs8", Some(seed)) => Ok(Outcome::Bytes(pq.pkcs8(seed))),
         ("jwk", _) => {
             let mut members = vec![
                 ("alg", JwkValue::Str(name.into())),
@@ -2210,7 +2389,8 @@ pub(crate) fn key_record(key: &Key) -> Option<Vec<u8>> {
         | KeyAlgorithm::Kdf { .. }
         | KeyAlgorithm::Okp { .. }
         | KeyAlgorithm::Chacha
-        | KeyAlgorithm::MlDsa { .. } => Json::object([("name", name)]),
+        | KeyAlgorithm::MlDsa { .. }
+        | KeyAlgorithm::MlKem { .. } => Json::object([("name", name)]),
     };
     let record = Json::object([
         ("f", Json::String(format.to_owned())),
@@ -2499,7 +2679,7 @@ fn verify(key: &Key, alg: &Normalized, signature: &[u8], data: &[u8]) -> Result<
         }
         (KeyAlgorithm::MlDsa { name }, Material::PqPublic { public }) => {
             ml_dsa_context(alg)?;
-            let (_, verifying, _) = ml_dsa(name).ok_or_else(|| Error::operation(""))?;
+            let (_, verifying) = ml_dsa(name).ok_or_else(|| Error::operation(""))?;
             Ok(signature::UnparsedPublicKey::new(verifying, public)
                 .verify(data, signature)
                 .is_ok())
@@ -2573,7 +2753,9 @@ fn generate(
         }
         "ECDSA" | "ECDH" => generate_ec(keys, alg, extractable, usages),
         "Ed25519" | "X25519" => generate_okp(keys, alg, extractable, usages),
-        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" => generate_ml_dsa(keys, alg, extractable, usages),
+        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" | "ML-KEM-768" | "ML-KEM-1024" => {
+            generate_pq(keys, alg, extractable, usages)
+        }
         _ => Err(Error::not_supported("Unsupported operation")),
     }
 }
@@ -2805,7 +2987,18 @@ fn import(
             if bytes.is_empty() {
                 return Err(Error::data("HMAC key data must not be empty"));
             }
-            let length = alg.num("length").unwrap_or(bytes.len() as u32 * 8);
+            let bits = bytes.len() as u64 * 8;
+            let length = match alg.num("length") {
+                // More than 7 bits short of its data, or past it: refused
+                // (the spec's, and the reference's words, probed).
+                Some(length) if u64::from(length) > bits || u64::from(length) + 8 <= bits => {
+                    return Err(Error::data(
+                        "The optional HMAC key length must be shorter than the key data, and by no more than 7 bits.",
+                    ));
+                }
+                Some(length) => length,
+                None => bits as u32,
+            };
             empty_usages(KeyType::Secret, usages)?;
             Ok(keys.insert(secret_key(KeyAlgorithm::Hmac { hash, length }, bytes)))
         }
@@ -2825,8 +3018,8 @@ fn import(
         }
         "ECDSA" | "ECDH" => import_ec(keys, format, data, alg, extractable, usages),
         "Ed25519" | "X25519" => import_okp(keys, format, data, alg, extractable, usages),
-        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" => {
-            import_ml_dsa(keys, format, data, alg, extractable, usages)
+        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" | "ML-KEM-768" | "ML-KEM-1024" => {
+            import_pq(keys, format, data, alg, extractable, usages)
         }
         "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP" => {
             let hash = alg.hash().unwrap_or("SHA-256");
@@ -3004,8 +3197,109 @@ fn has_export(name: &str) -> bool {
 fn import_params(alg: &Normalized) -> Result<(), Error> {
     match alg.name {
         "ECDSA" | "ECDH" => named_curve(alg, "EcKeyImportParams").map(|_| ()),
+        // A length of 0 fits no key data (more than 7 bits short of any).
+        "HMAC" if alg.num("length") == Some(0) => Err(Error::data("")),
         _ => Ok(()),
     }
+}
+
+/// An algorithm identifier's name: the string, or its `name` member.
+pub(crate) fn algorithm_name(algorithm: &Value) -> Option<&str> {
+    match algorithm {
+        Value::Str(name) => Some(name),
+        _ => match algorithm.get("name") {
+            Value::Str(name) => Some(name),
+            _ => None,
+        },
+    }
+}
+
+/// Whether algorithm `name`'s keys come in pairs, whose private key
+/// getPublicKey takes.
+fn asymmetric(name: &str) -> bool {
+    matches!(
+        name,
+        "RSASSA-PKCS1-v1_5"
+            | "RSA-PSS"
+            | "RSA-OAEP"
+            | "ECDSA"
+            | "ECDH"
+            | "Ed25519"
+            | "X25519"
+            | "ML-DSA-44"
+            | "ML-DSA-65"
+            | "ML-DSA-87"
+            | "ML-KEM-768"
+            | "ML-KEM-1024"
+    )
+}
+
+/// getPublicKey: a private key's public key, of the usages asked
+/// (probed: the reference's order and words).
+fn public_key_of(keys: &mut Keys, key: u32, usages: &[Usage]) -> Result<Outcome, Error> {
+    let key = keys.get(key)?;
+    match key.kind {
+        KeyType::Secret => {
+            return Err(Error::not_supported(
+                "getPublicKey can only be called with keys from an asymmetric algorithm",
+            )
+            .of_method());
+        }
+        KeyType::Public => {
+            return Err(Error::invalid_access(
+                "getPublicKey can only be called with a private key",
+            )
+            .of_method());
+        }
+        KeyType::Private => {}
+    }
+    check_usages(key.algorithm.name(), KeyType::Public, usages)?;
+    let material = match &key.material {
+        Material::RsaPrivate(parts) => Material::RsaPublic {
+            n: parts.n.clone(),
+            e: parts.e.clone(),
+        },
+        Material::EcPrivate { point, .. } => Material::EcPublic {
+            point: point.clone(),
+        },
+        Material::OkpPrivate { x, .. } => Material::OkpPublic { x: x.clone() },
+        Material::PqPrivate { public, .. } => Material::PqPublic {
+            public: public.clone(),
+        },
+        _ => return Err(Error::operation("")),
+    };
+    let public = Key {
+        kind: KeyType::Public,
+        extractable: true,
+        algorithm: key.algorithm.clone(),
+        usages: usage_set(usages),
+        material,
+    };
+    Ok(Outcome::Key(keys.insert(public)))
+}
+
+/// The shared key an encapsulation's or decapsulation's secret makes:
+/// imported as raw-secret, as the reference imports it (probed: an
+/// AES key of 256 bits whatever length was asked, HMAC's of 256), the
+/// secret overwritten after.
+fn shared_key(
+    keys: &mut Keys,
+    mut shared: Vec<u8>,
+    algorithm: &Normalized,
+    extractable: bool,
+    usages: &[Usage],
+) -> Result<Outcome, Error> {
+    let info = import(
+        keys,
+        "raw-secret",
+        &Value::Bytes(shared.clone()),
+        algorithm,
+        extractable,
+        &usage_set(usages),
+    );
+    shared.iter_mut().for_each(|b| *b = 0);
+    std::hint::black_box(&shared);
+    Ok(Outcome::Key(info?))
 }
 
 fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
@@ -3069,9 +3363,9 @@ fn export(key: &Key, format: &str) -> Result<Outcome, Error> {
             material @ (Material::OkpPublic { .. } | Material::OkpPrivate { .. }),
         ) => export_okp(key, name, material, format),
         (
-            KeyAlgorithm::MlDsa { name },
+            KeyAlgorithm::MlDsa { name } | KeyAlgorithm::MlKem { name },
             material @ (Material::PqPublic { .. } | Material::PqPrivate { .. }),
-        ) => export_ml_dsa(key, name, material, format),
+        ) => export_pq(key, name, material, format),
         (
             KeyAlgorithm::Ec { curve, .. },
             material @ (Material::EcPublic { .. } | Material::EcPrivate { .. }),
@@ -3164,12 +3458,20 @@ pub(crate) fn supports(keys: &Keys, op: &str, algorithm: &Value, extra: &Value) 
         Value::Num(n) => Some(*n as u32),
         _ => None,
     };
+    // getPublicKey takes no algorithm: any private key of an asymmetric
+    // one, whatever else the dictionary says.
+    if op == "getPublicKey" {
+        return algorithm_name(algorithm)
+            .and_then(crate::normalize::canonical)
+            .is_some_and(asymmetric);
+    }
     let normalized_as = match op {
         "encrypt" | "decrypt" | "sign" | "verify" | "digest" | "generateKey" | "importKey"
         | "deriveBits" | "wrapKey" | "unwrapKey" => op,
         "exportKey" => "importKey",
         "deriveKey" => "deriveBits",
-        // getPublicKey and the KEM methods: G255 step 5.
+        "encapsulateKey" | "encapsulateBits" => "encapsulate",
+        "decapsulateKey" | "decapsulateBits" => "decapsulate",
         _ => return false,
     };
     let Ok(alg) = normalize(normalized_as, algorithm) else {
@@ -3195,6 +3497,23 @@ pub(crate) fn supports(keys: &Keys, op: &str, algorithm: &Value, extra: &Value) 
             }
         },
         "importKey" => import_params(&alg).is_ok(),
+        // The shared key's algorithm, which the operation needs: one that
+        // 32 bytes of secret import as (run on a throwaway store).
+        "encapsulateKey" | "decapsulateKey" => match extra {
+            Value::Absent => false,
+            _ => normalize("importKey", extra).is_ok_and(|shared| {
+                let usages = allowed(shared.name, KeyType::Secret);
+                import(
+                    &mut Keys::default(),
+                    "raw-secret",
+                    &Value::Bytes(vec![0; 32]),
+                    &shared,
+                    false,
+                    usages,
+                )
+                .is_ok()
+            }),
+        },
         "exportKey" => import_params(&alg).is_ok() && has_export(alg.name),
         "encrypt" | "decrypt" => cipher_params(&alg),
         // The wrapped key's algorithm, if given: one that imports, and,

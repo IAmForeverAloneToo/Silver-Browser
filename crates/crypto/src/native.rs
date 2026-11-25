@@ -3,7 +3,10 @@
 //! length the reference allows; RSA's keys (generated, made from their
 //! parts, a PKCS #8 parsed, their parts and PKCS #1 read, each checked)
 //! and RSASSA-PKCS1-v1_5's and RSA-PSS's signing and verification outside
-//! aws-lc-rs's ranges. Every unsafe call of the crate is here.
+//! aws-lc-rs's ranges; an X25519 key's PKCS #8; an ML-KEM key made from
+//! its seed (`ml_kem_from_seed`, the lead's approval of 2026-11-24:
+//! remove it when aws-lc-rs makes or imports an ML-KEM key from its
+//! seed). Every unsafe call of the crate is here.
 //!
 //! The rules this module keeps: each C object is owned by a wrapper that
 //! frees it on every path (`Context`, `Rsa`, `Bignum`, `Pkey`); a private
@@ -579,6 +582,169 @@ pub(crate) fn x25519_private_from_pkcs8(der: &[u8]) -> Result<Vec<u8>, Failed> {
     Ok(out)
 }
 
+// SAFETY: the declaration is the header's own prototype (an
+// `EVP_PKEY_CTX *`, an `EVP_PKEY **`, a `const uint8_t *` and a
+// `size_t *`, an `int` back) under the symbol the library exports for
+// aws-lc-sys 0.45.0, which Cargo.toml pins exactly; it is called once, in
+// `ml_kem_from_seed`, under that function's checks.
+unsafe extern "C" {
+    /// aws-lc's deterministic key generation of a KEM's key from its seed
+    /// (include/openssl/experimental/kem_deterministic_api.h), which the
+    /// library builds in but aws-lc-sys's bindings leave out with the rest
+    /// of that header: declared here as the library exports it, under
+    /// aws-lc-sys's symbol prefix for its version (0.45.0), each platform
+    /// decorating it as its C names are. A version that renames it fails
+    /// the link; it never calls something else. Read it again, with the
+    /// header, on any aws-lc-sys bump.
+    #[link_name = "aws_lc_0_45_0_EVP_PKEY_keygen_deterministic"]
+    fn EVP_PKEY_keygen_deterministic(
+        ctx: *mut sys::EVP_PKEY_CTX,
+        out_pkey: *mut *mut sys::EVP_PKEY,
+        seed: *const u8,
+        seed_len: *mut usize,
+    ) -> c_int;
+}
+
+/// An `EVP_PKEY_CTX`, freed as it goes.
+struct PkeyContext(*mut sys::EVP_PKEY_CTX);
+
+impl Drop for PkeyContext {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `EVP_PKEY_CTX_new_id`, is not
+        // null, and is freed once, here.
+        unsafe { sys::EVP_PKEY_CTX_free(self.0) };
+    }
+}
+
+/// ML-KEM's parameter sets the store makes keys of (ML-KEM-512 is out,
+/// the lead's ruling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MlKem {
+    K768,
+    K1024,
+}
+
+impl MlKem {
+    fn nid(self) -> c_int {
+        match self {
+            MlKem::K768 => sys::NID_MLKEM768,
+            MlKem::K1024 => sys::NID_MLKEM1024,
+        }
+    }
+
+    /// FIPS 203's decapsulation key's length, expanded.
+    fn secret_len(self) -> usize {
+        match self {
+            MlKem::K768 => 2400,
+            MlKem::K1024 => 3168,
+        }
+    }
+
+    /// FIPS 203's encapsulation key's length.
+    fn public_len(self) -> usize {
+        match self {
+            MlKem::K768 => 1184,
+            MlKem::K1024 => 1568,
+        }
+    }
+
+    /// FIPS 203's ciphertext's length.
+    pub(crate) fn ciphertext_len(self) -> usize {
+        match self {
+            MlKem::K768 => 1088,
+            MlKem::K1024 => 1568,
+        }
+    }
+}
+
+/// ML-KEM's seed: d and z, 32 bytes each (FIPS 203's
+/// ML-KEM.KeyGen_internal).
+pub(crate) const ML_KEM_SEED: usize = 64;
+
+/// An ML-KEM decapsulation key, expanded (FIPS 203's dk): overwritten as
+/// it goes, never shown.
+pub(crate) struct MlKemSecret(Vec<u8>);
+
+impl MlKemSecret {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for MlKemSecret {
+    fn drop(&mut self) {
+        self.0.iter_mut().for_each(|b| *b = 0);
+        std::hint::black_box(&self.0);
+    }
+}
+
+impl std::fmt::Debug for MlKemSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MlKemSecret(..)")
+    }
+}
+
+/// An ML-KEM key pair made from its 64-byte seed by the library's
+/// deterministic key generation (`EVP_PKEY_keygen_deterministic`, FIPS
+/// 203's ML-KEM.KeyGen_internal(d, z)): the expanded decapsulation key
+/// and the encapsulation key. aws-lc-rs 1.18 takes only the expanded key
+/// (the lead's approval of 2026-11-24; remove when aws-lc-rs makes or
+/// imports a key from its seed). The seed's length is checked before
+/// any call; each call's code, and each length the library writes.
+pub(crate) fn ml_kem_from_seed(kind: MlKem, seed: &[u8]) -> Result<(MlKemSecret, Vec<u8>), Failed> {
+    if seed.len() != ML_KEM_SEED {
+        return Err(Failed);
+    }
+    reached();
+    // SAFETY: `EVP_PKEY_CTX_new_id` takes a key type and no engine and
+    // returns a new context or null; null is refused below, and the
+    // context is owned at once by its wrapper.
+    let ctx = unsafe { sys::EVP_PKEY_CTX_new_id(sys::EVP_PKEY_KEM, ptr::null_mut()) };
+    if ctx.is_null() {
+        return Err(Failed);
+    }
+    let ctx = PkeyContext(ctx);
+    // SAFETY: `ctx.0` is a live context.
+    ok("MlKemInit", unsafe { sys::EVP_PKEY_keygen_init(ctx.0) })?;
+    // SAFETY: `ctx.0` is a live context, set for key generation; the NID
+    // is one of the library's ML-KEM sets.
+    ok("MlKemParams", unsafe {
+        sys::EVP_PKEY_CTX_kem_set_params(ctx.0, kind.nid())
+    })?;
+    let mut pkey: *mut sys::EVP_PKEY = ptr::null_mut();
+    let mut seed_len = seed.len();
+    // SAFETY: `ctx.0` is a live context set for ML-KEM's key generation;
+    // `seed` has `seed_len` bytes and lives through the call; `pkey` is
+    // null, so the library makes a new key, which it frees itself and
+    // sets back to null when it fails.
+    let code =
+        unsafe { EVP_PKEY_keygen_deterministic(ctx.0, &mut pkey, seed.as_ptr(), &mut seed_len) };
+    // Owned at once, whatever the code says.
+    let pkey = (!pkey.is_null()).then_some(Pkey(pkey));
+    ok("MlKemKeygen", code)?;
+    let pkey = pkey.ok_or(Failed)?;
+    let mut secret = MlKemSecret(vec![0u8; kind.secret_len()]);
+    let mut len = secret.0.len();
+    // SAFETY: `pkey.0` is a live key, only read; `secret.0` has `len`
+    // bytes, the most the call writes, and `len` is written with what it
+    // wrote.
+    let code =
+        unsafe { sys::EVP_PKEY_get_raw_private_key(pkey.0, secret.0.as_mut_ptr(), &mut len) };
+    ok("MlKemSecret", code)?;
+    if len != secret.0.len() {
+        return Err(Failed);
+    }
+    let mut public = vec![0u8; kind.public_len()];
+    let mut len = public.len();
+    // SAFETY: as above, for the public key's buffer.
+    let code = unsafe { sys::EVP_PKEY_get_raw_public_key(pkey.0, public.as_mut_ptr(), &mut len) };
+    ok("MlKemPublic", code)?;
+    if len != public.len() {
+        return Err(Failed);
+    }
+    Ok((secret, public))
+}
+
 /// A PKCS #8 `PrivateKeyInfo` holding an RSA key, parsed and checked by
 /// the library (its `RSA_parse_private_key` ends with `RSA_check_key`),
 /// nothing after it: `Failed` for anything else.
@@ -863,6 +1029,108 @@ pub(crate) mod tests {
             gcm_open(&key, &iv, b"aad", &sealed, 12).unwrap(),
             b"some data"
         );
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    /// ML-KEM's key made from its seed, by Wycheproof's keygen-from-seed
+    /// vectors (FIPS 203; C2SP/wycheproof at the pinned commit): each
+    /// seed's expanded decapsulation key and its encapsulation key.
+    #[test]
+    fn ml_kem_from_seed_is_fips_203s_by_wycheproofs_vectors() {
+        use devtools::Json;
+        for (kind, text) in [
+            (
+                MlKem::K768,
+                include_str!("../tests/wycheproof/mlkem_768_keygen_seed_test.json"),
+            ),
+            (
+                MlKem::K1024,
+                include_str!("../tests/wycheproof/mlkem_1024_keygen_seed_test.json"),
+            ),
+        ] {
+            let json = Json::parse(text).expect("the vectors parse");
+            let mut count = 0;
+            for group in json
+                .get("testGroups")
+                .and_then(Json::as_array)
+                .expect("groups")
+            {
+                for test in group.get("tests").and_then(Json::as_array).expect("tests") {
+                    let field =
+                        |name: &str| unhex(test.get(name).and_then(Json::as_str).expect(name));
+                    let (secret, public) =
+                        ml_kem_from_seed(kind, &field("seed")).expect("a key of its seed");
+                    assert_eq!(public, field("ek"), "{kind:?}");
+                    assert_eq!(secret.bytes(), field("dk").as_slice(), "{kind:?}");
+                    count += 1;
+                }
+            }
+            assert_eq!(count, 100, "{kind:?}");
+        }
+    }
+
+    /// Each call's code checked, a seed of another length refused before
+    /// any call, and the expanded key never shown.
+    #[test]
+    fn ml_kem_from_seed_checks_every_call_and_length() {
+        let seed = [7u8; ML_KEM_SEED];
+        assert!(ml_kem_from_seed(MlKem::K768, &seed).is_ok());
+        for site in [
+            "MlKemInit",
+            "MlKemParams",
+            "MlKemKeygen",
+            "MlKemSecret",
+            "MlKemPublic",
+        ] {
+            assert!(
+                failing(site, || ml_kem_from_seed(MlKem::K768, &seed)).is_err(),
+                "{site} failing"
+            );
+        }
+        REACHED.set(0);
+        for len in [0, 32, 63, 65, 128] {
+            assert!(
+                ml_kem_from_seed(MlKem::K1024, &vec![1; len]).is_err(),
+                "{len}"
+            );
+        }
+        assert_eq!(
+            REACHED.get(),
+            0,
+            "a seed of another length reached the library"
+        );
+        let (secret, _) = ml_kem_from_seed(MlKem::K1024, &seed).expect("a key");
+        assert_eq!(format!("{secret:?}"), "MlKemSecret(..)");
+    }
+
+    /// The lead's cross-check: the public key the library makes from a
+    /// seed encapsulates with aws-lc-rs's safe API, and the safe API's
+    /// decapsulation with the expanded key gives the same secret.
+    #[test]
+    fn a_seed_key_encapsulates_and_decapsulates_with_the_safe_api() {
+        use aws_lc_rs::kem;
+        for (kind, algorithm) in [
+            (MlKem::K768, &kem::ML_KEM_768),
+            (MlKem::K1024, &kem::ML_KEM_1024),
+        ] {
+            let (secret, public) = ml_kem_from_seed(kind, &[3u8; ML_KEM_SEED]).expect("a key");
+            let encapsulation =
+                kem::EncapsulationKey::new(algorithm, &public).expect("its public key");
+            let (ciphertext, shared) = encapsulation.encapsulate().expect("an encapsulation");
+            assert_eq!(ciphertext.as_ref().len(), kind.ciphertext_len());
+            let decapsulation =
+                kem::DecapsulationKey::new(algorithm, secret.bytes()).expect("its secret key");
+            let again = decapsulation
+                .decapsulate(ciphertext)
+                .expect("a decapsulation");
+            assert_eq!(again.as_ref(), shared.as_ref(), "{kind:?}");
+        }
     }
 
     #[test]

@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const t = async (name, f) => {
+    try { const k = await f(); out.push(name + ' -> ' + JSON.stringify(k.algorithm)); }
+    catch (e) { out.push(name + ' -> ' + e.name + ': ' + e.message); }
+  };
+  for (const length of [0, 1, 248, 249, 255, 256, 257, 264, 512]) {
+    await t('raw 32 length ' + length, () => s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256', length}, true, ['sign']));
+  }
+  await t('raw 0 length 0', () => s.importKey('raw', new Uint8Array(0), {name: 'HMAC', hash: 'SHA-256', length: 0}, true, ['sign']));
+  await t('raw 0 length 8', () => s.importKey('raw', new Uint8Array(0), {name: 'HMAC', hash: 'SHA-256', length: 8}, true, ['sign']));
+  await t('raw 0', () => s.importKey('raw', new Uint8Array(0), {name: 'HMAC', hash: 'SHA-256'}, true, ['sign']));
+  await t('jwk 32 length 512', () => s.importKey('jwk', {kty: 'oct', k: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', alg: 'HS256'}, {name: 'HMAC', hash: 'SHA-256', length: 512}, true, ['sign']));
+  await t('length 512 bad usage', () => s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256', length: 512}, true, ['encrypt']));
+  await t('length 512 no usage', () => s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256', length: 512}, true, []));
+  window.__done = out;
+})();
+</script>

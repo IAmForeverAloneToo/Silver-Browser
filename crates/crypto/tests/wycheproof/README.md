@@ -33,6 +33,8 @@ its Apache License 2.0 (`LICENSE` beside this file), at commit
 | `rsa_signature_2048_sha512_test.json` | `testvectors_v1/rsa_signature_2048_sha512_test.json` |
 | `rsa_signature_3072_sha256_test.json` | `testvectors_v1/rsa_signature_3072_sha256_test.json` |
 | `rsa_signature_4096_sha512_test.json` | `testvectors_v1/rsa_signature_4096_sha512_test.json` |
+| `mlkem_768_keygen_seed_test.json` | `testvectors_v1/mlkem_768_keygen_seed_test.json` |
+| `mlkem_1024_keygen_seed_test.json` | `testvectors_v1/mlkem_1024_keygen_seed_test.json` |
 | `LICENSE` | `LICENSE` |
 
 Their SHA-256s are in `MANIFEST`, which a test holds every file here to

@@ -3962,6 +3962,12 @@ Deferred from the milestones above, each with what it waits on:
        and Proton's load-time steps (digests, AES-GCM, HMAC, HKDF,
        PBKDF2, RSASSA public keys); the rest of Chrome 157's algorithms,
        wrapping, a key's structured clone, Wycheproof and WPT to come.
+       After step 7: MLKEM768-X25519, the hybrid KEM Chrome 158 ships
+       (X-Wing: ML-KEM-768 and X25519, a SHA3-256 combiner, its 32-byte
+       seed expanded by SHAKE256), a NotSupportedError until then (step
+       5c's ruling); SHAKE256 by one native call, aws-lc-rs 1.18.1 having
+       none (approved by the lead), held to WPT's hybrid_kem_vectors.js
+       and the X-Wing draft's vectors.
 
 ### Known gaps (not G items: the list is frozen)
 

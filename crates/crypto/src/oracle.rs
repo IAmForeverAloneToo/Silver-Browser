@@ -81,6 +81,14 @@ const USAGE_SETS: &[&[Usage]] = &[
     &[Usage::DeriveKey, Usage::DeriveBits],
     &[Usage::Encrypt, Usage::WrapKey],
     &[Usage::Decrypt, Usage::UnwrapKey],
+    &[
+        Usage::EncapsulateKey,
+        Usage::EncapsulateBits,
+        Usage::DecapsulateKey,
+        Usage::DecapsulateBits,
+    ],
+    &[Usage::EncapsulateBits],
+    &[Usage::DecapsulateBits],
 ];
 
 /// The formats a key is exported to and imported from.
@@ -249,8 +257,14 @@ impl Oracle {
         ));
         specs.push((s("Ed25519"), true));
         specs.push((s("X25519"), true));
-        for name in ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"] {
-            specs.push((s(name), name == "ML-DSA-44"));
+        for name in [
+            "ML-DSA-44",
+            "ML-DSA-65",
+            "ML-DSA-87",
+            "ML-KEM-768",
+            "ML-KEM-1024",
+        ] {
+            specs.push((s(name), name == "ML-DSA-44" || name == "ML-KEM-768"));
         }
         specs.push((d(&[("name", s("AES-GCM")), ("length", n(256.0))]), true));
         for (algorithm, wrapped) in specs {
@@ -388,6 +402,59 @@ impl Oracle {
             texts,
             scratch,
         }
+    }
+
+    /// Imports to make through a page's bindings and compare: each
+    /// export of each throwaway key, with the algorithm it was made with
+    /// and the first usages the store takes it with, and the store's own
+    /// answer ("ok", or the error's name and message).
+    pub fn import_samples(&mut self) -> Vec<(&'static str, Value, Value, Vec<Usage>, String)> {
+        let mut out = Vec::new();
+        let made: Vec<(u32, Value)> = self
+            .made
+            .iter()
+            .map(|m| (m.id, m.algorithm.clone()))
+            .collect();
+        for (id, algorithm) in made {
+            for format in FORMATS {
+                let data = match run(
+                    &mut self.keys,
+                    Call::ExportKey {
+                        format: (*format).into(),
+                        key: id,
+                    },
+                ) {
+                    Ok(Outcome::Bytes(bytes)) => Value::Bytes(bytes),
+                    Ok(Outcome::Jwk(members)) => jwk_value(members),
+                    _ => continue,
+                };
+                let mut answer = String::new();
+                let mut chosen = Vec::new();
+                for usages in USAGE_SETS {
+                    let out = run(
+                        &mut self.keys,
+                        Call::ImportKey {
+                            format: (*format).into(),
+                            key_data: data.clone(),
+                            algorithm: algorithm.clone(),
+                            extractable: true,
+                            usages: usages.to_vec(),
+                        },
+                    );
+                    chosen = usages.to_vec();
+                    match out {
+                        Ok(_) => {
+                            answer = "ok".to_owned();
+                            break;
+                        }
+                        Err(error) => answer = format!("{}: {}", error.name, error.message),
+                    }
+                }
+                out.push((*format, data, algorithm.clone(), chosen, answer));
+            }
+        }
+        self.keys.forget_from(self.scratch);
+        out
     }
 
     /// The keys an agreement's `public` member may name, labelled.
@@ -583,6 +650,96 @@ impl Oracle {
                 })
             }),
             "wrapKey" | "unwrapKey" => self.wraps(op, algorithm, extra),
+            "encapsulateBits" => ids.iter().any(|&(key, _)| {
+                ok(&run(
+                    &mut self.keys,
+                    Call::EncapsulateBits {
+                        algorithm: alg(),
+                        key,
+                    },
+                ))
+            }),
+            "encapsulateKey" => ids.iter().any(|&(key, _)| {
+                USAGE_SETS.iter().any(|usages| {
+                    [true, false].into_iter().any(|extractable| {
+                        ok(&run(
+                            &mut self.keys,
+                            Call::EncapsulateKey {
+                                algorithm: alg(),
+                                key,
+                                shared_algorithm: extra.clone(),
+                                extractable,
+                                usages: usages.to_vec(),
+                            },
+                        ))
+                    })
+                })
+            }),
+            "decapsulateBits" | "decapsulateKey" => ids.iter().any(|&(key, partner)| {
+                let ciphertext = match run(
+                    &mut self.keys,
+                    Call::EncapsulateBits {
+                        algorithm: alg(),
+                        key: partner.unwrap_or(key),
+                    },
+                ) {
+                    Ok(Outcome::Encapsulated { ciphertext, .. }) => ciphertext,
+                    _ => vec![0; 1088],
+                };
+                if op == "decapsulateBits" {
+                    return ok(&run(
+                        &mut self.keys,
+                        Call::DecapsulateBits {
+                            algorithm: alg(),
+                            key,
+                            ciphertext,
+                        },
+                    ));
+                }
+                USAGE_SETS.iter().any(|usages| {
+                    [true, false].into_iter().any(|extractable| {
+                        ok(&run(
+                            &mut self.keys,
+                            Call::DecapsulateKey {
+                                algorithm: alg(),
+                                key,
+                                ciphertext: ciphertext.clone(),
+                                shared_algorithm: extra.clone(),
+                                extractable,
+                                usages: usages.to_vec(),
+                            },
+                        ))
+                    })
+                })
+            }),
+            // A throwaway key of the algorithm's name (getPublicKey takes
+            // no algorithm): its public key, of the usages it may have.
+            "getPublicKey" => {
+                let name = crate::algorithms::algorithm_name(algorithm)
+                    .and_then(crate::normalize::canonical);
+                let found: Vec<u32> = self
+                    .made
+                    .iter()
+                    .filter(|m| {
+                        name.is_some_and(|name| {
+                            crate::algorithms::algorithm_name(&m.algorithm)
+                                .is_some_and(|made| made.eq_ignore_ascii_case(name))
+                        })
+                    })
+                    .map(|m| m.id)
+                    .collect();
+                found.into_iter().any(|key| {
+                    USAGE_SETS.iter().any(|usages| {
+                        ok(&run(
+                            &mut self.keys,
+                            Call::GetPublicKey {
+                                key,
+                                usages: usages.to_vec(),
+                            },
+                        ))
+                    })
+                })
+            }
             _ => false,
         }
     }
@@ -894,6 +1051,54 @@ impl Oracle {
                     ));
                 }
             }
+        }
+        // The KEM methods, the shared key's algorithm.
+        let shared = [
+            Value::Absent,
+            s("AES-GCM"),
+            d(&[("name", s("AES-GCM")), ("length", n(128.0))]),
+            d(&[("name", s("HMAC")), ("hash", s("SHA-256"))]),
+            d(&[
+                ("name", s("HMAC")),
+                ("hash", s("SHA-256")),
+                ("length", n(256.0)),
+            ]),
+            d(&[
+                ("name", s("HMAC")),
+                ("hash", s("SHA-256")),
+                ("length", n(512.0)),
+            ]),
+            d(&[
+                ("name", s("HMAC")),
+                ("hash", s("SHA-256")),
+                ("length", n(0.0)),
+            ]),
+            s("HKDF"),
+            s("ChaCha20-Poly1305"),
+            d(&[("name", s("ECDSA")), ("namedCurve", s("P-256"))]),
+            s("nonsense"),
+        ];
+        for op in ["encapsulateKey", "decapsulateKey"] {
+            for name in ["ML-KEM-768", "ML-KEM-1024", "ML-DSA-44", "AES-GCM"] {
+                for key in &shared {
+                    out.push((op, s(name), key.clone()));
+                }
+            }
+        }
+        // getPublicKey: each algorithm's import parameters, valid and not.
+        for (name, curve) in [("ECDSA", "P-256"), ("ECDSA", "P-51"), ("ECDH", "P-384")] {
+            out.push((
+                "getPublicKey",
+                d(&[("name", s(name)), ("namedCurve", s(curve))]),
+                absent.clone(),
+            ));
+        }
+        for hash in ["SHA-256", "MD5"] {
+            out.push((
+                "getPublicKey",
+                d(&[("name", s("RSA-PSS")), ("hash", s(hash))]),
+                absent.clone(),
+            ));
         }
         // deriveBits, its lengths.
         let lengths = |values: &[f64]| -> Vec<Value> {

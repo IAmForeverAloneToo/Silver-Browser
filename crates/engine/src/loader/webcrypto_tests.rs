@@ -366,3 +366,195 @@ fn subtle_crypto_supports_and_quota_exceeded_error_are_the_references() {
         ]
     );
 }
+
+/// A value as a page's script writes it: `None` for a key, which only
+/// the store's numbers name.
+fn js(value: &crypto::Value) -> Option<String> {
+    use crypto::Value;
+    let text = |s: &str| devtools::Json::from(s.to_owned()).write();
+    Some(match value {
+        Value::Absent => "undefined".to_owned(),
+        Value::Str(s) => text(s),
+        Value::Num(n) => format!("{n}"),
+        Value::Bool(b) => b.to_string(),
+        Value::Bytes(bytes) => format!(
+            "new Uint8Array([{}])",
+            bytes
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Dict(members) => format!(
+            "{{{}}}",
+            members
+                .iter()
+                .map(|(name, v)| Some(format!("{}: {}", text(name), js(v)?)))
+                .collect::<Option<Vec<_>>>()?
+                .join(", ")
+        ),
+        Value::List(items) => format!(
+            "[{}]",
+            items.iter().map(js).collect::<Option<Vec<_>>>()?.join(", ")
+        ),
+        Value::Key(_) | Value::Other => return None,
+    })
+}
+
+/// The bindings' lists (the bootstrap's JsonWebKey members, usages,
+/// formats and methods) are the store's, member for member and in order
+/// (the lead's ruling, G255 5c): a member the bindings drop never
+/// reaches the store, which the store's own tests cannot see.
+#[test]
+fn the_bindings_lists_are_the_stores() {
+    let source = include_str!("../../../js/src/quickjs/bootstrap.js");
+    let list = |name: &str| -> Vec<String> {
+        let head = format!("const {name} = [");
+        assert_eq!(source.matches(&head).count(), 1, "{name}");
+        let rest = &source[source.find(&head).expect(name) + head.len()..];
+        let body = &rest[..rest.find("];").expect("its end")];
+        body.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(list("JWK_MEMBERS"), crypto::JWK_MEMBERS);
+    assert_eq!(
+        list("KEY_USAGES"),
+        crypto::Usage::ALL.map(crypto::Usage::name)
+    );
+    assert_eq!(list("KEY_FORMATS"), crypto::FORMATS);
+    assert_eq!(list("SUBTLE_METHODS"), crypto::METHODS);
+}
+
+/// SubtleCrypto.supports through a page's bindings answers as the store
+/// does, for a sample of the store's own generated combinations (every
+/// fourth without a key in it): a dropped argument, member or
+/// conversion shows as a difference.
+#[test]
+fn the_pages_supports_answers_as_the_stores() {
+    use crypto::Value;
+    let oracle = crypto::oracle::Oracle::new();
+    let keys = crypto::Keys::default();
+    let sample: Vec<(&str, Value, Value, String)> = oracle
+        .variants()
+        .into_iter()
+        .filter_map(|(op, algorithm, extra)| {
+            let call = match &extra {
+                Value::Absent => format!("S.supports({op:?}, {})", js(&algorithm)?),
+                _ => format!("S.supports({op:?}, {}, {})", js(&algorithm)?, js(&extra)?),
+            };
+            Some((op, algorithm, extra, call))
+        })
+        .step_by(4)
+        .collect();
+    assert!(sample.len() >= 300, "{} combinations", sample.len());
+    let calls: Vec<&str> = sample.iter().map(|(_, _, _, call)| call.as_str()).collect();
+    let script = format!(
+        "const S = SubtleCrypto; console.log(JSON.stringify([{}]));",
+        calls.join(",\n")
+    );
+    let lines = logged(&script, 1);
+    let answers = devtools::Json::parse(&lines[0]).expect("the page's answers");
+    let answers = answers.as_array().expect("a list");
+    assert_eq!(answers.len(), sample.len());
+    let wrong: Vec<String> = sample
+        .iter()
+        .zip(answers)
+        .map(|((op, algorithm, extra, call), page)| {
+            (call, page, crypto::supports(&keys, op, algorithm, extra))
+        })
+        .filter(|(_, page, store)| page.as_bool() != Some(*store))
+        .map(|(call, _, store)| format!("{call}: the store says {store}"))
+        .collect();
+    assert!(wrong.is_empty(), "the page differs:\n{}", wrong.join("\n"));
+}
+
+/// Every key the store makes, exported in each format it has, imported
+/// through a page's bindings with the store's algorithm and usages, is
+/// taken or refused as the store takes or refuses it, in its words.
+#[test]
+fn the_pages_imports_answer_as_the_stores() {
+    let mut oracle = crypto::oracle::Oracle::new();
+    let samples = oracle.import_samples();
+    let cases: Vec<String> = samples
+        .iter()
+        .map(|(format, data, algorithm, usages, _)| {
+            let usages: Vec<String> = usages.iter().map(|u| format!("{:?}", u.name())).collect();
+            format!(
+                "[{format:?}, {}, {}, [{}]]",
+                js(data).expect("data"),
+                js(algorithm).expect("an algorithm"),
+                usages.join(", ")
+            )
+        })
+        .collect();
+    let script = format!(
+        "(async () => {{ const cases = [{}]; const out = [];\
+         for (const [f, d, a, u] of cases) {{\
+           try {{ await crypto.subtle.importKey(f, d, a, true, u); out.push('ok'); }}\
+           catch (e) {{ out.push(e.name + ': ' + e.message); }}\
+         }}\
+         console.log(JSON.stringify(out)); }})();",
+        cases.join(",\n")
+    );
+    let lines = logged(&script, 1);
+    let answers = devtools::Json::parse(&lines[0]).expect("the page's answers");
+    let answers = answers.as_array().expect("a list");
+    assert_eq!(answers.len(), samples.len());
+    assert!(samples.len() >= 100, "{} imports", samples.len());
+    let wrong: Vec<String> = samples
+        .iter()
+        .zip(answers)
+        .filter(|((_, _, _, _, store), page)| page.as_str() != Some(store.as_str()))
+        .map(|((format, _, algorithm, _, store), page)| {
+            format!("{format} {algorithm:?}: page {page:?}, store {store}")
+        })
+        .collect();
+    assert!(wrong.is_empty(), "the page differs:\n{}", wrong.join("\n"));
+}
+
+/// ML-KEM's methods and getPublicKey through a page (probed: mlkem):
+/// their lengths and order on the prototype, an encapsulation's shape,
+/// its decapsulation, a shared key, and a public key from a private one.
+#[test]
+fn a_page_encapsulates_and_decapsulates_with_ml_kem() {
+    let script = "(async () => {\
+        const s = crypto.subtle; const out = [];\
+        const names = Object.getOwnPropertyNames(SubtleCrypto.prototype);\
+        out.push(names.slice(names.indexOf('wrapKey')).join());\
+        out.push(['encapsulateKey', 'encapsulateBits', 'decapsulateKey', 'decapsulateBits', 'getPublicKey'].map((m) => s[m].length).join());\
+        const pair = await s.generateKey('ML-KEM-768', true, ['encapsulateKey', 'encapsulateBits', 'decapsulateKey', 'decapsulateBits']);\
+        const enc = await s.encapsulateBits('ML-KEM-768', pair.publicKey);\
+        out.push([Object.keys(enc).join('/'), enc.ciphertext.byteLength, enc.sharedKey.byteLength].join());\
+        const dec = new Uint8Array(await s.decapsulateBits('ML-KEM-768', pair.privateKey, enc.ciphertext));\
+        out.push(String(dec.every((b, i) => b === new Uint8Array(enc.sharedKey)[i])));\
+        const k = await s.encapsulateKey('ML-KEM-768', pair.publicKey, {name: 'AES-GCM', length: 128}, true, ['encrypt']);\
+        out.push([k.ciphertext.byteLength, k.sharedKey.type, k.sharedKey.algorithm.length, k.sharedKey.usages.join()].join());\
+        const back = await s.decapsulateKey('ML-KEM-768', pair.privateKey, k.ciphertext, 'AES-GCM', true, ['decrypt']);\
+        out.push(String(new Uint8Array(await s.exportKey('raw', back)).join() === new Uint8Array(await s.exportKey('raw', k.sharedKey)).join()));\
+        try { await s.decapsulateBits('ML-KEM-768', pair.privateKey, new Uint8Array(5)); } catch (e) { out.push(e.name + ':' + e.message); }\
+        const pub = await s.getPublicKey(pair.privateKey, ['encapsulateBits']);\
+        out.push([pub.type, pub.algorithm.name, pub.usages.join(), pub.extractable].join());\
+        try { await s.getPublicKey(pair.publicKey, []); } catch (e) { out.push(e.name + ': ' + e.message); }\
+        out.push([SubtleCrypto.supports('encapsulateKey', 'ML-KEM-768', {name: 'AES-GCM', length: 256}), SubtleCrypto.supports('encapsulateKey', 'ML-KEM-768'), SubtleCrypto.supports('getPublicKey', 'ML-KEM-1024'), SubtleCrypto.supports('getPublicKey', 'AES-GCM')].join());\
+        for (const line of out) console.log(line);\
+        })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 10);
+    assert_eq!(
+        lines,
+        [
+            "wrapKey,decapsulateBits,decapsulateKey,encapsulateBits,encapsulateKey,getPublicKey,constructor",
+            "5,2,6,3,2",
+            "ciphertext/sharedKey,1088,32",
+            "true",
+            "1088,secret,256,encrypt",
+            "true",
+            "DataError:",
+            "public,ML-KEM-768,encapsulateBits,true",
+            "InvalidAccessError: Failed to execute 'getPublicKey' on 'SubtleCrypto': getPublicKey can only be called with a private key",
+            "true,false,true,false",
+        ]
+    );
+}

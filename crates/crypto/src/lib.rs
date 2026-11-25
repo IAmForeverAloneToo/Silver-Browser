@@ -22,7 +22,45 @@ mod normalize;
 
 use std::collections::HashMap;
 
+pub use jwk::JWK_MEMBERS;
 pub use normalize::{Member, MemberKind, members};
+
+/// The key formats the store knows (WebCrypto's KeyFormat, the modern
+/// algorithms' among them), in Web IDL's order: the bindings' list, held
+/// to this one by the engine's test.
+pub const FORMATS: [&str; 8] = [
+    "raw",
+    "spki",
+    "pkcs8",
+    "jwk",
+    "raw-public",
+    "raw-private",
+    "raw-seed",
+    "raw-secret",
+];
+
+/// SubtleCrypto's methods, each a [`Call`]'s, in the reference's order
+/// on its prototype (probed): the bindings' list, held to this one by
+/// the engine's test.
+pub const METHODS: [&str; 17] = [
+    "decrypt",
+    "deriveBits",
+    "deriveKey",
+    "digest",
+    "encrypt",
+    "exportKey",
+    "generateKey",
+    "importKey",
+    "sign",
+    "unwrapKey",
+    "verify",
+    "wrapKey",
+    "decapsulateBits",
+    "decapsulateKey",
+    "encapsulateBits",
+    "encapsulateKey",
+    "getPublicKey",
+];
 
 /// A Web Crypto error: the `DOMException`'s name (or `TypeError`) and
 /// message, the reference browser's words.
@@ -118,10 +156,14 @@ pub enum Usage {
     DeriveBits,
     WrapKey,
     UnwrapKey,
+    EncapsulateKey,
+    EncapsulateBits,
+    DecapsulateKey,
+    DecapsulateBits,
 }
 
 impl Usage {
-    pub const ALL: [Usage; 8] = [
+    pub const ALL: [Usage; 12] = [
         Usage::Encrypt,
         Usage::Decrypt,
         Usage::Sign,
@@ -130,6 +172,10 @@ impl Usage {
         Usage::DeriveBits,
         Usage::WrapKey,
         Usage::UnwrapKey,
+        Usage::EncapsulateKey,
+        Usage::EncapsulateBits,
+        Usage::DecapsulateKey,
+        Usage::DecapsulateBits,
     ];
 
     pub fn name(self) -> &'static str {
@@ -142,6 +188,10 @@ impl Usage {
             Usage::DeriveBits => "deriveBits",
             Usage::WrapKey => "wrapKey",
             Usage::UnwrapKey => "unwrapKey",
+            Usage::EncapsulateKey => "encapsulateKey",
+            Usage::EncapsulateBits => "encapsulateBits",
+            Usage::DecapsulateKey => "decapsulateKey",
+            Usage::DecapsulateBits => "decapsulateBits",
         }
     }
 
@@ -214,6 +264,12 @@ pub enum Outcome {
     Pair(KeyInfo, KeyInfo),
     /// An exported JWK, its members in the reference's order.
     Jwk(Vec<(String, JwkValue)>),
+    /// An encapsulation: its ciphertext, and its shared key, as bytes
+    /// (encapsulateBits) or a key (encapsulateKey).
+    Encapsulated {
+        ciphertext: Vec<u8>,
+        shared: Box<Outcome>,
+    },
 }
 
 /// A `SubtleCrypto` call, its arguments converted.
@@ -289,6 +345,34 @@ pub enum Call {
         extractable: bool,
         usages: Vec<Usage>,
     },
+    EncapsulateBits {
+        algorithm: Value,
+        key: u32,
+    },
+    EncapsulateKey {
+        algorithm: Value,
+        key: u32,
+        shared_algorithm: Value,
+        extractable: bool,
+        usages: Vec<Usage>,
+    },
+    DecapsulateBits {
+        algorithm: Value,
+        key: u32,
+        ciphertext: Vec<u8>,
+    },
+    DecapsulateKey {
+        algorithm: Value,
+        key: u32,
+        ciphertext: Vec<u8>,
+        shared_algorithm: Value,
+        extractable: bool,
+        usages: Vec<Usage>,
+    },
+    GetPublicKey {
+        key: u32,
+        usages: Vec<Usage>,
+    },
 }
 
 impl Call {
@@ -307,6 +391,11 @@ impl Call {
             Call::UnwrapKey { .. } => "unwrapKey",
             Call::DeriveBits { .. } => "deriveBits",
             Call::DeriveKey { .. } => "deriveKey",
+            Call::EncapsulateBits { .. } => "encapsulateBits",
+            Call::EncapsulateKey { .. } => "encapsulateKey",
+            Call::DecapsulateBits { .. } => "decapsulateBits",
+            Call::DecapsulateKey { .. } => "decapsulateKey",
+            Call::GetPublicKey { .. } => "getPublicKey",
         }
     }
 }

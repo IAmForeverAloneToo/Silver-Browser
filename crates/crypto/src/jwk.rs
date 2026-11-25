@@ -43,12 +43,30 @@ pub(crate) fn decode(text: &str) -> Option<Vec<u8>> {
     (text.len() % 4 != 1 && n == 0).then_some(out)
 }
 
+/// JsonWebKey's members (Web IDL's dictionary: RFC 7517's, RSA's and
+/// EC's, and the AKP keys' `pub` and `priv`), in its order. The bindings
+/// read these alone (the engine's test holds their list to this one),
+/// so the store reads no other: a debug build refuses one not here.
+pub const JWK_MEMBERS: [&str; 20] = [
+    "alg", "crv", "d", "dp", "dq", "e", "ext", "k", "key_ops", "kty", "n", "oth", "p", "priv",
+    "pub", "q", "qi", "use", "x", "y",
+];
+
 /// A JWK to import: its members as the bindings read them.
 pub(crate) struct Jwk<'a>(pub(crate) &'a Value);
 
 impl Jwk<'_> {
+    /// Member `name`, which JsonWebKey must have.
+    fn member(&self, name: &str) -> &Value {
+        debug_assert!(
+            JWK_MEMBERS.contains(&name),
+            "the store reads JWK member {name}, which the bindings do not"
+        );
+        self.0.get(name)
+    }
+
     pub(crate) fn str(&self, name: &str) -> Option<&str> {
-        match self.0.get(name) {
+        match self.member(name) {
             Value::Str(s) => Some(s),
             _ => None,
         }
@@ -112,7 +130,7 @@ impl Jwk<'_> {
                 ));
             }
         }
-        if let Value::List(ops) = self.0.get("key_ops") {
+        if let Value::List(ops) = self.member("key_ops") {
             let ops: Vec<&str> = ops
                 .iter()
                 .filter_map(|o| match o {
@@ -126,7 +144,7 @@ impl Jwk<'_> {
                 ));
             }
         }
-        if let Value::Bool(false) = self.0.get("ext")
+        if let Value::Bool(false) = self.member("ext")
             && extractable
         {
             return Err(Error::data(

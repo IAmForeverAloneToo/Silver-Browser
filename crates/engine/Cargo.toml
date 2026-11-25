@@ -189,6 +189,9 @@ name = "gpu"
 harness = false
 
 [dev-dependencies]
+# The store's oracle (crypto::oracle), for the tests that hold the page's
+# bindings to the store's answers.
+crypto = { workspace = true, features = ["fuzzing"] }
 # The steps up the flat tree counted, for the tests of a restyle's walks
 # (G253).
 dom = { workspace = true, features = ["flat-steps"] }

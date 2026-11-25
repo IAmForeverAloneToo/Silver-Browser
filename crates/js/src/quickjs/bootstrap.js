@@ -33781,11 +33781,15 @@
   const keyStates = new $WeakMap();
   const SUBTLE = "SubtleCrypto";
   const KEY_USAGES = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits",
-    "wrapKey", "unwrapKey"];
+    "wrapKey", "unwrapKey", "encapsulateKey", "encapsulateBits", "decapsulateKey",
+    "decapsulateBits"];
   const KEY_FORMATS = ["raw", "spki", "pkcs8", "jwk", "raw-public", "raw-private", "raw-seed",
     "raw-secret"];
   // JsonWebKey's members, in Web IDL's order, and those that are strings
-  // (an AKP key's pub and priv, ML-DSA's and ML-KEM's, among them).
+  // (an AKP key's pub and priv, ML-DSA's and ML-KEM's, among them). This
+  // list, KEY_USAGES, KEY_FORMATS and SUBTLE_METHODS are the store's
+  // (crypto::JWK_MEMBERS, Usage::ALL, FORMATS, METHODS): the engine's
+  // test fails on any difference.
   const JWK_MEMBERS = ["alg", "crv", "d", "dp", "dq", "e", "ext", "k", "key_ops", "kty", "n",
     "oth", "p", "priv", "pub", "q", "qi", "use", "x", "y"];
 
@@ -34156,6 +34160,57 @@
           };
         });
       },
+      decapsulateBits(decapsulationAlgorithm, decapsulationKey, ciphertext) {
+        return cryptoMethod("decapsulateBits", 3, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(decapsulationKey, "decapsulateBits", 2);
+          const c = cryptoBuffer(ciphertext, "decapsulateBits", 3);
+          const alg = cryptoAlgorithm(decapsulationAlgorithm, "decapsulate", buffers);
+          return { alg, key: k, data: cryptoCopy(c, buffers) };
+        });
+      },
+      decapsulateKey(decapsulationAlgorithm, decapsulationKey, ciphertext, sharedKeyAlgorithm,
+        extractable, keyUsages) {
+        return cryptoMethod("decapsulateKey", 6, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(decapsulationKey, "decapsulateKey", 2);
+          const c = cryptoBuffer(ciphertext, "decapsulateKey", 3);
+          const usages = cryptoUsages(keyUsages, "decapsulateKey");
+          const alg = cryptoAlgorithm(decapsulationAlgorithm, "decapsulate", buffers);
+          return {
+            alg,
+            key: k,
+            data: cryptoCopy(c, buffers),
+            shared: cryptoAlgorithm(sharedKeyAlgorithm, "importKey", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
+      },
+      encapsulateBits(encapsulationAlgorithm, encapsulationKey) {
+        return cryptoMethod("encapsulateBits", 2, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(encapsulationKey, "encapsulateBits", 2);
+          return { alg: cryptoAlgorithm(encapsulationAlgorithm, "encapsulate", buffers), key: k };
+        });
+      },
+      encapsulateKey(encapsulationAlgorithm, encapsulationKey, sharedKeyAlgorithm, extractable,
+        keyUsages) {
+        return cryptoMethod("encapsulateKey", 5, arguments.length, (buffers) => {
+          const k = cryptoKeyArgument(encapsulationKey, "encapsulateKey", 2);
+          const usages = cryptoUsages(keyUsages, "encapsulateKey");
+          return {
+            alg: cryptoAlgorithm(encapsulationAlgorithm, "encapsulate", buffers),
+            key: k,
+            shared: cryptoAlgorithm(sharedKeyAlgorithm, "importKey", buffers),
+            extractable: !!extractable,
+            usages,
+          };
+        });
+      },
+      getPublicKey(key, keyUsages) {
+        return cryptoMethod("getPublicKey", 2, arguments.length, () => {
+          const k = cryptoKeyArgument(key, "getPublicKey", 1);
+          return { key: k, usages: cryptoUsages(keyUsages, "getPublicKey") };
+        });
+      },
       wrapKey(format, key, wrappingKey, wrapAlgorithm) {
         return cryptoMethod("wrapKey", 4, arguments.length, (buffers) => {
           const f = cryptoFormat(format, "wrapKey");
@@ -34167,8 +34222,12 @@
         });
       },
     };
-    const names = ["decrypt", "deriveBits", "deriveKey", "digest", "encrypt", "exportKey",
-      "generateKey", "importKey", "sign", "unwrapKey", "verify", "wrapKey"];
+    // The reference's order (probed): the methods of old, then the KEM
+    // methods and getPublicKey.
+    const SUBTLE_METHODS = ["decrypt", "deriveBits", "deriveKey", "digest", "encrypt",
+      "exportKey", "generateKey", "importKey", "sign", "unwrapKey", "verify", "wrapKey",
+      "decapsulateBits", "decapsulateKey", "encapsulateBits", "encapsulateKey", "getPublicKey"];
+    const names = SUBTLE_METHODS;
     const proto = SubtleCrypto.prototype;
     const constructor = getOwnPropertyDescriptor(proto, "constructor");
     ReflectDeleteProperty(proto, "constructor");
@@ -34189,14 +34248,19 @@
         const op = str(operation);
         const extra = lengthOrAdditionalAlgorithm;
         const buffers = [];
-        const as = op === "exportKey" ? "importKey" : op === "deriveKey" ? "deriveBits" : op;
+        const as = op === "exportKey" || op === "getPublicKey" ? "importKey"
+          : op === "deriveKey" ? "deriveBits"
+          : op === "encapsulateKey" || op === "encapsulateBits" ? "encapsulate"
+          : op === "decapsulateKey" || op === "decapsulateBits" ? "decapsulate"
+          : op;
         const args = { op, alg: cryptoAlgorithm(algorithm, as, buffers) };
         if (typeof extra === "number" || typeof extra === "boolean") {
           args.extra = { $n: String($Number(extra) >>> 0) };
         } else if (extra !== null && extra !== undefined && op === "deriveKey") {
           args.derived = cryptoAlgorithm(extra, "importKey", buffers);
           args.derivedLength = cryptoAlgorithm(extra, "get key length", buffers);
-        } else if (extra !== null && extra !== undefined && (op === "wrapKey" || op === "unwrapKey")) {
+        } else if (extra !== null && extra !== undefined && (op === "wrapKey" ||
+          op === "unwrapKey" || op === "encapsulateKey" || op === "decapsulateKey")) {
           args.derived = cryptoAlgorithm(extra, "importKey", buffers);
         }
         const call = [JSONStringify(args)];
@@ -34268,6 +34332,17 @@
         break;
       case "pair":
         value = { privateKey: keyFrom(told.privateKey), publicKey: keyFrom(told.publicKey) };
+        break;
+      // An encapsulation: its ciphertext, and its shared key as bytes
+      // (after the ciphertext's, in the one buffer) or as a key.
+      case "encapsulatedBits":
+        value = {
+          ciphertext: ArrayBufferSlice(data, 0, told.split),
+          sharedKey: ArrayBufferSlice(data, told.split),
+        };
+        break;
+      case "encapsulatedKey":
+        value = { ciphertext: data, sharedKey: keyFrom(told.key) };
         break;
       case "jwk": {
         value = {};

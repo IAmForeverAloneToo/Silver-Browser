@@ -526,7 +526,8 @@ client, the stream's initialization, its buffer's size, its render
 client, its start and stop, the padding, and the buffer taken, written
 as a slice of floats and released.
 G255 adds the third, the crypto crate's `native` module (the lead's
-ruling), with 33 blocks over aws-lc's C interface where aws-lc-rs has
+ruling), with 40 blocks and one declaration over aws-lc's C interface
+where aws-lc-rs has
 none: AES-GCM at an IV or a tag length other than 96 and 128 bits (the
 cipher context made and freed, the cipher chosen by the key's length,
 the seal and the open, each length a script controls checked in Rust
@@ -557,7 +558,20 @@ bits, a salt as long as the digest alone); and X25519's PKCS #8, which
 aws-lc-rs reads not (`EVP_parse_private_key` as RSA's, the key's kind
 checked by `EVP_PKEY_id`, its 32 bytes read by
 `EVP_PKEY_get_raw_private_key` into a buffer of that length, cleansed on
-a failure). A private
+a failure); and an ML-KEM key made from its 64-byte seed, which
+aws-lc-rs makes not (step 5c, the lead's approval of 2026-11-24: the
+seed's length checked before any call, a key context made by
+`EVP_PKEY_CTX_new_id` and freed, `EVP_PKEY_keygen_init`,
+`EVP_PKEY_CTX_kem_set_params`, `EVP_PKEY_keygen_deterministic`, the
+key owned at once whatever its code, its expanded secret and public key
+read by `EVP_PKEY_get_raw_private_key` and `_public_key` into buffers of
+their lengths, the secret overwritten as it goes and never shown).
+`EVP_PKEY_keygen_deterministic` is declared in `native` itself, under
+the library's symbol for aws-lc-sys 0.45.0: its bindings leave out the
+experimental header that declares it, while the library builds it in; a
+version that renames it fails the link. Wycheproof's seed vectors hold
+its keys, and a test holds them to aws-lc-rs's safe encapsulation and
+decapsulation. A private
 key is kept as its parts, overwritten as they go and never printed.
 The tests and the fuzz target `crypto_rsa_roundtrip` hold that a
 signature the library made, with a key of any size, verifies true on
