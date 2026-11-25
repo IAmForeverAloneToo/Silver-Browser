@@ -208,12 +208,12 @@ impl Import {
 /// `rules`, an element's sheet's, inside an `@media` block of its
 /// `media` attribute; as they are for an absent or empty one, which
 /// holds whatever the medium (HTML).
-pub(crate) fn wrap_in_media(media: Option<&str>, rules: Vec<Rule>) -> Vec<Rule> {
+pub(crate) fn wrap_in_media(media: Option<&str>, rules: css::Rules) -> css::Rules {
     let list = media.map(css::tokenize).unwrap_or_default();
     if trim(&list).is_empty() {
         return rules;
     }
-    vec![block("media", trim(&list).to_vec(), rules)]
+    vec![block("media", trim(&list).to_vec(), rules.into_vec())].into()
 }
 
 /// Whether an element's `media` attribute holds for `media`; an absent
@@ -502,7 +502,7 @@ mod tests {
         };
         assert_eq!(at.name, "media");
         assert_eq!(at.prelude, [Token::Ident("print".into())]);
-        assert_eq!(at.block, Some(Block::Rules(rules)));
+        assert_eq!(at.block, Some(Block::Rules(rules.into_vec())));
         let screen = Media::screen(800.0, 600.0);
         assert!(media_attribute_holds(None, &screen));
         assert!(media_attribute_holds(Some(""), &screen));

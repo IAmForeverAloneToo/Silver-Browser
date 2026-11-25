@@ -8206,7 +8206,7 @@ impl DocumentHost {
                         };
                         cached.sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
                             .with_registered(page.registered_properties().to_vec())
-                            .with_shadow_trees(shadow);
+                            .with_shadow_trees_reusing(shadow, Some(&cached.sheets));
                         cached.raw = raw;
                     }
                 }
@@ -8225,9 +8225,10 @@ impl DocumentHost {
             }
             _ => {
                 let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
+                let previous = self.computed.as_ref().map(|cached| &cached.sheets);
                 let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
                     .with_registered(page.registered_properties().to_vec())
-                    .with_shadow_trees(shadow);
+                    .with_shadow_trees_reusing(shadow, previous);
                 // A run's first ask of a document as the frame styled it
                 // (or the last run, at the version lent), no sheet, no
                 // viewport and no media state changed since: those styles

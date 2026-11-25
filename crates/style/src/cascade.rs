@@ -1017,7 +1017,30 @@ impl Stylesheets {
     /// trees of the same sheets share one set, and what the sets'
     /// selectors depend on, the document's changes reach as these
     /// sheets' own.
-    pub fn with_shadow_trees(mut self, trees: Vec<ShadowTreeSheets>) -> Self {
+    pub fn with_shadow_trees(self, trees: Vec<ShadowTreeSheets>) -> Self {
+        self.with_shadow_trees_reusing(trees, None)
+    }
+
+    /// [`Stylesheets::with_shadow_trees`], a tree whose sheets and
+    /// scoping roots are those of one of `previous`'s trees taking that
+    /// tree's set rather than one made again: a page that adds components
+    /// changes its trees' sheets at every change of the document, and
+    /// made each distinct set's rules again each time (the reddit hang,
+    /// 2026-11-26).
+    pub fn with_shadow_trees_reusing(
+        mut self,
+        trees: Vec<ShadowTreeSheets>,
+        previous: Option<&Stylesheets>,
+    ) -> Self {
+        let mut kept: Vec<&Arc<Stylesheets>> = Vec::new();
+        for set in previous
+            .into_iter()
+            .flat_map(|previous| previous.shadow.values())
+        {
+            if !kept.iter().any(|other| Arc::ptr_eq(other, set)) {
+                kept.push(set);
+            }
+        }
         let mut made: Vec<Arc<Stylesheets>> = Vec::new();
         for (root, sheets, roots) in trees {
             if sheets.is_empty() {
@@ -1027,7 +1050,10 @@ impl Stylesheets {
             let set = match made.iter().find(same) {
                 Some(set) => set.clone(),
                 None => {
-                    let set = Arc::new(Stylesheets::with_scope_roots(sheets, roots));
+                    let set = match kept.iter().copied().find(same) {
+                        Some(set) => set.clone(),
+                        None => Arc::new(Stylesheets::with_scope_roots(sheets, roots)),
+                    };
                     self.features.absorb(&set.features);
                     made.push(set.clone());
                     set
@@ -1277,13 +1303,23 @@ impl Stylesheets {
     }
 
     /// The answers of the shadow trees' `@media` lists, by their roots.
+    ///
+    /// Each set's answered once, its trees taking them: a component of a
+    /// thousand instances answered its lists a thousand times at each
+    /// media check (the reddit hang, 2026-11-26).
     fn shadow_answers(&self, media: &Media) -> Vec<bool> {
         let mut roots: Vec<&NodeId> = self.shadow.keys().collect();
         roots.sort_unstable();
-        roots
-            .into_iter()
-            .flat_map(|root| self.shadow[root].rules.answers(media))
-            .collect()
+        let mut answered: HashMap<*const Stylesheets, Vec<bool>> = HashMap::new();
+        let mut answers = Vec::new();
+        for root in roots {
+            let set = &self.shadow[root];
+            let of_set = answered
+                .entry(Arc::as_ptr(set))
+                .or_insert_with(|| set.rules.answers(media));
+            answers.extend_from_slice(of_set);
+        }
+        answers
     }
 
     /// A cascader over `document` with the rules in force under
@@ -3964,28 +4000,45 @@ type RulesInForce<'r, 'a> = (&'r InForce<'a>, &'r InForce<'a>, &'r ShadowRules<'
 /// elements outside them makes none. A page of 430 shadow trees made
 /// each tree's at every cascader, twice a frame for a spinner of five
 /// elements' styles (the site sweep's reddit, 60 ms a frame).
+///
+/// The trees of one set share its rules in force, made once: a set's are
+/// the same for each of its trees, and were made for each, a thousand
+/// times for a component of a thousand instances (the reddit hang,
+/// 2026-11-26).
 #[derive(Default)]
 pub(crate) struct ShadowRules<'a> {
-    trees: HashMap<NodeId, (&'a Stylesheets, OnceCell<InForce<'a>>)>,
+    /// Each tree's set, by its place in `sets`.
+    trees: HashMap<NodeId, usize>,
+    sets: Vec<(&'a Stylesheets, OnceCell<InForce<'a>>)>,
     media: Option<&'a Media>,
 }
 
 impl<'a> ShadowRules<'a> {
     /// The trees of `sets`, their rules to be made under `media`.
     fn new(sets: &'a HashMap<NodeId, Arc<Stylesheets>>, media: &'a Media) -> ShadowRules<'a> {
+        let mut distinct: Vec<(&'a Stylesheets, OnceCell<InForce<'a>>)> = Vec::new();
+        let mut places: HashMap<*const Stylesheets, usize> = HashMap::new();
+        let trees = sets
+            .iter()
+            .map(|(&root, set)| {
+                let place = *places.entry(Arc::as_ptr(set)).or_insert_with(|| {
+                    distinct.push((&**set, OnceCell::new()));
+                    distinct.len() - 1
+                });
+                (root, place)
+            })
+            .collect();
         ShadowRules {
-            trees: sets
-                .iter()
-                .map(|(&root, set)| (root, (&**set, OnceCell::new())))
-                .collect(),
+            trees,
+            sets: distinct,
             media: Some(media),
         }
     }
 
     /// The rules in force of the tree whose root is `root`, made now if
-    /// they were not; `None` for a tree with no sheets.
+    /// its set's were not; `None` for a tree with no sheets.
     pub(crate) fn get(&self, root: &NodeId) -> Option<&InForce<'a>> {
-        let (set, made) = self.trees.get(root)?;
+        let (set, made) = self.sets.get(*self.trees.get(root)?)?;
         let media = self.media?;
         Some(made.get_or_init(|| {
             let answers = set.rules.answers(media);

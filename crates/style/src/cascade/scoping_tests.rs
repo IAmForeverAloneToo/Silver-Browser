@@ -576,3 +576,80 @@ fn a_restyle_outside_the_shadow_trees_makes_none_of_their_rules() {
         "{inside} sets' rules made for an element of one tree"
     );
 }
+
+/// `count` hosts, each with a shadow tree holding `<p id=inner{n}>`, and
+/// the trees' roots.
+fn hosts(count: usize) -> (Document, Vec<NodeId>) {
+    let page: String = (0..count)
+        .map(|n| format!("<div id=host{n}></div>"))
+        .collect();
+    let mut document = Document::from_node(&html::parse_document(&page).expect("parses"));
+    let mut roots = Vec::new();
+    for n in 0..count {
+        let host = by_id(&document, document.root(), &format!("host{n}"));
+        let root = document
+            .attach_shadow(host, ShadowRootInit::open(), false)
+            .expect("a div hosts it");
+        fill(&mut document, root, host, &format!("<p id=inner{n}>i</p>"));
+        roots.push(root);
+    }
+    (document, roots)
+}
+
+#[test]
+fn trees_of_one_set_make_its_rules_in_force_once() {
+    // The reddit hang (2026-11-26): a cascade made each tree's rules in
+    // force, the same for every tree of a set, once for each tree.
+    let (document, roots) = hosts(200);
+    let one = sheet("p { color: green }");
+    let trees = roots
+        .iter()
+        .map(|&root| (root, vec![one.clone()], vec![None]))
+        .collect();
+    let sheets = Stylesheets::new(vec![sheet("p { color: red }")]).with_shadow_trees(trees);
+    let made = || crate::rule_set::IN_FORCE_MADE.with(std::cell::Cell::get);
+    let before = made();
+    let styles = sheets.cascade(&document, &CascadeContext::default());
+    let made = made() - before;
+    for (n, &root) in roots.iter().enumerate() {
+        assert_eq!(
+            color(&styles, by_id(&document, root, &format!("inner{n}"))),
+            GREEN
+        );
+    }
+    assert!(
+        made <= 3,
+        "{made} rules in force made for one set of 200 trees"
+    );
+}
+
+#[test]
+fn a_tree_of_the_same_sheets_keeps_the_previous_styles_set() {
+    // The reddit hang (2026-11-26): each change of a page's components
+    // made every distinct set's rules again, the same sheets' as before.
+    let (_, roots) = hosts(2);
+    let (same, changed) = (sheet("p { color: green }"), sheet("p { color: red }"));
+    let previous = Stylesheets::new(vec![]).with_shadow_trees(vec![
+        (roots[0], vec![same.clone()], vec![None]),
+        (roots[1], vec![same.clone()], vec![None]),
+    ]);
+    let next = Stylesheets::new(vec![]).with_shadow_trees_reusing(
+        vec![
+            (roots[0], vec![same.clone()], vec![None]),
+            (roots[1], vec![changed], vec![None]),
+        ],
+        Some(&previous),
+    );
+    assert!(Arc::ptr_eq(
+        &next.shadow[&roots[0]],
+        &previous.shadow[&roots[0]]
+    ));
+    assert!(!Arc::ptr_eq(
+        &next.shadow[&roots[1]],
+        &previous.shadow[&roots[1]]
+    ));
+    assert!(next.same_shadow_trees(&[
+        (roots[0], vec![same.clone()], vec![None]),
+        (roots[1], vec![sheet("p { color: red }")], vec![None]),
+    ]));
+}

@@ -243,7 +243,7 @@ fn visible(list: &[Rule], place: Place, ns: &Namespaces) -> Vec<(usize, Kind)> {
 /// namespaces, which its selectors are read with.
 fn list<'a>(sheet: &'a Stylesheet, path: &[usize]) -> Option<(&'a Vec<Rule>, Place, Namespaces)> {
     let ns = style::sheet_namespaces(&sheet.rules);
-    let mut rules = &sheet.rules;
+    let mut rules: &Vec<Rule> = &sheet.rules;
     let mut place = TOP;
     for &index in path {
         let (at, kind) = *visible(rules, place, &ns).get(index)?;
@@ -265,7 +265,7 @@ fn list_mut<'a>(
     path: &[usize],
 ) -> Option<(&'a mut Vec<Rule>, Place, Namespaces)> {
     let ns = style::sheet_namespaces(&sheet.rules);
-    let mut rules = &mut sheet.rules;
+    let mut rules: &mut Vec<Rule> = &mut sheet.rules;
     let mut place = TOP;
     for &index in path {
         let (at, kind) = *visible(rules, place, &ns).get(index)?;
@@ -1320,7 +1320,7 @@ fn parse_one_rule(text: &str, place: Place) -> Result<Rule, DomError> {
     let syntax = || DomError::new("SyntaxError", format!("Failed to parse the rule '{text}'."));
     if place.relative == Relative::No {
         let parsed = css::parse_stylesheet(text).map_err(|_| syntax())?;
-        return <[Rule; 1]>::try_from(parsed.rules)
+        return <[Rule; 1]>::try_from(parsed.rules.into_vec())
             .map(|[rule]| rule)
             .map_err(|_| syntax());
     }
@@ -1524,7 +1524,10 @@ pub(crate) fn set(sheet: &mut Stylesheet, path: &[usize], text: &str, selector: 
     {
         let body = feature_values_text(text);
         at.block = Some(Block::Rules(
-            css::parse_stylesheet(&body).unwrap_or_default().rules,
+            css::parse_stylesheet(&body)
+                .unwrap_or_default()
+                .rules
+                .into_vec(),
         ));
         return true;
     }

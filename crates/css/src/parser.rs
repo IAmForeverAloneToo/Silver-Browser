@@ -39,6 +39,7 @@
 //! enclosing block rather than being swallowed into the prelude.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::tokenizer::{Token, tokenize_with_spans};
 
@@ -46,7 +47,72 @@ use crate::tokenizer::{Token, tokenize_with_spans};
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stylesheet {
     /// Top-level rules, in source order.
-    pub rules: Vec<Rule>,
+    pub rules: Rules,
+}
+
+/// A sheet's top-level rules, shared: a copy is the same rules, not a
+/// copy of them, until one is changed (copy on write). A thousand shadow
+/// trees adopting one sheet hold its rules once, and two copies compare
+/// equal at once (the reddit hang, 2026-11-26: each tree's sheets copied
+/// and compared rule by rule at every change of the document).
+#[derive(Debug, Clone, Default)]
+pub struct Rules(Arc<Vec<Rule>>);
+
+impl Rules {
+    /// Whether `self` and `other` are the same rules, not only equal.
+    pub fn same(&self, other: &Rules) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// The rules, taken: this copy's, or a copy of the shared ones.
+    pub fn into_vec(self) -> Vec<Rule> {
+        Arc::unwrap_or_clone(self.0)
+    }
+}
+
+impl IntoIterator for Rules {
+    type Item = Rule;
+    type IntoIter = std::vec::IntoIter<Rule>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_vec().into_iter()
+    }
+}
+
+impl PartialEq for Rules {
+    fn eq(&self, other: &Rules) -> bool {
+        self.same(other) || *self.0 == *other.0
+    }
+}
+
+impl std::ops::Deref for Rules {
+    type Target = Vec<Rule>;
+
+    fn deref(&self) -> &Vec<Rule> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Rules {
+    /// The rules to change: this copy's own, made so if shared.
+    fn deref_mut(&mut self) -> &mut Vec<Rule> {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl From<Vec<Rule>> for Rules {
+    fn from(rules: Vec<Rule>) -> Rules {
+        Rules(Arc::new(rules))
+    }
+}
+
+impl<'a> IntoIterator for &'a Rules {
+    type Item = &'a Rule;
+    type IntoIter = std::slice::Iter<'a, Rule>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
 }
 
 /// One rule in a stylesheet.
@@ -175,7 +241,7 @@ impl TokenStream {
 pub fn parse_stylesheet(input: &str) -> Result<Stylesheet, crate::ParseError> {
     let mut stream = TokenStream::new(input);
     Ok(Stylesheet {
-        rules: parse_rules(&mut stream, true, 0, false),
+        rules: parse_rules(&mut stream, true, 0, false).into(),
     })
 }
 
@@ -855,6 +921,24 @@ mod tests {
     use crate::tokenizer::tokenize;
 
     #[test]
+    fn a_sheets_copy_shares_its_rules_until_one_is_changed() {
+        // The reddit hang (2026-11-26): a sheet adopted by a thousand
+        // trees was copied, rule by rule, for each of them.
+        let sheet = parse_stylesheet("p { color: red } a { color: blue }").unwrap();
+        let mut copy = sheet.clone();
+        assert!(copy.rules.same(&sheet.rules));
+        assert_eq!(copy, sheet);
+        copy.rules.pop();
+        assert!(!copy.rules.same(&sheet.rules));
+        assert_eq!((copy.rules.len(), sheet.rules.len()), (1, 2));
+        assert_ne!(copy, sheet);
+        // Equal rules apart are equal, and not the same.
+        let again = parse_stylesheet("p { color: red } a { color: blue }").unwrap();
+        assert_eq!(again, sheet);
+        assert!(!again.rules.same(&sheet.rules));
+    }
+
+    #[test]
     fn simple_qualified_rule() {
         let sheet = parse_stylesheet("h1 { color: red; }").expect("never fails");
         assert_eq!(sheet.rules.len(), 1);
@@ -1311,8 +1395,8 @@ mod tests {
                 let source = "a{".repeat(20_000) + &"}".repeat(20_000) + "b{color:red}";
                 let sheet = parse_stylesheet(&source).unwrap();
                 let mut depth = 0;
-                let mut rules = &sheet.rules;
-                while let [Rule::Qualified(rule), ..] = rules.as_slice() {
+                let mut rules: &[Rule] = &sheet.rules;
+                while let [Rule::Qualified(rule), ..] = rules {
                     depth += 1;
                     rules = &rule.rules;
                 }
@@ -1352,9 +1436,9 @@ mod tests {
                 let source = "@media{".repeat(20_000) + "a{color:red}" + &"}".repeat(20_000);
                 let sheet = parse_stylesheet(&source).unwrap();
                 let mut depth = 0;
-                let mut rules = &sheet.rules;
+                let mut rules: &[Rule] = &sheet.rules;
                 loop {
-                    let [Rule::At(at)] = rules.as_slice() else {
+                    let [Rule::At(at)] = rules else {
                         panic!("one at-rule per level");
                     };
                     match &at.block {

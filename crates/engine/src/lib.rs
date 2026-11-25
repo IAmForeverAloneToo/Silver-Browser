@@ -1555,9 +1555,10 @@ fn drawn_size(
     (w, h)
 }
 
-/// The stylesheets `page` gives, its shadow trees' with them (D69).
-fn stylesheets_of(page: &loader::Page, document: &Document) -> Stylesheets {
-    page.stylesheets(document)
+/// The stylesheets `page` gives, its shadow trees' with them (D69),
+/// the sets of `previous`'s trees of the same sheets kept.
+fn stylesheets_of(page: &loader::Page, document: &Document, previous: &Stylesheets) -> Stylesheets {
+    page.stylesheets_reusing(document, Some(previous))
 }
 
 /// Whether `stylesheets` are those `page` gives in `document`: its
@@ -8464,7 +8465,11 @@ impl Engine {
             &self.shown.document,
             &self.shown.stylesheets,
         ) {
-            self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
+            self.shown.stylesheets = stylesheets_of(
+                &self.shown.page,
+                &self.shown.document,
+                &self.shown.stylesheets,
+            );
             self.shown.set_recascade();
             self.shown.pending.clear();
             self.shown.layout = None;
@@ -8822,7 +8827,11 @@ impl Engine {
             self.shown.layout = None;
         }
         if sheets.is_some() {
-            self.shown.stylesheets = stylesheets_of(&self.shown.page, &self.shown.document);
+            self.shown.stylesheets = stylesheets_of(
+                &self.shown.page,
+                &self.shown.document,
+                &self.shown.stylesheets,
+            );
             self.shown.set_recascade();
             self.shown.pending.clear();
         }

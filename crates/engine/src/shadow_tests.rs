@@ -280,3 +280,47 @@ fn a_part_rules_attr_reads_its_hosts_attributes() {
     );
     assert_eq!(lines, ["rgb(0, 128, 0)", "rgb(0, 0, 255)"]);
 }
+
+#[test]
+fn trees_adopting_one_sheet_share_its_rules_and_take_its_edits() {
+    // The reddit hang (2026-11-26): each tree's adopted sheets were
+    // copied, rule by rule, and compared with the styles' at every change
+    // of the document, a page of components spinning a core on it.
+    let mut engine = test_engine();
+    engine.set_viewport(800, 600);
+    let markup: String = (0..200)
+        .map(|n| format!("<div class=h id=h{n}></div>"))
+        .collect();
+    engine.load_document(&markup);
+    engine.take_console();
+    differential::run_script(
+        &mut engine,
+        "const sheet = new CSSStyleSheet(); \
+         sheet.replaceSync('p { color: rgb(0, 128, 0) }'); \
+         for (const h of document.querySelectorAll('.h')) { \
+           const r = h.attachShadow({mode: 'open'}); \
+           r.innerHTML = '<p>t</p>'; \
+           r.adoptedStyleSheets = [sheet]; \
+         } \
+         const p = (n) => document.getElementById('h' + n).shadowRoot.firstChild; \
+         console.log(getComputedStyle(p(199)).color); \
+         sheet.insertRule('p { color: rgb(0, 0, 255) }', 1); \
+         console.log(getComputedStyle(p(199)).color, getComputedStyle(p(0)).color);",
+    );
+    engine.run_tasks();
+    let lines: Vec<String> = engine
+        .take_console()
+        .into_iter()
+        .map(|entry| entry.text)
+        .collect();
+    assert_eq!(lines, ["rgb(0, 128, 0)", "rgb(0, 0, 255) rgb(0, 0, 255)"]);
+    let trees = engine.shown.page.shadow_sheets(&engine.shown.document);
+    assert_eq!(trees.len(), 200);
+    let first = &trees[0].1[0].rules;
+    assert!(
+        trees
+            .iter()
+            .all(|(_, sheets, _)| sheets.len() == 1 && sheets[0].rules.same(first)),
+        "every tree's sheet is the one sheet's rules, not a copy of them"
+    );
+}

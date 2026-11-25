@@ -1285,27 +1285,81 @@ impl Page {
     /// The sheets of each shadow tree (D69), by its root, in tree order:
     /// [`Page::sheets`] of its `<style>` and `<link>` elements, then its
     /// adopted sheets, with their implicit scoping roots in `document`.
+    ///
+    /// One pass over the owners and the constructed sheets for every
+    /// tree, each sheet's rules shared, not copied: a page of a thousand
+    /// components took a pass of every owner and a copy of every sheet
+    /// for each tree, at every change of the document (the reddit hang,
+    /// 2026-11-26).
     pub(crate) fn shadow_sheets(&self, document: &Document) -> Vec<style::ShadowTreeSheets> {
         let mut roots: Vec<NodeId> = Vec::new();
+        let mut by_tree: HashMap<NodeId, Vec<&Owner>> = HashMap::new();
         for owner in &self.owners {
-            if let Some(scope) = owner.scope
-                && !roots.contains(&scope)
-            {
-                roots.push(scope);
+            if let Some(scope) = owner.scope {
+                let tree = by_tree.entry(scope).or_default();
+                if tree.is_empty() {
+                    roots.push(scope);
+                }
+                tree.push(owner);
             }
         }
         for &root in self.adopted_shadow.keys() {
-            if !roots.contains(&root) {
+            if let std::collections::hash_map::Entry::Vacant(tree) = by_tree.entry(root) {
+                tree.insert(Vec::new());
                 roots.push(root);
             }
         }
+        let constructed = self.constructed_by_serial();
+        let preferred = self.preferred();
         roots
             .into_iter()
             .map(|root| {
-                let roots = self.scope_roots_of(document, Some(root));
-                (root, self.sheets_of(Some(root)), roots)
+                let owners = by_tree.get(&root).map_or(&[][..], Vec::as_slice);
+                let (sheets, scope_roots) =
+                    self.tree_sheets(document, Some(root), owners, &constructed, preferred);
+                (root, sheets, scope_roots)
             })
             .collect()
+    }
+
+    /// The constructed sheets by their serial numbers.
+    fn constructed_by_serial(&self) -> HashMap<u64, &Constructed> {
+        self.constructed
+            .iter()
+            .map(|sheet| (sheet.serial, sheet))
+            .collect()
+    }
+
+    /// The sheets of the tree whose shadow root is `scope`, the
+    /// document's for `None`, those of its `owners` then its adopted
+    /// ones, each with its implicit scoping root in `document`.
+    fn tree_sheets(
+        &self,
+        document: &Document,
+        scope: Option<NodeId>,
+        owners: &[&Owner],
+        constructed: &HashMap<u64, &Constructed>,
+        preferred: Option<&str>,
+    ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
+        let mut sheets = Vec::new();
+        let mut roots = Vec::new();
+        for owner in owners {
+            if let Slot::Ready(sheet) = &owner.sheet
+                && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
+                && !self.disabled.contains(&sheet.serial)
+            {
+                sheets.push(css::Stylesheet {
+                    rules: rules::wrap_in_media(owner.media.as_deref(), sheet.rules()),
+                });
+                roots.push(document.parent_element(owner.node));
+            }
+        }
+        // The adopted sheets after the document's (CSSOM's document or
+        // shadow root CSS style sheets).
+        let first_adopted = sheets.len();
+        self.adopted_sheets(scope, constructed, &mut sheets);
+        roots.resize(roots.len() + sheets.len() - first_adopted, None);
+        (sheets, roots)
     }
 
     /// The sheets of the tree whose shadow root is `scope`, the
@@ -1325,7 +1379,7 @@ impl Page {
         }
         // The adopted sheets after the document's (CSSOM's document or
         // shadow root CSS style sheets).
-        self.adopted_sheets(scope, &mut sheets);
+        self.adopted_sheets(scope, &self.constructed_by_serial(), &mut sheets);
         sheets
     }
 
@@ -1354,7 +1408,7 @@ impl Page {
             .map(|owner| document.parent_element(owner.node))
             .collect();
         let mut adopted = Vec::new();
-        self.adopted_sheets(scope, &mut adopted);
+        self.adopted_sheets(scope, &self.constructed_by_serial(), &mut adopted);
         roots.extend(adopted.iter().map(|_| None));
         roots
     }
@@ -1363,15 +1417,30 @@ impl Page {
     /// root in `document`, with the custom properties its scripts
     /// registered, and the shadow trees' sheets (D69).
     pub(crate) fn stylesheets(&self, document: &Document) -> style::Stylesheets {
+        self.stylesheets_reusing(document, None)
+    }
+
+    /// [`Page::stylesheets`], each shadow tree whose sheets are those of
+    /// one of `previous`'s taking its set (the reddit hang, 2026-11-26).
+    pub(crate) fn stylesheets_reusing(
+        &self,
+        document: &Document,
+        previous: Option<&style::Stylesheets>,
+    ) -> style::Stylesheets {
         style::Stylesheets::with_scope_roots(self.sheets(), self.scope_roots(document))
             .with_registered(self.registered.clone())
-            .with_shadow_trees(self.shadow_sheets(document))
+            .with_shadow_trees_reusing(self.shadow_sheets(document), previous)
     }
 
     /// The adopted sheets of the tree whose shadow root is `scope`, the
     /// document's for `None`, that apply, each in its `media`, after
     /// `sheets`.
-    fn adopted_sheets(&self, scope: Option<NodeId>, sheets: &mut Vec<css::Stylesheet>) {
+    fn adopted_sheets(
+        &self,
+        scope: Option<NodeId>,
+        constructed: &HashMap<u64, &Constructed>,
+        sheets: &mut Vec<css::Stylesheet>,
+    ) {
         let adopted = match scope {
             Some(root) => self
                 .adopted_shadow
@@ -1380,7 +1449,7 @@ impl Page {
             None => &self.adopted,
         };
         for serial in adopted {
-            if let Some(sheet) = self.constructed.iter().find(|c| c.serial == *serial)
+            if let Some(sheet) = constructed.get(serial)
                 && !self.disabled.contains(serial)
             {
                 sheets.push(css::Stylesheet {
@@ -1389,6 +1458,15 @@ impl Page {
             }
         }
     }
+}
+
+/// What a collection of every tree's sheets finds once for all of them:
+/// the owners by element, the constructed sheets by serial number, and
+/// the document's base URL.
+struct Lookups<'a> {
+    owners: &'a HashMap<NodeId, &'a Owner>,
+    constructed: &'a HashMap<u64, &'a Constructed>,
+    base: &'a OnceCell<Option<Url>>,
 }
 
 /// A new sheet's serial number.
@@ -1425,7 +1503,23 @@ impl Page {
         document: &Document,
         media: &Media,
     ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
-        self.scoped_sheets_now_of(document, media, document.root(), &OnceCell::new())
+        let owners = self.owners_by_node();
+        let constructed = self.constructed_by_serial();
+        let base = OnceCell::new();
+        let found = Lookups {
+            owners: &owners,
+            constructed: &constructed,
+            base: &base,
+        };
+        self.scoped_sheets_now_of(document, media, document.root(), &found)
+    }
+
+    /// The owners by element.
+    fn owners_by_node(&self) -> HashMap<NodeId, &Owner> {
+        self.owners
+            .iter()
+            .map(|owner| (owner.node, owner))
+            .collect()
     }
 
     /// [`Page::sheets_now`] of each shadow tree in `document` (D69), by
@@ -1438,14 +1532,22 @@ impl Page {
         if !document.has_shadow_roots() {
             return Vec::new();
         }
-        // The base URL found once for every tree, not walked for each.
+        // The base URL, the owners and the constructed sheets found once
+        // for every tree, not for each.
+        let owners = self.owners_by_node();
+        let constructed = self.constructed_by_serial();
         let base = OnceCell::new();
+        let found = Lookups {
+            owners: &owners,
+            constructed: &constructed,
+            base: &base,
+        };
         document
             .shadow_including_subtree(document.root())
             .into_iter()
             .filter(|&node| document.is_shadow_root(node))
             .map(|root| {
-                let (sheets, roots) = self.scoped_sheets_now_of(document, media, root, &base);
+                let (sheets, roots) = self.scoped_sheets_now_of(document, media, root, &found);
                 (root, sheets, roots)
             })
             .collect()
@@ -1494,20 +1596,15 @@ impl Page {
         document: &Document,
         media: &Media,
         top: NodeId,
-        base: &OnceCell<Option<Url>>,
+        found: &Lookups<'_>,
     ) -> (Vec<css::Stylesheet>, Vec<Option<NodeId>>) {
         let preferred = self.preferred();
         let csp = self.policies();
         let mut sheets = Vec::new();
         let mut roots = Vec::new();
-        // The owners by element, found once, not searched for each node.
-        let owners: HashMap<NodeId, &Owner> = self
-            .owners
-            .iter()
-            .map(|owner| (owner.node, owner))
-            .collect();
+        let base = found.base;
         for node in document.subtree(top) {
-            match owners.get(&node).copied() {
+            match found.owners.get(&node).copied() {
                 Some(owner) => {
                     if let Slot::Ready(sheet) = &owner.sheet
                         && (owner.title.is_empty() || Some(owner.title.as_str()) == preferred)
@@ -1543,7 +1640,7 @@ impl Page {
         }
         let scope = Some(top).filter(|&top| document.is_shadow_root(top));
         let first_adopted = sheets.len();
-        self.adopted_sheets(scope, &mut sheets);
+        self.adopted_sheets(scope, found.constructed, &mut sheets);
         roots.resize(roots.len() + sheets.len() - first_adopted, None);
         (sheets, roots)
     }
@@ -1825,15 +1922,19 @@ impl Slot {
 impl Sheet {
     /// The sheet's rules, each `@import` rule's place taken by the
     /// rules of the sheet it imports in the blocks of its conditions,
-    /// empty when that sheet has not come.
-    fn rules(&self) -> Vec<css::Rule> {
+    /// empty when that sheet has not come: the sheet's own, shared, when
+    /// it imports nothing.
+    fn rules(&self) -> css::Rules {
+        if self.imports.is_empty() {
+            return self.rules.rules.clone();
+        }
         let mut imports = self.imports.iter().peekable();
         let mut rules = Vec::with_capacity(self.rules.rules.len());
         for (index, rule) in self.rules.rules.iter().enumerate() {
             match imports.next_if(|imported| imported.import.rule == index) {
                 Some(imported) => {
                     let inner = match &imported.sheet {
-                        Slot::Ready(sheet) => sheet.rules(),
+                        Slot::Ready(sheet) => sheet.rules().into_vec(),
                         _ => Vec::new(),
                     };
                     rules.extend(imported.import.wrap(inner));
@@ -1841,7 +1942,7 @@ impl Sheet {
                 None => rules.push(rule.clone()),
             }
         }
-        rules
+        rules.into()
     }
 }
 
