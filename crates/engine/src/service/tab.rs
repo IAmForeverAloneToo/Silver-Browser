@@ -63,6 +63,10 @@ struct Slot {
     /// Since when it has shown nothing, holds none of the tab's history
     /// and is not the spare: it goes [`RETIRE_AFTER`] later (2026-11-19).
     idle_since: Option<Instant>,
+    /// Its crypto lane left dead work past its bound (G255 step 7): no
+    /// new document of its site goes to it, and it goes once it shows
+    /// nothing, its history's entries restored in another.
+    retiring: bool,
 }
 
 /// How long a renderer that shows nothing, holds none of the tab's
@@ -694,6 +698,7 @@ impl RemoteTab {
                         lock: None,
                         shown: Instant::now(),
                         idle_since: None,
+                        retiring: false,
                     },
                 );
                 Some(number)
@@ -743,7 +748,19 @@ impl RemoteTab {
             .collect();
         let mut due = None;
         let mut gone = Vec::new();
+        // A retiring renderer goes as soon as nothing of it is shown, its
+        // history no hold on it (G255 step 7).
+        let showing: Vec<u32> = self
+            .frame_views
+            .keys()
+            .map(|(renderer, _)| *renderer)
+            .chain(shown)
+            .collect();
         for (number, slot) in &mut self.renderers {
+            if slot.retiring && !showing.contains(number) {
+                gone.push(*number);
+                continue;
+            }
             // The spare (unlocked) waits for the next site; one in use or
             // holding history is kept.
             if slot.lock.is_none() || held.contains(number) {
@@ -819,7 +836,7 @@ impl RemoteTab {
         let locked = self
             .renderers
             .iter()
-            .find(|(_, slot)| slot.lock.as_ref() == Some(lock))
+            .find(|(_, slot)| slot.lock.as_ref() == Some(lock) && !slot.retiring)
             .map(|(number, _)| *number);
         let number = match locked {
             Some(number) => number,
@@ -1092,7 +1109,7 @@ impl RemoteTab {
         let reuse = root.filter(|(renderer, _)| {
             self.renderers
                 .get(renderer)
-                .is_some_and(|slot| slot.lock.as_ref() == Some(&notice.lock))
+                .is_some_and(|slot| slot.lock.as_ref() == Some(&notice.lock) && !slot.retiring)
         });
         let view = match reuse {
             Some(view) => view,
@@ -1359,6 +1376,15 @@ impl RemoteTab {
     /// Takes a message of renderer `number`'s; Err for one it may not
     /// send.
     fn take(&mut self, number: u32, message: ToBrowser) -> Result<(), String> {
+        // A renderer's own word on itself (G255 step 7): it costs it no
+        // more than a new renderer for its site's next documents.
+        if let ToBrowser::Retire { .. } = message {
+            if let Some(slot) = self.renderers.get_mut(&number) {
+                slot.retiring = true;
+            }
+            self.retire_due = self.retire_idle();
+            return Ok(());
+        }
         let view_of = |message: &ToBrowser| match message {
             ToBrowser::State { view, .. }
             | ToBrowser::History { view, .. }
@@ -2074,6 +2100,13 @@ impl RemoteTab {
         self.segment().and_then(|segment| segment.renderer)
     }
 
+    /// Takes `message` as renderer `number`'s, for the tests: what a
+    /// renderer says that a test page cannot make it say.
+    #[cfg(test)]
+    pub(crate) fn told(&mut self, number: u32, message: ToBrowser) -> Result<(), String> {
+        self.take(number, message)
+    }
+
     /// The frame roots of the tab, by the renderers that show them and the
     /// URLs they show: for the tests and the checks.
     pub fn frame_roots(&self) -> Vec<(u32, Option<Url>)> {
@@ -2165,11 +2198,14 @@ impl View for RemoteTab {
     fn navigate(&mut self, url: Url) {
         self.dismiss_dialogs();
         let lock = Lock::of(&url);
+        // Its renderer again, unless it is retiring (G255 step 7).
         let same = self.segment().is_some_and(|segment| {
             segment.lock == lock
-                && segment
-                    .renderer
-                    .is_some_and(|number| self.renderers.contains_key(&number))
+                && segment.renderer.is_some_and(|number| {
+                    self.renderers
+                        .get(&number)
+                        .is_some_and(|slot| !slot.retiring)
+                })
         });
         if !same && !self.new_segment(lock) {
             return;

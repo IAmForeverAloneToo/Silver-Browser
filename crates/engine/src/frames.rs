@@ -1054,8 +1054,10 @@ impl Engine {
             heap: self.script_limits.heap.min(MAX_FRAME_HEAP),
             ..self.script_limits
         };
-        // The agents by origin are the renderer's (G90).
+        // The agents by origin are the renderer's (G90), and so is the
+        // crypto lane (G255 step 7).
         child.agents = self.agents.clone();
+        child.lane = self.lane.clone();
         child.compat_user_agent = self.compat_user_agent;
         child.languages = self.languages.clone();
         child.preferences = self.preferences;

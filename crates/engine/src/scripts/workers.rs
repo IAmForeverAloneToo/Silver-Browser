@@ -293,11 +293,15 @@ struct Setup {
     live: Arc<AtomicUsize>,
     router: SharedRouter,
     document: u32,
+    lane: Option<super::lane::Lane>,
 }
 
 /// The workers a realm made (M31.1), by number, and those waiting for
 /// a slot.
 pub(crate) struct Workers {
+    /// The renderer's crypto lane, which its workers share with the
+    /// document (G255 step 7).
+    pub(crate) lane: Option<super::lane::Lane>,
     /// Where its workers send to: its realm's inbox.
     inbox: Inbox,
     next: u32,
@@ -342,6 +346,7 @@ impl Workers {
             depth,
             router,
             document,
+            lane: None,
         }
     }
 
@@ -387,6 +392,7 @@ impl Workers {
             live: self.live.clone(),
             router: self.router.clone(),
             document: self.document,
+            lane: self.lane.clone(),
         });
         self.start_waiting();
         id
@@ -651,6 +657,7 @@ fn run(setup: Setup) {
         live,
         router,
         document,
+        lane,
     } = setup;
     let ended = |error: Option<Option<ScriptError>>| {
         if let Some(error) = error {
@@ -696,6 +703,8 @@ fn run(setup: Setup) {
     pool.set_waker(Arc::new(move || {
         woken.send(WorkerMessage::Wake);
     }));
+    let mut workers = Workers::new(me, live, depth, router.clone(), document);
+    workers.lane = lane.clone();
     let mut host = WorkerHost {
         id,
         owner: Some(owner.clone()),
@@ -725,7 +734,8 @@ fn run(setup: Setup) {
         partition: start.partition.clone(),
         csp: Some(csp),
         local_network: start.local_network.clone(),
-        workers: Some(Workers::new(me, live, depth, router.clone(), document)),
+        workers: Some(workers),
+        lane: lane.map(|lane| super::webcrypto::Laned::new(lane.client(), limits.heap)),
         ..WorkerHost::default()
     };
     let script = Script {
@@ -855,6 +865,11 @@ pub(crate) fn run_service(setup: ServiceSetup) {
         // Its script's policies are not kept with it: it has none.
         csp: Some(net::csp::Csp::none(origin)),
         service: Some(service),
+        // A lane of its own: no document's renderer runs it (G255 step 7).
+        lane: Some(super::webcrypto::Laned::new(
+            super::lane::Lane::default().client(),
+            limits.heap,
+        )),
         ..WorkerHost::default()
     };
     let text = utf8_decode(&source);
@@ -1213,6 +1228,8 @@ pub(crate) struct WorkerHost {
     /// for the next wake.
     crypto_keys: crypto::Keys,
     crypto_answers: VecDeque<(String, Vec<u8>)>,
+    /// Its realm's way onto the crypto lane (G255 step 7).
+    lane: Option<super::webcrypto::Laned>,
 }
 
 /// What a worker's EventSources' connections did, by source.
@@ -1243,6 +1260,7 @@ impl Default for WorkerHost {
             source_news: Arc::default(),
             crypto_keys: crypto::Keys::default(),
             crypto_answers: VecDeque::new(),
+            lane: None,
             next_job: 0,
             canvases: Canvases::default(),
             viewport: (0, 0),
@@ -1436,7 +1454,9 @@ impl ScriptingHost for WorkerHost {
                 answer
             }
             Call::Crypto(call) => {
-                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call);
+                let wake = self.pool.as_ref().and_then(Pool::waker);
+                let lane = self.lane.as_mut().map(|lane| (lane, wake));
+                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call, lane);
                 if let Some(task) = task {
                     self.crypto_answers.push_back(task);
                     if let Some(wake) = self.pool.as_ref().and_then(Pool::waker) {
@@ -1820,6 +1840,13 @@ impl WorkerHost {
         while let Some((json, bytes)) = self.crypto_answers.pop_front() {
             tasks.push(Task::Crypto(json, bytes));
         }
+        // What the crypto lane did for it (G255 step 7), its keys made the
+        // realm's as each settles.
+        if let Some(lane) = &mut self.lane {
+            for (json, bytes) in lane.settled(&mut self.crypto_keys) {
+                tasks.push(Task::Crypto(json, bytes));
+            }
+        }
         while let Some((job, result)) = self.pool.as_ref().and_then(Pool::try_take) {
             let Some((id, url, _)) = self.fetching.remove(&job) else {
                 continue;
@@ -1964,7 +1991,9 @@ impl WorkerHost {
         for error in errors {
             self.uncaught(error);
         }
-        if realm.dead().is_some() {
+        // Out of memory too when its crypto jobs would have passed its
+        // heap's limit (G255 step 7).
+        if realm.dead().is_some() || self.lane.as_ref().is_some_and(|lane| lane.out_of_memory) {
             self.closing = true;
         }
         // What its offscreen canvases with placeholders drew in the task

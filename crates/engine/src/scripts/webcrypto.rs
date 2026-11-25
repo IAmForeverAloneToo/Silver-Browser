@@ -13,10 +13,56 @@ use js::{Answer, CryptoCall, DomError};
 /// call's answer is.
 pub(crate) type Settling = (String, Vec<u8>);
 
-/// What a call gives: the call's answer, and the task to queue.
+/// A realm's use of the crypto lane (G255 step 7): its client, the bytes
+/// its queued jobs hold, its realm's heap limit, which they may not pass
+/// together (the lead's ruling), and whether a job would have.
+pub(crate) struct Laned {
+    pub(crate) client: super::lane::Client,
+    /// Its jobs not yet settled.
+    pub(crate) jobs: usize,
+    pub(crate) pending: usize,
+    pub(crate) room: usize,
+    pub(crate) out_of_memory: bool,
+}
+
+impl Laned {
+    pub(crate) fn new(client: super::lane::Client, limit: usize) -> Laned {
+        Laned {
+            client,
+            jobs: 0,
+            pending: 0,
+            room: limit,
+            out_of_memory: false,
+        }
+    }
+
+    /// The tasks that settle the lane's jobs done since this was last
+    /// asked, in their order, their keys made the realm's.
+    pub(crate) fn settled(&mut self, keys: &mut crypto::Keys) -> Vec<Settling> {
+        self.client
+            .take_done()
+            .into_iter()
+            .map(|done| {
+                self.pending = self.pending.saturating_sub(done.cost);
+                self.jobs = self.jobs.saturating_sub(1);
+                let outcome = done
+                    .outcome
+                    .map(|outcome| crypto::adopt(keys, done.keys, outcome));
+                settled(done.id, outcome)
+            })
+            .collect()
+    }
+}
+
+/// What a call gives: the call's answer, and the task to queue. A call
+/// the reference runs off its thread (PBKDF2's, RSA's generation) goes on
+/// `lane`, when the realm has one, and settles when the lane is done; its
+/// bytes and its output counted against the realm's heap first, past
+/// which nothing goes and the realm is out of memory.
 pub(crate) fn call(
     keys: &mut crypto::Keys,
     call: CryptoCall,
+    lane: Option<(&mut Laned, Option<crate::loader::Waker>)>,
 ) -> (Result<Answer, DomError>, Option<Settling>) {
     match call {
         CryptoCall::Members { op, name } => {
@@ -34,7 +80,32 @@ pub(crate) fn call(
         CryptoCall::Run { id, json, buffers } => {
             let outcome = match Json::parse(&json) {
                 Ok(args) => match call_of(&args, &RefCell::new(buffers)) {
-                    Some(call) => crypto::run(keys, call),
+                    Some(call) => match lane {
+                        Some((lane, wake)) if crypto::lane_job(keys, &call) => {
+                            let cost = crypto::lane_cost(&call);
+                            if lane.pending.saturating_add(cost) > lane.room {
+                                lane.out_of_memory = true;
+                                return (Ok(Answer::Nothing), None);
+                            }
+                            lane.pending += cost;
+                            lane.jobs += 1;
+                            let mut lent = crypto::lend(keys, &call);
+                            lane.client.submit(
+                                Box::new(move || {
+                                    let outcome = crypto::run(&mut lent, call);
+                                    super::lane::Done {
+                                        id,
+                                        keys: lent,
+                                        outcome,
+                                        cost,
+                                    }
+                                }),
+                                wake,
+                            );
+                            return (Ok(Answer::Nothing), None);
+                        }
+                        _ => crypto::run(keys, call),
+                    },
                     None => Err(crypto::Error {
                         name: "TypeError",
                         message: "Malformed arguments".to_owned(),

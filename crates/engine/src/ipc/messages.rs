@@ -419,6 +419,11 @@ wire_enum! {
         /// WebSocket `id`'s page is gone: the browser closes it with
         /// 1001 and forgets it.
         39 => SocketDrop { id: u64 },
+        /// The renderer's crypto lane left dead work running past its
+        /// bound (G255 step 7): its site's next documents go to a new
+        /// renderer, and it goes once it shows nothing. `view` is the one
+        /// that noticed.
+        40 => Retire { view: u32 },
     }
 }
 

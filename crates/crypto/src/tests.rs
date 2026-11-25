@@ -5095,3 +5095,182 @@ fn an_hmac_keys_length_fits_its_data() {
     );
     assert_eq!(error(import(&mut keys, 32, Some(512.0), vec![])), refused);
 }
+
+/// The lane's calls (G255 step 7): PBKDF2's derivations and RSA's
+/// generation, past the checks made first; nothing else, and none that
+/// fails them.
+#[test]
+fn the_lanes_calls_are_the_references() {
+    let mut keys = Keys::default();
+    let pbkdf2 = import_raw(
+        &mut keys,
+        s("PBKDF2"),
+        b"password",
+        &[Usage::DeriveBits, Usage::DeriveKey],
+    );
+    let bits_only = import_raw(&mut keys, s("PBKDF2"), b"password", &[Usage::DeriveBits]);
+    let hkdf = import_raw(&mut keys, s("HKDF"), b"secret", &[Usage::DeriveBits]);
+    let params = || {
+        dict(&[
+            ("name", s("pbkdf2")),
+            ("hash", s("SHA-256")),
+            ("salt", Value::Bytes(vec![0; 16])),
+            ("iterations", Value::Num(1.0)),
+        ])
+    };
+    let derive = |key: u32| Call::DeriveBits {
+        algorithm: params(),
+        key,
+        length: Some(256),
+    };
+    let aes = dict(&[("name", s("AES-GCM")), ("length", Value::Num(128.0))]);
+    let derive_key = |key: u32, derived: Value| Call::DeriveKey {
+        algorithm: params(),
+        key,
+        derived,
+        extractable: false,
+        usages: vec![Usage::Encrypt],
+    };
+    let rsa = |name: &str| Call::GenerateKey {
+        algorithm: dict(&[
+            ("name", s(name)),
+            ("modulusLength", Value::Num(1024.0)),
+            ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+            ("hash", s("SHA-256")),
+        ]),
+        extractable: true,
+        usages: vec![Usage::Sign, Usage::Verify],
+    };
+    assert!(lane_job(&keys, &derive(pbkdf2.id)));
+    assert!(lane_job(&keys, &derive_key(pbkdf2.id, aes.clone())));
+    assert!(lane_job(&keys, &rsa("RSA-PSS")));
+    assert!(lane_job(&keys, &rsa("rsassa-pkcs1-v1_5")));
+    // Its checks fail: run now, its error at once.
+    assert!(!lane_job(&keys, &derive(hkdf.id)));
+    assert!(!lane_job(&keys, &derive(99)));
+    assert!(!lane_job(&keys, &derive_key(bits_only.id, aes.clone())));
+    assert!(!lane_job(&keys, &derive_key(pbkdf2.id, s("NOPE"))));
+    assert!(!lane_job(&keys, &rsa("RSA-NOPE")));
+    // Not the lane's.
+    assert!(!lane_job(
+        &keys,
+        &Call::Digest {
+            algorithm: s("SHA-256"),
+            data: vec![1]
+        }
+    ));
+    assert!(!lane_job(
+        &keys,
+        &Call::GenerateKey {
+            algorithm: aes.clone(),
+            extractable: false,
+            usages: vec![Usage::Encrypt]
+        }
+    ));
+    assert!(!lane_job(
+        &keys,
+        &Call::DeriveBits {
+            algorithm: dict(&[
+                ("name", s("HKDF")),
+                ("hash", s("SHA-256")),
+                ("salt", Value::Bytes(vec![])),
+                ("info", Value::Bytes(vec![]))
+            ]),
+            key: hkdf.id,
+            length: Some(256),
+        }
+    ));
+    // What each holds: its salt and its output.
+    assert_eq!(lane_cost(&derive(pbkdf2.id)), 16 + 32);
+    assert_eq!(
+        lane_cost(&Call::DeriveBits {
+            algorithm: params(),
+            key: pbkdf2.id,
+            length: Some(u32::MAX - 7)
+        }),
+        16 + (1 << 29) - 1
+    );
+    assert_eq!(lane_cost(&derive_key(pbkdf2.id, aes)), 16 + 64);
+    assert_eq!(lane_cost(&rsa("RSA-PSS")), 8 << 10);
+}
+
+/// A lane job runs against the store `lend` makes and its keys are the
+/// realm's after `adopt`, numbered as it numbers its own: a PBKDF2 key
+/// derived there encrypts as one derived here; an RSA pair made there
+/// signs and verifies.
+#[test]
+fn a_lane_jobs_keys_are_the_realms_after_it() {
+    let mut keys = Keys::default();
+    let pbkdf2 = import_raw(&mut keys, s("PBKDF2"), b"password", &[Usage::DeriveKey]);
+    let call = || Call::DeriveKey {
+        algorithm: dict(&[
+            ("name", s("PBKDF2")),
+            ("hash", s("SHA-256")),
+            ("salt", Value::Bytes(b"salt".to_vec())),
+            ("iterations", Value::Num(2.0)),
+        ]),
+        key: pbkdf2.id,
+        derived: dict(&[("name", s("AES-GCM")), ("length", Value::Num(128.0))]),
+        extractable: true,
+        usages: vec![Usage::Encrypt],
+    };
+    let mut lent = lend(&keys, &call());
+    assert_eq!(lent.len(), 1);
+    let made = run(&mut lent, call()).expect("derived");
+    let before = keys.len();
+    let Outcome::Key(info) = adopt(&mut keys, lent, made) else {
+        panic!("a key")
+    };
+    assert_eq!(keys.len(), before + 1);
+    assert!(info.id > pbkdf2.id);
+    let here = key(run(&mut keys, call()));
+    let mut export = |id| {
+        bytes(run(
+            &mut keys,
+            Call::ExportKey {
+                format: "raw".into(),
+                key: id,
+            },
+        ))
+    };
+    // PBKDF2-HMAC-SHA256 of "password" and "salt" at 2 iterations, its
+    // first 16 bytes (the published SHA-256 counterpart of RFC 6070's).
+    assert_eq!(export(info.id), hex("ae4d0c95af6b46d32d0adff928f06dd0"));
+    assert_eq!(export(here.id), export(info.id));
+
+    let generate = || Call::GenerateKey {
+        algorithm: dict(&[
+            ("name", s("RSA-PSS")),
+            ("modulusLength", Value::Num(1024.0)),
+            ("publicExponent", Value::Bytes(vec![1, 0, 1])),
+            ("hash", s("SHA-256")),
+        ]),
+        extractable: false,
+        usages: vec![Usage::Sign, Usage::Verify],
+    };
+    let mut lent = lend(&keys, &generate());
+    assert!(lent.is_empty());
+    let made = run(&mut lent, generate()).expect("generated");
+    let Outcome::Pair(public, private) = adopt(&mut keys, lent, made) else {
+        panic!("a pair")
+    };
+    let pss = || dict(&[("name", s("RSA-PSS")), ("saltLength", Value::Num(32.0))]);
+    let signature = bytes(run(
+        &mut keys,
+        Call::Sign {
+            algorithm: pss(),
+            key: private.id,
+            data: b"m".to_vec(),
+        },
+    ));
+    let verified = run(
+        &mut keys,
+        Call::Verify {
+            algorithm: pss(),
+            key: public.id,
+            signature,
+            data: b"m".to_vec(),
+        },
+    );
+    assert!(matches!(verified, Ok(Outcome::Bool(true))), "{verified:?}");
+}

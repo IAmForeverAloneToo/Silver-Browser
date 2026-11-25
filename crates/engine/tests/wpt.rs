@@ -2046,6 +2046,16 @@ fn equal(largest: u32, pixels: u32, fuzzy: Option<Fuzzy>) -> bool {
 /// one known to is not run (`not-run:` in expectations.txt).
 const GIVE_UP: Duration = Duration::from_secs(90);
 
+/// The pages that leave work running after they end (G255 step 7): a
+/// PBKDF2 derivation of 512 MiB at 100,000 iterations, length -8 wrapped
+/// to 2^32 - 8 bits, which Chrome times out on too. Its lane is abandoned
+/// as the page's engine goes, and computes until the process ends. Run
+/// last, the cores they keep are lost for the run's last minutes alone.
+const LEAVES_WORK: [&str; 2] = [
+    "WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.html",
+    "WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.worker.html",
+];
+
 /// Runs `run` on each of `items` on `threads` threads, and gives the
 /// results in the items' order. A run past `limit` of real time is given
 /// up from outside it: its result is `gave_up`'s, and its thread, which
@@ -2470,7 +2480,7 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
         // the page's own timeout waits for has the time it would have. So
         // does a page whose `AudioContext` renders, at the output's clock.
         let slice = moved.elapsed();
-        if engine.has_workers() || engine.renders_sound() {
+        if engine.has_workers() || engine.renders_sound() || engine.crypto_busy() {
             let jump = next.map_or(Duration::ZERO, |at| at.saturating_sub(now));
             let real = jump.clamp(WORKER_SLICE, WORKER_WAIT);
             if slice < real {
@@ -2483,14 +2493,16 @@ fn run_testharness(server: &TestServer, path: &str, long: bool) -> Outcome {
                 clock.set(at);
                 moved = Instant::now();
             }
-            // Only the network, a decoder, a worker or a graph can
-            // change anything now; a worker or a graph may take its time.
+            // Only the network, a decoder, a worker, a graph or the crypto
+            // lane can change anything now; a worker, a graph or the lane
+            // may take its time.
             None => {
-                let quiet = if engine.has_workers() || engine.renders_sound() {
-                    left
-                } else {
-                    left.min(Duration::from_secs(1))
-                };
+                let quiet =
+                    if engine.has_workers() || engine.renders_sound() || engine.crypto_busy() {
+                        left
+                    } else {
+                        left.min(Duration::from_secs(1))
+                    };
                 if woken.recv_timeout(quiet).is_err() {
                     return unfinished(
                         engine,
@@ -3392,6 +3404,11 @@ fn the_web_platform_tests_subset_runs_as_expected() {
             expected[test.path()]
         );
     }
+    // Those that leave work running, last.
+    let (last, mut tests): (Vec<Test>, Vec<Test>) = tests
+        .into_iter()
+        .partition(|t| LEAVES_WORK.contains(&t.path()));
+    tests.extend(last);
     let server = Arc::new(serve(root(), false));
     let harness = Arc::new(serve(root(), true));
     // A second port of the same, a distinct origin, and the same over

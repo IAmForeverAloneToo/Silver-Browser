@@ -508,6 +508,56 @@ impl Keys {
 }
 
 /// Runs `call` against `keys`, with the reference browser's errors.
+/// Whether `call` runs on the renderer's lane (G255 step 7): PBKDF2's
+/// derivations and RSA's generation, past the checks made before the
+/// work; any other call, or one that fails them, runs now.
+pub fn lane_job(keys: &Keys, call: &Call) -> bool {
+    algorithms::lane_job(keys, call)
+}
+
+/// The bytes lane job `call` holds, counted against its realm's heap.
+pub fn lane_cost(call: &Call) -> usize {
+    algorithms::lane_cost(call)
+}
+
+/// The store lane job `call` runs against: the key it names, if any,
+/// lent (its material's copy overwritten as the store goes), under its
+/// own number, the keys made there numbered past any of `keys`.
+pub fn lend(keys: &Keys, call: &Call) -> Keys {
+    let mut lent = Keys {
+        keys: HashMap::new(),
+        next: keys.next,
+    };
+    let base = match call {
+        Call::DeriveBits { key, .. } | Call::DeriveKey { key, .. } => Some(*key),
+        _ => None,
+    };
+    if let Some(id) = base
+        && let Some(key) = keys.keys.get(&id)
+    {
+        lent.keys.insert(id, key.clone());
+    }
+    lent
+}
+
+/// A lane job's `outcome`, the keys it made in `from` moved into `keys`
+/// and numbered there, as the realm numbers its own; what else `from`
+/// holds goes with it.
+pub fn adopt(keys: &mut Keys, mut from: Keys, outcome: Outcome) -> Outcome {
+    let mut moved = |info: KeyInfo| match from.keys.remove(&info.id) {
+        Some(key) => keys.insert(key),
+        None => info,
+    };
+    match outcome {
+        Outcome::Key(info) => Outcome::Key(moved(info)),
+        Outcome::Pair(public, private) => {
+            let public = moved(public);
+            Outcome::Pair(public, moved(private))
+        }
+        other => other,
+    }
+}
+
 /// A key's structured serialization (step 4): the import that makes it
 /// again, as JSON text's bytes, its material in the format it imports
 /// from whatever its `extractable`. `None` for a key not in the store.

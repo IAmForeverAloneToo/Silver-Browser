@@ -494,3 +494,39 @@ fn a_frame_of_another_renderer_is_another_origins_window_to_its_parent() {
         "{lines:?}"
     );
 }
+
+/// A renderer that says its crypto lane left dead work past its bound
+/// (G255 step 7) gets no new document of its site: the next goes to a
+/// new renderer, and it goes once it shows nothing, though the tab's
+/// history holds its site.
+#[test]
+fn a_retiring_renderer_gets_no_new_document_and_goes() {
+    let server = server();
+    let mut tab = tab();
+    tab.navigate(url(&server, "a.localhost", "/same"));
+    let mut lines = Vec::new();
+    settle(&mut tab, &mut lines, "the first page", |tab, _| {
+        tab.load_state() == &LoadState::Loaded
+    });
+    let first = tab.shown_renderer().expect("a renderer");
+    tab.told(first, crate::ipc::ToBrowser::Retire { view: 0 })
+        .expect("taken");
+    // Shown, it stays.
+    assert!(tab.renderers().iter().any(|(number, _)| *number == first));
+    tab.navigate(url(&server, "a.localhost", "/same"));
+    settle(
+        &mut tab,
+        &mut lines,
+        "the same site's next page",
+        |tab, _| {
+            tab.load_state() == &LoadState::Loaded
+                && tab.shown_renderer().is_some_and(|n| n != first)
+        },
+    );
+    settle(
+        &mut tab,
+        &mut lines,
+        "the retiring renderer gone",
+        |tab, _| tab.renderers().iter().all(|(number, _)| *number != first),
+    );
+}

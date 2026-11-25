@@ -1,0 +1,12 @@
+{
+ "version": "Chrome/158.0.8127.37",
+ "result": [
+  "page alone ms 485",
+  "worker alone ms 474",
+  "page and worker at once: page 445, worker 900, wall 900",
+  "two workers and page: 968, 1415, 519, wall 1416"
+ ],
+ "console": [
+  "error network Failed to load resource: the server responded with a status of 404 (File not found)"
+ ]
+}

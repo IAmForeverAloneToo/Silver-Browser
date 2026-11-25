@@ -20,6 +20,7 @@ pub(crate) mod event_source;
 mod fetch;
 mod host;
 mod import_map;
+pub(crate) mod lane;
 mod layout_observers;
 mod media_lists;
 pub(crate) mod modules;
@@ -944,6 +945,9 @@ pub(crate) struct Scripts {
     /// the document for each run.
     host: DocumentHost,
     limits: Limits,
+    /// The renderer's crypto lane (G255 step 7), which its realm and its
+    /// workers reach.
+    lane: Option<lane::Lane>,
     console: VecDeque<ConsoleEntry>,
     errors: usize,
     /// Its realm died: it runs nothing more.
@@ -1100,6 +1104,7 @@ impl Scripts {
             frame: None,
             host: DocumentHost::default(),
             limits,
+            lane: None,
             console: VecDeque::new(),
             errors: 0,
             stopped: false,
@@ -2350,7 +2355,10 @@ impl Scripts {
         host.lend(lent, how, self.blocking.is_some());
         let result = run(realm.as_mut(), host);
         let errors = realm.checkpoint(host);
-        let dead = realm.dead().is_some();
+        // Out of memory too when a crypto job would have passed the heap
+        // (G255 step 7, the lead's ruling).
+        let dead =
+            realm.dead().is_some() || host.lane.as_ref().is_some_and(|lane| lane.out_of_memory);
         // The sweep of the trees held for custom elements, and the
         // collection the document's growth asks for, before the host
         // frees what they released.
@@ -2681,7 +2689,8 @@ impl Scripts {
         host.lend(lent, how, self.blocking.is_some());
         let result = realm.enter(task, host);
         let errors = realm.checkpoint(host);
-        let dead = realm.dead().is_some();
+        let dead =
+            realm.dead().is_some() || host.lane.as_ref().is_some_and(|lane| lane.out_of_memory);
         let collect = host.collection_due();
         realm.sweep(host, collect);
         host.sweep();
@@ -2751,6 +2760,13 @@ impl Scripts {
     /// errors and ends queued as tasks from `now`, their console lines
     /// put in the document's console.
     pub(crate) fn take_worker_messages(&mut self, now: Duration) {
+        // And what the crypto lane did for it (G255 step 7), its keys made
+        // the realm's as each settles.
+        if let Some(lane) = &mut self.host.lane {
+            for (json, bytes) in lane.settled(&mut self.host.crypto_keys) {
+                self.posted.push_back((now, js::Task::Crypto(json, bytes)));
+            }
+        }
         while let Some(message) = self.host.workers.mailbox.try_take() {
             let (id, event) = match message {
                 workers::WorkerMessage::FromWorker(id, event) => (id, event),
@@ -3250,9 +3266,13 @@ impl Scripts {
 
     /// Whether the back-forward cache may keep the document: not when
     /// its realm died, nor while it has workers (M31), which end with it
-    /// as it goes, nor while an `AudioContext` of its is open (M40).
+    /// as it goes, nor while an `AudioContext` of its is open (M40), nor
+    /// while a crypto job of its is on the lane (G255 step 7): it goes,
+    /// and its job's lane with it, rather than the tab's next pages
+    /// waiting behind a page not shown.
     pub(crate) fn keepable(&self) -> bool {
         !self.stopped
+            && self.host.lane.as_ref().is_none_or(|lane| lane.jobs == 0)
             && !self.host.workers.workers.any()
             && !self.host.sockets.any()
             && !self.host.event_sources.any()
@@ -3284,6 +3304,25 @@ impl Scripts {
             member: self.member.take(),
             ..Scripts::with_limits(self.limits)
         };
+        // Its old realm's jobs went with its old host.
+        if let Some(lane) = self.lane.take() {
+            self.use_lane(&lane);
+        }
+    }
+
+    /// [`Self::use_lane`], unless it has one.
+    pub(crate) fn ensure_lane(&mut self, lane: &lane::Lane) {
+        if self.lane.is_none() {
+            self.use_lane(lane);
+        }
+    }
+
+    /// Runs its realm's PBKDF2 and RSA generation, and its workers', on
+    /// `lane`, the renderer's (G255 step 7).
+    pub(crate) fn use_lane(&mut self, lane: &lane::Lane) {
+        self.host.lane = Some(webcrypto::Laned::new(lane.client(), self.limits.heap));
+        self.host.workers.workers.lane = Some(lane.clone());
+        self.lane = Some(lane.clone());
     }
 
     /// Makes its realm, when it does, in `agent`, named frame `frame`
@@ -3389,6 +3428,8 @@ impl Scripts {
     /// word, for a cause reported already.
     fn halt(&mut self) {
         self.realm = None;
+        // Its crypto jobs go with it.
+        self.host.lane = None;
         self.host.forget_objects();
         self.host.timers.clear_all();
         self.host.workers.workers.terminate_all();
@@ -3460,7 +3501,10 @@ impl Scripts {
             && !self.host.workers.workers.any()
             && !self.host.workers.uses(&router)
         {
+            let lane = self.host.workers.workers.lane.take();
             self.host.workers = workers::DocumentWorkers::with_router(router);
+            // Its workers' crypto lane stays the renderer's (G255 step 7).
+            self.host.workers.workers.lane = lane;
         }
     }
 

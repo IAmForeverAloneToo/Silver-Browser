@@ -519,6 +519,10 @@ pub(crate) struct DocumentHost {
     pub(crate) sockets: super::websocket::Sockets,
     /// Its realm's Web Crypto keys (G255).
     pub(crate) crypto_keys: crypto::Keys,
+    /// Its realm's way onto the renderer's crypto lane (G255 step 7), and
+    /// what wakes the engine's owner when a job is done.
+    pub(crate) lane: Option<super::webcrypto::Laned>,
+    lane_wake: Option<crate::loader::Waker>,
     /// Its EventSources (G74).
     pub(crate) event_sources: super::event_source::Sources,
 }
@@ -2406,7 +2410,11 @@ impl DocumentHost {
                 answer
             }
             Call::Crypto(call) => {
-                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call);
+                let lane = self
+                    .lane
+                    .as_mut()
+                    .map(|lane| (lane, self.lane_wake.clone()));
+                let (answer, task) = super::webcrypto::call(&mut self.crypto_keys, *call, lane);
                 if let Some((json, bytes)) = task {
                     let now = self.now();
                     self.outputs
@@ -4755,6 +4763,7 @@ impl DocumentHost {
         self.cookies = Some(lent.network.cookie_access());
         self.client = Some(lent.network.client());
         self.workers.set_wake(lent.network.waker());
+        self.lane_wake = lent.network.waker();
         self.parser = lent
             .parser
             .as_deref_mut()

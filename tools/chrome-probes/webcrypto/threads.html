@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const now = () => performance.now();
+  const key = await s.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits']);
+  const pb = (iterations) => s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations}, key, 256);
+  // One long PBKDF2 alone.
+  let t = now(); await pb(3000000); const one = now() - t;
+  out.push('pbkdf2 alone ms ' + one.toFixed(0));
+  // Two at once: in parallel or one after the other?
+  t = now(); await Promise.all([pb(3000000), pb(3000000)]); const two = now() - t;
+  out.push('two pbkdf2 at once ms ' + two.toFixed(0) + ' ratio ' + (two / one).toFixed(2));
+  // Four at once.
+  t = now(); await Promise.all([pb(3000000), pb(3000000), pb(3000000), pb(3000000)]); const four = now() - t;
+  out.push('four pbkdf2 at once ms ' + four.toFixed(0) + ' ratio ' + (four / one).toFixed(2));
+  // Order: a slow PBKDF2 first, a digest after it.
+  const order = [];
+  t = now();
+  const slow = pb(3000000).then(() => order.push('pbkdf2 ' + (now() - t).toFixed(0)));
+  const fast = s.digest('SHA-256', new Uint8Array(16)).then(() => order.push('digest ' + (now() - t).toFixed(0)));
+  await Promise.all([slow, fast]);
+  out.push('order ' + order.join(', '));
+  // A digest behind an RSA keygen.
+  const order2 = [];
+  t = now();
+  const rsa = s.generateKey({name: 'RSA-PSS', modulusLength: 4096, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, false, ['sign'])
+    .then(() => order2.push('rsa4096 ' + (now() - t).toFixed(0)));
+  const fast2 = s.digest('SHA-256', new Uint8Array(16)).then(() => order2.push('digest ' + (now() - t).toFixed(0)));
+  await Promise.all([rsa, fast2]);
+  out.push('order behind rsa ' + order2.join(', '));
+  // A timer while a PBKDF2 runs: the page's own loop.
+  const order3 = [];
+  t = now();
+  const p3 = pb(3000000).then(() => order3.push('pbkdf2 ' + (now() - t).toFixed(0)));
+  setTimeout(() => order3.push('timer ' + (now() - t).toFixed(0)), 10);
+  await p3; await new Promise((r) => setTimeout(r, 20));
+  out.push('timer during ' + order3.join(', '));
+  // A big digest's time.
+  const big = new Uint8Array(256 << 20);
+  t = now(); await s.digest('SHA-256', big); out.push('digest 256 MiB ms ' + (now() - t).toFixed(0));
+  // The data copied at the call: changed after the call, the digest is of the old bytes.
+  const d = new Uint8Array(1 << 20);
+  const p = s.digest('SHA-256', d); d.fill(1);
+  const h1 = new Uint8Array(await p); const h0 = new Uint8Array(await s.digest('SHA-256', new Uint8Array(1 << 20)));
+  out.push('copied at the call ' + (h1.join() === h0.join()));
+  out.push('hardwareConcurrency ' + navigator.hardwareConcurrency);
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

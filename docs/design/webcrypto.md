@@ -420,6 +420,32 @@ it). getPublicKey gives any asymmetric private key's public key, of the
 usages asked; a public key's an InvalidAccessError, a secret key's a
 NotSupportedError, in the reference's words.
 
+The crypto lane (step 7, the lead's ruling): Chrome's split, probed on
+Chrome 158. PBKDF2's deriveBits and deriveKey and RSA's generateKey run
+on one lane per renderer (`scripts/lane.rs`), first come first served
+across the renderer's documents and workers (a service worker, run by
+no document's renderer, has a lane of its own); every other call runs
+where it is made, as Chrome runs them. What is checked before the work
+(the algorithm's normalization, the base key's algorithm and usage)
+still fails at once. A job runs against a store of its own, its base
+key lent; the keys it makes are moved into the realm's as the realm
+takes the result, on its own thread, numbered as it numbers its own.
+Nothing stops a job once it runs: when its realm goes, its queued jobs
+go unrun and a running one's lane is abandoned, a fresh lane taking the
+queue at once. At most two abandoned lanes run at once; the third marks
+the renderer for retirement (`ToBrowser::Retire`): the tab gives its
+site's next documents a new renderer and shuts it down once it shows
+nothing. A retiring renderer abandons no more lanes, its queue waiting
+for what runs: only its tab waits. A page with a job on the lane is not
+kept by the back-forward cache. A realm's queued jobs' bytes (their
+salts' copies and their outputs to come) may not pass its heap's limit
+together, counted from each call; past it, the realm stops as out of
+memory (M24.7). The limit is counted apart from the realm's own heap,
+which its runtime holds to it: measuring that heap at each call walks
+every object, too dear for each task. Measured against Chrome 158:
+RSA-8192 generation 4.95 s on average over 12 (Chrome 6.14 s), PBKDF2
+at 8.0M iterations a second (Chrome 6.3M).
+
 A page's bytes cross to the store copied once (step 7a, the lead's
 ruling): the binding hands a buffer's range to `bytesStash` where Web
 IDL copies it, which copies it into a vector held for the realm under a

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="lane-body.js"></script>
+<script>
+(async () => {
+  const out = [];
+  const alone = await lane(3000000);
+  out.push('page alone ms ' + alone.toFixed(0));
+  const w1 = new Worker('lane-worker.js'), w2 = new Worker('lane-worker.js');
+  const ask = (w) => new Promise((r) => { w.onmessage = (e) => r(e.data); w.postMessage(3000000); });
+  const wa = await ask(w1);
+  out.push('worker alone ms ' + wa.toFixed(0));
+  let t = performance.now();
+  const both = await Promise.all([lane(3000000), ask(w1)]);
+  out.push('page and worker at once: page ' + both[0].toFixed(0) + ', worker ' + both[1].toFixed(0) + ', wall ' + (performance.now() - t).toFixed(0));
+  t = performance.now();
+  const three = await Promise.all([ask(w1), ask(w2), lane(3000000)]);
+  out.push('two workers and page: ' + three.map((x) => x.toFixed(0)).join(', ') + ', wall ' + (performance.now() - t).toFixed(0));
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

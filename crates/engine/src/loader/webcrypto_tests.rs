@@ -17,6 +17,9 @@ fn logged(script: &str, count: usize) -> Vec<String> {
     tab.run_until(|lines| lines.len() >= count)
 }
 
+/// How long a test waits on a lane job; a hang is no result.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 const PROTON_RS1: &str = "{alg: 'RS1', e: 'AQAB', kty: 'RSA', n: 'rVMOV0fT7doXOgDU-drrk9yXIgEsB9aK5x9fSOpRuWa8aS9hmX9obPoOub1Boz0Rk_C4maZMKo8m7mHx3n6JXQ'}";
 
 #[test]
@@ -610,5 +613,188 @@ fn a_pages_buffers_are_copied_once_and_resizable_ones_refused() {
             "a view at an offset true true",
             "as at the call true",
         ]
+    );
+}
+
+/// The calls Chrome runs off its page's thread, and their order (G255
+/// step 7; Chrome 158, probed: tools/chrome-probes/webcrypto/order,
+/// lane-members, threads): PBKDF2 and RSA's generation on one lane, in
+/// the order they came; every other call settles at once, before a lane
+/// job made earlier; the page's timers run while a PBKDF2 does.
+#[test]
+fn the_lanes_calls_settle_in_the_references_order() {
+    let script = "(async () => {\
+      const s = crypto.subtle; const out = [];\
+      const pk = await s.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits', 'deriveKey']);\
+      const pbkdf2 = (iterations) => () => s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations}, pk, 256);\
+      const long = pbkdf2(2000000);\
+      const race = async (label, first, second) => { const o = [];\
+        await Promise.all([first().then(() => o.push('first')), second().then(() => o.push('second'))]);\
+        out.push(label + ': ' + o.join(' ')); };\
+      const hk = await s.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveBits']);\
+      const mac = await s.importKey('raw', new Uint8Array(32), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);\
+      const rsa = await s.generateKey({name: 'RSA-PSS', modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, true, ['sign', 'verify']);\
+      const pkcs8 = await s.exportKey('pkcs8', rsa.privateKey);\
+      await race('digest', long, () => s.digest('SHA-256', new Uint8Array(16)));\
+      await race('importKey', long, () => s.importKey('raw', new Uint8Array(16), 'AES-GCM', false, ['encrypt']));\
+      await race('HMAC sign', long, () => s.sign('HMAC', mac, new Uint8Array(1)));\
+      await race('AES generateKey', long, () => s.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt']));\
+      await race('ECDSA generateKey', long, () => s.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, false, ['sign']));\
+      await race('Ed25519 generateKey', long, () => s.generateKey('Ed25519', false, ['sign']));\
+      await race('ML-DSA generateKey', long, () => s.generateKey('ML-DSA-44', false, ['sign']));\
+      await race('HKDF', long, () => s.deriveBits({name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(1), info: new Uint8Array(0)}, hk, 256));\
+      await race('RSA importKey', long, () => s.importKey('pkcs8', pkcs8, {name: 'RSA-PSS', hash: 'SHA-256'}, false, ['sign']));\
+      await race('RSA sign', long, () => s.sign({name: 'RSA-PSS', saltLength: 32}, rsa.privateKey, new Uint8Array(1)));\
+      await race('a short PBKDF2', long, pbkdf2(1));\
+      await race('a short PBKDF2 behind RSA', () => s.generateKey({name: 'RSA-PSS', modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, false, ['sign']), pbkdf2(1));\
+      await race('a PBKDF2 key without the usage, its error now', long, () => s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 1}, hk, 256).catch(() => {}));\
+      const timed = []; const p = long().then(() => timed.push('PBKDF2'));\
+      setTimeout(() => timed.push('timer'), 0); await p;\
+      out.push('a timer during it: ' + timed.join(' '));\
+      const aes = await s.deriveKey({name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode('salt'), iterations: 2}, await s.importKey('raw', new TextEncoder().encode('password'), 'PBKDF2', false, ['deriveKey']), {name: 'AES-GCM', length: 128}, true, ['encrypt']);\
+      const raw = new Uint8Array(await s.exportKey('raw', aes));\
+      out.push('the AES-GCM bytes the lane derived: ' + Array.from(raw, (x) => x.toString(16).padStart(2, '0')).join(''));\
+      const signed = await s.sign({name: 'RSA-PSS', saltLength: 32}, rsa.privateKey, new Uint8Array(4));\
+      out.push('a pair the lane made: ' + await s.verify({name: 'RSA-PSS', saltLength: 32}, rsa.publicKey, signed, new Uint8Array(4)));\
+      for (const line of out) console.log(line);\
+      })().catch((e) => console.log('failed', e.name, e.message));";
+    let lines = logged(script, 16);
+    assert_eq!(
+        lines,
+        [
+            "digest: second first",
+            "importKey: second first",
+            "HMAC sign: second first",
+            "AES generateKey: second first",
+            "ECDSA generateKey: second first",
+            "Ed25519 generateKey: second first",
+            "ML-DSA generateKey: second first",
+            "HKDF: second first",
+            "RSA importKey: second first",
+            "RSA sign: second first",
+            "a short PBKDF2: first second",
+            "a short PBKDF2 behind RSA: first second",
+            "a PBKDF2 key without the usage, its error now: second first",
+            "a timer during it: timer PBKDF2",
+            "the AES-GCM bytes the lane derived: ae4d0c95af6b46d32d0adff928f06dd0",
+            "a pair the lane made: true",
+        ]
+    );
+}
+
+/// A page and its worker share the renderer's lane, first come first
+/// served (Chrome 158: a page's and a worker's PBKDF2s at once take twice
+/// one's time, probed: tools/chrome-probes/webcrypto/lane): the worker's
+/// short PBKDF2, made after the page's long one, settles after it.
+#[test]
+fn a_page_and_its_worker_share_the_lane() {
+    let worker = "crypto.subtle.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits'])\
+        .then((k) => crypto.subtle.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 1}, k, 256))\
+        .then(() => postMessage('worker'));";
+    let page = format!(
+        "<script>(async () => {{ const order = [];\
+         const k = await crypto.subtle.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits']);\
+         const long = crypto.subtle.deriveBits({{name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 3000000}}, k, 256)\
+           .then(() => order.push('page'));\
+         const w = new Worker(URL.createObjectURL(new Blob([\"{worker}\"])));\
+         const told = new Promise((r) => {{ w.onmessage = (e) => {{ order.push(e.data); r(); }}; }});\
+         await Promise.all([long, told]); console.log(order.join(' ')); }})();</script>"
+    );
+    let server = serve(move |path| (path == "/page.html").then(|| html(&page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| !lines.is_empty());
+    assert_eq!(lines, ["page worker"]);
+}
+
+/// A page left while its PBKDF2 runs is not kept: it goes, and its lane
+/// with it, abandoned to run on to its end; the next page's PBKDF2
+/// settles at once on a fresh lane rather than waiting behind it.
+#[test]
+fn a_page_left_mid_pbkdf2_does_not_hold_the_next_pages() {
+    let first = "<script>crypto.subtle.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits'])\
+        .then((k) => { crypto.subtle.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 40000000}, k, 256);\
+        console.log('begun'); });</script>";
+    let second = "<script>crypto.subtle.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits'])\
+        .then((k) => crypto.subtle.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 1}, k, 256))\
+        .then(() => console.log('settled'));</script>";
+    let server = serve(move |path| match path {
+        "/first.html" => Some(html(first)),
+        "/second.html" => Some(html(second)),
+        _ => None,
+    });
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.navigate(server.url("/first.html"));
+    assert_eq!(tab.run_until(|lines| !lines.is_empty()), ["begun"]);
+    tab.engine.navigate(server.url("/second.html"));
+    assert_eq!(tab.run_until(|lines| !lines.is_empty()), ["settled"]);
+    // The first page's job runs on, its lane abandoned.
+    assert_eq!(tab.engine.lane.abandoned(), 1);
+    assert!(!tab.engine.take_retire());
+}
+
+/// The renderer's owner hears of the third abandoned lane running at
+/// once, and of it once (the lead's ruling: at most two).
+#[test]
+fn the_engine_says_when_its_renderer_is_to_retire() {
+    let mut tab = Tab::new();
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let wait = std::sync::Arc::new(std::sync::Mutex::new(wait));
+    for number in 1..=3 {
+        let client = tab.engine.lane.client();
+        let (began, begun) = std::sync::mpsc::channel();
+        let wait = std::sync::Arc::clone(&wait);
+        client.submit(
+            Box::new(move || {
+                let _ = began.send(());
+                let _ = wait.lock().unwrap().recv_timeout(DEADLINE);
+                crate::scripts::lane::Done {
+                    id: 0,
+                    keys: crypto::Keys::default(),
+                    outcome: Ok(crypto::Outcome::Bool(true)),
+                    cost: 0,
+                }
+            }),
+            None,
+        );
+        begun
+            .recv_timeout(DEADLINE)
+            .unwrap_or_else(|_| panic!("waited {DEADLINE:?} for lane job {number} to begin"));
+        drop(client);
+        assert_eq!(tab.engine.take_retire(), tab.engine.lane.abandoned() == 3);
+    }
+    assert!(!tab.engine.take_retire());
+    for _ in 0..3 {
+        go.send(()).unwrap();
+    }
+}
+
+/// A PBKDF2 whose output would pass the page's heap stops its scripts as
+/// running out of memory does (M24.7), the reference's crash being its
+/// tab's: its bytes counted from its call (the lead's ruling).
+#[test]
+fn a_lane_job_past_the_heap_stops_the_pages_scripts() {
+    let page = "<script>crypto.subtle.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits'])\
+        .then((k) => { console.log('before');\
+          crypto.subtle.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 1}, k, 64 << 23);\
+          console.log('after'); });</script>";
+    let server = serve(move |path| (path == "/page.html").then(|| html(page)));
+    let mut tab = Tab::new();
+    tab.engine.set_scripting(true);
+    tab.engine.script_limits = js::Limits {
+        heap: 32 << 20,
+        ..js::Limits::default()
+    };
+    tab.engine.navigate(server.url("/page.html"));
+    let lines = tab.run_until(|lines| lines.iter().any(|l| l.contains("out of memory")));
+    assert_eq!(lines[0], "before");
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("Scripts stopped on this page: out of memory"),
+        "{lines:?}"
     );
 }

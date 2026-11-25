@@ -57,8 +57,20 @@ Probes: `tools/chrome-probes/webcrypto/`, Chrome 158.0.8127.37. Design:
   refused for its range: -8 is 2^32 - 8 bits, 2^32 + 8 is 8, NaN and
   the infinities are 0. WPT's `derived_bits_length` expects a TypeError
   for -8 (the length taken with EnforceRange). Silver does as Chrome
-  does; those WPT pages are `not-run` until G255 step 7 makes the long
-  operations cancellable (`enforce-range.html`).
+  does, and times out on those pages as Chrome does, the derivation run
+  on the lane and abandoned with its page (`enforce-range.html`).
+- PBKDF2's derivations and RSA's generation run off the page's thread,
+  on one lane its renderer's documents and workers share, in the order
+  they came; every other call, digest and HMAC over hundreds of MiB
+  among them, runs in the call, holding the page as Chrome's does.
+  Silver's split is Chrome's (`threads.html`, `order.html`,
+  `digest-sync.html`, `lane.html`, `lane-members.html`).
+- A BufferSource that is resizable, or a view of a resizable or a
+  shared buffer, is a TypeError in every SubtleCrypto method and in
+  `getRandomValues` ("The provided ArrayBufferView value must not be
+  shared."); `SubtleCrypto.supports` answers false for one
+  (`buffer-kinds.html`, `buffer-members.html`,
+  `supports-resizable.html`, the pages cross-origin isolated).
 - `QuotaExceededError` (the interface): its constructor takes a negative
   `quota`, a negative `requested` and a `requested` below `quota` as
   given, where the spec throws a RangeError; only a non-finite one is a
@@ -74,6 +86,14 @@ Probes: `tools/chrome-probes/webcrypto/`, Chrome 158.0.8127.37. Design:
 ## We differ, deliberately
 
 ### Web Crypto
+
+- A page whose queued PBKDF2 and RSA work would hold more than its
+  realm's heap limit (its salts' copies and the outputs to come,
+  counted from each call) has its scripts stopped as running out of
+  memory does: "Scripts stopped on this page: out of memory". Chrome
+  holds the same bytes and its tab crashes when the allocation fails;
+  Silver stops the page's scripts first, the tab and the machine
+  spared (the lead's ruling, G255 step 7).
 
 - `SubtleCrypto.supports('deriveBits', hkdf, -8)`: Chrome says true,
   Silver false. -8 wraps to 2^32 - 8 bits, past HKDF's 255 hash

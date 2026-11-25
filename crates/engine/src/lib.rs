@@ -492,6 +492,9 @@ pub struct Engine {
     /// The agents of the documents of this engine and its frames, by
     /// origin (G90), which its child engines share.
     agents: scripts::Agents,
+    /// The crypto lane its documents and their workers share, and its
+    /// child engines (G255 step 7): the renderer's.
+    lane: scripts::lane::Lane,
     /// What the user should be told of a navigation that showed no page:
     /// a download not saved (M15).
     notice: Option<String>,
@@ -1850,6 +1853,7 @@ impl Engine {
             gpu: gpu::local_client(),
             script_limits: js::Limits::default(),
             agents: scripts::Agents::default(),
+            lane: scripts::lane::Lane::default(),
             notice: None,
             next_page: 1,
             goal: None,
@@ -1979,6 +1983,7 @@ impl Engine {
     /// animation's clock.
     fn show(&mut self, shown: Shown) -> Shown {
         let left = std::mem::replace(&mut self.shown, shown);
+        self.shown.scripts.ensure_lane(&self.lane);
         self.sweep_left.add(left.scripts.sweep());
         // The tab knows the frame's document's origin, and its ports are
         // the tab's (M33.2).
@@ -6285,6 +6290,27 @@ impl Engine {
         self.notice.take().or_else(|| self.take_frame_notice())
     }
 
+    /// Whether a crypto job of its documents or their workers waits or
+    /// runs on the renderer's lane (G255 step 7): work off its thread, as
+    /// a worker's is, which its owner gives real time.
+    pub fn crypto_busy(&self) -> bool {
+        self.lane.busy()
+    }
+
+    /// Whether the renderer's crypto lane left dead work running past its
+    /// bound since this was last asked (G255 step 7): its site's next
+    /// documents go to a new renderer.
+    pub fn take_retire(&mut self) -> bool {
+        self.lane.take_retire()
+    }
+
+    /// Runs its documents' crypto jobs on the lane `with` runs them on,
+    /// the renderer's, which its views share (G255 step 7).
+    pub fn share_lane(&mut self, with: &Engine) {
+        self.lane = with.lane.clone();
+        self.shown.scripts.use_lane(&self.lane);
+    }
+
     /// Aborts the navigation under way, if there is one.
     fn cancel_navigation(&mut self) {
         self.handed_over = false;
@@ -7397,6 +7423,7 @@ impl Engine {
         // The document shown is left: a client no more (M39).
         self.shown.scripts.leave_service_workers();
         let mut scripts = scripts::Scripts::with_limits(self.script_limits);
+        scripts.use_lane(&self.lane);
         if page.is_panel() {
             scripts.make_panel();
         }

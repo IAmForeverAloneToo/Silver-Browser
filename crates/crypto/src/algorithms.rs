@@ -199,6 +199,56 @@ fn key_for<'k>(keys: &'k Keys, id: u32, name: &str, usage: Usage) -> Result<&'k 
     Ok(key)
 }
 
+/// Whether `call` is one the reference runs off its calling thread, on
+/// its renderer's one lane (G255 step 7; probed, Chrome 158): PBKDF2's
+/// deriveBits and deriveKey and RSA's generateKey, once what is checked
+/// before the work holds (the algorithm normalized; the base key's
+/// algorithm and usage; the derived key's type). One that fails them
+/// runs now, its error today's.
+pub(crate) fn lane_job(keys: &Keys, call: &Call) -> bool {
+    match call {
+        Call::DeriveBits { algorithm, key, .. } => {
+            normalize("deriveBits", algorithm).is_ok_and(|alg| {
+                alg.name == "PBKDF2" && key_for(keys, *key, alg.name, Usage::DeriveBits).is_ok()
+            })
+        }
+        Call::DeriveKey {
+            algorithm,
+            key,
+            derived,
+            ..
+        } => normalize("deriveBits", algorithm).is_ok_and(|alg| {
+            alg.name == "PBKDF2"
+                && normalize("importKey", derived).is_ok()
+                && normalize("get key length", derived).is_ok()
+                && key_for(keys, *key, alg.name, Usage::DeriveKey).is_ok()
+        }),
+        Call::GenerateKey { algorithm, .. } => normalize("generateKey", algorithm)
+            .is_ok_and(|alg| matches!(alg.name, "RSASSA-PKCS1-v1_5" | "RSA-PSS" | "RSA-OAEP")),
+        _ => false,
+    }
+}
+
+/// The bytes a lane job holds while it waits and runs, counted against
+/// its realm's heap (G255 step 7, the lead's ruling): its salt's copy and
+/// the output it will make (a derivation's length; an RSA pair's
+/// material, 8 KiB at most).
+pub(crate) fn lane_cost(call: &Call) -> usize {
+    let salt = |algorithm: &Value| match algorithm.get("salt") {
+        Value::Bytes(salt) => salt.len(),
+        _ => 0,
+    };
+    match call {
+        Call::DeriveBits {
+            algorithm, length, ..
+        } => salt(algorithm) + length.map_or(0, |bits| bits as usize / 8),
+        // A derived key is a secret of 512 bits at most.
+        Call::DeriveKey { algorithm, .. } => salt(algorithm) + 64,
+        Call::GenerateKey { .. } => 8 << 10,
+        _ => 0,
+    }
+}
+
 fn secret(key: &Key) -> &[u8] {
     match &key.material {
         Material::Secret(bytes) => bytes,

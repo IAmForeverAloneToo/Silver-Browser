@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<script src="order-body.js"></script>
+<script>
+(async () => {
+  const page = await orderProbe();
+  const worker = await new Promise((resolve) => {
+    const w = new Worker('order-worker.js');
+    w.onmessage = (e) => resolve(e.data);
+    w.onerror = (e) => resolve(['worker failed ' + e.message]);
+  });
+  window.__done = {page, worker, workerConcurrency: navigator.hardwareConcurrency};
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

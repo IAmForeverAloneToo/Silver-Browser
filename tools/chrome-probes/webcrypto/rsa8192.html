@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const t = performance.now();
+    await crypto.subtle.generateKey({name: 'RSA-PSS', modulusLength: 8192, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, false, ['sign']);
+    out.push(Math.round(performance.now() - t));
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

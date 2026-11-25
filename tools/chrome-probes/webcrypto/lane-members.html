@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+(async () => {
+  const s = crypto.subtle;
+  const out = [];
+  const now = () => performance.now();
+  const pk = await s.importKey('raw', new Uint8Array(16), 'PBKDF2', false, ['deriveBits', 'deriveKey']);
+  const hk = await s.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveBits']);
+  const long = () => s.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 2000000}, pk, 256);
+  const rsa = await s.generateKey({name: 'RSA-PSS', modulusLength: 4096, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, true, ['sign']);
+  const pkcs8 = await s.exportKey('pkcs8', rsa.privateKey);
+  const cases = {
+    'deriveKey PBKDF2 1 iteration': () => s.deriveKey({name: 'PBKDF2', hash: 'SHA-256', salt: new Uint8Array(8), iterations: 1}, pk, {name: 'AES-GCM', length: 128}, false, ['encrypt']),
+    'HKDF deriveBits': () => s.deriveBits({name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(8), info: new Uint8Array(0)}, hk, 256),
+    'ML-KEM-768 generateKey': () => s.generateKey('ML-KEM-768', false, ['encapsulateBits']),
+    'ML-DSA-65 generateKey': () => s.generateKey('ML-DSA-65', false, ['sign']),
+    'Ed25519 generateKey': () => s.generateKey('Ed25519', false, ['sign']),
+    'RSA-4096 importKey pkcs8': () => s.importKey('pkcs8', pkcs8, {name: 'RSA-PSS', hash: 'SHA-256'}, false, ['sign']),
+    'RSA-4096 sign': () => s.sign({name: 'RSA-PSS', saltLength: 32}, rsa.privateKey, new Uint8Array(16)),
+  };
+  for (const [label, op] of Object.entries(cases)) {
+    const order = []; const t = now();
+    try {
+      await Promise.all([long().then(() => order.push('pbkdf2 ' + (now() - t).toFixed(0))), op().then(() => order.push(label + ' ' + (now() - t).toFixed(0)))]);
+      out.push(order.join(', '));
+    } catch (e) { out.push(label + ': ' + e.name + ' ' + e.message); }
+  }
+  window.__done = out;
+})().catch((e) => { window.__done = ['failed ' + e]; });
+</script>

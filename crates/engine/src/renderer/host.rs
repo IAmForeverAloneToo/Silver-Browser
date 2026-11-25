@@ -201,6 +201,10 @@ impl Host {
         if self.views.contains_key(&view) {
             return Err(format!("view {view} again"));
         }
+        // The renderer's views share one crypto lane (G255 step 7).
+        if let Some(other) = self.views.values().next() {
+            engine.share_lane(&other.engine);
+        }
         engine.share_storage(self.storage.clone(), 0);
         engine.set_asker(Arc::new(super::link::RemoteAsker::new(
             self.link.clone(),
@@ -523,6 +527,9 @@ impl Host {
             }
             if view.engine.take_close_asked() {
                 out.push(ToBrowser::CloseTab { view: id });
+            }
+            if view.engine.take_retire() {
+                out.push(ToBrowser::Retire { view: id });
             }
             for key in view.engine.take_remote_drops() {
                 out.push(ToBrowser::FrameDropped { key });

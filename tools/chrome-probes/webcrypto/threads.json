@@ -1,0 +1,17 @@
+{
+ "version": "Chrome/158.0.8127.37",
+ "result": [
+  "pbkdf2 alone ms 474",
+  "two pbkdf2 at once ms 912 ratio 1.92",
+  "four pbkdf2 at once ms 1913 ratio 4.04",
+  "order digest 0, pbkdf2 454",
+  "order behind rsa digest 0, rsa4096 879",
+  "timer during timer 10, pbkdf2 452",
+  "digest 256 MiB ms 260",
+  "copied at the call true",
+  "hardwareConcurrency 16"
+ ],
+ "console": [
+  "error network Failed to load resource: the server responded with a status of 404 (File not found)"
+ ]
+}

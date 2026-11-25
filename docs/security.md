@@ -315,7 +315,12 @@ font folders; a file it cannot read, it scans for.
   through aws-lc-rs's safe API, or, where it has none, the C library's
   own calls in the crate's `native` module (section 5); a secret's
   bytes are overwritten as its key goes. `crypto.subtle` exists in
-  secure contexts alone. The fuzz target `crypto_import` feeds any
+  secure contexts alone. PBKDF2's derivations and RSA's generation run
+  on the renderer's crypto lane (G255 step 7), a thread of its
+  process, against a store holding the one key lent them; a page
+  gone leaves its running job to end on an abandoned lane, at most
+  two at once before its renderer is retired, and its queued jobs'
+  bytes count against its heap's limit from each call. The fuzz target `crypto_import` feeds any
   bytes to every import format, and `crypto_gcm` holds `native`'s
   AES-GCM to aws-lc-rs's where both run and to its own round trip
   where only it does; `crypto_rsa_roundtrip`, RSA's signatures on
