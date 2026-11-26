@@ -38,6 +38,13 @@ const SCREENS_DOWN: f32 = 3.0;
 /// How long a page is left alone, no input, once scrolled, for what it
 /// still does then (`idleCounters`).
 const IDLE: Duration = Duration::from_secs(10);
+
+/// How long no layout must have run for the page to be steady, and the
+/// longest the sweep waits for it, before its steady window (the lead's
+/// ruling, 2026-11-26: the target is judged on a page once steady, not
+/// on the tail of its load).
+const STEADY_QUIET: Duration = Duration::from_secs(5);
+const STEADY_WAIT: Duration = Duration::from_secs(20);
 /// The most console entries kept, and characters of each.
 const MAX_ENTRIES: usize = 500;
 const MAX_TEXT: usize = 300;
@@ -144,6 +151,10 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut idle_cpu = Json::Null;
     let mut idle_pointer = Json::Null;
     let mut idle_cpu_pointer = Json::Null;
+    let mut steady_from = Json::Null;
+    let mut steady = Json::Null;
+    let mut idle_cpu_steady = Json::Null;
+    let mut steady_wait = Json::Null;
     let mut memory_idle = Json::Null;
     let mut parts_idle = Json::Null;
     let mut loop_turns = Json::Null;
@@ -302,6 +313,62 @@ fn capture(asked: &Asked) -> Result<(), String> {
         )
         .unwrap_or(Json::Null);
         tab.pointer_leave();
+        next_id += 1;
+        // Then the page once steady: no layout for STEADY_QUIET, waited
+        // on for STEADY_WAIT at most, then left alone IDLE more.
+        let waited = Instant::now();
+        let mut layouts: Option<f64> = None;
+        let mut still = Instant::now();
+        let mut quiet = false;
+        while waited.elapsed() < STEADY_WAIT {
+            let counts = ask(
+                &mut tab,
+                &woken,
+                began,
+                &mut console,
+                (next_id, "page.sweep"),
+            );
+            next_id += 1;
+            let now = counts
+                .as_ref()
+                .and_then(|counts| counts.get("layouts"))
+                .and_then(Json::as_f64);
+            if now != layouts {
+                layouts = now;
+                still = Instant::now();
+            } else if still.elapsed() >= STEADY_QUIET {
+                quiet = true;
+                break;
+            }
+            let until = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < until {
+                let _ = woken.recv_timeout(Duration::from_millis(50));
+                step(&mut tab, began, &mut console);
+            }
+        }
+        steady_wait = Json::object([
+            ("waitedMs", Json::from(waited.elapsed().as_millis() as f64)),
+            ("quiet", Json::from(quiet)),
+            ("loaded", Json::from(load.is_some())),
+        ]);
+        steady_from = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (next_id, "page.sweep"),
+        )
+        .unwrap_or(Json::Null);
+        next_id += 1;
+        idle_cpu_steady = left_alone(&mut tab, &woken, began, &mut console);
+        steady = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (next_id, "page.sweep"),
+        )
+        .unwrap_or(Json::Null);
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
         // looked empty at it).
@@ -365,6 +432,14 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // page's middle (less `idleCounters`), and the CPU then.
         ("idlePointerCounters", idle_pointer),
         ("idleCpuPointer", idle_cpu_pointer),
+        // The page once steady (no layout for 5 s, waited on 20 s at
+        // most): the counts at its start and end, the CPU between, and
+        // how long it took to go quiet, whether it did, and whether it
+        // had loaded.
+        ("steadyFromCounters", steady_from),
+        ("steadyCounters", steady),
+        ("idleCpuSteady", idle_cpu_steady),
+        ("steadyWait", steady_wait),
         // The private bytes (commit) and working sets of the browser's
         // process and the tab's renderers, together, at the load and once
         // left alone.

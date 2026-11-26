@@ -84,6 +84,8 @@ pub(crate) struct SweepCounts {
     /// The timers its scripts set (an interval each time it is set
     /// again), by their delay ([`TIMER_DELAYS`]).
     pub(crate) timers_by_delay: [u32; TIMER_DELAYS.len()],
+    /// The dedicated workers its scripts started (2026-11-26).
+    pub(crate) workers_started: u32,
 }
 
 /// The delays [`SweepCounts::timers_by_delay`] counts timers by, in
@@ -204,6 +206,7 @@ impl SweepCounts {
         for (mine, theirs) in self.timers_by_delay.iter_mut().zip(other.timers_by_delay) {
             *mine += theirs;
         }
+        self.workers_started += other.workers_started;
     }
 
     /// The counts as `page.sweep` answers them, with the layouts run and
@@ -315,6 +318,10 @@ impl SweepCounts {
                         .zip(crate::phases::spent())
                         .map(|(name, ms)| (*name, Json::from((ms * 10.0).round() / 10.0))),
                 ),
+            ),
+            (
+                "workersStarted",
+                Json::from(f64::from(self.workers_started)),
             ),
             (
                 "webglFrames",

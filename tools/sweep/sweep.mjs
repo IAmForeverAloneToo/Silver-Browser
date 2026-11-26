@@ -28,6 +28,15 @@ const SETTLE_MS = 2_000;
 const SCROLL_SCREENS = 3;
 // How long a page is left alone, as the shell's sweep leaves it.
 const IDLE_MS = 10_000;
+// The steady window (2026-11-26): no layout for STEADY_QUIET_MS, waited
+// on STEADY_WAIT_MS at most, then left alone IDLE_MS more.
+const STEADY_QUIET_MS = 5_000;
+const STEADY_WAIT_MS = 20_000;
+// What Silver's capture may take: its load's cap, the scroll, its three
+// idle windows and the wait for the steady one, and room for the asks
+// (proton, 2026-11-26: a page that never loads ran past CAP_MS + 30 s
+// once the pointer's window came, and was killed with no record).
+const SILVER_MS = CAP_MS + 6_000 + 3 * IDLE_MS + STEADY_WAIT_MS + 30_000;
 
 // The sites: the lead's list, kept beside the repository (an id and a
 // URL a line, tab-separated, `#` for a comment), or `--sites <file>`.
@@ -296,7 +305,7 @@ async function startChrome(exe) {
 // and WebGL frames (tasks that drew). Frames of other processes and
 // workers are not counted, as Silver's counts are the page renderer's.
 const COUNTER_SCRIPT = `(() => {
-  const c = { timersByDelay: [0, 0, 0, 0], timers: 0, animationFrames: 0, observers: 0, messages: 0, webglFrames: 0 };
+  const c = { timersByDelay: [0, 0, 0, 0], timers: 0, animationFrames: 0, observers: 0, messages: 0, webglFrames: 0, workersStarted: 0 };
   Object.defineProperty(window, "__sweepCounts", { value: c });
   const bucket = (d) => { d = +d || 0; return d < 4 ? 0 : d < 16 ? 1 : d < 100 ? 2 : 3; };
   const st = window.setTimeout, si = window.setInterval, raf = window.requestAnimationFrame;
@@ -322,6 +331,15 @@ const COUNTER_SCRIPT = `(() => {
     };
     Object.defineProperty(W, "name", { value: name });
     window[name] = W;
+  }
+  for (const name of ["Worker", "SharedWorker"]) {
+    const W = window[name];
+    if (typeof W !== "function") continue;
+    const Counted = class extends W {
+      constructor(...a) { super(...a); c.workersStarted++; }
+    };
+    Object.defineProperty(Counted, "name", { value: name });
+    window[name] = Counted;
   }
   window.addEventListener("message", () => { c.messages++; }, true);
   const post = MessagePort.prototype.postMessage;
@@ -470,6 +488,29 @@ async function captureChrome(chrome, url, dir) {
     const rested = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
     result.idleCpuPointer = chromeIdleShares(pointed?.processInfo, rested?.processInfo, (Date.now() - pointedAt) / 1000);
     result.idlePointerCounters = await chromeCounts(send);
+    // Then, the pointer gone, the page once steady, as Silver's.
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: WIDTH + 50, y: HEIGHT + 50 }).catch(() => {});
+    const waited = Date.now();
+    let still = Date.now(), steadyLast = -1, quiet = false;
+    while (Date.now() - waited < STEADY_WAIT_MS) {
+      const count = await layouts().catch(() => steadyLast);
+      if (count !== steadyLast) {
+        steadyLast = count;
+        still = Date.now();
+      } else if (Date.now() - still >= STEADY_QUIET_MS) {
+        quiet = true;
+        break;
+      }
+      await sleep(250);
+    }
+    result.steadyWait = { waitedMs: Date.now() - waited, quiet, loaded: result.timings.load !== undefined };
+    result.steadyFromCounters = await chromeCounts(send);
+    const steadyBefore = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    const steadyAt = Date.now();
+    await sleep(IDLE_MS);
+    const steadyAfter = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    result.idleCpuSteady = chromeIdleShares(steadyBefore?.processInfo, steadyAfter?.processInfo, (Date.now() - steadyAt) / 1000);
+    result.steadyCounters = await chromeCounts(send);
     return result;
   } catch (error) {
     result.outcome = result.outcome === "ok" ? "harness error" : result.outcome;
@@ -496,7 +537,7 @@ function captureSilver(exe, url, dir) {
     const child = spawn(exe, ["--sweep-site", url, "--sweep-out", dir], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (d) => (stderr += d).length > 20_000 && (stderr = stderr.slice(-20_000)));
-    const timer = setTimeout(() => child.kill(), CAP_MS + 30_000);
+    const timer = setTimeout(() => child.kill(), SILVER_MS);
     child.on("exit", (code) => {
       clearTimeout(timer);
       // What the browser and its renderers said, kept beside the record:

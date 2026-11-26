@@ -2343,6 +2343,7 @@ impl DocumentHost {
                         _ => None,
                     },
                 };
+                self.sweep.workers_started += 1;
                 Ok(Answer::Number(f64::from(self.workers.workers.start(start))))
             }
             Call::WorkerPost { worker, data } => {
