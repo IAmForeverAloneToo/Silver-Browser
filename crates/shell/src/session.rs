@@ -194,6 +194,15 @@ pub(crate) struct Session<V: View = Engine> {
     /// bar takes the prompt's place.
     hang: bool,
     drawn_hang: bool,
+    /// Where the page shown was last told the pointer is, none when it is
+    /// to be told again: when the pointer moved, a frame was drawn (what
+    /// is under it may have moved), it left the page, or another tab was
+    /// shown. Told at every wake, a page heard a move, and hit-tested,
+    /// for each message any renderer sent (2026-11-26).
+    page_hovered: Option<(f32, f32)>,
+    /// How many moves the page was told of, for the tests.
+    #[cfg(test)]
+    hover_sends: u64,
     /// The page's dialog the tab has open (gap batch A, D43), its sheet,
     /// and whether the last frame showed it as it is.
     dialog: Option<engine::UserDialog>,
@@ -289,6 +298,9 @@ impl<V: View> Session<V> {
             drawn_prompt: None,
             hang: false,
             drawn_hang: false,
+            page_hovered: None,
+            #[cfg(test)]
+            hover_sends: 0,
             dialog: None,
             dialog_sheet: ui::DialogSheet::new(fonts.clone()),
             dialog_drawn: true,
@@ -502,6 +514,7 @@ impl<V: View> Session<V> {
         self.toolbar.blur();
         let field_state = self.toolbar.take_state();
         let mut left = std::mem::replace(&mut self.engine, view);
+        self.page_hovered = None;
         left.set_hidden(true);
         left.set_window_focus(false);
         left.pointer_leave();
@@ -1541,6 +1554,7 @@ impl<V: View> Session<V> {
         );
         if page_height > 0 {
             let page = self.engine.frame_at(width, page_height, time);
+            self.page_hovered = None;
             // Past the engine's frame cap, the last frame stays shown.
             if page.len() == w * page_height as usize * 4 {
                 put(page, &mut out[bar_rows * w..]);
@@ -1945,6 +1959,7 @@ impl<V: View> Session<V> {
                 self.panel_cursor = panel.cursor_at(x, y - top);
             }
             self.engine.pointer_leave();
+            self.page_hovered = None;
             return;
         }
         if let Some(panel) = &mut self.panel {
@@ -1962,14 +1977,29 @@ impl<V: View> Session<V> {
                     .is_some_and(|bar| bar.contains(x, y));
             if !on_bar {
                 // The page hovers what is under the pointer and says
-                // what cursor it is over (M26.4).
-                self.engine.pointer_move(x, y);
+                // what cursor it is over (M26.4), told only when that may
+                // have changed.
+                if self.page_hovered != Some((x, y)) {
+                    self.engine.pointer_move(x, y);
+                    self.page_hovered = Some((x, y));
+                    #[cfg(test)]
+                    {
+                        self.hover_sends += 1;
+                    }
+                }
                 self.hover = self.engine.link_at(x, y);
                 self.cursor = self.engine.cursor_at(x, y);
                 return;
             }
         }
         self.engine.pointer_leave();
+        self.page_hovered = None;
+    }
+
+    /// How many moves the page was told of, for the tests.
+    #[cfg(test)]
+    pub(crate) fn hover_sends(&self) -> u64 {
+        self.hover_sends
     }
 
     /// What the page wrote to its console since this was last called:

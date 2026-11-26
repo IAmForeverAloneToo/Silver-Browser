@@ -3100,3 +3100,47 @@ fn a_pages_dialog_shows_over_it_takes_the_keys_and_gives_the_answer() {
     });
     assert!(session.dialog.is_none());
 }
+
+#[test]
+fn the_page_hears_of_the_pointer_once_not_at_every_wake() {
+    // Every network wake, a message of any renderer or a fetch, told the
+    // page the pointer had moved, a hit test in its renderer each time
+    // (2026-11-26). It is told when the pointer moved, or a frame was
+    // drawn, what is under the pointer having maybe moved.
+    let server = serve(|path| match path {
+        "/" => html("<body style='margin:0'><p style='height:2000px'>still</p>"),
+        _ => None,
+    });
+    let mut window = Window::new(Some(server.url("/")), Platform::Other);
+    window.settle();
+    window.session.pointer_moved(50.0, 300.0);
+    let told = window.session.hover_sends();
+    for _ in 0..10 {
+        window.session.network();
+    }
+    assert_eq!(window.session.hover_sends(), told, "no move for a wake");
+    window.session.pointer_moved(60.0, 300.0);
+    assert_eq!(window.session.hover_sends(), told + 1, "a move for a move");
+    window.frame();
+    assert_eq!(
+        window.session.hover_sends(),
+        told + 2,
+        "a frame drawn: told again"
+    );
+    for _ in 0..3 {
+        window.session.network();
+    }
+    assert_eq!(window.session.hover_sends(), told + 2, "and then not again");
+    // Another tab shown: its page is told where the pointer is.
+    window.session.new_tab(Some(server.url("/")), true);
+    window.settle();
+    let before = window.session.hover_sends();
+    window.session.switch_to(0);
+    assert_eq!(
+        window.session.hover_sends(),
+        before + 1,
+        "the tab shown again is told"
+    );
+    window.session.network();
+    assert_eq!(window.session.hover_sends(), before + 1, "once");
+}
