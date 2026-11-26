@@ -52,6 +52,12 @@ use crate::{
 /// (docs/design/processes.md, "The cap and eviction").
 pub const MAX_RENDERERS: usize = 16;
 
+/// The most of its renderers' messages a tab takes a turn, and the
+/// longest it spends taking them: a renderer that floods the browser
+/// keeps no turn to itself, the window's input and frames between.
+const MOST_TAKEN_A_TURN: usize = 256;
+const TAKING_A_TURN: Duration = Duration::from_millis(8);
+
 /// How long input may go unanswered before the page is said
 /// unresponsive: Chrome's `kHungRendererDelay` on desktop
 /// (components/input/input_constants.h), its hang monitor's delay.
@@ -1070,7 +1076,16 @@ impl RemoteTab {
                 FrameEvent::Dropped(key) => self.drop_frame(key),
             }
         }
-        while let Ok((number, event)) = self.events.try_recv() {
+        // At most MOST_TAKEN_A_TURN messages or TAKING_A_TURN of them a
+        // turn, then the loop's other work (the lead's ruling, 2026-11-26):
+        // what is left is taken at the next turn, the loop woken for it.
+        let began = Instant::now();
+        let mut taken = 0;
+        while taken < MOST_TAKEN_A_TURN && began.elapsed() < TAKING_A_TURN {
+            let Ok((number, event)) = self.events.try_recv() else {
+                break;
+            };
+            taken += 1;
             if !self.renderers.contains_key(&number) {
                 continue;
             }
@@ -1078,7 +1093,7 @@ impl RemoteTab {
             // taken as a change, it drew a frame, the frame a hover, the
             // hover input again, a loop of a core each in the browser and
             // the renderer on a page left alone (the idle CPU test).
-            if let Event::Message(message) = &event
+            if let Event::Message(message, _) = &event
                 && let ToBrowser::InputTaken { .. } = **message
             {
                 self.unanswered.borrow_mut().remove(&number);
@@ -1087,7 +1102,7 @@ impl RemoteTab {
             changed = true;
             match event {
                 Event::Ready => {}
-                Event::Message(message) => {
+                Event::Message(message, _held) => {
                     if let Err(why) = self.take(number, *message)
                         && let Some(slot) = self.renderers.get(&number)
                     {
@@ -1096,6 +1111,17 @@ impl RemoteTab {
                 }
                 Event::Gone(why) => self.gone(number, why),
             }
+        }
+        // Stopped by the bound, not by the queue's end: the rest at the
+        // next turn, which this wakes.
+        if (taken == MOST_TAKEN_A_TURN || began.elapsed() >= TAKING_A_TURN)
+            && let Some(wake) = self
+                .waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+        {
+            wake();
         }
         changed
     }
@@ -2089,6 +2115,12 @@ impl RemoteTab {
             .iter()
             .map(|((renderer, _), frame)| (*renderer, frame.state.load.clone()))
             .collect()
+    }
+
+    /// Where the tab's renderers' events come, for the tests.
+    #[cfg(test)]
+    pub(crate) fn test_sender(&self) -> mpsc::Sender<(u32, Event)> {
+        self.sender.clone()
     }
 
     /// Kills renderer `number`, as a crash would end it: the tests', and

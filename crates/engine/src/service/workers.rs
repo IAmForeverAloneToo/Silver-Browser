@@ -164,7 +164,7 @@ fn run(weak: &Weak<Inner>, receiver: &Receiver<(u32, Event)>) {
             return;
         };
         match received {
-            Ok((number, Event::Message(message))) => inner.heard(number, *message),
+            Ok((number, Event::Message(message, _held))) => inner.heard(number, *message),
             Ok((number, Event::Gone(_))) => inner.gone(number),
             Ok((_, Event::Ready)) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,

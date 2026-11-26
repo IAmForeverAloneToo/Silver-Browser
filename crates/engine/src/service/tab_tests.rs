@@ -1110,3 +1110,40 @@ fn a_websocket_goes_through_the_browser_with_its_cookies_and_messages_in_pieces(
     assert!(head.contains("\r\nCookie: session=1\r\n"), "{head}");
     assert!(head.starts_with("GET /live HTTP/1.1\r\n"), "{head}");
 }
+
+#[test]
+fn a_tab_takes_a_bounded_share_of_its_renderers_messages_a_turn() {
+    // The lead's ruling, 2026-11-26: a renderer flooding the browser keeps
+    // no turn to itself; the tab takes a bounded share and is woken for
+    // the rest.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::process::Budget;
+
+    let mut tab = tab();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&woken);
+    tab.set_waker(Arc::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    }));
+    let budget = Arc::new(Budget::default());
+    let sender = tab.test_sender();
+    for _ in 0..1000 {
+        let held = budget.charge(16).expect("within its budget");
+        let message = Box::new(ToBrowser::InputTaken { view: 0 });
+        sender
+            .send((99, super::Event::Message(message, held)))
+            .expect("sent");
+    }
+    tab.run_tasks();
+    let left = budget.untaken();
+    assert!(
+        (744..1000).contains(&left),
+        "{left} of 1000 left after one turn"
+    );
+    assert!(woken.load(Ordering::SeqCst) >= 1, "woken for the rest");
+    for _ in 0..10 {
+        tab.run_tasks();
+    }
+    assert_eq!(budget.untaken(), 0, "all taken in later turns");
+}

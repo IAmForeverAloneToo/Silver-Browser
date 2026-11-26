@@ -253,7 +253,12 @@ the permissions and the frames' tree; each site's documents are
 engines in a *renderer process* of their own, the same executable run
 with `--renderer`, which speaks to the browser over its standard input
 and output by the protocol of `engine::ipc` (a versioned schema, each
-message at most `MAX_MESSAGE`). After the hello the browser names the
+message at most `MAX_MESSAGE`; a renderer's messages the browser has
+not yet taken at most `MOST_UNTAKEN_MESSAGES` and `MOST_UNTAKEN_BYTES`,
+past which the renderer is a bad message source and ends, and a tab
+takes at most `MOST_TAKEN_A_TURN` of them a turn, so that one flooding
+the browser can neither fill its memory nor keep its window's turns).
+After the hello the browser names the
 files of the system's fonts it found (M35.6, `ToRenderer::Fonts`),
 which the renderer opens with its own token rather than scanning the
 font folders; a file it cannot read, it scans for.
@@ -819,6 +824,9 @@ earlier milestones say why each is what it is):
 | `engine` | `MAX_MESSAGE` | `16 << 20` | The longest message, in bytes. A body or a picture longer goes in pieces of at most [`MAX_CHUNK`]. |
 | `engine` | `MAX_CHUNK` | `1 << 20` | The longest piece of a body in one message. |
 | `engine` | `HELLO_TIMEOUT` | `10 s` | How long a renderer has to answer the hello before it is killed. |
+| `engine` | `MOST_UNTAKEN_MESSAGES` | `4096` | The most messages of one renderer the browser may hold untaken: past it, the renderer is a bad message source and ends (2026-11-26). |
+| `engine` | `MOST_UNTAKEN_BYTES` | `64 << 20` | The most bytes of one renderer's untaken messages, likewise. |
+| `engine` | `MOST_TAKEN_A_TURN` | `256` (and `8 ms`) | The most of its renderers' messages a tab takes in one turn of the window's loop; the rest at the next, which it wakes. |
 | `engine` | `MAX_RENDERER_MEMORY` | `4 << 30` | The memory a renderer's process may commit, where its sandbox can limit it (M34.3, D2): past it, its allocations fail. |
 | `engine` | `MAX_RENDERER_FETCHES` | `256` | The most fetches one renderer has in flight; one past it is answered with an error. |
 | `engine` | `MAX_HANDOVER_BUFFER` | `16 << 20` | How much of a body waits for the renderer it goes to; past it the network waits. |

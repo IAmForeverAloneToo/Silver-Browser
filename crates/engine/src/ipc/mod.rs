@@ -16,7 +16,9 @@ mod pipe;
 mod tests;
 mod view_wire;
 
-pub use channel::{Calls, Closed, ReadError, Sender, frame, read_message, spawn_reader};
+pub use channel::{
+    Calls, Closed, ReadError, Sender, frame, read_message, spawn_reader, spawn_reader_sized,
+};
 pub use codec::{Bytes, Decoder, Encoder, Malformed, Wire, decode_all, encode};
 // The GPU process's protocols are made the same way (M41).
 #[cfg(test)]

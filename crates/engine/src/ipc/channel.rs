@@ -61,6 +61,14 @@ pub fn frame<M: Wire>(message: &M) -> Option<Vec<u8>> {
 
 /// The next message of `reader`; `None` at its end between two frames.
 pub fn read_message<M: Wire>(reader: &mut impl Read) -> Result<Option<M>, ReadError> {
+    read_message_sized(reader).map(|read| read.map(|(message, _)| message))
+}
+
+/// [`read_message`], with the length of the message's frame: what a
+/// reader charges a writer's budget.
+pub fn read_message_sized<M: Wire>(
+    reader: &mut impl Read,
+) -> Result<Option<(M, usize)>, ReadError> {
     let mut head = [0; 4];
     let mut got = 0;
     while got < head.len() {
@@ -85,7 +93,9 @@ pub fn read_message<M: Wire>(reader: &mut impl Read) -> Result<Option<M>, ReadEr
     if bytes.len() != len {
         return Err(ReadError::Io(io::ErrorKind::UnexpectedEof.into()));
     }
-    decode_all(&bytes).map(Some).map_err(ReadError::Malformed)
+    decode_all(&bytes)
+        .map(|message| Some((message, len)))
+        .map_err(ReadError::Malformed)
 }
 
 /// Where messages of type `M` are written: any thread may send through
@@ -156,11 +166,25 @@ where
     M: Wire + Send + 'static,
     R: Read + Send + 'static,
 {
+    spawn_reader_sized(name, reader, move |message, _| deliver(message), closed)
+}
+
+/// [`spawn_reader`], each message given with its frame's length.
+pub fn spawn_reader_sized<M, R>(
+    name: &str,
+    reader: R,
+    mut deliver: impl FnMut(M, usize) + Send + 'static,
+    closed: impl FnOnce(Option<ReadError>) + Send + 'static,
+) -> io::Result<JoinHandle<()>>
+where
+    M: Wire + Send + 'static,
+    R: Read + Send + 'static,
+{
     thread::Builder::new().name(name.to_owned()).spawn(move || {
         let mut reader = BufReader::with_capacity(64 << 10, reader);
         let reason = loop {
-            match read_message::<M>(&mut reader) {
-                Ok(Some(message)) => deliver(message),
+            match read_message_sized::<M>(&mut reader) {
+                Ok(Some((message, len))) => deliver(message, len),
                 Ok(None) => break None,
                 Err(error) => break Some(error),
             }

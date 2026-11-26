@@ -7,10 +7,12 @@
 //! [`HELLO_TIMEOUT`]; one that says anything else first, or nothing, is
 //! killed.
 
+use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering, fence};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ipc::{
     self, Closed, IPC_VERSION, PipeBreaker, ReadError, Sender, ToBrowser, ToRenderer,
@@ -111,13 +113,343 @@ pub enum Gone {
     Shutdown,
 }
 
+/// The most messages of one renderer the browser may hold untaken, and
+/// the most bytes of them (the lead's ruling, 2026-11-26): past either,
+/// the renderer is a bad message source and ends, as Chrome ends a
+/// renderer that sends what it may not. A renderer the browser keeps up
+/// with holds a few; a compromised or broken one could have filled the
+/// browser's memory.
+pub const MOST_UNTAKEN_MESSAGES: usize = 4096;
+pub const MOST_UNTAKEN_BYTES: usize = 64 << 20;
+
+/// How long the browser may take nothing of a renderer before it counts
+/// as stalled: its thread held elsewhere, in a modal loop (a window
+/// dragged or resized, a menu held open, a native file or print dialog).
+/// A renderer over its budget then is not ended: its messages past the
+/// budget are parked, and its reader keeps reading, its sound, GPU and
+/// frames messages served as ever (the lead's review, 2026-11-26: a page
+/// logging each frame passed the budget in a minute of a Save dialog,
+/// and a reader that stopped would have silenced its music). Frames
+/// never pile up: a view draws its next only once the browser took its
+/// last.
+pub const STALLED: Duration = Duration::from_secs(1);
+
+/// A renderer's messages the browser has not yet taken: their count and
+/// their frames' bytes, when it last took one, and the messages parked
+/// past the budget while it was stalled.
+#[derive(Debug)]
+pub struct Budget {
+    messages: AtomicUsize,
+    bytes: AtomicUsize,
+    born: Instant,
+    /// When the browser last took one of its messages, in milliseconds
+    /// from `born` and one more; none yet, 0.
+    last_taken: AtomicU64,
+    /// A give-back could not take `parked` to unpark: whoever holds it
+    /// unparks as it lets go. Set before trying, so that the holder, who
+    /// looks after letting go, always sees it (no lost wakeup).
+    owed: AtomicBool,
+    parked: Mutex<Parked>,
+    limits: Limits,
+}
+
+/// A budget's limits: [`MOST_UNTAKEN_MESSAGES`], [`MOST_UNTAKEN_BYTES`],
+/// [`STALLED`], and how long a reader waits when even its parked messages
+/// are at their limit; smaller in the tests.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    messages: usize,
+    bytes: usize,
+    stalled: Duration,
+    wait: Duration,
+}
+
+/// Messages past a stalled browser's budget, in order, with their
+/// frames' bytes, and where they go once there is room.
+#[derive(Debug, Default)]
+struct Parked {
+    queue: VecDeque<(Box<ToBrowser>, usize)>,
+    bytes: usize,
+    to: Option<(mpsc::Sender<(u32, Event)>, u32)>,
+}
+
+/// What becomes of a message a reader takes.
+enum Step {
+    /// The browser's now.
+    Now(Event),
+    /// Parked, or merged into one parked.
+    Parked,
+    /// Its renderer outran a browser that takes, with what it held.
+    Outran(usize, usize),
+    /// Its parked messages at their limit too: given back, to try again.
+    Wait(Box<ToBrowser>),
+}
+
+impl Default for Budget {
+    fn default() -> Budget {
+        Budget::with(Limits {
+            messages: MOST_UNTAKEN_MESSAGES,
+            bytes: MOST_UNTAKEN_BYTES,
+            stalled: STALLED,
+            wait: Duration::from_millis(20),
+        })
+    }
+}
+
+impl Budget {
+    fn with(limits: Limits) -> Budget {
+        Budget {
+            messages: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+            born: Instant::now(),
+            last_taken: AtomicU64::new(0),
+            owed: AtomicBool::new(false),
+            parked: Mutex::default(),
+            limits,
+        }
+    }
+
+    /// A budget of `messages` and `bytes`, the browser stalled once it has
+    /// taken nothing for `stalled`, a reader waiting `wait` at a time.
+    #[cfg(test)]
+    fn with_limits(messages: usize, bytes: usize, stalled: Duration, wait: Duration) -> Budget {
+        Budget::with(Limits {
+            messages,
+            bytes,
+            stalled,
+            wait,
+        })
+    }
+
+    /// Whether the browser has taken nothing of the renderer for the
+    /// stall's time: it waits for the browser, the browser not outrun.
+    fn stalled(&self) -> bool {
+        let last = self.last_taken.load(AtomicOrdering::SeqCst);
+        let now = self.born.elapsed().as_millis() as u64 + 1;
+        last == 0 || now.saturating_sub(last) >= self.limits.stalled.as_millis() as u64
+    }
+
+    /// Charges a message of `bytes` to the budget: its share, given back
+    /// when dropped; or, past the budget, what it would have held, and
+    /// nothing charged.
+    pub(crate) fn charge(self: &Arc<Self>, bytes: usize) -> Result<Held, (usize, usize)> {
+        let messages = self.messages.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        let held = self.bytes.fetch_add(bytes, AtomicOrdering::SeqCst) + bytes;
+        if messages > self.limits.messages || held > self.limits.bytes {
+            // Given back at once: a share never made, no message taken.
+            self.messages.fetch_sub(1, AtomicOrdering::SeqCst);
+            self.bytes.fetch_sub(bytes, AtomicOrdering::SeqCst);
+            return Err((messages, held));
+        }
+        Ok(Held {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+
+    /// Parked messages given to the browser, in order, while the budget
+    /// has room.
+    fn unpark(self: &Arc<Self>, parked: &mut Parked) {
+        let Some((to, number)) = parked.to.clone() else {
+            return;
+        };
+        while let Some(&(_, len)) = parked.queue.front() {
+            let Ok(held) = self.charge(len) else { break };
+            let Some((message, len)) = parked.queue.pop_front() else {
+                break;
+            };
+            parked.bytes -= len;
+            let _ = to.send((number, Event::Message(message, held)));
+        }
+    }
+
+    /// The unparks owed, done while `parked` can be had: by the one that
+    /// owes it, or by the holder as it lets go.
+    fn settle(self: &Arc<Self>) {
+        loop {
+            // A StoreLoad pairing: the give-back stores `owed` then reads
+            // the lock (its try_lock); the holder stores the lock (its
+            // unlock) then reads `owed`. Acquire and release order neither
+            // store before the load after it, and on a weakly ordered
+            // processor (ARM64) each side could miss the other's store, the
+            // wakeup lost again; a SeqCst fence between them on both sides
+            // (this one: after a give-back's store, after a holder's
+            // unlock) forbids it (the lead's review, 2026-11-26).
+            fence(AtomicOrdering::SeqCst);
+            if !self.owed.load(AtomicOrdering::SeqCst) {
+                return;
+            }
+            let Ok(mut parked) = self.parked.try_lock() else {
+                // Its holder settles as it lets go.
+                return;
+            };
+            self.owed.store(false, AtomicOrdering::SeqCst);
+            self.unpark(&mut parked);
+        }
+    }
+
+    /// Takes renderer's `message` of `len` bytes, not served: its event
+    /// now, or none, parked (the browser stalled) or the renderer ended
+    /// (it outran a browser that takes).
+    fn take(self: &Arc<Self>, message: ToBrowser, len: usize, reading: &Shared) -> Option<Event> {
+        let mut message = Box::new(message);
+        loop {
+            let step = {
+                let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
+                // Held now: what is owed is done here.
+                self.owed.store(false, AtomicOrdering::SeqCst);
+                self.unpark(&mut parked);
+                self.decide(&mut parked, message, len)
+            };
+            self.settle();
+            match step {
+                Step::Now(event) => return Some(event),
+                Step::Parked => return None,
+                Step::Outran(messages, bytes) => {
+                    self.outran(reading, messages, bytes);
+                    return None;
+                }
+                Step::Wait(back) => {
+                    if matches!(*reading.state(), State::Gone(_)) {
+                        return None;
+                    }
+                    message = back;
+                    if self.limits.wait.is_zero() {
+                        thread::yield_now();
+                    } else {
+                        thread::sleep(self.limits.wait);
+                    }
+                }
+            }
+        }
+    }
+
+    /// What becomes of `message`, `parked` held.
+    fn decide(
+        self: &Arc<Self>,
+        parked: &mut Parked,
+        mut message: Box<ToBrowser>,
+        len: usize,
+    ) -> Step {
+        if parked.queue.is_empty() {
+            match self.charge(len) {
+                Ok(held) => return Step::Now(Event::Message(message, held)),
+                Err((messages, bytes)) if !self.stalled() => return Step::Outran(messages, bytes),
+                Err(_) => {}
+            }
+        }
+        if parked.queue.len() >= self.limits.messages || parked.bytes >= self.limits.bytes {
+            // Parked to its own limit: outrun, or else wait for the
+            // browser, the renderer's pipe filling.
+            if !self.stalled() {
+                return Step::Outran(parked.queue.len(), parked.bytes);
+            }
+            return Step::Wait(message);
+        }
+        // Parked: a view's state replaces its last, a view's console joins
+        // the console last parked for it.
+        let joins = |last: Option<&(Box<ToBrowser>, usize)>, view: u32| {
+            last.is_some_and(
+                |(last, _)| matches!(&**last, ToBrowser::Console { view: v, .. } if *v == view),
+            )
+        };
+        match &mut *message {
+            ToBrowser::Console { view, entries } if joins(parked.queue.back(), *view) => {
+                let mut more = std::mem::take(entries);
+                if let Some((last, last_len)) = parked.queue.back_mut() {
+                    if let ToBrowser::Console {
+                        entries: before, ..
+                    } = &mut **last
+                    {
+                        before.append(&mut more);
+                    }
+                    *last_len += len;
+                }
+            }
+            ToBrowser::State { view, .. } => {
+                let view = *view;
+                let mut freed = 0;
+                parked.queue.retain(|(parked, len)| {
+                    let same = matches!(&**parked, ToBrowser::State { view: v, .. } if *v == view);
+                    if same {
+                        freed += len;
+                    }
+                    !same
+                });
+                parked.bytes -= freed;
+                parked.queue.push_back((message, len));
+            }
+            _ => parked.queue.push_back((message, len)),
+        }
+        parked.bytes += len;
+        Step::Parked
+    }
+
+    /// The renderer outran a browser that takes: a bad message source.
+    fn outran(&self, reading: &Shared, messages: usize, bytes: usize) {
+        let Limits {
+            messages: most,
+            bytes: most_bytes,
+            ..
+        } = self.limits;
+        reading.end(
+            Gone::BadMessage(format!(
+                "past its budget of untaken messages: {messages} messages, {bytes} bytes \
+                 (at most {most}, {most_bytes})"
+            )),
+            true,
+        );
+    }
+
+    /// How many messages it holds untaken, for the tests.
+    #[cfg(test)]
+    pub(crate) fn untaken(&self) -> usize {
+        self.messages.load(AtomicOrdering::SeqCst)
+    }
+
+    /// How many messages it holds parked, for the tests.
+    #[cfg(test)]
+    fn parked(&self) -> usize {
+        self.parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .queue
+            .len()
+    }
+}
+
+/// A message's share of its renderer's [`Budget`], given back when it is
+/// dropped: once the browser has taken the message, whoever took it; and
+/// with the room, the messages parked meanwhile given to the browser.
+#[derive(Debug)]
+pub struct Held {
+    budget: Arc<Budget>,
+    bytes: usize,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let now = self.budget.born.elapsed().as_millis() as u64 + 1;
+        self.budget.last_taken.store(now, AtomicOrdering::SeqCst);
+        self.budget.messages.fetch_sub(1, AtomicOrdering::SeqCst);
+        self.budget
+            .bytes
+            .fetch_sub(self.bytes, AtomicOrdering::SeqCst);
+        // An unpark is owed: done now, or by the parked queue's holder as
+        // it lets go.
+        self.budget.owed.store(true, AtomicOrdering::SeqCst);
+        self.budget.settle();
+    }
+}
+
 /// What a renderer did, for the browser's thread.
 #[derive(Debug)]
 pub enum Event {
     /// It answered the hello.
     Ready,
-    /// A message after its hello.
-    Message(Box<ToBrowser>),
+    /// A message after its hello, and its share of the renderer's
+    /// budget, given back as the message is dropped.
+    Message(Box<ToBrowser>, Held),
     /// It is gone, and why; nothing comes after.
     Gone(Gone),
 }
@@ -313,10 +645,16 @@ pub(super) fn start_within(
     let ending = shared.clone();
     let reply = sender.clone();
     let (deliver, delivered, wake_too) = (events.clone(), wake.clone(), wake.clone());
-    ipc::spawn_reader::<ToBrowser, _>(
+    let budget = Arc::new(Budget::default());
+    budget
+        .parked
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .to = Some((events.clone(), number));
+    ipc::spawn_reader_sized::<ToBrowser, _>(
         &format!("renderer-{number}-reader"),
         launched.from_renderer,
-        move |message| {
+        move |message, len| {
             let event = {
                 let mut state = reading.state();
                 match (&*state, message) {
@@ -367,7 +705,8 @@ pub(super) fn start_within(
                             None => Ok(Some(message)),
                         };
                         match served {
-                            Ok(message) => message.map(|message| Event::Message(Box::new(message))),
+                            Ok(None) => None,
+                            Ok(Some(message)) => budget.take(message, len, &reading),
                             Err(why) => {
                                 reading.end(Gone::BadMessage(why), true);
                                 None
@@ -384,7 +723,7 @@ pub(super) fn start_within(
                 // frame, the frame moved the pointer, and the move was
                 // input again: a core each in the browser and the
                 // renderer on a page left alone (the idle CPU test).
-                let quiet = matches!(&event, Event::Message(message)
+                let quiet = matches!(&event, Event::Message(message, _)
                     if matches!(**message, ToBrowser::InputTaken { .. }));
                 let _ = deliver.send((number, event));
                 if !quiet {
@@ -527,5 +866,135 @@ impl Launcher for ThreadLauncher {
                 breakers,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    //! The budget's parking under every interleaving (the lead's review,
+    //! 2026-11-26): a reader and a browser taking at random, no message
+    //! lost, none out of order, none left parked. `SILVER_BUDGET_STRESS=
+    //! long` runs many more (the extended check).
+
+    use super::*;
+
+    struct Nothing;
+
+    impl RendererProcess for Nothing {
+        fn kill(&mut self) {}
+        fn id(&self) -> u32 {
+            0
+        }
+        fn exit_code(&mut self) -> Option<i64> {
+            None
+        }
+    }
+
+    fn shared() -> Shared {
+        Shared {
+            state: Mutex::new(State::Ready),
+            changed: Condvar::new(),
+            process: Mutex::new(Box::new(Nothing)),
+        }
+    }
+
+    /// xorshift64: the same interleavings for the same seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    fn stress(seed: u64, n: u32) {
+        let (to, from) = mpsc::channel::<(u32, Event)>();
+        // Always stalled: it parks, never ends; a budget of 8 and parked
+        // messages of 8, so that parking and unparking happen at every turn.
+        let budget = Arc::new(Budget::with_limits(
+            8,
+            1 << 20,
+            Duration::ZERO,
+            Duration::ZERO,
+        ));
+        budget
+            .parked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .to = Some((to.clone(), 1));
+        let reading = Arc::new(shared());
+        let producer = {
+            let (budget, reading) = (Arc::clone(&budget), Arc::clone(&reading));
+            thread::spawn(move || {
+                let mut rng = Rng(seed);
+                for seq in 0..n {
+                    let message = ToBrowser::FocusLeft { view: seq };
+                    if let Some(event) = budget.take(message, 16, &reading) {
+                        to.send((1, event)).expect("the browser listens");
+                    }
+                    if rng.next().is_multiple_of(8) {
+                        thread::yield_now();
+                    }
+                }
+            })
+        };
+        let mut rng = Rng(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let mut held: VecDeque<Event> = VecDeque::new();
+        let mut seen = 0;
+        let began = Instant::now();
+        while seen < n {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "seed {seed}: {seen} of {n} after a minute: one lost or stuck parked"
+            );
+            match from.try_recv() {
+                Ok((_, event)) => {
+                    let Event::Message(message, _) = &event else {
+                        panic!("seed {seed}: {event:?}");
+                    };
+                    let ToBrowser::FocusLeft { view } = **message else {
+                        panic!("seed {seed}: {message:?}");
+                    };
+                    assert_eq!(view, seen, "seed {seed}: out of order");
+                    seen += 1;
+                    held.push_back(event);
+                }
+                // Nothing to take: the browser takes what it held, as a
+                // browser does in the end.
+                Err(_) => {
+                    if held.pop_front().is_none() {
+                        thread::yield_now();
+                    }
+                }
+            }
+            // Taken at random, some kept a while.
+            while held.len() > (rng.next() % 12) as usize {
+                held.pop_front();
+            }
+            if rng.next().is_multiple_of(5) {
+                thread::yield_now();
+            }
+        }
+        held.clear();
+        producer.join().expect("the reader ran");
+        assert_eq!(budget.untaken(), 0, "seed {seed}: all given back");
+        assert_eq!(budget.parked(), 0, "seed {seed}: none left parked");
+        assert!(from.try_recv().is_err(), "seed {seed}: none more");
+    }
+
+    #[test]
+    fn parking_loses_no_message_keeps_their_order_and_leaves_none_parked() {
+        let long = std::env::var("SILVER_BUDGET_STRESS").is_ok_and(|v| v == "long");
+        let (seeds, n) = if long {
+            (1..=16, 200_000)
+        } else {
+            (1..=4, 20_000)
+        };
+        for seed in seeds {
+            stress(seed, n);
+        }
     }
 }

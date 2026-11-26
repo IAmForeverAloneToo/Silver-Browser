@@ -2,9 +2,9 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::process::start_within;
+use super::process::{MOST_UNTAKEN_MESSAGES, start_within};
 use super::*;
 use crate::ipc::{self, IPC_VERSION, ToBrowser, ToRenderer};
 
@@ -206,4 +206,299 @@ fn each_renderer_numbers_its_opaque_origins_apart() {
         panic!("an opaque origin");
     };
     assert!(number >= opaque_origins_of(5), "{number}");
+}
+
+/// How the browser takes a flooding renderer's messages in a test.
+#[derive(Clone, Copy)]
+enum Taking {
+    /// Each as it comes.
+    Promptly,
+    /// One each `0` milliseconds: it takes, but is outrun.
+    Slowly(u64),
+    /// Nothing for two seconds, as a browser held in a modal loop, then
+    /// each as it comes.
+    AfterAStall,
+}
+
+/// A renderer that says hello, writes `frames`, and keeps its pipes open
+/// until it is killed, its messages taken as `taking` says: the reasons
+/// it is gone for, whether it was killed, and how many messages the
+/// browser took.
+fn flooded(frames: Vec<Vec<u8>>, taking: Taking) -> (Vec<String>, bool, usize) {
+    let (events, received) = mpsc::channel();
+    let killed = Arc::new(AtomicBool::new(false));
+    let total = frames.len();
+    let fake = Fake(
+        move |mut input: ipc::PipeReader, mut output: ipc::PipeWriter| {
+            if output.write_all(&hello(IPC_VERSION)).is_err() {
+                return;
+            }
+            for frame in &frames {
+                if output.write_all(frame).is_err() {
+                    return;
+                }
+            }
+            let mut sink = Vec::new();
+            let _ = input.read_to_end(&mut sink);
+        },
+        killed.clone(),
+    );
+    let renderer = start_within(&fake, 9, events, nothing(), None, WAIT).expect("started");
+    if let Taking::AfterAStall = taking {
+        thread::sleep(Duration::from_secs(2));
+    }
+    let began = Instant::now();
+    let mut gone = Vec::new();
+    let mut took = 0;
+    while took < total && gone.is_empty() {
+        assert!(
+            began.elapsed() < WAIT,
+            "waited {WAIT:?}: {took} of {total} taken"
+        );
+        let Ok((_, event)) = received.recv_timeout(WAIT) else {
+            break;
+        };
+        match event {
+            Event::Message(..) => took += 1,
+            Event::Gone(why) => gone.push(format!("{why:?}")),
+            Event::Ready => {}
+        }
+        if let Taking::Slowly(ms) = taking {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+    let was_killed = killed.load(Ordering::Relaxed);
+    drop(renderer);
+    (gone, was_killed, took)
+}
+
+fn past_its_budget(gone: &[String]) -> bool {
+    gone.iter()
+        .any(|why| why.contains("past its budget of untaken messages"))
+}
+
+#[test]
+fn a_renderer_outrunning_a_browser_that_takes_is_ended_as_a_bad_message_source() {
+    // The lead's ruling, 2026-11-26: a renderer whose messages the browser
+    // takes, but slower than they come, may hold at most
+    // MOST_UNTAKEN_MESSAGES of them untaken.
+    let frame = ipc::frame(&ToBrowser::FocusLeft { view: 0 }).expect("short");
+    let (gone, killed, _) = flooded(vec![frame; MOST_UNTAKEN_MESSAGES * 3], Taking::Slowly(2));
+    assert!(killed && past_its_budget(&gone), "{gone:?}");
+}
+
+#[test]
+fn a_renderer_past_its_bytes_of_untaken_messages_is_ended_too() {
+    // 1 MiB messages: past the bytes long before the count, and read
+    // faster than a browser taking one each 200 ms.
+    let text = Some("x".repeat(1 << 20));
+    let frame = ipc::frame(&ToBrowser::Copied {
+        view: 0,
+        text,
+        cut: false,
+    })
+    .expect("short");
+    let (gone, killed, _) = flooded(vec![frame; 100], Taking::Slowly(200));
+    assert!(killed && past_its_budget(&gone), "{gone:?}");
+}
+
+#[test]
+fn a_renderer_waits_for_a_stalled_browser_and_is_not_ended() {
+    // The lead's review, 2026-11-26: a browser held in a modal loop (a
+    // Save dialog, a window dragged) takes nothing; a healthy renderer's
+    // messages past the budget wait, its pipe filling, and all arrive
+    // once the browser takes again.
+    let frame = ipc::frame(&ToBrowser::FocusLeft { view: 0 }).expect("short");
+    let total = MOST_UNTAKEN_MESSAGES + 2000;
+    let (gone, killed, took) = flooded(vec![frame; total], Taking::AfterAStall);
+    assert!(!killed && gone.is_empty(), "{gone:?}");
+    assert_eq!(took, total);
+}
+
+#[test]
+fn a_renderer_the_browser_keeps_up_with_is_never_ended_for_its_budget() {
+    let frame = ipc::frame(&ToBrowser::FocusLeft { view: 0 }).expect("short");
+    let total = MOST_UNTAKEN_MESSAGES + 500;
+    let (gone, killed, took) = flooded(vec![frame; total], Taking::Promptly);
+    assert_eq!(took, total, "{gone:?}");
+    assert!(!killed && gone.is_empty(), "{gone:?}");
+}
+
+/// A service that hears a renderer's sound: when it last did.
+struct HearsSound(Arc<std::sync::Mutex<Option<Instant>>>);
+
+impl Serve for HearsSound {
+    fn serve(
+        &self,
+        _: u32,
+        message: ToBrowser,
+        _: &ipc::Sender<ToRenderer>,
+    ) -> Result<Option<ToBrowser>, String> {
+        if let ToBrowser::Audio { .. } = message {
+            *self.0.lock().expect("not poisoned") = Some(Instant::now());
+            return Ok(None);
+        }
+        Ok(Some(message))
+    }
+}
+
+#[test]
+fn a_stalled_browser_still_serves_a_renderers_sound_at_once() {
+    // The lead's review, 2026-11-26: messages past a stalled browser's
+    // budget are parked, never the reading: a page's music plays on, and
+    // the GPU answers, through a minute of a Save dialog.
+    let (events, received) = mpsc::channel();
+    let killed = Arc::new(AtomicBool::new(false));
+    let heard = Arc::new(std::sync::Mutex::new(None));
+    let sent = Arc::new(std::sync::Mutex::new(None));
+    let total = MOST_UNTAKEN_MESSAGES + 2000;
+    let wrote = Arc::clone(&sent);
+    let fake = Fake(
+        move |mut input: ipc::PipeReader, mut output: ipc::PipeWriter| {
+            let frame = ipc::frame(&ToBrowser::FocusLeft { view: 0 }).expect("short");
+            let sound = ipc::frame(&ToBrowser::Audio {
+                samples: ipc::Bytes(vec![0; 4096]),
+            })
+            .expect("short");
+            let _ = output.write_all(&hello(IPC_VERSION));
+            for _ in 0..total {
+                if output.write_all(&frame).is_err() {
+                    return;
+                }
+            }
+            *wrote.lock().expect("not poisoned") = Some(Instant::now());
+            let _ = output.write_all(&sound);
+            let mut sink = Vec::new();
+            let _ = input.read_to_end(&mut sink);
+        },
+        killed.clone(),
+    );
+    let serve: Arc<dyn Serve> = Arc::new(HearsSound(Arc::clone(&heard)));
+    let renderer = start_within(&fake, 9, events, nothing(), Some(serve), WAIT).expect("started");
+    // The browser stalled: nothing taken for two seconds.
+    thread::sleep(Duration::from_secs(2));
+    let sent_at = sent
+        .lock()
+        .expect("not poisoned")
+        .expect("the sound was sent");
+    let heard_at = heard
+        .lock()
+        .expect("not poisoned")
+        .expect("the sound was served");
+    let late = heard_at.saturating_duration_since(sent_at);
+    assert!(
+        late < Duration::from_millis(500),
+        "served {late:?} after it was sent"
+    );
+    // Taken again, every parked message arrives, and nothing was ended.
+    let mut took = 0;
+    while took < total {
+        match received.recv_timeout(WAIT).expect("an event in time") {
+            (_, Event::Message(..)) => took += 1,
+            (_, Event::Gone(why)) => panic!("ended: {why:?}"),
+            (_, Event::Ready) => {}
+        }
+    }
+    assert!(!killed.load(Ordering::Relaxed));
+    drop(renderer);
+}
+
+#[test]
+fn a_stalled_browsers_parked_console_is_merged_and_kept_whole() {
+    let (events, received) = mpsc::channel();
+    let killed = Arc::new(AtomicBool::new(false));
+    let total = MOST_UNTAKEN_MESSAGES + 2000;
+    let fake = Fake(
+        move |mut input: ipc::PipeReader, mut output: ipc::PipeWriter| {
+            let _ = output.write_all(&hello(IPC_VERSION));
+            for n in 0..total {
+                let entry = crate::ConsoleEntry {
+                    text: n.to_string(),
+                    ..Default::default()
+                };
+                let frame = ipc::frame(&ToBrowser::Console {
+                    view: 0,
+                    entries: vec![entry],
+                })
+                .expect("short");
+                if output.write_all(&frame).is_err() {
+                    return;
+                }
+            }
+            let mut sink = Vec::new();
+            let _ = input.read_to_end(&mut sink);
+        },
+        killed.clone(),
+    );
+    let renderer = start_within(&fake, 9, events, nothing(), None, WAIT).expect("started");
+    thread::sleep(Duration::from_secs(2));
+    let (mut messages, mut entries) = (0, Vec::new());
+    while entries.len() < total {
+        match received.recv_timeout(WAIT).expect("an event in time") {
+            (_, Event::Message(message, _)) => {
+                messages += 1;
+                if let ToBrowser::Console { entries: more, .. } = *message {
+                    entries.extend(more.into_iter().map(|entry| entry.text));
+                }
+            }
+            (_, Event::Gone(why)) => panic!("ended: {why:?}"),
+            (_, Event::Ready) => {}
+        }
+    }
+    assert!(
+        messages < total,
+        "{messages} messages: the parked ones merged"
+    );
+    let wanted: Vec<String> = (0..total).map(|n| n.to_string()).collect();
+    assert_eq!(entries, wanted, "every entry, in order");
+    assert!(!killed.load(Ordering::Relaxed));
+    drop(renderer);
+}
+
+#[test]
+fn a_renderer_silent_after_a_burst_has_every_parked_message_arrive() {
+    // The lead's review, 2026-11-26: a burst past a stalled browser's
+    // budget, then nothing more from the renderer, ever: what was parked
+    // arrives as the browser takes, no message waiting on a next one.
+    let (events, received) = mpsc::channel();
+    let killed = Arc::new(AtomicBool::new(false));
+    let total = MOST_UNTAKEN_MESSAGES + 3000;
+    let fake = Fake(
+        move |mut input: ipc::PipeReader, mut output: ipc::PipeWriter| {
+            let frame = ipc::frame(&ToBrowser::FocusLeft { view: 0 }).expect("short");
+            let _ = output.write_all(&hello(IPC_VERSION));
+            for _ in 0..total {
+                if output.write_all(&frame).is_err() {
+                    return;
+                }
+            }
+            // Silent from now on.
+            let mut sink = Vec::new();
+            let _ = input.read_to_end(&mut sink);
+        },
+        killed.clone(),
+    );
+    let renderer = start_within(&fake, 9, events, nothing(), None, WAIT).expect("started");
+    thread::sleep(Duration::from_secs(2));
+    let mut took = 0;
+    let mut last = Instant::now();
+    let mut longest = Duration::ZERO;
+    while took < total {
+        let (_, event) = received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{took} of {total}: the rest stayed parked"));
+        match event {
+            Event::Message(..) => took += 1,
+            Event::Gone(why) => panic!("ended: {why:?}"),
+            Event::Ready => {}
+        }
+        longest = longest.max(last.elapsed());
+        last = Instant::now();
+    }
+    assert!(
+        longest < Duration::from_millis(100),
+        "a message waited {longest:?} after the one before"
+    );
+    assert!(!killed.load(Ordering::Relaxed));
+    drop(renderer);
 }
