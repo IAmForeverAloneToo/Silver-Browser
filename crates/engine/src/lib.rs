@@ -531,6 +531,23 @@ pub struct Engine {
     last_drawn: Option<DrawnAt>,
     /// How many frames showed the last frame's pixels so.
     frames_unpainted: u64,
+    /// The last frame left unpainted, its animations' targets all out of
+    /// view after its restyle: the targets, the layouts run then, and
+    /// what it was drawn at. The next frame's targets, the same, on the
+    /// same layout and drawn alike, were out of view before its restyle
+    /// as this one found them after, and are not measured again (2c,
+    /// 2026-11-26: each measure walked the page's whole paint order).
+    unseen_last: Option<(HashSet<NodeId>, u64, DrawnAt)>,
+    /// The last hit test's point, what it was made on, and its answer:
+    /// asked again of the same point on the same layout, scroll and
+    /// document, it answers at once (2c, 2026-11-26: a pointer resting
+    /// over a page asked for its cursor and its link, each through
+    /// `frame_under` too, four walks of the paint order every frame).
+    hit_memo: Option<(HitKey, Hit)>,
+    /// The walks of the paint order the unseen check and hit testing
+    /// made, for the tests.
+    #[cfg(test)]
+    walks: (u64, u64),
     /// What the site sweep counted of the documents this engine showed
     /// and left (`sweep`); the shown one's are its scripts'.
     sweep_left: sweep::SweepCounts,
@@ -1872,6 +1889,10 @@ impl Engine {
             svg_recascades: 0,
             last_drawn: None,
             frames_unpainted: 0,
+            unseen_last: None,
+            hit_memo: None,
+            #[cfg(test)]
+            walks: (0, 0),
             sweep_left: sweep::SweepCounts::default(),
             #[cfg(test)]
             withhold_lending: false,
@@ -9317,6 +9338,23 @@ impl Engine {
     /// only repaints, and the scrollable overflow as it was. When it does
     /// not, the caller lays the document out again.
     fn patch_layout(&mut self, changed: &[NodeId], composited: &[style::Composited]) -> bool {
+        // The elements the changes are of and every element around them
+        // in the flat tree: the walks go no further (2026-11-26).
+        let document = &self.shown.document;
+        let mut within: HashSet<NodeId> = HashSet::from([document.root()]);
+        for node in changed
+            .iter()
+            .copied()
+            .chain(composited.iter().map(|change| change.node))
+        {
+            if within.insert(node) {
+                for around in document.flat_ancestors(node) {
+                    if !within.insert(around) {
+                        break;
+                    }
+                }
+            }
+        }
         let (Some(cached), Some(styled)) = (self.shown.layout.as_mut(), self.shown.styled.as_ref())
         else {
             return false;
@@ -9355,7 +9393,9 @@ impl Engine {
         // One patch for both: the lists of children the layout shares
         // with the cache are copied once (M35.9). A layout that does not
         // stand is made again, the entries the changes reach forgotten.
-        let mut patch = layout::Patch::new(&changes).restyled(&restyled);
+        let mut patch = layout::Patch::new(&changes)
+            .restyled(&restyled)
+            .within(within);
         let done = cached.layout.composite(&mut patch, cached.width) == layout::Composited::Done;
         if done {
             self.shown.layout_cache.composite(&mut patch);
@@ -9957,7 +9997,18 @@ impl Engine {
             && self.goal.is_none())
         .then(|| self.unseen_targets())
         .flatten()
-        .filter(|targets| self.unseen(targets));
+        .filter(|targets| {
+            let known = self.unseen_last.as_ref().is_some_and(|(last, runs, at)| {
+                last == targets && *runs == self.layout_runs && self.last_drawn.as_ref() == Some(at)
+            });
+            known || self.unseen(targets)
+        });
+        // The measure lays the document out, restyle and all, before the
+        // layouts are counted: a verdict known without it lays it out
+        // here, so that the frame stands as one measured would.
+        if unseen.is_some() {
+            self.layout(width as f32);
+        }
         let layouts_before = self.layout_runs;
         self.cached_styles();
         let animations = self.shown.animations.get_mut();
@@ -10036,6 +10087,7 @@ impl Engine {
             && self.unseen(&targets)
         {
             self.frames_unpainted += 1;
+            self.unseen_last = Some((targets, self.layout_runs, drawn_at));
             let total = start.elapsed();
             self.stats = FrameStats {
                 style: style_time,
@@ -10049,6 +10101,7 @@ impl Engine {
             return self.backend.last_frame();
         }
         self.last_drawn = Some(drawn_at);
+        self.unseen_last = None;
         let stage = Instant::now();
         let viewport = Viewport {
             width: width as f32,
@@ -11276,6 +11329,10 @@ impl Engine {
             height: height as f32,
             scroll_y,
         };
+        #[cfg(test)]
+        {
+            self.walks.0 += 1;
+        }
         let layout = self.layout(width as f32);
         geometry::measure(layout, viewport, &offsets, targets)
     }
@@ -11316,12 +11373,29 @@ impl Engine {
         if width == 0 || !x.is_finite() || !y.is_finite() {
             return None;
         }
+        // Laid out first: the key is of the layout the answer is made on.
+        self.layout(width as f32);
         let (scroll_y, offsets) = self.drawn_offsets();
+        let key = HitKey {
+            point: (x.to_bits(), y.to_bits()),
+            version: self.shown.document.version(),
+            layouts: (self.layout_runs, self.layouts_kept),
+            at: self.drawn_at((0, 0), scroll_y),
+        };
+        if let Some((known, answer)) = &self.hit_memo
+            && *known == key
+        {
+            return answer.clone();
+        }
         let viewport = Viewport {
             width: width as f32,
             height: height as f32,
             scroll_y,
         };
+        #[cfg(test)]
+        {
+            self.walks.1 += 1;
+        }
         let layout = self.layout(width as f32);
         let (mut hit, in_svg, _) = geometry::hit(layout, viewport, &offsets, x, y);
         // A point on an outer `<svg>` hits the shape under it (M32), or
@@ -11333,6 +11407,7 @@ impl Engine {
         {
             *node = shape;
         }
+        self.hit_memo = Some((key, hit.clone()));
         hit
     }
 
@@ -11849,6 +11924,21 @@ fn refusal(url: &Url, source: Option<&str>, made: bool, framed: bool) -> Option<
 pub(crate) fn parsed_or_empty(source: &str) -> Document {
     html::parse_document(source)
         .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
+}
+
+/// A hit test's answer: the element under the point and the clipping
+/// boxes around it, outermost first.
+type Hit = Option<(NodeId, Vec<NodeId>)>;
+
+/// What a hit test's answer was made on: the point, the document's
+/// version, the layouts run and kept (a composite patch moves boxes
+/// without a layout run), and the scroll offsets as drawn.
+#[derive(Debug, Clone, PartialEq)]
+struct HitKey {
+    point: (u32, u32),
+    version: u64,
+    layouts: (u64, u64),
+    at: DrawnAt,
 }
 
 /// The box fragment of the element `node`, if it has one of its own: a
@@ -15952,6 +16042,59 @@ mod tests {
         engine.frame(300, 200);
         assert_eq!(engine.svg_recascades - before, 1);
         assert_eq!(engine.shown.svgs.len(), 20);
+    }
+
+    #[test]
+    fn an_unseen_animations_frame_measures_its_targets_once() {
+        // 2c (2026-11-26): the frame before was left unpainted, its
+        // targets out of view after its restyle, on this layout: they
+        // were out of view before this frame's restyle too, and each
+        // measure walks the page's whole paint order.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@keyframes slide { to { transform: translateX(50px) } }             body { margin: 0 } div { width: 20px; height: 20px; background: blue }</style>             <div style='position: absolute; top: 2000px; animation: slide 1s linear infinite'></div>",
+        );
+        for ms in [0.0, 16.0] {
+            frame_at_ms(&mut engine, ms);
+        }
+        let (walks, unpainted) = (engine.walks.0, engine.frames_unpainted);
+        for n in 2..12 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        let frames = engine.frames_unpainted - unpainted;
+        assert_eq!(frames, 10, "out of view, not painted");
+        assert_eq!(engine.walks.0 - walks, frames, "one walk a frame, not two");
+    }
+
+    #[test]
+    fn a_points_cursor_and_link_are_found_by_one_walk_until_the_page_moves() {
+        // 2c (2026-11-26): a pointer resting over a page asked for its
+        // cursor and its link, each through `frame_under` too: four walks
+        // of the paint order a frame for one point.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>body { margin: 0 } a { display: block; height: 40px }</style>             <a href='https://example.com/one'>one</a><a href='https://example.com/two'>two</a>             <p style='height: 3000px'></p>",
+        );
+        engine.frame(300, 200);
+        let before = engine.walks.1;
+        let _ = engine.cursor_at(10.0, 10.0);
+        let link = engine
+            .link_at(10.0, 10.0)
+            .map(|link| link.url().to_string());
+        assert_eq!(link.as_deref(), Some("https://example.com/one"));
+        assert_eq!(
+            engine.walks.1 - before,
+            1,
+            "one walk for the cursor and the link"
+        );
+        // The page scrolled under the pointer: walked again, the link
+        // under it the next one.
+        engine.set_scroll(40.0);
+        engine.frame(300, 200);
+        let link = engine
+            .link_at(10.0, 10.0)
+            .map(|link| link.url().to_string());
+        assert_eq!(link.as_deref(), Some("https://example.com/two"));
     }
 
     #[test]

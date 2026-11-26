@@ -18,10 +18,14 @@ pub(crate) enum Phase {
     Style,
     Layout,
     Paint,
+    /// Where elements are, through the transforms and clips around them:
+    /// what observers, the unseen animations' check and scripts' geometry
+    /// queries walk the paint order for.
+    Measure,
 }
 
 /// The phases' names, in [`Phase`]'s order.
-pub(crate) const PHASES: [&str; 5] = ["parse", "script", "style", "layout", "paint"];
+pub(crate) const PHASES: [&str; 6] = ["parse", "script", "style", "layout", "paint", "measure"];
 
 #[derive(Default)]
 struct Clock {

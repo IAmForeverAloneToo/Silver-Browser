@@ -19,14 +19,24 @@ alone, MiB; likeness of the top and scrolled screenshots to Chrome's.
 Silver loaded 42 of 42 with no crash or hang. Chrome's load error on x
 and hang on etsy are the harness's.
 
+Chrome: challenged. On reddit, reddit-home, ai-chat, chatgpt and
+pcpartpicker, automated Chrome (headless or windowed, a throwaway
+profile) was shown a bot wall in place of the site: Reddit's "Prove
+your humanity" reCAPTCHA page, Cloudflare's "Just a moment" check. Its
+numbers there were the wall's and are left out (shown "-"); Silver's
+stand. The sweep now flags such a row (`challenged` on Chrome's side).
+Until a real reference exists, those sites are held to absolute
+targets: idle at most 0.15 cores, settled within 3 s, the renderer's
+peak at most 500 MiB.
+
 | site | S/C outcome | load s S/C | settled s S/C | idle CPU S/C (renderers+browser, cores) | S idle frames/s | S frame cause | S idle tasks/s by kind | loop turns/s max | private MiB idle S/C | similarity top/scrolled |
 |---|---|---|---|---|---|---|---|---|---|---|
-| ai-chat | ok/ok | 0.7/0.3 | 0.8/2.0 | 1.17/0.07 | 3 | changed | timer6 event6 other4 messa1 anima0 fetch0 | - | 475/576 | 0.84/0.66 |
+| ai-chat | ok/challenged | 0.7/- | 0.8/- | 1.17/- | 3 | changed | timer6 event6 other4 messa1 anima0 fetch0 | - | 475/- | - |
 | amazon | ok/ok | 1.0/0.6 | 1.0/0.6 | 0.00/0.01 | 0 | - | 0 | 0 | 265/282 | 0.72/0.73 |
 | amazon-au | ok/ok | -/1.0 | -/2.8 | 0.97/0.06 | - | - | - | 0 | 554/454 | 0.71/0.72 |
 | bbc | ok/ok | 1.9/0.9 | 6.3/1.2 | 1.12/0.61 | 48 | asked | timer49 other48 anima10 event3 fetch1 messa0 | 80 | 1088/610 | 0.87/0.80 |
 | bing | ok/ok | 1.3/0.8 | 21.1/4.6 | 0.03/0.01 | 0 | - | timer4 | 4 | 360/331 | 0.76/0.77 |
-| chatgpt | ok/ok | 2.4/0.4 | 2.5/2.1 | 0.32/0.06 | 1 | changed | event37 other3 messa2 timer2 fetch1 anima0 | - | 575/569 | 0.74/0.74 |
+| chatgpt | ok/challenged | 2.4/- | 2.5/- | 0.32/- | 1 | changed | event37 other3 messa2 timer2 fetch1 anima0 | - | 575/- | - |
 | cloudflare | ok/ok | -/3.8 | -/- | 0.97/2.13 | 2 | changed | event118 other3 timer1 anima1 messa0 | - | 494/909 | 0.84/0.70 |
 | cratesio | ok/ok | 1.0/0.9 | 4.5/2.2 | 0.00/0.01 | 0 | - | 0 | 0 | 184/387 | 0.85/0.84 |
 | ddg | ok/ok | 2.5/1.4 | 2.5/1.7 | 0.71/0.01 | 71 | asked | other71 timer0 | 115 | 360/360 | 0.70/0.70 |
@@ -47,12 +57,12 @@ and hang on etsy are the harness's.
 | mdn | ok/ok | 2.5/0.3 | 3.8/2.3 | 1.02/0.01 | - | - | - | - | 328/419 | 0.78/0.74 |
 | mslearn | ok/ok | 2.4/1.3 | 2.4/2.5 | 0.00/0.01 | 0 | - | timer0 | 0 | 229/295 | 0.85/0.85 |
 | onepassword | ok/ok | 3.3/1.6 | 4.4/4.0 | 0.62/0.08 | 71 | animation | timer4 fetch2 event0 | 121 | 819/455 | 0.76/0.85 |
-| pcpartpicker | ok/ok | 0.6/0.3 | 3.1/2.1 | 0.21/0.05 | 71 | animation | event5 timer1 | 118 | 159/578 | 0.83/0.83 |
+| pcpartpicker | ok/challenged | 0.6/- | 3.1/- | 0.21/- | 71 | animation | event5 timer1 | 118 | 159/- | - |
 | plex | ok/ok | 2.9/0.9 | 10.5/5.7 | 0.98/0.53 | 62 | animation | event564 anima31 other31 timer0 | 26 | 385/585 | 0.73/0.73 |
 | proton | ok/ok | -/2.3 | -/4.7 | 0.62/0.01 | 1 | changed | messa4 other1 event1 timer0 fetch0 | 7 | 267/369 | 0.77/0.74 |
 | proton-drive | ok/ok | 3.1/2.5 | 3.1/9.1 | 0.00/0.01 | 0 | - | 0 | 0 | 164/378 | 0.72/0.72 |
-| reddit | ok/ok | 15.7/1.1 | 17.6/1.7 | 0.85/0.01 | 56 | animation | timer2 anima0 event0 fetch0 messa0 | 89 | 734/418 | 0.67/0.71 |
-| reddit-home | ok/ok | 8.8/0.8 | 11.8/1.4 | 0.70/0.02 | 62 | animation | timer3 anima0 event0 messa0 | 102 | 638/426 | 0.61/0.73 |
+| reddit | ok/challenged | 15.7/- | 17.6/- | 0.85/- | 56 | animation | timer2 anima0 event0 fetch0 messa0 | 89 | 734/- | - |
+| reddit-home | ok/challenged | 8.8/- | 11.8/- | 0.70/- | 62 | animation | timer3 anima0 event0 messa0 | 102 | 638/- | - |
 | stackoverflow | ok/ok | 0.6/1.7 | 7.0/4.7 | 1.16/0.06 | 2 | changed | event12 timer12 fetch4 anima0 messa0 other0 | - | 751/585 | 0.72/0.72 |
 | twitch | ok/ok | 2.7/1.1 | 5.4/2.9 | 0.94/0.26 | 0 | changed | timer1 messa1 fetch0 anima0 event0 other0 | 1 | 576/735 | 0.67/0.86 |
 | verge | ok/ok | 11.0/2.7 | 11.4/6.7 | 1.01/0.14 | 3 | animation | other33 timer21 event3 fetch1 messa0 | 1 | 974/765 | 0.76/0.64 |

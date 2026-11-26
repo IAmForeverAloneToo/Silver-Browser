@@ -14,6 +14,9 @@ use paint::Rect;
 use crate::loader::{Incoming, LoadState};
 use crate::{Engine, FontMeasurer, Handling, Navigation, Url, cascade_context};
 
+/// How many playing animations `page.sweep` names.
+const ANIMATIONS_LISTED: usize = 20;
+
 /// The most answers and events a page inspected may have waiting for the
 /// browser: it takes them each turn.
 pub const MAX_INSPECTED_MESSAGES: usize = 1024;
@@ -222,7 +225,113 @@ impl Engine {
         total.removed_frames_alive = alive;
         total.removed_frames_heap = heap;
         total.removed_remote_frames_alive = self.removed_remote_frames_alive();
-        total.json(layouts, &frames)
+        let mut json = total.json(layouts, &frames);
+        if let Json::Object(members) = &mut json {
+            members.push(("animationsRunning".to_owned(), self.animations_running()));
+        }
+        json
+    }
+
+    /// The animations and transitions playing in their active phase, the
+    /// first [`ANIMATIONS_LISTED`]: what wants a page's frames (the site
+    /// sweep, 2026-11-26), each with its target, the pseudo-element, the
+    /// target's display and whether the last layout gave it a box.
+    fn animations_running(&self) -> Json {
+        let document = &self.shown.document;
+        let styles = self.shown.styled.as_ref().map(|styled| &styled.styles);
+        let layout = self.shown.layout.as_ref().map(|cached| &cached.layout);
+        let running = self.shown.animations.borrow().running();
+        let listed = running
+            .iter()
+            .filter(|r| !r.paused && r.phase == Some(style::animation::Phase::Active))
+            .take(ANIMATIONS_LISTED)
+            .map(|r| {
+                let mut target = document.tag(r.node).unwrap_or("?").to_owned();
+                if let Some(id) = document.attr(r.node, "id") {
+                    target.push('#');
+                    target.push_str(id);
+                }
+                if let Some(class) = document.attr(r.node, "class") {
+                    for name in class.split_ascii_whitespace().take(2) {
+                        target.push('.');
+                        target.push_str(name);
+                    }
+                }
+                let display = styles
+                    .and_then(|styles| styles.shared(r.node))
+                    .map_or(Json::Null, |style| {
+                        Json::from(format!("{:?}", style.display))
+                    });
+                let boxed = layout
+                    .is_some_and(|layout| crate::fragment_of(&layout.roots, r.node).is_some());
+                Json::object([
+                    ("name", Json::from(&*r.name)),
+                    ("transition", Json::from(r.transition)),
+                    ("target", Json::from(target)),
+                    (
+                        "pseudo",
+                        r.pseudo
+                            .map_or(Json::Null, |p| Json::from(format!("{p:?}"))),
+                    ),
+                    ("inDocument", Json::from(document.contains(r.node))),
+                    ("display", display),
+                    ("boxed", Json::from(boxed)),
+                ])
+            })
+            .collect();
+        let count = running
+            .iter()
+            .filter(|r| !r.paused && r.phase == Some(style::animation::Phase::Active))
+            .count();
+        let [notices, playback, touched, pending, active] =
+            self.shown.animations.borrow().frame_wants();
+        Json::object([
+            ("active", Json::from(count as f64)),
+            ("listed", Json::Array(listed)),
+            (
+                "wants",
+                Json::object([
+                    ("notices", Json::from(notices as f64)),
+                    ("playback", Json::from(playback as f64)),
+                    ("touched", Json::from(touched as f64)),
+                    ("pending", Json::from(pending as f64)),
+                    ("active", Json::from(active as f64)),
+                ]),
+            ),
+            ("all", Json::from(running.len() as f64)),
+            (
+                "activeAll",
+                Json::Array(
+                    self.shown
+                        .animations
+                        .borrow()
+                        .active_described()
+                        .into_iter()
+                        .map(|(kind, target, duration, iterations, held)| {
+                            let described = target.map_or(Json::Null, |node| {
+                                let mut d = document.tag(node).unwrap_or("?").to_owned();
+                                if let Some(class) = document.attr(node, "class") {
+                                    d.push('.');
+                                    d.push_str(class.split_ascii_whitespace().next().unwrap_or(""));
+                                }
+                                Json::from(d)
+                            });
+                            Json::object([
+                                ("kind", Json::from(kind)),
+                                ("target", described),
+                                (
+                                    "inDocument",
+                                    Json::from(target.is_some_and(|n| document.is_connected(n))),
+                                ),
+                                ("duration", Json::from(duration)),
+                                ("iterations", Json::from(iterations)),
+                                ("held", Json::from(held)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
     }
 
     /// The frames of this engine's tree whose `iframe` is out of its

@@ -1249,6 +1249,71 @@ impl Animations {
         changed
     }
 
+    /// Why frames are wanted, for the site sweep (2026-11-26): the
+    /// notices, playback events and touched elements waiting, the
+    /// animations waiting for a frame to start them, and those playing
+    /// in their active phase.
+    pub fn active_described(&self) -> Vec<(&'static str, Option<NodeId>, f64, f64, bool)> {
+        self.animations
+            .values()
+            .filter(|animation| {
+                let cx = self.context(animation);
+                !animation.player.pending()
+                    && !self.progress_based(animation.timeline)
+                    && animation.player.play_state(&cx) == PlayState::Running
+                    && animation.player.playback_rate != 0.0
+                    && self
+                        .progress_of(animation)
+                        .is_some_and(|p| p.phase == Phase::Active)
+            })
+            .take(20)
+            .map(|animation| {
+                let kind = match &animation.class {
+                    Class::Transition { owner: Some(_), .. } => "transition",
+                    Class::Transition { .. } => "transition, unowned",
+                    Class::Css { owner: Some(_), .. } => "css",
+                    Class::Css { .. } => "css, unowned",
+                    Class::Script => "script",
+                };
+                let effect = animation.effect.and_then(|e| self.effects.get(&e));
+                let target = effect.and_then(|e| e.target).map(|t| t.0);
+                let (duration, iterations) =
+                    effect.map_or((0.0, 0.0), |e| (e.timing.duration, e.timing.iterations));
+                (kind, target, duration, iterations, animation.held)
+            })
+            .collect()
+    }
+
+    /// Why frames are wanted (the site sweep).
+    pub fn frame_wants(&self) -> [usize; 5] {
+        let pending = self
+            .animations
+            .values()
+            .filter(|a| a.player.pending() && self.timeline_time(a.timeline).is_some())
+            .count();
+        let active = self
+            .animations
+            .values()
+            .filter(|animation| {
+                let cx = self.context(animation);
+                !animation.player.pending()
+                    && !self.progress_based(animation.timeline)
+                    && animation.player.play_state(&cx) == PlayState::Running
+                    && animation.player.playback_rate != 0.0
+                    && self
+                        .progress_of(animation)
+                        .is_some_and(|p| p.phase == Phase::Active)
+            })
+            .count();
+        [
+            self.notices.len(),
+            self.playback.len(),
+            self.touched.len(),
+            pending,
+            active,
+        ]
+    }
+
     /// Whether a frame is wanted now: an animation waits for one to
     /// start it, or plays in its active phase, its values changing with
     /// the time; or what a script holds waits for the frame's update.

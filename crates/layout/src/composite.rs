@@ -157,6 +157,11 @@ struct Changes<'c, 'a> {
     restyled: HashSet<NodeId>,
     /// The style each replaces, as its fragments carry it, once found.
     olds: Vec<Option<Arc<ComputedStyle>>>,
+    /// The elements the changes are of and every element around them in
+    /// the flat tree, when the caller knows them: a fragment of another
+    /// holds none of the changes, nor do the fragments under it, which
+    /// are of the elements inside it, and the walks go no further.
+    within: Option<HashSet<NodeId>>,
 }
 
 impl<'c, 'a> Changes<'c, 'a> {
@@ -174,7 +179,16 @@ impl<'c, 'a> Changes<'c, 'a> {
             by_style: HashMap::new(),
             restyled: HashSet::new(),
             olds: Vec::new(),
+            within: None,
         }
+    }
+
+    /// Whether `fragment` and those under it hold none of the changes:
+    /// its element is not one the changes are in ([`Changes::within`]).
+    fn outside(&self, fragment: &Fragment) -> bool {
+        self.within
+            .as_ref()
+            .is_some_and(|within| !within.contains(&fragment.node))
     }
 
     /// The change of style that reaches `fragment`, if one does: one of
@@ -321,9 +335,22 @@ impl<'c, 'a> Patch<'c, 'a> {
         self
     }
 
+    /// The patch walking only the fragments of `within`: the elements
+    /// the changes are of and every element around them in the flat
+    /// tree (the site sweep, 2026-11-26: a spinner's frame walked a
+    /// page's every fragment). A change a fragment outside them held is
+    /// not found, and the layout is made again.
+    pub fn within(mut self, within: HashSet<NodeId>) -> Self {
+        self.changes.within = Some(within);
+        self
+    }
+
     /// Writes the changes into `fragment` and the fragments under it;
     /// whether any reached.
     pub(crate) fn fragment(&mut self, fragment: &mut Fragment) -> bool {
+        if self.changes.outside(fragment) {
+            return false;
+        }
         let restyled = self.changes.restyling(fragment);
         if let Some(i) = restyled {
             self.changes.restyle(fragment, i);
@@ -356,6 +383,9 @@ impl<'c, 'a> Patch<'c, 'a> {
         let list = Arc::clone(list);
         let mut copy: Option<Vec<Fragment>> = None;
         for (i, child) in list.iter().enumerate() {
+            if self.changes.outside(child) {
+                continue;
+            }
             let restyled = self.changes.restyling(child);
             let reached = self.changes.reaching(child);
             let mut below = child.children.clone();
@@ -426,6 +456,9 @@ impl Walk<'_, '_, '_> {
         covered: bool,
         top: f32,
     ) {
+        if self.changes.outside(fragment) {
+            return;
+        }
         if self.changes.restyled.contains(&fragment.node) {
             match self
                 .changes
@@ -484,12 +517,13 @@ impl Walk<'_, '_, '_> {
     /// inside a box that clips.
     fn holds(&self, fragment: &Fragment) -> bool {
         fragment.children.iter().any(|child| {
-            (matches!(child.kind, FragmentKind::Box)
-                && self
-                    .changes
-                    .reaching(child)
-                    .is_some_and(|i| self.changes.changes[i].transformed))
-                || (!child.clips() && self.holds(child))
+            !self.changes.outside(child)
+                && ((matches!(child.kind, FragmentKind::Box)
+                    && self
+                        .changes
+                        .reaching(child)
+                        .is_some_and(|i| self.changes.changes[i].transformed))
+                    || (!child.clips() && self.holds(child)))
         })
     }
 }
@@ -568,6 +602,42 @@ mod tests {
             styles: None,
         };
         composite(&mut laid.layout, &[change])
+    }
+
+    #[test]
+    fn a_patch_within_a_changes_ancestors_finds_it_and_one_without_them_does_not() {
+        // 2c (2026-11-26): the walk keeps to the elements the changes are
+        // of and those around them; a change its set leaves out is not
+        // found, and the layout is made again rather than left wrong.
+        let mut laid = laid(
+            "<div id=wrap><div id=a></div></div><div id=other><p>x</p></div><div id=tall></div>",
+            "#a { translate: 0 0; height: 20px } #tall { height: 500px }",
+        );
+        let a = node(&laid, "a");
+        let old = effects(&laid, "a");
+        let new = moved(&old, 5.0, old.opacity);
+        let change = || EffectsChange {
+            node: a,
+            pseudo: None,
+            old: &old,
+            new: &new,
+            transformed: true,
+            styles: None,
+        };
+        let root = laid.document.root();
+        let without: HashSet<NodeId> = [root, node(&laid, "other")].into_iter().collect();
+        let missed = laid
+            .layout
+            .composite(&mut Patch::new(&[change()]).within(without), VIEWPORT);
+        assert_eq!(missed, Composited::Missed);
+        assert!(Arc::ptr_eq(&effects(&laid, "a"), &old), "nothing written");
+        let mut within: HashSet<NodeId> = laid.document.ancestors(a).collect();
+        within.extend([a, root]);
+        let done = laid
+            .layout
+            .composite(&mut Patch::new(&[change()]).within(within), VIEWPORT);
+        assert_eq!(done, Composited::Done);
+        assert!(Arc::ptr_eq(&effects(&laid, "a"), &new));
     }
 
     #[test]

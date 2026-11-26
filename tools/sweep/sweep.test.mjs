@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import zlib from "node:zlib";
 
-import { chromeIdleShares, idleSummary, memorySum, spinning, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
+import { challenge, chromeIdleShares, idleSummary, memorySum, spinning, normalize, readPng, similarity, topCauses } from "./sweep.mjs";
 
 // A PNG of `width` by `height`, RGB, each pixel `colour(x, y)`.
 function png(width, height, colour) {
@@ -106,4 +106,13 @@ test("a renderer that turns more than a thousand times a second left alone is fl
   assert.equal(spinning({ loopTurns: { most: 160000 } }), 160000);
   assert.equal(spinning({ loopTurns: { most: 12 } }), null);
   assert.equal(spinning({}), null);
+});
+
+test("a bot wall in place of a site is named, a login's badge is not", () => {
+  assert.equal(challenge("Reddit - Prove your humanity", ""), "Prove your humanity");
+  assert.equal(challenge("Just a moment...", ""), "Just a moment");
+  assert.equal(challenge("", "Our systems have detected unusual traffic from your network"), "unusual traffic");
+  assert.equal(challenge("au.pcpartpicker.com", "au.pcpartpicker.com\nPerforming security verification\nThis website uses a security service"), "Performing security verification");
+  assert.equal(challenge("Sign in", "This site is protected by reCAPTCHA and the Google Privacy Policy"), null);
+  assert.equal(challenge("r/rust", "Rust programming language"), null);
 });

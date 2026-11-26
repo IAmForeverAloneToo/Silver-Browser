@@ -28,6 +28,7 @@ pub(crate) fn measure(
     offsets: &dyn ScrollOffsets,
     targets: &HashSet<NodeId>,
 ) -> HashMap<NodeId, scripts::Measured> {
+    let _measure = crate::phases::enter(crate::phases::Phase::Measure);
     let mut out: HashMap<NodeId, scripts::Measured> = HashMap::new();
     // The `display` of each one's first box, which its others share.
     let mut displays: HashMap<NodeId, style::computed::Display> = HashMap::new();

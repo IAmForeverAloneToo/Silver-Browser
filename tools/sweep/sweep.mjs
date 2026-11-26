@@ -352,6 +352,18 @@ async function chromeCounts(send) {
   };
 }
 
+// The words of a bot wall shown in place of a site, by its title or the
+// start of its text; null when there are none. Not "captcha" alone: a
+// login page carries a reCAPTCHA badge.
+export function challenge(title, text) {
+  const walls = [/prove your humanity/i, /verify (that )?you are (a )?human/i, /are you a robot/i, /unusual traffic/i, /^just a moment/i, /checking (if the site connection is secure|your browser)/i, /performing security verification/i];
+  for (const wall of walls) {
+    const found = (title ?? "").match(wall) || (text ?? "").match(wall);
+    if (found) return found[0];
+  }
+  return null;
+}
+
 // One site in Chrome: its outcome, timings, console, screenshots.
 async function captureChrome(chrome, url, dir) {
   const { cdp } = chrome;
@@ -419,6 +431,13 @@ async function captureChrome(chrome, url, dir) {
     };
     const served = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }).catch(() => null);
     result.finalUrl = served?.result?.value ?? null;
+    // A bot wall in Chrome's place of the site (2026-11-26: Reddit's
+    // "Prove your humanity" for automated Chrome, headless or not): its
+    // numbers are the wall's, not the site's, and the row says so.
+    const page = await send("Runtime.evaluate", { expression: "JSON.stringify([document.title, (document.body?.innerText ?? '').slice(0, 2000)])", returnByValue: true }).catch(() => null);
+    const [title, text] = JSON.parse(page?.result?.value ?? '["", ""]');
+    result.title = title;
+    result.challenged = challenge(title, text);
     result.memoryTotal = { load: await chromeMemory(cdp), idle: null };
     result.counters = await chromeCounts(send);
     await shot("chrome-top.png");
@@ -579,7 +598,7 @@ export async function run(options) {
       }
     }
     fs.writeFileSync(path.join(dir, "row.json"), JSON.stringify(row, null, 1));
-    console.log(`${id}: silver ${s.outcome}, chrome ${c ? c.outcome : "-"}, similarity ${row.similarity.top ?? "-"}`);
+    console.log(`${id}: silver ${s.outcome}, chrome ${c ? c.outcome : "-"}${c?.challenged ? ` (challenged: "${c.challenged}")` : ""}, similarity ${row.similarity.top ?? "-"}`);
     return row;
   });
   if (chrome) await chrome.stop();
