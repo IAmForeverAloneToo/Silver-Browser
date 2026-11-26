@@ -549,6 +549,12 @@ pub struct Engine {
     /// whole cascade, they answer the same, and are not evaluated (2c,
     /// 2026-11-26: reddit's frames evaluated every shadow tree's).
     media_held: Option<MediaKey>,
+    /// What the observers last measured their targets on, and the
+    /// elements whose transforms were patched since (2c, 2026-11-26):
+    /// the same again, none of those a target or around one, they are
+    /// not measured.
+    observed_on: Option<ObservedOn>,
+    moved_since_observed: HashSet<NodeId>,
     /// How many times the media queries were evaluated, for the tests.
     #[cfg(test)]
     media_checks: u64,
@@ -1900,6 +1906,8 @@ impl Engine {
             unseen_last: None,
             hit_memo: None,
             media_held: None,
+            observed_on: None,
+            moved_since_observed: HashSet::new(),
             #[cfg(test)]
             media_checks: 0,
             #[cfg(test)]
@@ -9420,6 +9428,13 @@ impl Engine {
         // One patch for both: the lists of children the layout shares
         // with the cache are copied once (M35.9). A layout that does not
         // stand is made again, the entries the changes reach forgotten.
+        // The elements whose transforms moved, for the observers.
+        self.moved_since_observed.extend(
+            composited
+                .iter()
+                .filter(|change| change.transformed)
+                .map(|change| change.node),
+        );
         let mut patch = layout::Patch::new(&changes)
             .restyled(&restyled)
             .within(within);
@@ -11168,6 +11183,31 @@ impl Engine {
             return;
         }
         let targets = self.shown.scripts.layout_targets();
+        // Measured again only when what the observations read could have
+        // changed (2c, 2026-11-26: plex's 277 observed placeholders were
+        // measured, a walk of the whole page, at each spinner's frame).
+        let (scroll_y, _) = self.drawn_offsets();
+        let on = ObservedOn {
+            generation: self.shown.scripts.layout_generation(),
+            layouts: self.layout_runs,
+            version: self.shown.document.version(),
+            at: self.drawn_at((0, 0), scroll_y),
+            hidden: self.hidden,
+        };
+        let moved = std::mem::take(&mut self.moved_since_observed);
+        let reached = !moved.is_empty() && {
+            let document = &self.shown.document;
+            targets.iter().any(|&target| {
+                moved.contains(&target)
+                    || document
+                        .flat_ancestors(target)
+                        .any(|around| moved.contains(&around))
+            })
+        };
+        if !self.frame.is_frame() && !reached && self.observed_on.as_ref() == Some(&on) {
+            return;
+        }
+        self.observed_on = Some(on);
         let measured = self.measure(&targets);
         // The targets in contents an element skips (`content-visibility`,
         // gap batch H): each flat ancestor's answer remembered, so that
@@ -11951,6 +11991,18 @@ fn refusal(url: &Url, source: Option<&str>, made: bool, framed: bool) -> Option<
 pub(crate) fn parsed_or_empty(source: &str) -> Document {
     html::parse_document(source)
         .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
+}
+
+/// What the layout's observers last measured their targets on: what is
+/// observed, the layouts run, the document's version, the scroll offsets
+/// as drawn, and whether the document was hidden.
+#[derive(Debug, Clone, PartialEq)]
+struct ObservedOn {
+    generation: u64,
+    layouts: u64,
+    version: u64,
+    at: DrawnAt,
+    hidden: bool,
 }
 
 /// What the media queries' answers are made from: the medium, the
@@ -16133,6 +16185,76 @@ mod tests {
             frame_at_ms(&mut engine, 16.0 * f64::from(n));
         }
         assert_eq!(color(&mut engine), away, "left, it matches no more");
+    }
+
+    /// What an IntersectionObserver of `#t` says, the element carried up
+    /// into the viewport from below it by `moved`'s animated transform,
+    /// the page's overflow the same throughout (no layout runs again), over
+    /// the first 600 ms of frames.
+    fn intersections_as_carried_in(moved: &str) -> Vec<String> {
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document(&format!(
+            "<style>@keyframes in {{ to {{ transform: translateY(-100px) }} }}             body {{ margin: 0; height: 3000px }} #w {{ position: absolute; top: 150px }}             #t {{ width: 20px; height: 20px }}             {moved} {{ animation: in 1s linear forwards }}</style>             <div id=w><div id=t></div></div>"
+        ));
+        crate::differential::run_script(
+            &mut engine,
+            "new IntersectionObserver(es => { for (const e of es) console.log(String(e.isIntersecting)); })             .observe(document.getElementById('t'));",
+        );
+        engine.take_console();
+        for n in 0..38 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+            engine.run_tasks();
+        }
+        engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect()
+    }
+
+    #[test]
+    fn an_animated_transform_carrying_a_target_across_a_threshold_reaches_its_observer() {
+        // The lead's review of 2c (2026-11-26): the observers are measured
+        // again when a transform patched onto a target, or onto an element
+        // around it, could have carried it across a threshold.
+        assert_eq!(intersections_as_carried_in("#t"), ["false", "true"]);
+        assert_eq!(intersections_as_carried_in("#w"), ["false", "true"]);
+    }
+
+    #[test]
+    fn a_spinner_elsewhere_leaves_the_observers_unmeasured() {
+        // 2c (2026-11-26): plex's observed placeholders were measured, a walk
+        // of the whole page, at each frame of a spinner none of them is in.
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document(
+            "<style>@keyframes turn { to { transform: rotate(360deg) } }             body { margin: 0 } #s { width: 20px; height: 20px; animation: turn 1s linear infinite }             #o { width: 20px; height: 20px }</style>             <div id=s></div><div id=o></div>",
+        );
+        crate::differential::run_script(
+            &mut engine,
+            "window.seen = 0; new IntersectionObserver(() => { seen++; }).observe(document.getElementById('o'));             new ResizeObserver(() => { seen++; }).observe(document.getElementById('o'));             requestAnimationFrame(() => console.log('framed'));",
+        );
+        for n in 0..4 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+            engine.run_tasks();
+        }
+        let walks = engine.walks.0;
+        for n in 4..14 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+            engine.run_tasks();
+        }
+        // The observers were met once, at their first frame.
+        crate::differential::run_script(&mut engine, "console.log(String(seen));");
+        let said: Vec<String> = engine.take_console().into_iter().map(|e| e.text).collect();
+        assert_eq!(said, ["framed", "2"], "both observers delivered once");
+        // The spinner's own check that it is out of view walks once a
+        // frame at most; the observers no more.
+        assert!(
+            engine.walks.0 - walks <= 10,
+            "{} walks in 10 frames",
+            engine.walks.0 - walks
+        );
     }
 
     #[test]

@@ -2231,6 +2231,11 @@ impl Scripts {
         !self.stopped && self.host.layout_observers.observing()
     }
 
+    /// How many times what the layout's observers watch changed.
+    pub(crate) fn layout_generation(&self) -> u64 {
+        self.host.layout_observers.generation()
+    }
+
     /// The elements those observers watch, and their roots.
     pub(crate) fn layout_targets(&self) -> std::collections::HashSet<NodeId> {
         self.host.layout_observers.targets()

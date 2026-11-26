@@ -90,6 +90,9 @@ struct Intersection {
 pub(crate) struct LayoutObservers {
     resize: BTreeMap<u32, Vec<ResizeTarget>>,
     intersection: BTreeMap<u32, Intersection>,
+    /// How many times what is observed changed: an observation made is
+    /// measured at the next frame, whatever else did not change.
+    generation: u64,
 }
 
 /// A rectangle as JSON: x, y, width and height.
@@ -116,7 +119,13 @@ impl LayoutObservers {
 
     /// `ResizeObserver.observe()`: `node` watched for `observed`'s size,
     /// as if `(0, 0)` had been reported, which observing it again resets.
+    /// How many times what is observed changed (2c, 2026-11-26).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn resize_observe(&mut self, observer: u32, node: NodeId, observed: ObservedBox) {
+        self.generation += 1;
         let targets = self.resize.entry(observer).or_default();
         targets.retain(|t| t.node != node);
         targets.push(ResizeTarget {
@@ -127,12 +136,14 @@ impl LayoutObservers {
     }
 
     pub(crate) fn resize_unobserve(&mut self, observer: u32, node: NodeId) {
+        self.generation += 1;
         if let Some(targets) = self.resize.get_mut(&observer) {
             targets.retain(|t| t.node != node);
         }
     }
 
     pub(crate) fn resize_disconnect(&mut self, observer: u32) {
+        self.generation += 1;
         self.resize.remove(&observer);
     }
 
@@ -146,6 +157,7 @@ impl LayoutObservers {
         margin: [(f32, bool); 4],
         thresholds: Vec<f64>,
     ) {
+        self.generation += 1;
         let entry = self.intersection.entry(observer).or_insert(Intersection {
             root,
             margin,
@@ -158,12 +170,14 @@ impl LayoutObservers {
     }
 
     pub(crate) fn intersection_unobserve(&mut self, observer: u32, node: NodeId) {
+        self.generation += 1;
         if let Some(o) = self.intersection.get_mut(&observer) {
             o.targets.retain(|t| t.0 != node);
         }
     }
 
     pub(crate) fn intersection_disconnect(&mut self, observer: u32) {
+        self.generation += 1;
         self.intersection.remove(&observer);
     }
 

@@ -300,6 +300,16 @@ impl Engine {
             ),
             ("all", Json::from(running.len() as f64)),
             (
+                "matchesKept",
+                self.shown.styled.as_ref().map_or(Json::Null, |styled| {
+                    let (kept, watched) = self.shown.stylesheets.matches_kept(&styled.styles);
+                    Json::object([
+                        ("kept", Json::from(kept as f64)),
+                        ("containersWatched", Json::from(watched)),
+                    ])
+                }),
+            ),
+            (
                 "activeAll",
                 Json::Array(
                     self.shown

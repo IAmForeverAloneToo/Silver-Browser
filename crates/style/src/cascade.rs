@@ -223,6 +223,9 @@ pub struct Styles {
     /// matched against (2c, 2026-11-26): what an element restyled for its
     /// animation alone takes, rather than matching every selector again.
     matched: MatchedKept,
+    /// How many restyles took the declarations matched last, for the site
+    /// sweep (2026-11-26).
+    matches_kept: u64,
     /// By slot index: the node the styles were computed for, so that a
     /// later node in the same slot is not taken for it, and its styles.
     entries: Vec<Option<(NodeId, Computed)>>,
@@ -1079,6 +1082,16 @@ impl Stylesheets {
             .count()
     }
 
+    /// How many restyles of `styles` took the declarations matched last,
+    /// and whether these sheets' containers are watched there, which keeps
+    /// none (the site sweep, 2026-11-26).
+    pub fn matches_kept(&self, styles: &Styles) -> (u64, bool) {
+        (
+            styles.matches_kept,
+            self.rules.has_containers() || !styles.queried.is_empty(),
+        )
+    }
+
     /// Whether the shadow trees' sheets are `trees`, as
     /// [`Stylesheets::with_shadow_trees`] takes them.
     pub fn same_shadow_trees(&self, trees: &[ShadowTreeSheets]) -> bool {
@@ -1667,6 +1680,7 @@ impl Stylesheets {
             }
         }
         styles.matched = std::mem::take(&mut cascader.matched);
+        styles.matches_kept += cascader.kept_count;
         styles.uses_viewport_units |= cascader.viewport_used.get();
         styles.uses_font_units |= cascader.fonts_used.get();
         styles.queried.extend(cascader.queried.take());
@@ -2906,6 +2920,8 @@ struct Cascader<'a> {
     /// matches made now are kept. Off for the tests that compare.
     animation_only: HashSet<NodeId>,
     keep_matched: HashSet<NodeId>,
+    /// How many elements took their matches kept, in this restyle.
+    kept_count: u64,
 }
 
 impl<'a> Cascader<'a> {
@@ -2950,6 +2966,7 @@ impl<'a> Cascader<'a> {
             sheets,
             animation_only: HashSet::new(),
             keep_matched: HashSet::new(),
+            kept_count: 0,
         }
     }
 
@@ -3016,8 +3033,9 @@ impl<'a> Cascader<'a> {
             .flatten()
             .filter(|(sheets, _)| *sheets == self.sheets)
             .map(|(_, matched)| Arc::clone(matched));
-        #[cfg(test)]
         if kept_match.is_some() {
+            self.kept_count += 1;
+            #[cfg(test)]
             MATCHES_KEPT.with(|kept| kept.set(kept.get() + 1));
         }
         let made;
