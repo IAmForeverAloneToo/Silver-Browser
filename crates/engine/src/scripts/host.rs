@@ -2613,6 +2613,7 @@ impl DocumentHost {
             }
             Call::MutationNotify => {
                 let observers = self.mutations.notifying();
+                self.sweep.note_observers(observers.len());
                 self.watch();
                 Ok(Answer::Numbers(
                     observers.into_iter().map(f64::from).collect(),
@@ -3401,6 +3402,7 @@ impl DocumentHost {
                 Ok(Answer::Nothing)
             }
             Call::SetTimer { id, delay } => {
+                self.sweep.note_timer(delay);
                 let now = self.now();
                 self.timers.set(id, delay, self.nesting, now)?;
                 Ok(Answer::Nothing)
@@ -5014,7 +5016,11 @@ impl DocumentHost {
         let before = self.document.len();
         self.writing = true;
         loop {
-            match parser.parse(&mut self.document, usize::MAX) {
+            let stop = {
+                let _parse = crate::phases::enter(crate::phases::Phase::Parse);
+                parser.parse(&mut self.document, usize::MAX)
+            };
+            match stop {
                 html::Stop::Script { element, .. } => {
                     self.made_by_script(element, false);
                     let written = std::mem::take(&mut self.nested_writes);
@@ -5414,6 +5420,7 @@ impl DocumentHost {
     /// it (D65): its styles brought up to date, and at most one layout a
     /// version of the document; none for a document without a window.
     fn layout_now(&mut self) -> Option<&layout::DocumentLayout> {
+        let _layout = crate::phases::enter(crate::phases::Phase::Layout);
         self.size_from_owner();
         let version = self.document.version();
         if self.laid_out.as_ref().is_some_and(|(at, _)| *at == version) {
@@ -8087,6 +8094,7 @@ impl DocumentHost {
     /// | `lang`, a `content-language` pragma; a policy's `style` checks | journal |
     /// | the response's language | the page's: fixed |
     fn styles_now(&mut self) -> Option<&Styles> {
+        let _style = crate::phases::enter(crate::phases::Phase::Style);
         self.size_from_owner();
         self.inline_sheets();
         let page = self.page.as_ref()?;

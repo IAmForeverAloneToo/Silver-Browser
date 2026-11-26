@@ -289,6 +289,69 @@ async function startChrome(exe) {
   };
 }
 
+// What Chrome's page does, counted as Silver's renderer counts it
+// (page.sweep): timers armed, by their delay (under 4 ms, 4 to 16, 16 to
+// 100, 100 and more; an interval each time it runs, as Silver re-arms it),
+// timer runs, animation frames run, observers' callbacks, message events,
+// and WebGL frames (tasks that drew). Frames of other processes and
+// workers are not counted, as Silver's counts are the page renderer's.
+const COUNTER_SCRIPT = `(() => {
+  const c = { timersByDelay: [0, 0, 0, 0], timers: 0, animationFrames: 0, observers: 0, messages: 0, webglFrames: 0 };
+  Object.defineProperty(window, "__sweepCounts", { value: c });
+  const bucket = (d) => { d = +d || 0; return d < 4 ? 0 : d < 16 ? 1 : d < 100 ? 2 : 3; };
+  const st = window.setTimeout, si = window.setInterval, raf = window.requestAnimationFrame;
+  window.setTimeout = function (f, d, ...a) {
+    c.timersByDelay[bucket(d)]++;
+    const g = typeof f === "function" ? function () { c.timers++; return f.apply(this, arguments); } : f;
+    return st.call(this, g, d, ...a);
+  };
+  window.setInterval = function (f, d, ...a) {
+    const b = bucket(d);
+    c.timersByDelay[b]++;
+    const g = typeof f === "function" ? function () { c.timers++; c.timersByDelay[b]++; return f.apply(this, arguments); } : f;
+    return si.call(this, g, d, ...a);
+  };
+  window.requestAnimationFrame = function (f) {
+    return raf.call(this, typeof f === "function" ? function (t) { c.animationFrames++; return f.call(this, t); } : f);
+  };
+  for (const name of ["MutationObserver", "ResizeObserver", "IntersectionObserver", "PerformanceObserver"]) {
+    const O = window[name];
+    if (typeof O !== "function") continue;
+    const W = class extends O {
+      constructor(f, ...r) { super(typeof f === "function" ? function () { c.observers++; return f.apply(this, arguments); } : f, ...r); }
+    };
+    Object.defineProperty(W, "name", { value: name });
+    window[name] = W;
+  }
+  window.addEventListener("message", () => { c.messages++; }, true);
+  const post = MessagePort.prototype.postMessage;
+  MessagePort.prototype.postMessage = function () { c.messages++; return post.apply(this, arguments); };
+  let drew = false;
+  const drawn = () => { if (!drew) { drew = true; c.webglFrames++; queueMicrotask(() => { drew = false; }); } };
+  for (const K of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+    if (!K) continue;
+    for (const m of ["drawArrays", "drawElements", "drawArraysInstanced", "drawElementsInstanced", "drawRangeElements", "clear"]) {
+      const f = K.prototype[m];
+      if (typeof f === "function") K.prototype[m] = function () { drawn(); return f.apply(this, arguments); };
+    }
+  }
+})();`;
+
+// The page's counts by the injected script, and its renderer's time in
+// each phase so far (Performance.getMetrics; Chrome says no paint time).
+async function chromeCounts(send) {
+  const counted = await send("Runtime.evaluate", { expression: "JSON.stringify(window.__sweepCounts ?? null)", returnByValue: true }).catch(() => null);
+  const { metrics } = await send("Performance.getMetrics").catch(() => ({ metrics: [] }));
+  const ms = (name) => Math.round((metrics.find((m) => m.name === name)?.value ?? 0) * 10_000) / 10;
+  const task = ms("TaskDuration"), script = ms("ScriptDuration"), style = ms("RecalcStyleDuration"), layout = ms("LayoutDuration");
+  return {
+    counts: JSON.parse(counted?.result?.value ?? "null"),
+    timesMs: { script, style, layout, paint: null, other: Math.round((task - script - style - layout) * 10) / 10, task },
+    layouts: metrics.find((m) => m.name === "LayoutCount")?.value ?? null,
+    styles: metrics.find((m) => m.name === "RecalcStyleCount")?.value ?? null,
+  };
+}
+
 // One site in Chrome: its outcome, timings, console, screenshots.
 async function captureChrome(chrome, url, dir) {
   const { cdp } = chrome;
@@ -320,6 +383,7 @@ async function captureChrome(chrome, url, dir) {
     await send("Performance.enable");
     await send("Inspector.enable");
     await send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
+    await send("Page.addScriptToEvaluateOnNewDocument", { source: COUNTER_SCRIPT });
     start = Date.now();
     const nav = await send("Page.navigate", { url });
     if (nav.errorText) {
@@ -356,6 +420,7 @@ async function captureChrome(chrome, url, dir) {
     const served = await send("Runtime.evaluate", { expression: "location.href", returnByValue: true }).catch(() => null);
     result.finalUrl = served?.result?.value ?? null;
     result.memoryTotal = { load: await chromeMemory(cdp), idle: null };
+    result.counters = await chromeCounts(send);
     await shot("chrome-top.png");
     await send("Runtime.evaluate", { expression: `window.scrollBy(0, ${SCROLL_SCREENS * HEIGHT})` });
     let settled = Date.now();
@@ -375,6 +440,17 @@ async function captureChrome(chrome, url, dir) {
     const after = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
     result.idleCpu = chromeIdleShares(before?.processInfo, after?.processInfo, (Date.now() - began) / 1000);
     result.memoryTotal.idle = await chromeMemory(cdp);
+    result.idleCounters = await chromeCounts(send);
+    result.idleSeconds = IDLE_MS / 1000;
+    // Then the pointer resting over the page's middle, unmoved, as long
+    // again: what its hover styles and pointer listeners cost.
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: WIDTH / 2, y: HEIGHT / 2 });
+    const pointed = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    const pointedAt = Date.now();
+    await sleep(IDLE_MS);
+    const rested = await cdp.send("SystemInfo.getProcessInfo").catch(() => null);
+    result.idleCpuPointer = chromeIdleShares(pointed?.processInfo, rested?.processInfo, (Date.now() - pointedAt) / 1000);
+    result.idlePointerCounters = await chromeCounts(send);
     return result;
   } catch (error) {
     result.outcome = result.outcome === "ok" ? "harness error" : result.outcome;

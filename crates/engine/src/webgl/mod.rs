@@ -9,6 +9,7 @@
 
 pub mod acceptance;
 mod draw;
+pub(crate) use draw::PRESENTED;
 mod ext;
 mod formats;
 mod framebuffer;

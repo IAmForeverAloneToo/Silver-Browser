@@ -46,6 +46,13 @@ pub(crate) fn renderer() -> i32 {
         }
         return 0;
     }
+    // The site sweep's renderers time their phases (`--sweep-phases`).
+    if arguments
+        .iter()
+        .any(|argument| argument == "--sweep-phases")
+    {
+        engine::time_phases();
+    }
     let crash = arguments
         .first()
         .is_some_and(|first| first == "--crash-now")

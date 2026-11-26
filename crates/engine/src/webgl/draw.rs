@@ -1884,6 +1884,7 @@ impl Context {
     /// document; then cleared before it is drawn again, unless
     /// preserved.
     pub(crate) fn present(&mut self, inbox: &Inbox) {
+        PRESENTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.gpu_flush();
         self.drawn = false;
         let Some(d) = self.drawing.clone() else {
@@ -1972,6 +1973,10 @@ impl Context {
         }
     }
 }
+
+/// WebGL frames presented in this process, for the site sweep
+/// (2026-11-26): what a page left alone still draws.
+pub(crate) static PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 mod tests {

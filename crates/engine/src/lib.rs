@@ -132,6 +132,7 @@ mod navigation;
 pub mod network_log;
 mod pages;
 mod permissions;
+mod phases;
 mod playback;
 mod print;
 mod prompts;
@@ -165,6 +166,12 @@ mod web_fonts;
 mod webaudio;
 pub mod webgl;
 mod webgpu;
+
+/// Times this process's parse, script, style, layout and paint for the
+/// site sweep's `page.sweep` (`timesMs`); untimed, they cost nothing.
+pub fn time_phases() {
+    phases::time();
+}
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -7739,7 +7746,10 @@ impl Engine {
             return;
         };
         let before = self.shown.document.changes().len();
-        let progress = parsing.load.parse(&mut self.shown.document, PARSE_SLICE);
+        let progress = {
+            let _parse = phases::enter(phases::Phase::Parse);
+            parsing.load.parse(&mut self.shown.document, PARSE_SLICE)
+        };
         if self.scripting && matches!(progress, html::Progress::Parsed(_)) {
             let document = &self.shown.document;
             let elements = scripts::parsed_elements(document, changes_since(document, before));
@@ -8107,7 +8117,11 @@ impl Engine {
             }
         };
         let at = response.url().clone();
-        match loader::outcome(&response) {
+        let outcome = {
+            let _parse = phases::enter(phases::Phase::Parse);
+            loader::outcome(&response)
+        };
+        match outcome {
             loader::Outcome::Document(parsed) => {
                 let address_space = response.address_space.unwrap_or(net::AddressSpace::Public);
                 // Every kind of document has its response's policies
@@ -9156,6 +9170,7 @@ impl Engine {
     /// the changes and the restyled elements reach forgotten by a
     /// restyle (M13.2).
     fn cached_styles(&mut self) -> &Styles {
+        let _style = phases::enter(phases::Phase::Style);
         let media = self.media(self.viewport);
         let stale = self.shown.recascade
             || self.shown.styled.as_ref().is_none_or(|cached| {
@@ -9427,6 +9442,7 @@ impl Engine {
     /// Computes [`Engine::layout`]'s layout, kept in the shown document;
     /// what it asks for after (fonts, images) may want it made again.
     fn lay_out(&mut self, viewport_width: f32) {
+        let _layout = phases::enter(phases::Phase::Layout);
         // A viewport change can invalidate the cascade, and with it the
         // layout — so the cascade is checked first.
         self.cached_styles();
@@ -9879,6 +9895,7 @@ impl Engine {
 
     /// Draws a frame and times its stages, overrunning past `budget`.
     fn draw(&mut self, width: u32, height: u32, budget: Duration) -> &[u8] {
+        let _paint = phases::enter(phases::Phase::Paint);
         let start = Instant::now();
         // The document's first frame (2026-11-20, `chrome.loadTimes()`).
         if self.shown.scripts.navigation_timing().first_paint.is_none() {

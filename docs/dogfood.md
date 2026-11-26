@@ -28,7 +28,9 @@ Each session, a little of each:
   follow links, go back and forward, reload.
 - **Tabs.** Open links in new tabs (Ctrl+click or the middle button),
   switch with Ctrl+Tab and Ctrl+1..9, close with Ctrl+W, reopen with
-  Ctrl+Shift+T; drag a tab along the strip.
+  Ctrl+Shift+T; drag a tab along the strip. Switch to another tab and
+  back, then open a link in a new tab at once: twice in the first
+  dogfood session (2026-11-26) that click opened nothing.
 - **Searching.** Type words that are not an address into the address
   field: they go to the search engine the settings name.
 - **Forms.** Sign in somewhere, fill a search form, post a comment on a

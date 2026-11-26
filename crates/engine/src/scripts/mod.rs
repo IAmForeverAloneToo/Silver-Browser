@@ -2341,6 +2341,7 @@ impl Scripts {
             return None;
         }
         self.guard_code(lent);
+        let _script = crate::phases::enter(crate::phases::Phase::Script);
         let realm = self.realm.as_mut()?;
         let host = &mut self.host;
         let insertion_point = how.at_insertion_point
@@ -2672,6 +2673,7 @@ impl Scripts {
             js::Task::Dispatch { .. } => 2,
             js::Task::Fetched { .. } => 3,
             js::Task::Message { .. } => 4,
+            js::Task::Observations(_) => 6,
             _ => 5,
         };
         self.host.sweep.tasks[kind] += 1;
@@ -2687,7 +2689,10 @@ impl Scripts {
         host.in_flight = self.fetching.len();
         let others = lend_others(self.agent.as_ref(), lent);
         host.lend(lent, how, self.blocking.is_some());
-        let result = realm.enter(task, host);
+        let result = {
+            let _script = crate::phases::enter(crate::phases::Phase::Script);
+            realm.enter(task, host)
+        };
         let errors = realm.checkpoint(host);
         let dead =
             realm.dead().is_some() || host.lane.as_ref().is_some_and(|lane| lane.out_of_memory);

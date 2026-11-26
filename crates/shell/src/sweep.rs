@@ -109,9 +109,13 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut launcher = platform::ProcessLauncher::new()
         .map_err(|e| format!("no renderer can be started: {e}"))?
         .with_crashes(Some(crashes.clone()));
+    // Its renderers time their phases, for `timesMs`; others never do.
+    let mut arguments = Vec::new();
     if asked.crash_renderers {
-        launcher = launcher.with_arguments(vec!["--crash-now".into(), "panic".into()]);
+        arguments.extend(["--crash-now".into(), "panic".into()]);
     }
+    arguments.push("--sweep-phases".into());
+    launcher = launcher.with_arguments(arguments);
     text::FontCollection::scan_system();
     let fonts = text::FontCollection::system().map_err(|e| format!("no fonts: {e}"))?;
     // A context of its own, which keeps nothing: no profile is read or
@@ -138,6 +142,8 @@ fn capture(asked: &Asked) -> Result<(), String> {
     let mut counters = Json::Null;
     let mut idle = Json::Null;
     let mut idle_cpu = Json::Null;
+    let mut idle_pointer = Json::Null;
+    let mut idle_cpu_pointer = Json::Null;
     let mut memory_idle = Json::Null;
     let mut parts_idle = Json::Null;
     let mut loop_turns = Json::Null;
@@ -260,23 +266,8 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // the time of its whole life (the first baseline's weather, at
         // sixteen cores).
         let turns_before = ask_loop_turns(&mut tab, &woken, began, &mut console, 1);
-        let mut cpu_first = cpu_times(&tab);
         let idle_began = Instant::now();
-        let until = idle_began + IDLE;
-        let mut sampled = Instant::now();
-        while Instant::now() < until {
-            let _ = woken.recv_timeout(Duration::from_millis(50));
-            step(&mut tab, began, &mut console);
-            if sampled.elapsed() >= Duration::from_millis(500) {
-                sampled = Instant::now();
-                for (pid, at) in cpu_times(&tab) {
-                    if !cpu_first.iter().any(|(p, _)| *p == pid) {
-                        cpu_first.push((pid, at));
-                    }
-                }
-            }
-        }
-        idle_cpu = idle_shares(&cpu_first, &cpu_times(&tab), idle_began.elapsed());
+        idle_cpu = left_alone(&mut tab, &woken, began, &mut console);
         memory_idle = memory_total(&tab);
         parts_idle = ask(
             &mut tab,
@@ -296,6 +287,21 @@ fn capture(asked: &Asked) -> Result<(), String> {
             (next_id, "page.sweep"),
         )
         .unwrap_or(Json::Null);
+        next_id += 1;
+        // Then the pointer resting over the page's middle, unmoved, for as
+        // long again (the lead's ruling, 2026-11-26): what its hover
+        // styles and pointer listeners cost a page left alone.
+        tab.pointer_move(SIZE.0 as f32 / 2.0, SIZE.1 as f32 / 2.0);
+        idle_cpu_pointer = left_alone(&mut tab, &woken, began, &mut console);
+        idle_pointer = ask(
+            &mut tab,
+            &woken,
+            began,
+            &mut console,
+            (next_id, "page.sweep"),
+        )
+        .unwrap_or(Json::Null);
+        tab.pointer_leave();
         // And its top again: what the load's shot showed, once the page
         // has had its time (a site whose scripts fill it after the load
         // looked empty at it).
@@ -355,6 +361,10 @@ fn capture(asked: &Asked) -> Result<(), String> {
         // The share of a core the renderers, together, and the browser's
         // process used while the page was left alone.
         ("idleCpu", idle_cpu),
+        // The counts after [`IDLE`] more with the pointer resting over the
+        // page's middle (less `idleCounters`), and the CPU then.
+        ("idlePointerCounters", idle_pointer),
+        ("idleCpuPointer", idle_cpu_pointer),
         // The private bytes (commit) and working sets of the browser's
         // process and the tab's renderers, together, at the load and once
         // left alone.
@@ -386,6 +396,34 @@ fn capture(asked: &Asked) -> Result<(), String> {
     // The renderers end with the tab, and the context keeps nothing.
     drop(tab);
     Ok(())
+}
+
+/// The tab stepped for [`IDLE`] with no input: the share of a core its
+/// processes used meanwhile. A renderer is counted from when it is first
+/// seen: one a frame brought meanwhile, or one the tab lists only now,
+/// would bring the time of its whole life.
+fn left_alone(
+    tab: &mut RemoteTab,
+    woken: &mpsc::Receiver<()>,
+    began: Instant,
+    console: &mut Vec<Json>,
+) -> Json {
+    let mut first = cpu_times(tab);
+    let from = Instant::now();
+    let mut sampled = from;
+    while from.elapsed() < IDLE {
+        let _ = woken.recv_timeout(Duration::from_millis(50));
+        step(tab, began, console);
+        if sampled.elapsed() >= Duration::from_millis(500) {
+            sampled = Instant::now();
+            for (pid, at) in cpu_times(tab) {
+                if !first.iter().any(|(p, _)| *p == pid) {
+                    first.push((pid, at));
+                }
+            }
+        }
+    }
+    idle_shares(&first, &cpu_times(tab), from.elapsed())
 }
 
 /// Takes what the renderers said, runs what is due, refuses what the

@@ -81,18 +81,26 @@ pub(crate) struct SweepCounts {
     /// The tasks the page's scripts ran, by kind: what a page left alone
     /// still does ([`TASK_KINDS`]).
     pub(crate) tasks: [u32; TASK_KINDS.len()],
+    /// The timers its scripts set (an interval each time it is set
+    /// again), by their delay ([`TIMER_DELAYS`]).
+    pub(crate) timers_by_delay: [u32; TIMER_DELAYS.len()],
 }
+
+/// The delays [`SweepCounts::timers_by_delay`] counts timers by, in
+/// milliseconds: under 4, 4 to 16, 16 to 100, and 100 and more.
+pub(crate) const TIMER_DELAYS: [&str; 4] = ["under4", "4to16", "16to100", "100up"];
 
 /// The kinds of the tasks [`SweepCounts::tasks`] counts: timers, frame
 /// callbacks' turns, events dispatched, fetches answered, messages, and
 /// the rest.
-pub(crate) const TASK_KINDS: [&str; 6] = [
+pub(crate) const TASK_KINDS: [&str; 7] = [
     "timers",
     "animationFrames",
     "events",
     "fetched",
     "messages",
     "other",
+    "observers",
 ];
 
 impl SweepCounts {
@@ -119,6 +127,23 @@ impl SweepCounts {
             }
             _ => {}
         }
+    }
+
+    /// Counts a timer set to `delay` milliseconds.
+    pub(crate) fn note_timer(&mut self, delay: i32) {
+        let bucket = match delay {
+            ..4 => 0,
+            4..16 => 1,
+            16..100 => 2,
+            _ => 3,
+        };
+        self.timers_by_delay[bucket] += 1;
+    }
+
+    /// Counts mutation observers given their records: each a callback,
+    /// with the resize and intersection observers' tasks as observers.
+    pub(crate) fn note_observers(&mut self, observers: usize) {
+        self.tasks[6] += u32::try_from(observers).unwrap_or(u32::MAX);
     }
 
     /// Counts a media type asked about and answered no.
@@ -174,6 +199,9 @@ impl SweepCounts {
         self.style_mismatches += other.style_mismatches;
         self.style_checks += other.style_checks;
         for (mine, theirs) in self.tasks.iter_mut().zip(other.tasks) {
+            *mine += theirs;
+        }
+        for (mine, theirs) in self.timers_by_delay.iter_mut().zip(other.timers_by_delay) {
             *mine += theirs;
         }
     }
@@ -267,6 +295,33 @@ impl SweepCounts {
             ("frames", Json::from(frames.iter().sum::<u64>() as f64)),
             ("frameCauses", Json::object(causes)),
             ("tasks", Json::object(tasks)),
+            (
+                "timersByDelay",
+                Json::object(
+                    TIMER_DELAYS
+                        .iter()
+                        .zip(self.timers_by_delay)
+                        .map(|(name, count)| (*name, Json::from(f64::from(count)))),
+                ),
+            ),
+            // The renderer's thread's time in each phase, and its WebGL
+            // frames, so far: the process's, the sweep's renderer serving
+            // its one site (2026-11-26).
+            (
+                "timesMs",
+                Json::object(
+                    crate::phases::PHASES
+                        .iter()
+                        .zip(crate::phases::spent())
+                        .map(|(name, ms)| (*name, Json::from((ms * 10.0).round() / 10.0))),
+                ),
+            ),
+            (
+                "webglFrames",
+                Json::from(
+                    crate::webgl::PRESENTED.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                ),
+            ),
         ])
     }
 }
