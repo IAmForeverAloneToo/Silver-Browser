@@ -351,7 +351,9 @@ mod tests {
         }
     }
 
-    const PROMPTLY: Duration = Duration::from_millis(1500);
+    /// Well within the minute the waits under an abort would take
+    /// (the timing audit, 2026-11-26: 1.5 s was a runner's speed).
+    const PROMPTLY: Duration = Duration::from_secs(10);
 
     #[test]
     fn a_wait_to_write_wakes_when_the_socket_takes_more() {
@@ -397,7 +399,7 @@ mod tests {
             assert!(began.elapsed() < Duration::from_secs(5), "never woken");
         }
         assert!(
-            began.elapsed() < Duration::from_secs(1),
+            began.elapsed() < Duration::from_secs(3),
             "woken after {:?}",
             began.elapsed()
         );

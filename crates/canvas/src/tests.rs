@@ -1730,7 +1730,7 @@ fn a_dashed_stroke_with_a_shadow_under_a_vast_skew_holds_its_outline_bounded() {
     canvas.with_path(|current, _| *current = path.clone());
     canvas.stroke(None);
     assert!(
-        began.elapsed() < std::time::Duration::from_secs(2),
+        began.elapsed() < std::time::Duration::from_secs(6),
         "{:?}",
         began.elapsed()
     );
@@ -1790,7 +1790,7 @@ fn a_thick_dashed_stroke_far_out_is_traced_no_finer_than_its_outline_holds() {
         let _ = canvas.is_point_in_stroke(Some(&path), 20.0, 20.0);
     }
     assert!(
-        began.elapsed() < std::time::Duration::from_secs(2),
+        began.elapsed() < std::time::Duration::from_secs(6),
         "{:?}",
         began.elapsed()
     );

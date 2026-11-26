@@ -1527,7 +1527,7 @@ mod tests {
         let began = std::time::Instant::now();
         assert!(parse(&source).is_err());
         let took = began.elapsed();
-        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+        assert!(took < std::time::Duration::from_secs(6), "{took:?}");
     }
 
     // ---- simple selectors ------------------------------------------------

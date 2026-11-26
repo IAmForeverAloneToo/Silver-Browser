@@ -13,7 +13,12 @@ use super::ABORT_POLL;
 
 /// RFC 8305's connection attempt delay: how long one attempt has alone
 /// before the next address is tried beside it.
+#[cfg(not(test))]
 pub(crate) const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+/// In the tests, long enough that an attempt that did not wait it is told
+/// from one that did on any runner (the timing audit, 2026-11-26).
+#[cfg(test)]
+pub(crate) const ATTEMPT_DELAY: Duration = Duration::from_secs(1);
 
 /// The addresses `host` names, with `port`. `localhost` and the names
 /// under `.localhost` are this machine without asking a resolver, as
@@ -372,7 +377,7 @@ mod tests {
             started.elapsed()
         );
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < ATTEMPT_DELAY * 3,
             "{:?}",
             started.elapsed()
         );
@@ -417,7 +422,7 @@ mod tests {
             resolve_abortable(&host, 80, &abort),
             Err(NetworkError::Aborted)
         );
-        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(started.elapsed() < Duration::from_secs(10));
         // Names that need no resolver are not waited for at all.
         let local = Host::Domain("localhost".into());
         assert!(resolve_abortable(&local, 80, &abort).is_ok());

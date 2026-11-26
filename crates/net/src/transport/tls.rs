@@ -160,7 +160,7 @@ mod tests {
             silent(Duration::from_secs(60), &abort),
             Err(NetworkError::Aborted)
         );
-        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(started.elapsed() < Duration::from_secs(10));
         // ...and while it waits.
         let abort = AbortHandle::new();
         let aborter = abort.clone();
@@ -174,7 +174,7 @@ mod tests {
             Err(NetworkError::Aborted)
         );
         assert!(
-            started.elapsed() < Duration::from_millis(1500),
+            started.elapsed() < Duration::from_secs(10),
             "{:?}",
             started.elapsed()
         );

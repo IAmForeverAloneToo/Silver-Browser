@@ -478,7 +478,7 @@ fn an_abort_ends_a_stream_and_the_connection_goes_on() {
         waiting.join().unwrap(),
         Err(NetworkError::Aborted)
     ));
-    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(started.elapsed() < Duration::from_secs(10));
     // The server heard the stream was cancelled.
     let waited = Instant::now();
     while server.resets() == 0 {

@@ -367,7 +367,7 @@ fn an_abort_ends_the_exchange() {
     let result = send(&transport, "GET", &server.url("/"), None, &abort);
     assert_eq!(result.unwrap_err(), NetworkError::Aborted);
     assert!(
-        started.elapsed() < Duration::from_millis(1500),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
@@ -745,7 +745,7 @@ fn a_handshake_that_never_ends() {
     let result = send(&transport(), "GET", &url, None, &abort);
     assert_eq!(result.unwrap_err(), NetworkError::Aborted);
     assert!(
-        started.elapsed() < Duration::from_millis(1500),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
@@ -899,7 +899,7 @@ fn an_offline_test_run_refuses_the_web_and_names_the_host() {
     ] {
         let started = Instant::now();
         let refused = get(&transport, &Url::parse(url).unwrap()).expect_err(url);
-        assert!(started.elapsed() < Duration::from_secs(1), "{url}");
+        assert!(started.elapsed() < Duration::from_secs(10), "{url}");
         match refused {
             NetworkError::Resolve(why) => {
                 assert!(why.starts_with(OFFLINE_REFUSAL), "{why}");

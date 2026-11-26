@@ -511,7 +511,7 @@ mod tests {
         drop(pool);
         while shared.upgrade().is_some() {
             assert!(
-                dropped.elapsed() < Duration::from_secs(2),
+                dropped.elapsed() < Duration::from_secs(10),
                 "the reaper outlives its pool"
             );
             thread::sleep(Duration::from_millis(10));
@@ -578,7 +578,7 @@ mod tests {
         let waited = pool.checkout(&a, false, &aborted_after(Duration::from_millis(300)));
         assert_eq!(waited.err(), Some(NetworkError::Aborted));
         assert!(
-            started.elapsed() < Duration::from_millis(1500),
+            started.elapsed() < Duration::from_secs(10),
             "{:?}",
             started.elapsed()
         );

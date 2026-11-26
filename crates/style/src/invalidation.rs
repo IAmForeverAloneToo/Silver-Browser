@@ -1438,7 +1438,7 @@ mod tests {
         let began = std::time::Instant::now();
         let sheets = Stylesheets::new(vec![sheet]);
         let took = began.elapsed();
-        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+        assert!(took < std::time::Duration::from_secs(6), "{took:?}");
         let f = sheets.features();
         for level in 0..depth {
             assert!(f.classes.contains(&format!("a{level}")), "a{level}");

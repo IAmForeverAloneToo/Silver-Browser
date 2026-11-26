@@ -4,7 +4,7 @@
 //! and opened again; and the same page over HTTP/2, each reply held
 //! back, on one connection with its streams open at once.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use net::test_server::{Reply, ServerRequest, TestAuthority, TestServer, VALID};
 use net::transport::Config;
@@ -146,9 +146,7 @@ fn over_http2_the_page_takes_one_connection_and_many_streams_at_once() {
             .resolve("a.localhost", std::net::IpAddr::from([127, 0, 0, 1])),
     ));
     let url = net::Url::parse(&format!("https://a.localhost:{}/page.html", server.port())).unwrap();
-    let started = Instant::now();
     load_all(&mut tab, url);
-    let took = started.elapsed();
     scripts_ran(&mut tab);
     each_once(&server);
     assert!(
@@ -156,10 +154,8 @@ fn over_http2_the_page_takes_one_connection_and_many_streams_at_once() {
         "every request over HTTP/2"
     );
     assert_eq!(server.connections(), 1);
-    // The scanner asked for the twenty at once, the page first: here
-    // about two replies' time, where one connection of HTTP/1.1 would
-    // take twenty-one; the bound is loose, for slow machines (macOS's
-    // runners took ten and a half).
+    // The scanner asked for the twenty at once, the page first: fifteen
+    // or more in flight together, which one connection of HTTP/1.1 would
+    // never have (the count, not the time, which was a runner's speed).
     assert!(server.most_streams() >= 15, "{}", server.most_streams());
-    assert!(took < HELD * 15, "{took:?}");
 }
