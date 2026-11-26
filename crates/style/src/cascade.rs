@@ -1064,6 +1064,15 @@ impl Stylesheets {
         self
     }
 
+    /// How many of the shadow trees' rule sets are `other`'s own, not
+    /// made again: what a run's first style query kept of the last run's.
+    pub fn shadow_sets_kept_from(&self, other: &Stylesheets) -> usize {
+        self.shadow
+            .iter()
+            .filter(|(root, set)| other.shadow.get(root).is_some_and(|o| Arc::ptr_eq(o, set)))
+            .count()
+    }
+
     /// Whether the shadow trees' sheets are `trees`, as
     /// [`Stylesheets::with_shadow_trees`] takes them.
     pub fn same_shadow_trees(&self, trees: &[ShadowTreeSheets]) -> bool {

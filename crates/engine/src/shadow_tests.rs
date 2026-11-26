@@ -31,6 +31,35 @@ fn said(markup: &str, script: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_runs_first_style_query_keeps_the_last_runs_shadow_rule_sets() {
+    // The site sweep's reddit idle (2026-11-26): each timer's first
+    // getComputedStyle made every shadow tree's rule sets again, the
+    // run's styles gone at its start and nothing to reuse.
+    let mut engine = test_engine();
+    engine.load_document("<div id=a></div><div id=b></div>");
+    engine
+        .run_classic(
+            "for (const id of ['a', 'b']) {\
+               const root = document.getElementById(id).attachShadow({mode: 'open'});\
+               root.innerHTML = '<style>p { color: rgb(0, 128, 0) }</style><p>x</p>';\
+             }",
+        )
+        .expect("runs");
+    engine.frame(200, 100);
+    let ask = "for (const id of ['a', 'b']) {\
+                 getComputedStyle(document.getElementById(id).shadowRoot.querySelector('p')).color;\
+               }";
+    engine.run_classic(ask).expect("runs");
+    let before = engine.shown.scripts.shadow_sets_kept();
+    engine.run_classic(ask).expect("runs");
+    assert_eq!(
+        engine.shown.scripts.shadow_sets_kept() - before,
+        2,
+        "both trees' sets kept, not made again"
+    );
+}
+
+#[test]
 fn a_shadow_roots_object_lives_as_long_as_its_hosts() {
     // What a script set on a shadow root stays with it while its host's
     // object lives, in the document or out of it.

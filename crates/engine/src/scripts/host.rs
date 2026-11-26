@@ -422,6 +422,15 @@ pub(crate) struct DocumentHost {
     /// that a change of style it finds starts its transitions (D75),
     /// unless the frame styled the document since.
     previous_styles: Option<(u64, Styles)>,
+    /// The last run's sheets: a run's first style query takes from them
+    /// the rule sets of the shadow trees whose sheets are the same, not
+    /// built anew at every task (the site sweep's reddit, 2026-11-26:
+    /// its timers' queries built them dozens of times a second).
+    previous_sheets: Option<Stylesheets>,
+    /// The shadow trees' rule sets runs' first style queries kept of the
+    /// last run's sheets, for the tests.
+    #[cfg(test)]
+    pub(crate) shadow_sets_kept: u64,
     /// The shown document's styles as its last frame computed them, lent
     /// for a run: the before-change style of a run's first flush when the
     /// frame's are newer than the last run's (CSS Transitions 1 section
@@ -4841,6 +4850,7 @@ impl DocumentHost {
         self.animations.get_mut().set_in_script(false);
         if let Some(computed) = self.computed.take() {
             self.previous_styles = Some((computed.version, computed.styles));
+            self.previous_sheets = Some(computed.sheets);
         }
         if let Some(styled) = lent.styled.as_deref_mut() {
             *styled = self.frame_styled.take();
@@ -8233,10 +8243,18 @@ impl DocumentHost {
             }
             _ => {
                 let (raw, roots) = page.scoped_sheets_now(&self.document, &self.window.media);
-                let previous = self.computed.as_ref().map(|cached| &cached.sheets);
+                let previous = self
+                    .computed
+                    .as_ref()
+                    .map(|cached| &cached.sheets)
+                    .or(self.previous_sheets.as_ref());
                 let sheets = Stylesheets::with_scope_roots(raw.clone(), roots)
                     .with_registered(page.registered_properties().to_vec())
                     .with_shadow_trees_reusing(shadow, previous);
+                #[cfg(test)]
+                if let Some(previous) = previous {
+                    self.shadow_sets_kept += sheets.shadow_sets_kept_from(previous) as u64;
+                }
                 // A run's first ask of a document as the frame styled it
                 // (or the last run, at the version lent), no sheet, no
                 // viewport and no media state changed since: those styles

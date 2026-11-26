@@ -3591,6 +3591,13 @@ impl Scripts {
         &self.host.sweep
     }
 
+    /// The shadow trees' rule sets runs' first style queries kept of the
+    /// last run's sheets (2026-11-26): for the tests.
+    #[cfg(test)]
+    pub(crate) fn shadow_sets_kept(&self) -> u64 {
+        self.host.shadow_sets_kept
+    }
+
     /// How many flushes started from the frame's styles: for the tests.
     #[cfg(test)]
     pub(crate) fn flushes_from_frame(&self) -> u64 {
