@@ -1147,3 +1147,25 @@ fn a_tab_takes_a_bounded_share_of_its_renderers_messages_a_turn() {
     }
     assert_eq!(budget.untaken(), 0, "all taken in later turns");
 }
+
+#[test]
+fn a_hostile_renderers_untaken_messages_are_dropped_in_one_turn() {
+    // The lead, 2026-11-26: a renderer ended as a bad message source is
+    // heard no more; the thousands it sent before are dropped unread, not
+    // taken 256 a turn ahead of its end.
+    use super::process::Budget;
+
+    let mut tab = tab();
+    let budget = Arc::new(Budget::default());
+    let sender = tab.test_sender();
+    for _ in 0..1000 {
+        let held = budget.charge(16).expect("within its budget");
+        let message = Box::new(ToBrowser::FocusLeft { view: 0 });
+        sender
+            .send((99, super::Event::Message(message, held)))
+            .expect("sent");
+    }
+    budget.end_as_hostile();
+    tab.run_tasks();
+    assert_eq!(budget.untaken(), 0, "all dropped in one turn");
+}

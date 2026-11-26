@@ -151,6 +151,8 @@ pub struct Budget {
     owed: AtomicBool,
     parked: Mutex<Parked>,
     limits: Limits,
+    /// Its renderer ended as a bad message source ([`Shared`]'s).
+    hostile: Arc<AtomicBool>,
 }
 
 /// A budget's limits: [`MOST_UNTAKEN_MESSAGES`], [`MOST_UNTAKEN_BYTES`],
@@ -197,8 +199,17 @@ impl Default for Budget {
 }
 
 impl Budget {
+    /// A renderer's budget, its verdict shared with its state.
+    fn for_renderer(hostile: Arc<AtomicBool>) -> Budget {
+        Budget {
+            hostile,
+            ..Budget::default()
+        }
+    }
+
     fn with(limits: Limits) -> Budget {
         Budget {
+            hostile: Arc::default(),
             messages: AtomicUsize::new(0),
             bytes: AtomicUsize::new(0),
             born: Instant::now(),
@@ -250,6 +261,13 @@ impl Budget {
     /// Parked messages given to the browser, in order, while the budget
     /// has room.
     fn unpark(self: &Arc<Self>, parked: &mut Parked) {
+        if self.hostile.load(AtomicOrdering::SeqCst) {
+            // Its renderer ended as a bad message source: nothing of it
+            // parked reaches the browser.
+            parked.queue.clear();
+            parked.bytes = 0;
+            return;
+        }
         let Some((to, number)) = parked.to.clone() else {
             return;
         };
@@ -307,6 +325,9 @@ impl Budget {
                 Step::Parked => return None,
                 Step::Outran(messages, bytes) => {
                     self.outran(reading, messages, bytes);
+                    // Its parked messages dropped with it.
+                    let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
+                    self.unpark(&mut parked);
                     return None;
                 }
                 Step::Wait(back) => {
@@ -401,6 +422,12 @@ impl Budget {
         );
     }
 
+    /// Its renderer judged a bad message source, for the tests.
+    #[cfg(test)]
+    pub(crate) fn end_as_hostile(&self) {
+        self.hostile.store(true, AtomicOrdering::SeqCst);
+    }
+
     /// How many messages it holds untaken, for the tests.
     #[cfg(test)]
     pub(crate) fn untaken(&self) -> usize {
@@ -425,6 +452,14 @@ impl Budget {
 pub struct Held {
     budget: Arc<Budget>,
     bytes: usize,
+}
+
+impl Held {
+    /// Whether its renderer was ended as a bad message source since: the
+    /// message is dropped unread (the lead, 2026-11-26).
+    pub(crate) fn is_from_a_hostile_renderer(&self) -> bool {
+        self.budget.hostile.load(AtomicOrdering::SeqCst)
+    }
 }
 
 impl Drop for Held {
@@ -465,6 +500,9 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     process: Mutex<Box<dyn RendererProcess>>,
+    /// Ended as a bad message source: what it said and the browser has
+    /// not taken is dropped unread ([`Held::is_from_a_hostile_renderer`]).
+    hostile: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -478,6 +516,9 @@ impl Shared {
         let mut state = self.state();
         if matches!(*state, State::Gone(_)) {
             return false;
+        }
+        if matches!(why, Gone::BadMessage(_)) {
+            self.hostile.store(true, AtomicOrdering::SeqCst);
         }
         *state = State::Gone(why);
         drop(state);
@@ -625,10 +666,12 @@ pub(super) fn start_within(
     timeout: Duration,
 ) -> io::Result<Renderer> {
     let launched = launcher.launch(number)?;
+    let hostile = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared {
         state: Mutex::new(State::Starting),
         changed: Condvar::new(),
         process: Mutex::new(launched.process),
+        hostile: Arc::clone(&hostile),
     });
     let sender = Sender::new(launched.to_renderer);
     if let Some(log) = launched.log {
@@ -645,7 +688,7 @@ pub(super) fn start_within(
     let ending = shared.clone();
     let reply = sender.clone();
     let (deliver, delivered, wake_too) = (events.clone(), wake.clone(), wake.clone());
-    let budget = Arc::new(Budget::default());
+    let budget = Arc::new(Budget::for_renderer(hostile));
     budget
         .parked
         .lock()
@@ -895,6 +938,7 @@ mod budget_tests {
             state: Mutex::new(State::Ready),
             changed: Condvar::new(),
             process: Mutex::new(Box::new(Nothing)),
+            hostile: Arc::default(),
         }
     }
 

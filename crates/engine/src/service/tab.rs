@@ -1085,6 +1085,15 @@ impl RemoteTab {
             let Ok((number, event)) = self.events.try_recv() else {
                 break;
             };
+            // A renderer ended as a bad message source is heard no more:
+            // what it said and was not yet taken is dropped unread, not
+            // counted against the turn, so that its end comes at once
+            // (the lead, 2026-11-26).
+            if let Event::Message(_, held) = &event
+                && held.is_from_a_hostile_renderer()
+            {
+                continue;
+            }
             taken += 1;
             if !self.renderers.contains_key(&number) {
                 continue;

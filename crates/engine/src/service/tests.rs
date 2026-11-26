@@ -250,6 +250,10 @@ fn flooded(frames: Vec<Vec<u8>>, taking: Taking) -> (Vec<String>, bool, usize) {
     let began = Instant::now();
     let mut gone = Vec::new();
     let mut took = 0;
+    // When the renderer was first seen killed: its end follows at once,
+    // whatever it had sent (CI, 2026-11-26: a slow taker reached it after
+    // the ~4096 messages queued before it).
+    let mut killed_at: Option<Instant> = None;
     while took < total && gone.is_empty() {
         assert!(
             began.elapsed() < WAIT,
@@ -258,9 +262,23 @@ fn flooded(frames: Vec<Vec<u8>>, taking: Taking) -> (Vec<String>, bool, usize) {
         let Ok((_, event)) = received.recv_timeout(WAIT) else {
             break;
         };
+        if killed_at.is_none() && killed.load(Ordering::Relaxed) {
+            killed_at = Some(Instant::now());
+        }
         match event {
+            // As the tab drops it, unread.
+            Event::Message(_, held) if held.is_from_a_hostile_renderer() => continue,
             Event::Message(..) => took += 1,
-            Event::Gone(why) => gone.push(format!("{why:?}")),
+            Event::Gone(why) => {
+                if let Some(at) = killed_at {
+                    let late = at.elapsed();
+                    assert!(
+                        late < Duration::from_secs(1),
+                        "its end came {late:?} after the kill"
+                    );
+                }
+                gone.push(format!("{why:?}"));
+            }
             Event::Ready => {}
         }
         if let Taking::Slowly(ms) = taking {
