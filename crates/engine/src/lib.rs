@@ -544,6 +544,14 @@ pub struct Engine {
     /// over a page asked for its cursor and its link, each through
     /// `frame_under` too, four walks of the paint order every frame).
     hit_memo: Option<(HitKey, Hit)>,
+    /// What the media queries last answered as the styles had them from:
+    /// asked again of the same medium, viewport, document, sheets and
+    /// whole cascade, they answer the same, and are not evaluated (2c,
+    /// 2026-11-26: reddit's frames evaluated every shadow tree's).
+    media_held: Option<MediaKey>,
+    /// How many times the media queries were evaluated, for the tests.
+    #[cfg(test)]
+    media_checks: u64,
     /// The walks of the paint order the unseen check and hit testing
     /// made, for the tests.
     #[cfg(test)]
@@ -1891,6 +1899,9 @@ impl Engine {
             frames_unpainted: 0,
             unseen_last: None,
             hit_memo: None,
+            media_held: None,
+            #[cfg(test)]
+            media_checks: 0,
             #[cfg(test)]
             walks: (0, 0),
             sweep_left: sweep::SweepCounts::default(),
@@ -9193,11 +9204,27 @@ impl Engine {
     fn cached_styles(&mut self) -> &Styles {
         let _style = phases::enter(phases::Phase::Style);
         let media = self.media(self.viewport);
+        let key: MediaKey = (
+            media,
+            self.viewport,
+            self.shown.document.version(),
+            self.shown.page.sheets_generation(),
+            self.style_runs,
+        );
+        let held = self.media_held == Some(key);
+        let asked = !held && !self.shown.recascade && self.shown.styled.is_some();
         let stale = self.shown.recascade
             || self.shown.styled.as_ref().is_none_or(|cached| {
                 (cached.styles.uses_viewport_units && cached.viewport != self.viewport)
-                    || self.shown.stylesheets.media_changed(&cached.styles, &media)
+                    || (!held && self.shown.stylesheets.media_changed(&cached.styles, &media))
             });
+        #[cfg(test)]
+        {
+            self.media_checks += u64::from(asked);
+        }
+        #[cfg(not(test))]
+        let _ = asked;
+        self.media_held = (!stale).then_some(key);
         if stale {
             // A change of style from the styles cached, when there are
             // some: a change of the sheets, the viewport or the medium
@@ -11925,6 +11952,11 @@ pub(crate) fn parsed_or_empty(source: &str) -> Document {
     html::parse_document(source)
         .map_or_else(|_| Document::new(), |parsed| Document::from_node(&parsed))
 }
+
+/// What the media queries' answers are made from: the medium, the
+/// viewport, the document's version, the sheets' generation, and how many
+/// whole cascades there were.
+type MediaKey = (style::media::Media, (u32, u32), u64, u64, u64);
 
 /// A hit test's answer: the element under the point and the clipping
 /// boxes around it, outermost first.
@@ -16042,6 +16074,27 @@ mod tests {
         engine.frame(300, 200);
         assert_eq!(engine.svg_recascades - before, 1);
         assert_eq!(engine.shown.svgs.len(), 20);
+    }
+
+    #[test]
+    fn the_media_queries_are_asked_again_only_when_what_they_answer_from_changed() {
+        // 2c (2026-11-26): an animation's frames asked every sheet's media
+        // queries again, the medium, the viewport and the sheets the same.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@keyframes slide { to { transform: translateX(50px) } }             @media (min-width: 250px) { p { color: green } }             div { width: 20px; height: 20px; animation: slide 1s linear infinite }</style>             <div></div><p>x</p>",
+        );
+        for ms in [0.0, 16.0] {
+            frame_at_ms(&mut engine, ms);
+        }
+        let checks = engine.media_checks;
+        for n in 2..10 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        assert_eq!(engine.media_checks, checks, "asked again of the same");
+        // A wider viewport is asked, and answers otherwise.
+        engine.frame_at(300, 100, FrameTime::at(Duration::from_millis(200)));
+        assert!(engine.media_checks > checks, "a new viewport is asked");
     }
 
     #[test]
