@@ -322,7 +322,11 @@ fn import_maps_map_bare_specifiers_and_a_later_one_is_merged() {
     });
     let mut tab = scripting();
     load_all(&mut tab, server.url("/page.html"));
-    let lines = tab.run_until(|lines| lines.iter().any(|line| line == "late done"));
+    // Both chains ended: the late imports' and the checked one's, whose
+    // failure may come after (CI, 2026-11-26).
+    let lines = tab.run_until(|lines| {
+        lines.iter().any(|line| line == "late done") && lines.iter().any(|line| line == "TypeError")
+    });
     let ignored = |key: &str| {
         format!(
             "An import map rule for specifier \"{key}\" was ignored as it conflicts with an \

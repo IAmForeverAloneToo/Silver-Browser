@@ -96,6 +96,7 @@ mod tests {
     fn a_phase_inside_another_is_counted_as_its_own() {
         time();
         let before = spent();
+        let began = Instant::now();
         {
             let _script = enter(Phase::Script);
             std::thread::sleep(Duration::from_millis(20));
@@ -105,10 +106,20 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        let total = began.elapsed().as_secs_f64() * 1000.0;
         let after = spent();
         let script = after[Phase::Script as usize] - before[Phase::Script as usize];
         let layout = after[Phase::Layout as usize] - before[Phase::Layout as usize];
-        assert!((40.0..60.0).contains(&script), "script {script} ms");
-        assert!((40.0..55.0).contains(&layout), "layout {layout} ms");
+        // Each at least its sleeps, however long a runner sleeps; and
+        // the two together the whole, so that the layout inside the
+        // script is not the script's too (it would be 40 ms more).
+        assert!(
+            script >= 40.0 && layout >= 40.0,
+            "script {script}, layout {layout} ms"
+        );
+        assert!(
+            (script + layout - total).abs() < 10.0,
+            "script {script} + layout {layout} ms, the whole {total} ms"
+        );
     }
 }
