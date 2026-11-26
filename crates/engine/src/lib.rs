@@ -16077,6 +16077,65 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_a_script_inserts_reaches_an_animated_element_at_once() {
+        // 2c (2026-11-26): the matches an animated element keeps are its
+        // sheets', and a script's flush, under sheets a rule was added to,
+        // matches it again: `getComputedStyle` reads the new rule.
+        let mut engine = test_engine();
+        engine.set_scripting(true);
+        engine.load_document(
+            "<style id=st>@keyframes turn { to { rotate: 360deg } }             #s { width: 40px; height: 40px; animation: turn 1s linear infinite;             color: rgb(0, 0, 255) }</style><div id=s></div>",
+        );
+        for n in 0..4 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        engine.take_console();
+        engine
+            .run_classic(
+                "const s = document.getElementById('s');                 getComputedStyle(s).color;                 const sheet = document.getElementById('st').sheet;                 sheet.insertRule('#s { color: rgb(255, 0, 0) }', sheet.cssRules.length);                 console.log(getComputedStyle(s).color);",
+            )
+            .expect("runs");
+        let said: Vec<String> = engine
+            .take_console()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(said, ["rgb(255, 0, 0)"]);
+    }
+
+    #[test]
+    fn hovering_an_animated_spinner_changes_what_it_matches() {
+        // The lead's review of 2c (2026-11-26): an element restyled for its
+        // animation alone takes what it matched last, but a state reaching
+        // it, `:hover` here, matches it again.
+        let mut engine = test_engine();
+        engine.load_document(
+            "<style>@keyframes turn { to { rotate: 360deg } }             body { margin: 0 }             #s { width: 40px; height: 40px; animation: turn 1s linear infinite;             color: rgb(0, 0, 255) } #s:hover { color: rgb(255, 0, 0) }</style>             <div id=s></div>",
+        );
+        let s = engine
+            .document()
+            .subtree(engine.document().root())
+            .find(|&n| engine.document().attr(n, "id") == Some("s"))
+            .expect("the spinner");
+        let color = |engine: &mut Engine| engine.cached_styles().get(s).expect("styled").color;
+        for n in 0..4 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        let away = color(&mut engine);
+        engine.pointer_move(20.0, 20.0);
+        for n in 4..8 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        let hovered = color(&mut engine);
+        assert_ne!(hovered, away, "hovered, it matches `:hover`");
+        engine.pointer_move(150.0, 80.0);
+        for n in 8..12 {
+            frame_at_ms(&mut engine, 16.0 * f64::from(n));
+        }
+        assert_eq!(color(&mut engine), away, "left, it matches no more");
+    }
+
+    #[test]
     fn the_media_queries_are_asked_again_only_when_what_they_answer_from_changed() {
         // 2c (2026-11-26): an animation's frames asked every sheet's media
         // queries again, the medium, the viewport and the sheets the same.

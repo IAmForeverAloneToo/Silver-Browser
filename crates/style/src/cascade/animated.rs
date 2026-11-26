@@ -863,6 +863,34 @@ mod tests {
     }
 
     #[test]
+    fn an_animations_frames_take_what_its_element_matched_until_a_change_reaches_it() {
+        // 2c (2026-11-26): reddit's spinner matched its rules again at each
+        // of its sixty frames a second, nothing else changing.
+        let css = "@keyframes turn { to { rotate: 360deg } }             .spin { animation: turn 1s linear infinite; color: rgb(0, 0, 255) }             .spin.hot { color: rgb(255, 0, 0) }";
+        let mut page = Page::new(css, "<div id=s class=spin></div>");
+        page.frame(0.0);
+        page.frame(0.016);
+        let kept = || crate::cascade::MATCHES_KEPT.with(std::cell::Cell::get);
+        let before = kept();
+        for n in 2..10 {
+            page.frame(0.016 * f64::from(n));
+        }
+        assert_eq!(kept() - before, 8, "each frame took what it matched last");
+        let blue = rgba(page.style("s").color);
+        // A change reaching it is matched again, and what it matches then is
+        // what the frames after take.
+        page.class("s", "spin hot");
+        page.frame(0.2);
+        let red = rgba(page.style("s").color);
+        assert_ne!(red, blue, "the rule its class now matches applies");
+        page.frame(0.216);
+        assert_eq!(rgba(page.style("s").color), red, "and goes on applying");
+        page.class("s", "spin");
+        page.frame(0.232);
+        assert_eq!(rgba(page.style("s").color), blue);
+    }
+
+    #[test]
     fn a_transition_starts_at_the_next_frame_and_runs_from_the_old_value() {
         let mut page = Page::new(WIDTHS, "<div id=a class=w></div>");
         page.frame(0.0);

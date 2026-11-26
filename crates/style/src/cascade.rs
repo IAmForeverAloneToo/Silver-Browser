@@ -218,6 +218,11 @@ const UA_STYLESHEET_SRC: &str = include_str!("../assets/ua.css");
 /// inherit from.
 #[derive(Debug, Clone, Default)]
 pub struct Styles {
+    /// The declarations the elements restyled for their animations
+    /// matched, by element, with the number of the sheets they were
+    /// matched against (2c, 2026-11-26): what an element restyled for its
+    /// animation alone takes, rather than matching every selector again.
+    matched: MatchedKept,
     /// By slot index: the node the styles were computed for, so that a
     /// later node in the same slot is not taken for it, and its styles.
     entries: Vec<Option<(NodeId, Computed)>>,
@@ -396,6 +401,7 @@ impl Styles {
 
     /// Forgets `node`'s style, if it has one.
     fn forget(&mut self, node: NodeId) {
+        self.matched.0.remove(&node);
         if let Some(entry) = self.entries.get_mut(node.index())
             && entry.as_ref().is_some_and(|(id, _)| *id == node)
         {
@@ -1521,6 +1527,22 @@ impl Stylesheets {
         let mut levels: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
         let mut pending = invalidation.dirty;
         let mut depths = invalidation.depths;
+        // An element restyled for its animation alone, no change reaching
+        // it and no container watched, takes the declarations it matched
+        // last (2c, 2026-11-26); every element restyled for an animation
+        // keeps the ones it matches now.
+        cascader.matched = std::mem::take(&mut styles.matched);
+        cascader.sheets = self.id;
+        if !plain() {
+            cascader.keep_matched = animated.iter().copied().collect();
+            if !watches_containers {
+                cascader.animation_only = animated
+                    .iter()
+                    .copied()
+                    .filter(|node| !pending.contains_key(node) && !subtrees.contains(node))
+                    .collect();
+            }
+        }
         for &node in animated {
             if document.is_element(node) && styles.get(node).is_some() {
                 pending.entry(node).or_insert(Reach::Element);
@@ -1644,6 +1666,7 @@ impl Stylesheets {
                 }
             }
         }
+        styles.matched = std::mem::take(&mut cascader.matched);
         styles.uses_viewport_units |= cascader.viewport_used.get();
         styles.uses_font_units |= cascader.fonts_used.get();
         styles.queried.extend(cascader.queried.take());
@@ -2772,6 +2795,9 @@ thread_local! {
     /// How many base styles the cascades made on this thread computed
     /// rather than took from those kept.
     pub(crate) static AFRESH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many elements took the declarations they matched last, for
+    /// the tests (2c, 2026-11-26).
+    pub(crate) static MATCHES_KEPT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// How many animated styles were made by setting their animations'
     /// values on the style made without them.
     pub(crate) static SET_ON: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -2871,6 +2897,15 @@ struct Cascader<'a> {
     /// The author rules of an element's starting style (Transitions 2
     /// section 3.1), `@starting-style`'s among them, where there are any.
     starting: Option<InForce<'a>>,
+    /// The matches kept, taken from the styles for a restyle and given
+    /// back after it, and the number of the sheets matched against now.
+    matched: MatchedKept,
+    sheets: u64,
+    /// The elements restyled for their animations alone, which take their
+    /// matches kept; and those restyled for their animations at all, whose
+    /// matches made now are kept. Off for the tests that compare.
+    animation_only: HashSet<NodeId>,
+    keep_matched: HashSet<NodeId>,
 }
 
 impl<'a> Cascader<'a> {
@@ -2911,7 +2946,42 @@ impl<'a> Cascader<'a> {
             containers_used: Cell::new(false),
             shadow_keyframes: HashMap::new(),
             starting: None,
+            matched: MatchedKept::default(),
+            sheets,
+            animation_only: HashSet::new(),
+            keep_matched: HashSet::new(),
         }
+    }
+
+    /// The declarations `element` matches, its container queries asked
+    /// of the containers `styles` hold (D72).
+    fn match_element(
+        &mut self,
+        element: NodeId,
+        styles: &Styles,
+        viewport: (f32, f32),
+        rem: f32,
+    ) -> Matched<'a> {
+        let containers = Containers {
+            document: self.document,
+            styles,
+            sizes: &self.container_sizes,
+            queried: &self.queried,
+            substitutions: &self.substitutions,
+            viewport,
+            rem,
+            fonts: self.context.fonts,
+            own: None,
+        };
+        declarations_for(
+            self.document,
+            (&mut self.matcher, &mut self.candidates),
+            element,
+            (&self.ua, &self.author, &self.shadow),
+            (self.context.inline_styles, self.context.top_layer),
+            self.context.frame_margins,
+            Some(&containers),
+        )
     }
 
     /// The computed style of `element`, a child of `parent`, with `rem`
@@ -2934,29 +3004,41 @@ impl<'a> Cascader<'a> {
     ) -> Computed {
         dom::hook!("style::style_of");
         let viewport = (self.context.viewport_width, self.context.viewport_height);
-        let matched = {
-            let containers = Containers {
-                document: self.document,
-                styles,
-                sizes: &self.container_sizes,
-                queried: &self.queried,
-                substitutions: &self.substitutions,
-                viewport,
-                rem,
-                fonts: self.context.fonts,
-                own: None,
-            };
-            declarations_for(
-                self.document,
-                (&mut self.matcher, &mut self.candidates),
-                element,
-                (&self.ua, &self.author, &self.shadow),
-                (self.context.inline_styles, self.context.top_layer),
-                self.context.frame_margins,
-                Some(&containers),
-            )
+        // Nor kept nor taken for one the top layer holds or is letting go,
+        // whose `overlay` it declares without a change of the document.
+        let keepable = !self.document.in_top_layer(element)
+            && self
+                .context
+                .top_layer
+                .is_none_or(|layer| layer.overlay(element).is_none());
+        let kept_match = (keepable && self.animation_only.contains(&element))
+            .then(|| self.matched.0.get(&element))
+            .flatten()
+            .filter(|(sheets, _)| *sheets == self.sheets)
+            .map(|(_, matched)| Arc::clone(matched));
+        #[cfg(test)]
+        if kept_match.is_some() {
+            MATCHES_KEPT.with(|kept| kept.set(kept.get() + 1));
+        }
+        let made;
+        let matched: &Matched<'a> = match &kept_match {
+            Some(kept) => kept,
+            None => {
+                made = self.match_element(element, styles, viewport, rem);
+                if keepable
+                    && self.keep_matched.contains(&element)
+                    && let Some(owned) = made.owned()
+                {
+                    self.matched
+                        .0
+                        .insert(element, (self.sheets, Arc::new(owned)));
+                } else {
+                    self.matched.0.remove(&element);
+                }
+                &made
+            }
         };
-        let key = self.style_key(element, &matched, parent.style, rem);
+        let key = self.style_key(element, matched, parent.style, rem);
         let containers = Containers {
             document: self.document,
             styles,
@@ -3003,7 +3085,7 @@ impl<'a> Cascader<'a> {
                 let base = element_style(
                     self.document,
                     element,
-                    &matched,
+                    matched,
                     parent.style,
                     &resolution,
                     None,
@@ -3093,7 +3175,7 @@ impl<'a> Cascader<'a> {
                 element_style(
                     self.document,
                     element,
-                    &matched,
+                    matched,
                     parent,
                     &resolution,
                     animated,
@@ -3889,6 +3971,51 @@ struct Applied<'a> {
     /// What few declarations have besides (G247): kept apart, shared by a
     /// rule's, so that the many without are small to push and to sort.
     extra: Option<Arc<Extra<'a>>>,
+}
+
+/// The declarations elements matched, kept owned, by element, with the
+/// number of the sheets they were matched against ([`Styles`]).
+#[derive(Clone, Default)]
+struct MatchedKept(HashMap<NodeId, (u64, Arc<Matched<'static>>)>);
+
+impl std::fmt::Debug for MatchedKept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MatchedKept({} elements)", self.0.len())
+    }
+}
+
+impl Matched<'_> {
+    /// These declarations, owned, to keep beyond the rules they were
+    /// matched from; `None` when one of them is in an `@container` block,
+    /// whose answer is the element's own style's to give.
+    fn owned(&self) -> Option<Matched<'static>> {
+        let mut out = Matched::default();
+        for (to, from) in out.targets.iter_mut().zip(&self.targets) {
+            for applied in from {
+                let extra = match &applied.extra {
+                    None => None,
+                    Some(extra) if extra.container.is_some() => return None,
+                    Some(extra) => Some(Arc::new(Extra {
+                        tree: extra.tree,
+                        originating: extra.originating,
+                        container: None,
+                    })),
+                };
+                to.push(Applied {
+                    tier: applied.tier,
+                    layer: applied.layer,
+                    specificity: applied.specificity,
+                    proximity: applied.proximity,
+                    order: applied.order,
+                    rule: applied.rule,
+                    context: applied.context,
+                    decl: Decl::Own(Arc::new((*applied.decl).clone())),
+                    extra,
+                });
+            }
+        }
+        Some(out)
+    }
 }
 
 /// A declaration an [`Applied`] holds: a stylesheet's, borrowed, or one
